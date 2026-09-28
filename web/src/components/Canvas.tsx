@@ -23,12 +23,13 @@ export function openInWindow(view: string) {
 }
 
 interface Props {
-  tasks: Task[]; groups: Group[]; view: string; setView: (v: string) => void; openPanel: (id: string) => void;
+  tasks: Task[]; groups: Group[]; view: string; setView: (v: string) => void; openPanel: (id: string | null) => void;
+  panelTaskId?: string | null; // the task whose panel is open (its tile then does not attach a second terminal)
   selected: Set<string>; toggleSel: (id: string) => void; clearSel: () => void; solo: boolean;
   focusMode: boolean; setFocusMode: (f: boolean) => void; toast: (s: string, action?: { label: string; fn: () => void }) => void;
 }
 
-export function Canvas({ tasks, groups, view, setView, openPanel, selected, toggleSel, clearSel, solo, focusMode, setFocusMode, toast }: Props) {
+export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, selected, toggleSel, clearSel, solo, focusMode, setFocusMode, toast }: Props) {
   const lk = (k: string) => `tb-cv-${view}-${k}`;
   const [layout, setLayout] = useState<Layout>(() => (localStorage.getItem(lk('layout')) as Layout) || 'columns');
   const [visible, setVisible] = useState<number | 'auto'>(() => { const v = localStorage.getItem(lk('visible')); return v && v !== 'auto' ? Number(v) : 'auto'; });
@@ -187,6 +188,8 @@ export function Canvas({ tasks, groups, view, setView, openPanel, selected, togg
             </div>
             <div className="wb">{t.openElsewhere ? <div className="empty" style={{ padding: 16 }}>Running in another terminal ({t.openElsewhere?.tty}). <button className="btn" onClick={() => openPanel(t.id)}>Options…</button></div>
               : t.status === 'suspended' ? <div className="empty" style={{ padding: 16 }}>Suspended. <button className="btn" onClick={() => openPanel(t.id)}>Resume…</button></div>
+              // a tmux window has one size: while this task's panel is open, the panel shows the terminal and the tile waits
+              : t.id === panelTaskId ? <div className="tile-in-panel"><div>Shown in the task panel.</div><div className="sub">One terminal per task at a time, so neither is cut off. Closing the panel brings it back here.</div><button className="btn" onClick={() => openPanel(null)}>Show it here instead</button></div>
               : <Terminal taskId={t.id} fontSize={font[t.id] || 13} onFocus={() => setFocused(t.id)} />}</div>
           </div>
         ))}

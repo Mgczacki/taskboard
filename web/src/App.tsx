@@ -188,7 +188,7 @@ export function App() {
           {page === 'settings' && <SettingsPage tasks={allTasks} />}
           {page === 'review' && <ReviewPage tasks={tasks} open={(id, tab) => setOpenId(id, tab)} />}
           {page === 'graph' && <GraphView tasks={tasks} groups={groups} open={(id, tab) => setOpenId(id, tab)} />}
-          {page === 'canvas' && <Canvas tasks={tasks} groups={groups} view={view} setView={setView} openPanel={setOpenId} selected={selected} toggleSel={toggleSel} clearSel={() => setSelected(new Set())} solo={SOLO} focusMode={focusMode} setFocusMode={setFocusMode} toast={toast} />}
+          {page === 'canvas' && <Canvas tasks={tasks} groups={groups} view={view} setView={setView} openPanel={id => setOpenId(id)} panelTaskId={openId} selected={selected} toggleSel={toggleSel} clearSel={() => setSelected(new Set())} solo={SOLO} focusMode={focusMode} setFocusMode={setFocusMode} toast={toast} />}
         </div>
       </div>
       {selected.size > 0 && <SelectionBar ids={[...selected]} tasks={tasks} groups={groups} clear={() => setSelected(new Set())} newGroup={ids => setGroupPrompt(ids)} toast={toast} />}

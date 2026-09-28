@@ -12,11 +12,27 @@ const quiet = (session: string) => quietUntil.set(session, Date.now() + 3000);
 
 const tmuxSync = (...args: string[]) => { try { return execFileSync(TMUX_BIN, ['-L', TMUX_SOCKET, ...args], { encoding: 'utf8', maxBuffer: 64 << 20 }); } catch { return ''; } };
 
-// Size the task's tmux window to this browser terminal. With several clients on one session (the task panel, a canvas
-// tile, another window), tmux would otherwise use the size of whichever client was used last, and a terminal of another
-// size shows a cut-off part of the screen (Codex draws at the bottom, so that part can be empty). Called when a terminal
-// attaches, is resized, or gets the keyboard; it also fixes that window's size for clients attached from other terminals.
-const sizeWindow = (session: string, cols: number, rows: number) => tmuxSync('resize-window', '-t', '=' + session + ':', '-x', String(Math.max(20, cols)), '-y', String(Math.max(5, rows)));
+// One tmux window has one size, however many terminals show it. A terminal larger than the window shows dots in the
+// unused area; a smaller one shows the window cut off (Codex draws at the bottom, so that part can even be empty).
+// So the server keeps, per session, every browser terminal attached to it (task panel, canvas tile, other windows)
+// with its size and when it was last used (opened, clicked or typed in), and gives the window the size of the most
+// recently used one. When that terminal closes, the next most recent one takes over; when none is left, the window
+// goes back to tmux's own sizing (window-size latest), so terminals attached from iTerm behave as before.
+interface Viewer { cols: number; rows: number; usedAt: number }
+const viewers = new Map<string, Set<Viewer>>();
+const sizedBy = new Map<string, Viewer>();
+const clamp = (v: Viewer) => [String(Math.max(20, v.cols)), String(Math.max(5, v.rows))];
+function sizeWindow(session: string) {
+  const list = [...(viewers.get(session) || [])];
+  if (!list.length) { sizedBy.delete(session); tmuxSync('set-option', '-w', '-t', '=' + session + ':', '-u', 'window-size'); return; }
+  const v = list.reduce((a, b) => (b.usedAt > a.usedAt ? b : a));
+  const prev = sizedBy.get(session);
+  if (prev === v && (v as Viewer & { applied?: string }).applied === `${v.cols}x${v.rows}`) return; // nothing changed
+  sizedBy.set(session, v); (v as Viewer & { applied?: string }).applied = `${v.cols}x${v.rows}`;
+  const [x, y] = clamp(v);
+  tmuxSync('resize-window', '-t', '=' + session + ':', '-x', x, '-y', y);
+}
+const use = (session: string, v: Viewer) => { v.usedAt = Date.now(); sizeWindow(session); };
 
 export function attach(ws: WebSocket, session: string, cols: number, rows: number) {
   quiet(session);
@@ -26,7 +42,10 @@ export function attach(ws: WebSocket, session: string, cols: number, rows: numbe
     name: 'xterm-256color', cols: Math.max(20, cols), rows: Math.max(5, rows),
     env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' } as Record<string, string>,
   });
-  sizeWindow(session, cols, rows);
+  const me: Viewer = { cols, rows, usedAt: Date.now() };
+  if (!viewers.has(session)) viewers.set(session, new Set());
+  viewers.get(session)!.add(me);
+  sizeWindow(session);
   // coalesce output: one WebSocket message per 8 ms instead of one per read from the pseudo-terminal
   let buf = '', timer: NodeJS.Timeout | null = null;
   const flush = () => { timer = null; if (buf && ws.readyState === ws.OPEN) ws.send(buf); buf = ''; };
@@ -38,12 +57,19 @@ export function attach(ws: WebSocket, session: string, cols: number, rows: numbe
     if (!isBinary && s.charCodeAt(0) === 0) {
       try {
         const m = JSON.parse(s.slice(1));
-        if (m.t === 'resize') { quiet(session); cols = m.cols; rows = m.rows; p.resize(Math.max(20, cols), Math.max(5, rows)); sizeWindow(session, cols, rows); }
-        if (m.t === 'focus') sizeWindow(session, cols, rows);
+        if (m.t === 'resize') { quiet(session); me.cols = m.cols; me.rows = m.rows; p.resize(Math.max(20, me.cols), Math.max(5, me.rows)); sizeWindow(session); }
+        if (m.t === 'focus') use(session, me);
       } catch { /* ignore malformed control message */ }
       return;
     }
+    // typing counts as using this terminal (only a change of terminal resizes the window)
+    if (sizedBy.get(session) !== me) use(session, me); else me.usedAt = Date.now();
     p.write(s);
   });
-  ws.on('close', () => { try { p.kill(); } catch { /* already gone */ } });
+  ws.on('close', () => {
+    try { p.kill(); } catch { /* already gone */ }
+    viewers.get(session)?.delete(me);
+    if (sizedBy.get(session) === me) sizedBy.delete(session);
+    sizeWindow(session);
+  });
 }
