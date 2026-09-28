@@ -8,6 +8,11 @@ import { DocsTab } from './Docs';
 import { hasFiles, uploadAll } from '../drop';
 import { loadAccounts, type Account } from './Accounts';
 
+// The drawer's width, set by dragging its left edge and kept across reloads. null means the default width.
+const WIDTH_KEY = 'tb-drawer-width', MIN_W = 420, EDGE = 120;
+const maxW = () => Math.max(MIN_W, innerWidth - EDGE);
+const savedWidth = () => { try { const w = Number(localStorage.getItem(WIDTH_KEY)); return w > 0 ? w : null; } catch { return null; } };
+
 export function TaskPanel({ t, tasks, groups, onClose, onCanvas, initialTab }: { t: Task; tasks: Task[]; groups: Group[]; onClose: () => void; onCanvas: (id: string) => void; initialTab?: 'terminal' | 'log' | 'docs' }) {
   const [tab, setTab] = useState<'terminal' | 'log' | 'docs'>(initialTab || 'terminal');
   const [log, setLog] = useState('');
@@ -33,12 +38,32 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, initialTab }: {
   useEffect(() => setBriefOpen(false), [t.id]);
   const [dropping, setDropping] = useState(false);
   const [dropMsg, setDropMsg] = useState('');
+  const [width, setWidth] = useState<number | null>(savedWidth);
+  const [resizing, setResizing] = useState(false);
+  // dragging the left edge widens the drawer; the terminal's ResizeObserver refits it and resizes the tmux pane
+  const startResize = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    const handle = e.currentTarget, x0 = e.clientX, w0 = handle.parentElement!.getBoundingClientRect().width;
+    let w = w0;
+    handle.setPointerCapture(e.pointerId);
+    setResizing(true);
+    const move = (ev: PointerEvent) => { w = Math.round(Math.min(maxW(), Math.max(MIN_W, w0 + x0 - ev.clientX))); setWidth(w); };
+    const up = () => {
+      handle.removeEventListener('pointermove', move); handle.removeEventListener('pointerup', up); handle.removeEventListener('pointercancel', up);
+      setResizing(false);
+      if (w !== w0) try { localStorage.setItem(WIDTH_KEY, String(w)); } catch { /* private mode */ }
+    };
+    handle.addEventListener('pointermove', move); handle.addEventListener('pointerup', up); handle.addEventListener('pointercancel', up);
+  };
+  const resetWidth = () => { setWidth(null); try { localStorage.removeItem(WIDTH_KEY); } catch { /* private mode */ } };
 
   return (
-    <aside className={`drawer open ${dropping ? 'dropping' : ''}`} style={{ width: 'min(880px, 55vw)' }}
+    <aside className={`drawer open ${dropping ? 'dropping' : ''} ${resizing ? 'resizing' : ''}`} style={{ width: width ? `clamp(${MIN_W}px, ${width}px, calc(100vw - ${EDGE}px))` : 'min(880px, 55vw)' }}
       onDragOver={e => { if (!hasFiles(e) || t.machine) return; e.preventDefault(); setDropping(true); }}
       onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropping(false); }}
       onDrop={e => { if (!hasFiles(e) || t.machine) return; e.preventDefault(); setDropping(false); uploadAll(t.id, e.dataTransfer.files, setDropMsg); }}>
+      <div className={`drawer-resize ${resizing ? 'on' : ''}`} onPointerDown={startResize} onDoubleClick={resetWidth} title="Drag to resize. Double-click to reset." />
       {dropping && <div className="dropnote">Drop to put in #{t.num}'s inbox</div>}
       <div className="dr-head">
         <div className="dr-row1"><span className="num">#{t.num}</span><h2>{t.title}</h2><button className="btn ghost icon" onClick={onClose} title="Close">✕</button></div>

@@ -52,14 +52,16 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
       return true;
     });
     const sendSize = () => { if (ws && ws.readyState === 1) ws.send('\x00' + JSON.stringify({ t: 'resize', cols: term.cols, rows: term.rows })); };
-    const ro = new ResizeObserver(() => { try { fit.fit(); sendSize(); } catch { /* hidden */ } });
+    // refit at once, but tell tmux only once the size settles: a drag changes it every frame, and each resize redraws the agent's screen
+    let sizeTimer: ReturnType<typeof setTimeout> | undefined;
+    const ro = new ResizeObserver(() => { try { fit.fit(); clearTimeout(sizeTimer); sizeTimer = setTimeout(sendSize, 100); } catch { /* hidden */ } });
     ro.observe(el);
     const sendFocus = () => { if (ws && ws.readyState === 1) ws.send('\x00' + JSON.stringify({ t: 'focus' })); };
     const onF = () => { sendFocus(); if (onFocus) onFocus(); };
     term.textarea?.addEventListener('focus', onF);
     if (autoFocus) setTimeout(() => term.focus(), 50);
 
-    return () => { closed = true; ro.disconnect(); input.dispose(); term.textarea?.removeEventListener('focus', onF); ws?.close(); term.dispose(); };
+    return () => { closed = true; clearTimeout(sizeTimer); ro.disconnect(); input.dispose(); term.textarea?.removeEventListener('focus', onF); ws?.close(); term.dispose(); };
   }, [taskId, session]);
 
   useEffect(() => { if (termRef.current) termRef.current.options.fontSize = fontSize; }, [fontSize]);
