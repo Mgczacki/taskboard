@@ -5,11 +5,16 @@
   "type": "module",
   "description": "A local board for Claude Code and Codex agents running in tmux.",
   "scripts": {
-    "dev": "concurrently -k -n server,web \"tsx watch server/index.ts\" \"vite\"",
+    "dev": "node scripts/sandbox.mjs dev",
     "build": "vite build",
     "start": "NODE_ENV=production tsx server/index.ts",
     "typecheck": "tsc --noEmit -p .",
-    "postinstall": "node scripts/fix-node-pty.mjs"
+    "postinstall": "node scripts/fix-node-pty.mjs",
+    "stop": "node scripts/stop.mjs",
+    "sandbox": "node scripts/sandbox.mjs",
+    "release": "node scripts/release.mjs",
+    "rollback": "node scripts/rollback.mjs",
+    "app": "pnpm --dir desktop setup"
   },
   "dependencies": {
     "@xterm/addon-clipboard": "^0.2.0",

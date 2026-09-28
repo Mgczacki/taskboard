@@ -6,7 +6,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from
 import { basename, join } from 'node:path';
 import { hostname } from 'node:os';
 import { promisify } from 'node:util';
-import { STATUSLINE_SCRIPT, ROOT, TB_DIR, CLAUDE_SETTINGS_FILE, CODEX_NOTIFY_SCRIPT, HOME, HOOK_SCRIPT, TOKEN_FILE, URL_BASE, VAULT, DOCS_DIR } from './config.ts';
+import { GUARD_SCRIPT, STATUSLINE_SCRIPT, ROOT, TB_DIR, CLAUDE_SETTINGS_FILE, CODEX_NOTIFY_SCRIPT, HOME, HOOK_SCRIPT, TOKEN_FILE, URL_BASE, VAULT, DOCS_DIR } from './config.ts';
 import * as store from './store.ts';
 import type { Agent, Task } from './store.ts';
 import * as tmux from './tmux.ts';
@@ -37,10 +37,12 @@ const HOOK_EVENTS = ['SessionStart', 'UserPromptSubmit', 'Notification', 'Permis
 
 export function writeClaudeSettings() {
   const cmd = { type: 'command', command: `node ${tmux.quote(HOOK_SCRIPT)}`, timeout: 10 };
-  const hooks = Object.fromEntries(HOOK_EVENTS.map(e => [e, [{ hooks: [cmd] }]]));
+  const hooks: Record<string, unknown[]> = Object.fromEntries(HOOK_EVENTS.map(e => [e, [{ hooks: [cmd] }]]));
+  // blocks shell commands that would stop the real Taskboard server or its agents (see server/hooks/guard.mjs)
+  hooks.PreToolUse = [{ matcher: 'Bash', hooks: [{ type: 'command', command: `node ${tmux.quote(GUARD_SCRIPT)}`, timeout: 5 }] }];
   // The log and documents live in the vault, outside the project folder; allow writing there without a prompt each turn.
   const vault = VAULT.replace(HOME, '~');
-  const permissions = { allow: [`Edit(${vault}/**)`, `Read(${vault}/**)`, 'Bash(tb review:*)', `Bash(python3 ${WORDING_SCRIPT}:*)`] }; // Edit rules cover every file-writing tool
+  const permissions = { allow: [`Edit(${vault}/**)`, `Read(${vault}/**)`, 'Bash(tb review:*)', 'Bash(tb inbox wait:*)', `Bash(python3 ${WORDING_SCRIPT}:*)`] }; // Edit rules cover every file-writing tool
   // status line: shows the model and usage in the terminal and reports the account's usage windows to Taskboard
   const statusLine = { type: 'command', command: `node ${tmux.quote(STATUSLINE_SCRIPT)}` };
   writeFileSync(CLAUDE_SETTINGS_FILE, JSON.stringify({ hooks, permissions, statusLine }, null, 2));
@@ -92,7 +94,9 @@ export async function startController(): Promise<Task> {
   writeFileSync(join(CONTROLLER_DIR, 'AGENTS.md'), controllerMd());
   let t = store.get('controller');
   if (!t) t = store.create({ id: 'controller', num: 0, title: 'Controller', agent: 'claude', status: 'working', cwd: CONTROLLER_DIR, folder: CONTROLLER_DIR, session: 'tb-controller', sessionId: randomUUID(), role: 'controller', statusSource: 'Started just now.', goal: 'Manage the other agents', desc: 'The controller agent.' });
-  if (await tmux.hasSession(t.session)) { const s = (await tmux.listSessions()).find(x => x.name === t!.session); if (s && !s.dead) return t; await tmux.killSession(t.session); }
+  // an existing session is only replaced when tmux reports its agent as exited; a session missing from the list is
+  // never closed on that basis (a listing problem once closed a running controller)
+  if ((await tmux.hasSession(t.session)) !== false) { const s = (await tmux.listSessions())?.find(x => x.name === t!.session); if (!s || !s.dead) return t; await tmux.killSession(t.session); }
   const resume = t.agent === 'claude' ? !!t.transcript : !!t.sessionId;
   launching.add(t.id); store.launchedAt.set(t.id, Date.now());
   try {
@@ -108,18 +112,26 @@ export async function startController(): Promise<Task> {
   return store.update(t.id, { status: 'idle', launchedAs: controllerLaunchKey(t.agent), statusSource: resume ? 'Controller resumed.' : 'Controller started. Ask it anything about your agents.' })!;
 }
 
-function claudeInstructions(t: Task) {
+// Instructions for every Taskboard task. Claude Code writes its own log entry each turn. For Codex, Taskboard writes
+// the entry from the first paragraph of Codex's last reply (events.ts codexEvent), so Codex is told that instead.
+function taskInstructions(t: Task) {
   const dir = store.taskDir(t.id);
-  return [
-    `You are running as task #${t.num} ("${t.title}") in Taskboard, which shows the user many agents at once.`,
+  const log = t.agent === 'claude' ? [
     `At the end of every turn, append one entry to ${dir}/log.md so the user can catch up quickly. Format exactly:`,
     `## <YYYY-MM-DD HH:MM>`,
     `- Did: <one sentence>`,
     `- Waiting: <what you need from the user, or "Nothing.">`,
     `- Next: <one sentence>`,
+  ] : [
+    `At the end of every turn, Taskboard copies the first paragraph of your last reply into ${dir}/log.md so the user can catch up quickly. Start each final reply with one sentence that states what you did.`,
+  ];
+  return [
+    `You are running as task #${t.num} ("${t.title}") in Taskboard, which shows the user many agents at once.`,
+    ...log,
     `Documents meant for the user or for other agents (handoffs, designs, reviews, diagrams, HTML pages) go in ${dir}/outbox/ as Markdown or HTML files. Files others send you arrive in ${dir}/inbox/.`,
+    `To wait for a file another agent or the user will send you, run: tb inbox wait [--timeout seconds]. It prints the path and sender of each new file (exit 0), or exits 2 on timeout.`,
     `When a document in your outbox needs the user's review or approval, run: tb review <path>. Their comments arrive in your inbox.`,
-    `Writing the log entry is always allowed, even if the user asked you not to use tools. Do it quietly: do not mention the log to the user.`,
+    ...(t.agent === 'claude' ? [`Writing the log entry is always allowed, even if the user asked you not to use tools. Do it quietly: do not mention the log to the user.`] : []),
     writingRules('the log entries, the documents and artifacts in your outbox, and all other text for the user or for other agents'),
   ].join('\n');
 }
@@ -140,7 +152,7 @@ function baseEnv(t: Task): Record<string, string> {
     TASK_ID: t.id, TASK_DIR: store.taskDir(t.id), TASK_NUM: String(t.num),
     TB_URL: URL_BASE, TB_TOKEN_FILE: TOKEN_FILE, TASKBOARD_VAULT: VAULT,
     // the tb command is on the agent's PATH
-    PATH: `${join(ROOT, 'bin')}:${process.env.PATH || '/usr/bin:/bin'}`,
+    PATH: `${join(TB_DIR, 'bin')}:${process.env.PATH || '/usr/bin:/bin'}`,
     ...accounts.envFor(accounts.get(t.account)),
   };
   const orig = codexOriginalNotify(t); if (t.agent === 'codex' && orig) env.TB_CODEX_ORIG_NOTIFY = orig;
@@ -160,13 +172,16 @@ function codexFlags(): string[] {
 
 function command(t: Task, prompt: string | null, resume: boolean): string[] {
   if (t.agent === 'claude') {
-    const c = ['claude', '--settings', CLAUDE_SETTINGS_FILE, '--add-dir', VAULT, '--append-system-prompt', claudeInstructions(t)];
+    const c = ['claude', '--settings', CLAUDE_SETTINGS_FILE, '--add-dir', VAULT, '--append-system-prompt', taskInstructions(t)];
     if (resume && t.sessionId) c.push('--resume', t.sessionId);
     else if (t.sessionId) c.push('--session-id', t.sessionId);
     if (prompt) c.push(prompt);
     return c;
   }
   const c = ['codex', ...codexFlags()];
+  // Codex has no flag that appends to its system prompt. developer_instructions is a config value, so it is written as a
+  // TOML string (a JSON string is also a valid TOML basic string). The controller reads AGENTS.md in its folder instead.
+  if (t.role !== 'controller') c.push('-c', `developer_instructions=${JSON.stringify(taskInstructions(t))}`);
   if (resume && t.sessionId) return [...c.slice(0, 1), 'resume', ...c.slice(1), t.sessionId, ...(prompt ? [prompt] : [])];
   if (prompt) c.push(prompt);
   return c;
@@ -179,7 +194,7 @@ async function ensureTmuxConfigured() {
   await tmux.configureServer(hook);
   tmuxConfigured = true;
 }
-export async function configureIfRunning() { if ((await tmux.listSessions()).length) await ensureTmuxConfigured(); }
+export async function configureIfRunning() { if ((await tmux.listSessions())?.length) await ensureTmuxConfigured(); }
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'task';
 
@@ -221,7 +236,14 @@ export async function resumeTask(t: Task, force = false): Promise<Task> {
     catch (e) { if ((e as NodeJS.ErrnoException).code !== 'ESRCH') throw e; }
   }
   if (t.openElsewhere) store.update(t.id, { openElsewhere: undefined });
-  if (await tmux.hasSession(t.session)) await tmux.killSession(t.session); // a dead pane from remain-on-exit
+  // a session that is still there: close it only if its agent exited (a dead pane from remain-on-exit); a running
+  // agent is kept and the task simply takes it back
+  if ((await tmux.hasSession(t.session)) !== false) {
+    const s = (await tmux.listSessions())?.find(x => x.name === t.session);
+    if (!s) throw new Error('Could not check the task\'s tmux session (tmux did not answer). Try again in a moment.');
+    if (!s.dead) { launching.delete(t.id); return store.update(t.id, { status: 'idle', statusSource: 'Its session was still running.' })!; }
+    await tmux.killSession(t.session);
+  }
   if (!t.sessionId) throw new Error('No session id recorded for this task, so it cannot be resumed.');
   await launch(t, null, true);
   return store.update(t.id, { status: 'idle', statusSource: `Resumed with ${t.agent === 'claude' ? 'claude --resume' : 'codex resume'} ${t.sessionId}.` })!;

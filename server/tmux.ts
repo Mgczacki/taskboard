@@ -5,8 +5,11 @@ import { TMUX_SOCKET } from './config.ts';
 const exec = promisify(execFile);
 export const TMUX_BIN = process.env.TASKBOARD_TMUX || 'tmux';
 
+// tmux rewrites tabs and other characters in its output when the locale is not UTF-8 (as under launchd, which sets
+// no locale). Always run it with a UTF-8 locale; the list below also uses a separator tmux never rewrites.
+const TMUX_ENV = { ...process.env, LANG: process.env.LANG?.includes('UTF-8') ? process.env.LANG : 'en_US.UTF-8', LC_CTYPE: 'en_US.UTF-8' };
 export async function tmux(...args: string[]): Promise<string> {
-  const { stdout } = await exec(TMUX_BIN, ['-L', TMUX_SOCKET, ...args], { maxBuffer: 16 * 1024 * 1024 });
+  const { stdout } = await exec(TMUX_BIN, ['-L', TMUX_SOCKET, ...args], { maxBuffer: 16 * 1024 * 1024, env: TMUX_ENV });
   return stdout;
 }
 
@@ -16,18 +19,27 @@ async function tmuxQuiet(...args: string[]): Promise<string | null> {
 
 export interface SessionInfo { name: string; activity: number; bell: boolean; panePid: number; dead: boolean; unscrollable: boolean }
 
-export async function listSessions(): Promise<SessionInfo[]> {
-  const out = await tmuxQuiet('list-panes', '-a', '-F', '#{session_name}\t#{window_activity}\t#{window_bell_flag}\t#{pane_pid}\t#{pane_dead}\t#{alternate_on}\t#{mouse_any_flag}');
-  if (!out) return [];
+const SEP = '|~|'; // printable, so no locale changes it; session names never contain it
+// tmux's answer when its server (and so every session) is gone, as opposed to tmux failing to run or answer
+const NO_SERVER = /no server running|error connecting to|No such file or directory|can't find session/i;
+const errText = (e: unknown) => `${(e as { stderr?: string }).stderr || ''} ${(e as Error).message || ''}`;
+// null means tmux could not be asked (the caller must not conclude that sessions are gone); [] means there are none
+export async function listSessions(): Promise<SessionInfo[] | null> {
+  let out: string;
+  try { out = await tmux('list-panes', '-a', '-F', ['#{session_name}', '#{window_activity}', '#{window_bell_flag}', '#{pane_pid}', '#{pane_dead}', '#{alternate_on}', '#{mouse_any_flag}'].join(SEP)); }
+  catch (e) { return NO_SERVER.test(errText(e)) ? [] : null; }
+  if (out.trim() && !out.includes(SEP)) return null; // output in a format we did not ask for: do not guess
   return out.trim().split('\n').filter(Boolean).map(l => {
-    const [name, activity, bell, pid, dead, alt, mouse] = l.split('\t');
+    const [name, activity, bell, pid, dead, alt, mouse] = l.split(SEP);
     // full screen without mouse reporting: tmux has no history for it and the program ignores the wheel, so it cannot be scrolled
     return { name, activity: Number(activity) * 1000, bell: bell === '1', panePid: Number(pid), dead: dead === '1', unscrollable: alt === '1' && mouse !== '1' };
   });
 }
 
-export async function hasSession(name: string): Promise<boolean> {
-  return (await tmuxQuiet('has-session', '-t', '=' + name)) !== null;
+// true / false when tmux answered; null when it could not be asked
+export async function hasSession(name: string): Promise<boolean | null> {
+  try { await tmux('has-session', '-t', '=' + name); return true; }
+  catch (e) { return NO_SERVER.test(errText(e)) ? false : null; }
 }
 
 // Server-wide options. escape-time 0 keeps Esc instant (Claude Code and Codex use Esc to interrupt).

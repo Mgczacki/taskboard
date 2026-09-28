@@ -20,7 +20,8 @@ import * as accounts from './accounts.ts';
 import * as external from './external.ts';
 import * as machines from './machines.ts';
 import * as machine from './machine.ts';
-import { alreadyRunning, holdLock } from './lock.ts';
+import { acquire } from './lock.ts';
+import { ROLE, installRuntimeFiles, refuseReason } from './instance.ts';
 import { hostname } from 'node:os';
 import WebSocket from 'ws';
 import { mountReview } from './review.ts';
@@ -29,19 +30,29 @@ import * as store from './store.ts';
 import * as tmux from './tmux.ts';
 
 const execFileP = promisify(execFile);
+// a development checkout never runs as the real Taskboard, and a sandbox never uses the real one's port, folders or tmux
+const refused = refuseReason();
+if (refused) { console.error(refused); process.exit(1); }
+// Bind the port before doing anything else. The kernel lets only one process hold it and frees it when that process
+// dies, so a second server stops here, before it has touched a task file, tmux or the controller.
+const app = express();
+const server = createServer(app);
+await new Promise<void>(resolve => {
+  server.once('error', e => { console.error(`${new Date().toISOString()} cannot listen on ${URL_BASE}: ${e.message}. Another Taskboard server is probably running; not starting a second one.`); process.exit(1); });
+  server.listen(PORT, HOST, () => resolve());
+});
+// the lock file only records which process serves this TB_DIR (and refuses a second server on another port)
+const other = acquire();
+if (other) { console.error(`Taskboard is already running here: process ${other.pid}, ${other.url} (started ${other.started}). Not starting a second server.`); process.exit(1); }
 store.loadAll();
 groups.load();
 // "open in another terminal" used to be a status; it is now only the openElsewhere field, and the status is read from the transcript
 for (const t of store.all()) if (t.openElsewhere && (t.status as string) === 'elsewhere' || t.openElsewhere && t.status === 'suspended')
   store.update(t.id, { status: 'idle', transcript: t.transcript || importer.transcriptFor(t.agent, t.sessionId || '') });
-// one Taskboard server per machine (per ~/.taskboard): a second one exits instead of fighting over tmux and hooks
-const other = alreadyRunning();
-if (other) { console.error(`Taskboard is already running on this machine: process ${other.pid}, ${other.url} (started ${other.started}). Not starting a second server.`); process.exit(1); }
-holdLock();
+installRuntimeFiles();
 agents.writeClaudeSettings();
 await agents.configureIfRunning();
 
-const app = express();
 app.use(express.json({ limit: '2mb' }));
 
 const ALLOWED_ORIGINS = new Set([URL_BASE, `http://localhost:${PORT}`, 'http://localhost:5173', 'http://127.0.0.1:5173']);
@@ -85,9 +96,13 @@ app.use('/api', (req, res, next) => {
 // Actions the controller agent takes on other agents wait for your approval on the dashboard.
 // tb sends x-tb-actor with the calling task's id; the controller's requests get a 202 and an approval id to wait on.
 async function guarded(req: express.Request, res: express.Response, summary: string, detail: string, action: approvals.Approval['action'], run: () => Promise<unknown>, describe: (r: any) => string) {
-  if (req.get('x-tb-actor') !== 'controller') { try { res.json(await run()); } catch (e) { fail(res, e); } return; }
-  const a = approvals.request({ actor: 'controller', action, summary, detail, payload: req.body }, async () => describe(await run()));
-  store.update('controller', { status: 'needs-you', ask: `Approve: ${summary}`, statusSource: 'Waiting for your approval on the dashboard.' });
+  // the dashboard (a browser origin) acts directly; any agent — the controller or another task, identified by `tb`'s
+  // x-tb-actor — waits for your approval. (Agents run as you and can read the token, so this guards against mistakes,
+  // not against an agent that deliberately calls the API without `tb`.)
+  const actor = req.get('x-tb-actor') || '';
+  if (req.get('origin') || !actor) { try { res.json(await run()); } catch (e) { fail(res, e); } return; }
+  const a = approvals.request({ actor, action, summary, detail, payload: req.body }, async () => describe(await run()));
+  if (store.get(actor)) store.update(actor, { status: 'needs-you', ask: `Approve: ${summary}`, statusSource: 'Waiting for your approval on the dashboard.' });
   res.status(202).json({ approval: a });
 }
 app.get('/api/approvals', (_req, res) => res.json(approvals.all()));
@@ -131,7 +146,7 @@ app.use('/api', async (req, res, next) => {
 // This machine: its name, the server, and the controller (tb info, the dashboard, other machines).
 const info = () => {
   const c = store.get('controller');
-  return { machine: machine.get().name, host: hostname(), url: URL_BASE, pid: process.pid, settings: machine.get(),
+  return { role: ROLE, root: ROOT, machine: machine.get().name, host: hostname(), url: URL_BASE, pid: process.pid, settings: machine.get(),
     controller: c ? { agent: c.agent, account: c.account, status: c.status, remoteUrl: c.agent === 'claude' && machine.get().controller.remoteControl ? c.remoteUrl : undefined, label: machine.controllerLabel() } : null,
     tasks: store.all().filter(t => t.role !== 'controller' && t.status !== 'archived').length };
 };
@@ -210,7 +225,7 @@ app.post('/api/tasks/:id/restart', async (req, res) => {
   const t = store.get(req.params.id); if (!t) return res.status(404).end();
   if (t.openElsewhere) return fail(res, 'This session runs in another terminal; use “Move it here” instead.');
   if (req.body.when === 'cancel') return res.json(view(store.update(t.id, { restartWhenDone: undefined })!));
-  if (req.body.when === 'after-turn' && !['idle', 'unread', 'suspended', 'stopped'].includes(t.status)) return res.json(view(store.update(t.id, { restartWhenDone: true })!));
+  if (req.body.when === 'after-turn' && !['suspended', 'stopped'].includes(t.status) && !betweenTurns(t)) return res.json(view(store.update(t.id, { restartWhenDone: true })!));
   try { await restartTask(t); res.json(view(store.get(t.id)!)); } catch (e) { fail(res, e); }
 });
 mountReview(app);
@@ -296,6 +311,12 @@ app.post('/api/docs/send', (req, res) => {
   } catch (e) { fail(res, e); }
 });
 app.post('/api/tasks/:id/inbox/remove', (req, res) => { docs.removeFromInbox(req.params.id, req.body.name); store.touch(req.params.id); res.json({}); });
+// New inbox files the agent has not been told about (for `tb inbox wait`). Clears the pending list,
+// so the prompt hook does not report the same files again.
+app.post('/api/tasks/:id/inbox/take', (req, res) => {
+  if (!store.get(req.params.id)) return res.status(404).json({ error: 'no such task' });
+  res.json({ files: docs.takePending(req.params.id) });
+});
 // Type the inbox notice into the agent's terminal (needed for Codex, which has no prompt hook here).
 app.post('/api/tasks/:id/inbox/tell', async (req, res) => {
   const t = store.get(req.params.id); if (!t) return res.status(404).end();
@@ -380,7 +401,6 @@ if (existsSync(dist)) {
 }
 
 // ---------- websockets: /ws/events (changes) and /ws/term?task=<id> ----------
-const server = createServer(app);
 const wss = new WebSocketServer({ noServer: true });
 const eventClients = new Set<import('ws').WebSocket>();
 
@@ -490,7 +510,7 @@ function watchElsewhere(t: store.Task) {
     patch = { status: 'idle', ask: '', statusSource: `Running in ${where} · no output since ${at}.` };
   }
   if (Object.entries(patch).some(([k, v]) => (t as any)[k] !== v)) store.update(t.id, patch);
-  if (t.moveWhenDone && (r.state === 'finished' || r.state === 'aborted') && !movingNow.has(t.id)) {
+  if (t.moveWhenDone && (r.state === 'finished' || r.state === 'aborted') && quietFor >= QUIET_MS && !movingNow.has(t.id)) {
     movingNow.add(t.id);
     agents.takeOver(store.get(t.id)!).then(() => store.update(t.id, { moveWhenDone: undefined }))
       .catch(err => store.update(t.id, { moveWhenDone: undefined, statusSource: `Could not move it here: ${err instanceof Error ? err.message : err}` }))
@@ -521,7 +541,7 @@ async function keepController(t: store.Task, s?: { dead: boolean }) {
     return;
   }
   // started with an older name / Remote Control setting: restart it (it resumes the same conversation), but not mid-turn
-  if (s && !s.dead && t.launchedAs !== agents.controllerLaunchKey(t.agent) && ['idle', 'unread'].includes(t.status) && Date.now() - controllerStartedAt > 60000) {
+  if (s && !s.dead && t.launchedAs !== agents.controllerLaunchKey(t.agent) && betweenTurns(t) && Date.now() - controllerStartedAt > 60000) {
     controllerStartedAt = Date.now();
     await tmux.killSession(t.session); store.update(t.id, { remoteUrl: undefined });
     try { await agents.startController(); console.log('controller restarted with new settings'); } catch (e) { console.error('controller restart failed', e); }
@@ -547,18 +567,36 @@ async function restartTask(t: store.Task) {
   try { await agents.resumeTask(store.get(t.id)!, true); } catch (e) { store.update(t.id, { status: 'suspended', statusSource: `Restart failed: ${e instanceof Error ? e.message : e}` }); }
 }
 
+// "Between turns" as far as the server can tell: idle or unread, and neither the status nor the transcript changed for
+// 15 s. A prompt typed in the last moment can still race with this (the CLIs give no way to hold input); 15 s makes it
+// unlikely instead of likely.
+const QUIET_MS = 15000;
+function betweenTurns(t: store.Task) {
+  if (!['idle', 'unread'].includes(t.status)) return false;
+  let last = Date.parse(t.statusAt) || 0;
+  try { if (t.transcript) last = Math.max(last, statSync(t.transcript).mtimeMs); } catch { /* moved */ }
+  return Date.now() - Math.max(last, store.launchedAt.get(t.id) || 0) >= QUIET_MS;
+}
+let lastListWarn = 0;
 async function reconcile() {
   const sessions = await tmux.listSessions();
+  if (!sessions) { if (Date.now() - lastListWarn > 60000) { lastListWarn = Date.now(); console.error(`${new Date().toISOString()} tmux did not answer; skipping status checks`); } return; }
   const byName = new Map(sessions.map(s => [s.name, s]));
   for (const t of store.all()) {
     if (t.role === 'controller') { await keepController(t, byName.get(t.session)); continue; }
     if (t.openElsewhere && !['archived', 'parked'].includes(t.status)) { watchElsewhere(t); continue; }
-    if (['archived', 'parked', 'suspended'].includes(t.status) || agents.launching.has(t.id)) continue;
+    if (['archived', 'parked'].includes(t.status) || agents.launching.has(t.id)) continue;
     const s = byName.get(t.session);
+    // marked suspended but its session is running (for example after a listing problem): take it back
+    if (t.status === 'suspended') {
+      if (s && !s.dead && !t.openElsewhere) store.update(t.id, { status: 'idle', interrupted: undefined, statusSource: `Found its session running at ${new Date().toTimeString().slice(0, 5)}.` });
+      continue;
+    }
+    // missing from the list: confirm with tmux directly before treating the session as gone
+    if (!s && (await tmux.hasSession(t.session)) !== false) continue;
     if (!s) { store.update(t.id, { status: 'suspended', interrupted: t.status === 'working' ? 'The session ended while the agent was working.' : undefined, statusSource: 'The tmux session is gone (restart or crash). Opening the task resumes it.' }); continue; }
     if (s.dead) { store.update(t.id, { status: 'suspended', statusSource: 'The agent exited. Resume to continue the conversation.' }); continue; }
     if (!!t.unscrollable !== s.unscrollable) store.update(t.id, { unscrollable: s.unscrollable || undefined });
-    if (t.restartWhenDone && ['idle', 'unread'].includes(t.status)) { await restartTask(t); continue; }
     if (Date.now() - Date.parse(t.updated) < 90000 && !events.sessionStarted.has(t.id) && ['working', 'idle'].includes(t.status))
       events.screenCheck(t, await tmux.capture(t.session, 30));
     if (t.agent === 'codex' && t.sessionId) {
@@ -566,9 +604,22 @@ async function reconcile() {
       if (!tr) { tr = importer.transcriptFor('codex', t.sessionId); if (tr) store.update(t.id, { transcript: tr }); }
       try { if (tr) events.codexActivity(t, statSync(tr).mtimeMs); } catch { /* moved */ }
     }
+    // after the activity checks above, so a new Codex turn is seen first
+    const cur = store.get(t.id)!;
+    if (cur.restartWhenDone && betweenTurns(cur)) { await restartTask(cur); continue; }
   }
 }
 await reconcile();
+// Events sent while the server was down are lost; take the status from the transcripts once at start.
+for (const t of store.all()) {
+  if (!t.transcript || t.openElsewhere || !['working', 'needs-you', 'idle', 'unread'].includes(t.status)) continue;
+  const r = external.readState(t.agent, t.transcript); if (!r) continue;
+  const newer = (r.at ?? 0) > (Date.parse(t.statusAt) || 0); // compare conversation records, not file writes
+  if (r.state === 'finished' && ['working', 'needs-you'].includes(t.status) && newer)
+    store.update(t.id, { status: 'unread', ask: '', now: r.text || t.now, statusSource: 'Turn ended while Taskboard was restarting (read from the transcript).' });
+  else if ((r.state === 'busy' || r.state === 'tool') && ['idle', 'unread'].includes(t.status) && newer)
+    store.update(t.id, { status: 'working', statusSource: 'Started working while Taskboard was restarting (read from the transcript).' });
+}
 // start the controller together with Taskboard
 if (machine.get().controller.autostart && store.get('controller')?.status !== 'archived') {
   controllerStartedAt = Date.now();
@@ -581,4 +632,4 @@ setInterval(() => reconcile().catch(e => console.error('reconcile', e)), 2000);
 // "waiting N min" changes over time; push a refresh every minute
 setInterval(() => { const msg = JSON.stringify({ type: 'tasks', tasks: [...store.all().map(view), ...machines.remoteTasks()] }); for (const c of eventClients) if (c.readyState === c.OPEN) c.send(msg); }, 60000);
 
-server.listen(PORT, HOST, () => console.log(`Taskboard on ${URL_BASE}  (vault ${store.taskDir('').replace(/\/$/, '')})`));
+console.log(`Taskboard on ${URL_BASE}  (vault ${store.taskDir('').replace(/\/$/, '')})`);

@@ -1,0 +1,121 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 68 and seed 2189611444089187385 with 10 workers on 10 cores with 14564MB heap and 64MB offheap memory [pid: 81269] (Mac OS X 14.5 aarch64, Homebrew 17.0.19 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /Users/mariogarrido/taskboard/formal/tla/ServerInstance.tla
+Parsing file /private/var/folders/cz/_lh4d7h151zg6qwyqggqjyl80000gn/T/Naturals.tla
+Parsing file /private/var/folders/cz/_lh4d7h151zg6qwyqggqjyl80000gn/T/FiniteSets.tla
+Parsing file /private/var/folders/cz/_lh4d7h151zg6qwyqggqjyl80000gn/T/TLC.tla
+Parsing file /private/var/folders/cz/_lh4d7h151zg6qwyqggqjyl80000gn/T/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module ServerInstance
+Starting... (2026-09-28 06:14:22)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-28 06:14:22.
+Error: Invariant SingleReconciler is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ manual = 0
+/\ attempts = [s1 |-> 0, s2 |-> 0]
+/\ pc = [s1 |-> "down", s2 |-> "down"]
+/\ file = <<"none", "-">>
+/\ signalledForeign = FALSE
+/\ crashes = 0
+/\ port = "free"
+/\ staleOwner = "dead"
+
+State 2: <ManualStart line 124, col 19 to line 124, col 96 of module ServerInstance>
+/\ manual = 1
+/\ attempts = [s1 |-> 0, s2 |-> 0]
+/\ pc = [s1 |-> "down", s2 |-> "create"]
+/\ file = <<"none", "-">>
+/\ signalledForeign = FALSE
+/\ crashes = 0
+/\ port = "free"
+/\ staleOwner = "dead"
+
+State 3: <LaunchdStart line 123, col 17 to line 123, col 53 of module ServerInstance>
+/\ manual = 1
+/\ attempts = [s1 |-> 0, s2 |-> 0]
+/\ pc = [s1 |-> "create", s2 |-> "create"]
+/\ file = <<"none", "-">>
+/\ signalledForeign = FALSE
+/\ crashes = 0
+/\ port = "free"
+/\ staleOwner = "dead"
+
+State 4: <Create line 140, col 3 to line 143, col 80 of module ServerInstance>
+/\ manual = 1
+/\ attempts = [s1 |-> 0, s2 |-> 0]
+/\ pc = [s1 |-> "write", s2 |-> "create"]
+/\ file = <<"s1", "e">>
+/\ signalledForeign = FALSE
+/\ crashes = 0
+/\ port = "free"
+/\ staleOwner = "dead"
+
+State 5: <Create line 140, col 3 to line 143, col 80 of module ServerInstance>
+/\ manual = 1
+/\ attempts = [s1 |-> 0, s2 |-> 0]
+/\ pc = [s1 |-> "write", s2 |-> "check"]
+/\ file = <<"s1", "e">>
+/\ signalledForeign = FALSE
+/\ crashes = 0
+/\ port = "free"
+/\ staleOwner = "dead"
+
+State 6: <Check line 153, col 3 to line 155, col 86 of module ServerInstance>
+/\ manual = 1
+/\ attempts = [s1 |-> 0, s2 |-> 0]
+/\ pc = [s1 |-> "write", s2 |-> "unlink"]
+/\ file = <<"s1", "e">>
+/\ signalledForeign = FALSE
+/\ crashes = 0
+/\ port = "free"
+/\ staleOwner = "dead"
+
+State 7: <Unlink line 158, col 3 to line 162, col 70 of module ServerInstance>
+/\ manual = 1
+/\ attempts = [s1 |-> 0, s2 |-> 1]
+/\ pc = [s1 |-> "write", s2 |-> "create"]
+/\ file = <<"none", "-">>
+/\ signalledForeign = FALSE
+/\ crashes = 0
+/\ port = "free"
+/\ staleOwner = "dead"
+
+State 8: <Write line 147, col 3 to line 150, col 80 of module ServerInstance>
+/\ manual = 1
+/\ attempts = [s1 |-> 0, s2 |-> 1]
+/\ pc = [s1 |-> "startup", s2 |-> "create"]
+/\ file = <<"none", "-">>
+/\ signalledForeign = FALSE
+/\ crashes = 0
+/\ port = "free"
+/\ staleOwner = "dead"
+
+State 9: <Create line 140, col 3 to line 143, col 80 of module ServerInstance>
+/\ manual = 1
+/\ attempts = [s1 |-> 0, s2 |-> 1]
+/\ pc = [s1 |-> "startup", s2 |-> "write"]
+/\ file = <<"s2", "e">>
+/\ signalledForeign = FALSE
+/\ crashes = 0
+/\ port = "free"
+/\ staleOwner = "dead"
+
+State 10: <Write line 147, col 3 to line 150, col 80 of module ServerInstance>
+/\ manual = 1
+/\ attempts = [s1 |-> 0, s2 |-> 1]
+/\ pc = [s1 |-> "startup", s2 |-> "startup"]
+/\ file = <<"s2", "f">>
+/\ signalledForeign = FALSE
+/\ crashes = 0
+/\ port = "free"
+/\ staleOwner = "dead"
+
+1846 states generated, 777 distinct states found, 252 states left on queue.
+The depth of the complete state graph search is 12.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 5 and the 95th percentile is 3).
+Finished in 00s at (2026-09-28 06:14:22)

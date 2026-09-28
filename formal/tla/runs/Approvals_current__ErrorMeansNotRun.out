@@ -1,0 +1,90 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 26 and seed 6430432826934735715 with 10 workers on 10 cores with 14564MB heap and 64MB offheap memory [pid: 95461] (Mac OS X 14.5 aarch64, Homebrew 17.0.19 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /Users/mariogarrido/taskboard/formal/tla/Approvals.tla
+Parsing file /private/var/folders/cz/_lh4d7h151zg6qwyqggqjyl80000gn/T/Naturals.tla
+Semantic processing of module Naturals
+Semantic processing of module Approvals
+Starting... (2026-09-28 06:26:06)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-28 06:26:06.
+Error: Invariant ErrorMeansNotRun is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ deniedEver = <<FALSE, FALSE>>
+/\ bypassed = FALSE
+/\ clicks = 0
+/\ crashes = 0
+/\ pre = <<0, 0>>
+/\ errEver = <<FALSE, FALSE>>
+/\ cid = 0
+/\ execs = <<0, 0>>
+/\ nextId = 1
+/\ appr = <<"absent", "absent">>
+/\ srvUp = TRUE
+/\ client = "idle"
+/\ post = <<0, 0>>
+
+State 2: <Request line 75, col 3 to line 80, col 81 of module Approvals>
+/\ deniedEver = <<FALSE, FALSE>>
+/\ bypassed = FALSE
+/\ clicks = 0
+/\ crashes = 0
+/\ pre = <<0, 0>>
+/\ errEver = <<FALSE, FALSE>>
+/\ cid = 1
+/\ execs = <<0, 0>>
+/\ nextId = 2
+/\ appr = <<"pending", "absent">>
+/\ srvUp = TRUE
+/\ client = "waiting"
+/\ post = <<0, 0>>
+
+State 3: <ClientTimeout line 136, col 3 to line 138, col 100 of module Approvals>
+/\ deniedEver = <<FALSE, FALSE>>
+/\ bypassed = FALSE
+/\ clicks = 0
+/\ crashes = 0
+/\ pre = <<0, 0>>
+/\ errEver = <<TRUE, FALSE>>
+/\ cid = 1
+/\ execs = <<0, 0>>
+/\ nextId = 2
+/\ appr = <<"pending", "absent">>
+/\ srvUp = TRUE
+/\ client = "error"
+/\ post = <<0, 0>>
+
+State 4: <Approve line 92, col 3 to line 96, col 98 of module Approvals>
+/\ deniedEver = <<FALSE, FALSE>>
+/\ bypassed = FALSE
+/\ clicks = 1
+/\ crashes = 0
+/\ pre = <<1, 0>>
+/\ errEver = <<TRUE, FALSE>>
+/\ cid = 1
+/\ execs = <<0, 0>>
+/\ nextId = 2
+/\ appr = <<"pending", "absent">>
+/\ srvUp = TRUE
+/\ client = "error"
+/\ post = <<0, 0>>
+
+State 5: <Effect line 106, col 3 to line 108, col 99 of module Approvals>
+/\ deniedEver = <<FALSE, FALSE>>
+/\ bypassed = FALSE
+/\ clicks = 1
+/\ crashes = 0
+/\ pre = <<0, 0>>
+/\ errEver = <<TRUE, FALSE>>
+/\ cid = 1
+/\ execs = <<1, 0>>
+/\ nextId = 2
+/\ appr = <<"pending", "absent">>
+/\ srvUp = TRUE
+/\ client = "error"
+/\ post = <<1, 0>>
+
+153 states generated, 102 distinct states found, 46 states left on queue.
+The depth of the complete state graph search is 8.
+The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 5 and the 95th percentile is 5).
+Finished in 00s at (2026-09-28 06:26:06)

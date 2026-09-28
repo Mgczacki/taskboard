@@ -1,0 +1,131 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 87 and seed 8083988159945156170 with 10 workers on 10 cores with 14564MB heap and 64MB offheap memory [pid: 92213] (Mac OS X 14.5 aarch64, Homebrew 17.0.19 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /Users/mariogarrido/taskboard/formal/tla/AgentLifecycle.tla
+Parsing file /private/var/folders/cz/_lh4d7h151zg6qwyqggqjyl80000gn/T/Naturals.tla
+Parsing file /private/var/folders/cz/_lh4d7h151zg6qwyqggqjyl80000gn/T/Sequences.tla
+Parsing file /private/var/folders/cz/_lh4d7h151zg6qwyqggqjyl80000gn/T/TLC.tla
+Parsing file /private/var/folders/cz/_lh4d7h151zg6qwyqggqjyl80000gn/T/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module AgentLifecycle
+Starting... (2026-09-28 06:23:28)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-28 06:23:29.
+Error: Invariant NoKillLiveOnListingError is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ proc = "idle"
+/\ restartWD = FALSE
+/\ trSeen = FALSE
+/\ requests = 0
+/\ moved = FALSE
+/\ moveWD = FALSE
+/\ faults = 0
+/\ ctlGen = 0
+/\ settingsStale = FALSE
+/\ asks = 0
+/\ prompts = 0
+/\ badKill = "none"
+/\ exits = 0
+/\ hookQ = <<>>
+/\ tr = "finished"
+/\ crashes = 0
+/\ rateOK = TRUE
+/\ changes = 0
+/\ status = "idle"
+/\ srvUp = TRUE
+
+State 2: <ServerCrash line 193, col 3 to line 195, col 165 of module AgentLifecycle>
+/\ proc = "idle"
+/\ restartWD = FALSE
+/\ trSeen = FALSE
+/\ requests = 0
+/\ moved = FALSE
+/\ moveWD = FALSE
+/\ faults = 0
+/\ ctlGen = 0
+/\ settingsStale = FALSE
+/\ asks = 0
+/\ prompts = 0
+/\ badKill = "none"
+/\ exits = 0
+/\ hookQ = <<>>
+/\ tr = "finished"
+/\ crashes = 1
+/\ rateOK = TRUE
+/\ changes = 0
+/\ status = "idle"
+/\ srvUp = FALSE
+
+State 3: <ServerBoot line 217, col 3 to line 221, col 97 of module AgentLifecycle>
+/\ proc = "idle"
+/\ restartWD = FALSE
+/\ trSeen = FALSE
+/\ requests = 0
+/\ moved = FALSE
+/\ moveWD = FALSE
+/\ faults = 0
+/\ ctlGen = 0
+/\ settingsStale = FALSE
+/\ asks = 0
+/\ prompts = 0
+/\ badKill = "none"
+/\ exits = 0
+/\ hookQ = <<>>
+/\ tr = "finished"
+/\ crashes = 1
+/\ rateOK = TRUE
+/\ changes = 0
+/\ status = "idle"
+/\ srvUp = TRUE
+
+State 4: <Reconcile line 271, col 3 to line 276, col 78 of module AgentLifecycle>
+/\ proc = "idle"
+/\ restartWD = FALSE
+/\ trSeen = FALSE
+/\ requests = 0
+/\ moved = FALSE
+/\ moveWD = FALSE
+/\ faults = 0
+/\ ctlGen = 0
+/\ settingsStale = FALSE
+/\ asks = 0
+/\ prompts = 0
+/\ badKill = "none"
+/\ exits = 0
+/\ hookQ = <<>>
+/\ tr = "finished"
+/\ crashes = 1
+/\ rateOK = TRUE
+/\ changes = 0
+/\ status = "suspended"
+/\ srvUp = TRUE
+
+State 5: <OpenSuspended line 311, col 3 to line 315, col 120 of module AgentLifecycle>
+/\ proc = "idle"
+/\ restartWD = FALSE
+/\ trSeen = FALSE
+/\ requests = 0
+/\ moved = FALSE
+/\ moveWD = FALSE
+/\ faults = 0
+/\ ctlGen = 0
+/\ settingsStale = FALSE
+/\ asks = 0
+/\ prompts = 0
+/\ badKill = "falseSuspend"
+/\ exits = 0
+/\ hookQ = <<>>
+/\ tr = "finished"
+/\ crashes = 1
+/\ rateOK = TRUE
+/\ changes = 0
+/\ status = "idle"
+/\ srvUp = TRUE
+
+257 states generated, 160 distinct states found, 78 states left on queue.
+The depth of the complete state graph search is 7.
+The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 6 and the 95th percentile is 5).
+Finished in 00s at (2026-09-28 06:23:29)

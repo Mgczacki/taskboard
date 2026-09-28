@@ -10,7 +10,8 @@ export interface TranscriptState {
   tool?: string;   // the pending tool call, e.g. "Bash: npm test"
   toolAt?: number; // when that call was made
   waitMs?: number; // the call's own timeout, for Codex calls that wait on purpose (duration_ms)
-  mtime: number;   // when the transcript file last changed
+  mtime: number;   // when the transcript file last changed (also by bookkeeping records, e.g. Remote Control)
+  at?: number;     // time of the conversation record the state was read from
 }
 
 function tailLines(path: string, bytes = 262144): string[] {
@@ -28,6 +29,8 @@ function claude(lines: string[]): Omit<TranscriptState, 'mtime'> {
   // walk backwards over the conversation records; attachments, system notes and bookkeeping records are skipped
   for (let i = lines.length - 1; i >= 0; i--) {
     const o = parse(lines[i]); if (!o || (o.type !== 'user' && o.type !== 'assistant')) continue;
+    // records Claude Code adds itself (background-task notifications, meta notes) are not a prompt from anyone
+    if (o.type === 'user' && (o.isMeta || (typeof o.message?.content === 'string' && /^\s*<(task-notification|local-command|command-name|system-reminder)/.test(o.message.content)))) continue;
     const c = o.message?.content;
     const parts: any[] = Array.isArray(c) ? c : [{ type: 'text', text: String(c ?? '') }];
     if (o.type === 'assistant') {
@@ -71,6 +74,9 @@ function codex(lines: string[]): Omit<TranscriptState, 'mtime'> {
 export function readState(agent: 'claude' | 'codex', path: string): TranscriptState | null {
   try {
     const mtime = statSync(path).mtimeMs, lines = tailLines(path);
-    return { ...(agent === 'claude' ? claude(lines) : codex(lines)), mtime };
+    // time of the newest conversation record, for comparisons that bookkeeping writes must not affect
+    let at: number | undefined;
+    for (let i = lines.length - 1; i >= 0 && at === undefined; i--) { const o = parse(lines[i]); if (o && (o.type === 'user' || o.type === 'assistant' || o.type === 'response_item' || o.type === 'event_msg') && o.timestamp) at = Date.parse(o.timestamp); }
+    return { ...(agent === 'claude' ? claude(lines) : codex(lines)), mtime, at };
   } catch { return null; }
 }

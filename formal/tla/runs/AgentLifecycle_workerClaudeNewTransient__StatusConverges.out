@@ -1,0 +1,290 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 43 and seed -4774535510369176218 with 10 workers on 10 cores with 14564MB heap and 64MB offheap memory [pid: 92132] (Mac OS X 14.5 aarch64, Homebrew 17.0.19 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /Users/mariogarrido/taskboard/formal/tla/AgentLifecycle.tla
+Parsing file /private/var/folders/cz/_lh4d7h151zg6qwyqggqjyl80000gn/T/Naturals.tla
+Parsing file /private/var/folders/cz/_lh4d7h151zg6qwyqggqjyl80000gn/T/Sequences.tla
+Parsing file /private/var/folders/cz/_lh4d7h151zg6qwyqggqjyl80000gn/T/TLC.tla
+Parsing file /private/var/folders/cz/_lh4d7h151zg6qwyqggqjyl80000gn/T/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module AgentLifecycle
+Starting... (2026-09-28 06:23:26)
+Implied-temporal checking--satisfiability problem has 1 branches.
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-28 06:23:26.
+Progress(22) at 2026-09-28 06:23:26: 45,447 states generated, 11,619 distinct states found, 0 states left on queue.
+Checking temporal properties for the complete state space with 11619 total distinct states at (2026-09-28 06:23:26)
+Error: Temporal properties were violated.
+
+Error: The following behavior constitutes a counter-example:
+
+State 1: <Initial predicate>
+/\ proc = "idle"
+/\ restartWD = FALSE
+/\ trSeen = FALSE
+/\ requests = 0
+/\ moved = FALSE
+/\ moveWD = FALSE
+/\ faults = 0
+/\ ctlGen = 0
+/\ settingsStale = FALSE
+/\ asks = 0
+/\ prompts = 0
+/\ badKill = "none"
+/\ exits = 0
+/\ hookQ = <<>>
+/\ tr = "finished"
+/\ crashes = 0
+/\ rateOK = TRUE
+/\ changes = 0
+/\ status = "idle"
+/\ srvUp = TRUE
+
+State 2: <ServerCrash line 193, col 3 to line 195, col 165 of module AgentLifecycle>
+/\ proc = "idle"
+/\ restartWD = FALSE
+/\ trSeen = FALSE
+/\ requests = 0
+/\ moved = FALSE
+/\ moveWD = FALSE
+/\ faults = 0
+/\ ctlGen = 0
+/\ settingsStale = FALSE
+/\ asks = 0
+/\ prompts = 0
+/\ badKill = "none"
+/\ exits = 0
+/\ hookQ = <<>>
+/\ tr = "finished"
+/\ crashes = 1
+/\ rateOK = TRUE
+/\ changes = 0
+/\ status = "idle"
+/\ srvUp = FALSE
+
+State 3: <ServerBoot line 217, col 3 to line 221, col 97 of module AgentLifecycle>
+/\ proc = "idle"
+/\ restartWD = FALSE
+/\ trSeen = FALSE
+/\ requests = 0
+/\ moved = FALSE
+/\ moveWD = FALSE
+/\ faults = 0
+/\ ctlGen = 0
+/\ settingsStale = FALSE
+/\ asks = 0
+/\ prompts = 0
+/\ badKill = "none"
+/\ exits = 0
+/\ hookQ = <<>>
+/\ tr = "finished"
+/\ crashes = 1
+/\ rateOK = TRUE
+/\ changes = 0
+/\ status = "idle"
+/\ srvUp = TRUE
+
+State 4: <RequestRestart line 285, col 3 to line 293, col 99 of module AgentLifecycle>
+/\ proc = "idle"
+/\ restartWD = FALSE
+/\ trSeen = FALSE
+/\ requests = 1
+/\ moved = FALSE
+/\ moveWD = FALSE
+/\ faults = 0
+/\ ctlGen = 0
+/\ settingsStale = FALSE
+/\ asks = 0
+/\ prompts = 0
+/\ badKill = "none"
+/\ exits = 0
+/\ hookQ = <<>>
+/\ tr = "finished"
+/\ crashes = 1
+/\ rateOK = TRUE
+/\ changes = 0
+/\ status = "idle"
+/\ srvUp = TRUE
+
+State 5: <Prompt line 129, col 3 to line 133, col 151 of module AgentLifecycle>
+/\ proc = "turn"
+/\ restartWD = FALSE
+/\ trSeen = FALSE
+/\ requests = 1
+/\ moved = FALSE
+/\ moveWD = FALSE
+/\ faults = 0
+/\ ctlGen = 0
+/\ settingsStale = FALSE
+/\ asks = 0
+/\ prompts = 1
+/\ badKill = "none"
+/\ exits = 0
+/\ hookQ = <<"UPS">>
+/\ tr = "finished"
+/\ crashes = 1
+/\ rateOK = TRUE
+/\ changes = 0
+/\ status = "idle"
+/\ srvUp = TRUE
+
+State 6: <Deliver line 179, col 3 to line 188, col 170 of module AgentLifecycle>
+/\ proc = "turn"
+/\ restartWD = FALSE
+/\ trSeen = FALSE
+/\ requests = 1
+/\ moved = FALSE
+/\ moveWD = FALSE
+/\ faults = 0
+/\ ctlGen = 0
+/\ settingsStale = FALSE
+/\ asks = 0
+/\ prompts = 1
+/\ badKill = "none"
+/\ exits = 0
+/\ hookQ = <<>>
+/\ tr = "finished"
+/\ crashes = 1
+/\ rateOK = TRUE
+/\ changes = 0
+/\ status = "working"
+/\ srvUp = TRUE
+
+State 7: <AskApproval line 140, col 3 to line 143, col 162 of module AgentLifecycle>
+/\ proc = "approval"
+/\ restartWD = FALSE
+/\ trSeen = FALSE
+/\ requests = 1
+/\ moved = FALSE
+/\ moveWD = FALSE
+/\ faults = 0
+/\ ctlGen = 0
+/\ settingsStale = FALSE
+/\ asks = 1
+/\ prompts = 1
+/\ badKill = "none"
+/\ exits = 0
+/\ hookQ = <<"Perm">>
+/\ tr = "finished"
+/\ crashes = 1
+/\ rateOK = TRUE
+/\ changes = 0
+/\ status = "working"
+/\ srvUp = TRUE
+
+State 8: <Deliver line 179, col 3 to line 188, col 170 of module AgentLifecycle>
+/\ proc = "approval"
+/\ restartWD = FALSE
+/\ trSeen = FALSE
+/\ requests = 1
+/\ moved = FALSE
+/\ moveWD = FALSE
+/\ faults = 0
+/\ ctlGen = 0
+/\ settingsStale = FALSE
+/\ asks = 1
+/\ prompts = 1
+/\ badKill = "none"
+/\ exits = 0
+/\ hookQ = <<>>
+/\ tr = "finished"
+/\ crashes = 1
+/\ rateOK = TRUE
+/\ changes = 0
+/\ status = "needs"
+/\ srvUp = TRUE
+
+State 9: <Reconcile line 271, col 3 to line 276, col 78 of module AgentLifecycle>
+/\ proc = "approval"
+/\ restartWD = FALSE
+/\ trSeen = FALSE
+/\ requests = 1
+/\ moved = FALSE
+/\ moveWD = FALSE
+/\ faults = 1
+/\ ctlGen = 0
+/\ settingsStale = FALSE
+/\ asks = 1
+/\ prompts = 1
+/\ badKill = "none"
+/\ exits = 0
+/\ hookQ = <<>>
+/\ tr = "finished"
+/\ crashes = 1
+/\ rateOK = TRUE
+/\ changes = 0
+/\ status = "suspended"
+/\ srvUp = TRUE
+
+State 10: <ApproveInTerminal line 145, col 3 to line 148, col 168 of module AgentLifecycle>
+/\ proc = "turn"
+/\ restartWD = FALSE
+/\ trSeen = FALSE
+/\ requests = 1
+/\ moved = FALSE
+/\ moveWD = FALSE
+/\ faults = 1
+/\ ctlGen = 0
+/\ settingsStale = FALSE
+/\ asks = 1
+/\ prompts = 1
+/\ badKill = "none"
+/\ exits = 0
+/\ hookQ = <<"PostTool">>
+/\ tr = "finished"
+/\ crashes = 1
+/\ rateOK = TRUE
+/\ changes = 0
+/\ status = "suspended"
+/\ srvUp = TRUE
+
+State 11: <Deliver line 179, col 3 to line 188, col 170 of module AgentLifecycle>
+/\ proc = "turn"
+/\ restartWD = FALSE
+/\ trSeen = FALSE
+/\ requests = 1
+/\ moved = FALSE
+/\ moveWD = FALSE
+/\ faults = 1
+/\ ctlGen = 0
+/\ settingsStale = FALSE
+/\ asks = 1
+/\ prompts = 1
+/\ badKill = "none"
+/\ exits = 0
+/\ hookQ = <<>>
+/\ tr = "finished"
+/\ crashes = 1
+/\ rateOK = TRUE
+/\ changes = 0
+/\ status = "suspended"
+/\ srvUp = TRUE
+
+State 12: <Reconcile line 271, col 3 to line 276, col 78 of module AgentLifecycle>
+/\ proc = "turn"
+/\ restartWD = FALSE
+/\ trSeen = FALSE
+/\ requests = 1
+/\ moved = FALSE
+/\ moveWD = FALSE
+/\ faults = 2
+/\ ctlGen = 0
+/\ settingsStale = FALSE
+/\ asks = 1
+/\ prompts = 1
+/\ badKill = "none"
+/\ exits = 0
+/\ hookQ = <<>>
+/\ tr = "finished"
+/\ crashes = 1
+/\ rateOK = TRUE
+/\ changes = 0
+/\ status = "idle"
+/\ srvUp = TRUE
+
+State 13: Stuttering
+Finished checking temporal properties in 00s at 2026-09-28 06:23:26
+45447 states generated, 11619 distinct states found, 0 states left on queue.
+Finished in 00s at (2026-09-28 06:23:26)

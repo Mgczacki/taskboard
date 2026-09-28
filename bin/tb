@@ -20,8 +20,13 @@ async function call(method, path, body) {
     console.log(`Waiting for the user to approve on the Taskboard dashboard: ${data.approval.summary}`);
     for (;;) {
       await new Promise(res => setTimeout(res, 2000));
-      const a = await (await fetch(`${URL_BASE}/api/approvals/${data.approval.id}`)).json();
-      if (a.state === 'pending') continue;
+      let a;
+      try {
+        const r2 = await fetch(`${URL_BASE}/api/approvals/${data.approval.id}`, { headers: { 'x-taskboard-token': token } });
+        if (r2.status === 404) { console.error('tb: not done: the approval was lost because Taskboard restarted before you decided. Nothing was run; ask again.'); process.exit(3); }
+        a = await r2.json();
+      } catch { continue; } // server restarting: keep waiting
+      if (a.state === 'pending' || a.state === 'running') continue;
       if (a.state !== 'approved') { console.error(`tb: not done: ${a.result || a.state}`); process.exit(3); }
       console.log(a.result); return { approved: true };
     }
@@ -53,6 +58,8 @@ const HELP = `tb — Taskboard command line
   tb group list | tb group add <group> <task…> | tb group rm <group> <task…>
   tb doc send <task>:<file> <task>   send a document from one task's outbox to another task's inbox
   tb review <file>                   ask the user to review a document from your outbox
+  tb inbox wait [--timeout seconds]  wait until a file arrives in your inbox (uses TASK_ID; default 3600 s);
+                                     prints each file's path and sender; exit 0 = files, 2 = timed out
   tb park|archive <task>      park = set aside: off Needs you / Unread until the agent works or finishes again; archive = done
 <task> is a number (12 or #12) or a task id.`;
 
@@ -139,11 +146,26 @@ switch (cmd) {
     const r = await call('POST', '/api/docs/send', { from: from.id, name, to: to.id }); console.log(`Copied to ${r.path}`);
     break;
   }
+  case 'inbox': {
+    if (rest[0] !== 'wait') { console.log(HELP); break; }
+    const id = process.env.TASK_ID; if (!id) { console.error('tb inbox wait: TASK_ID is not set (run it inside a Taskboard task)'); process.exit(1); }
+    const timeout = Number(flag('--timeout', '3600')) * 1000, start = Date.now();
+    const sender = f => !f ? 'unknown sender' : f.task === 'you' ? 'the user' : f.task === '__review' ? 'the Review page (the user\'s comments)' : f.num ? `task #${f.num} "${f.title}"` : `task ${f.task}`;
+    for (;;) {
+      const { files } = await call('POST', `/api/tasks/${id}/inbox/take`);
+      if (files.length) { console.log(files.map(f => `${f.path}  (from ${sender(f.from)})`).join('\n')); break; }
+      if (Date.now() - start >= timeout) { console.log('tb inbox wait: timed out, no new files'); process.exit(2); }
+      await sleep(Math.min(2000, Math.max(0, timeout - (Date.now() - start))));
+    }
+    break;
+  }
   case 'review': {
     const path = resolve(rest[0] || ''); await call('POST', '/api/review/request', { path, task: process.env.TASK_ID });
     console.log('Marked for review. The user sees it on the Review page; their comments will arrive in your inbox.');
     break;
   }
-  case 'park': case 'archive': { const t = await task(rest[0]); await call('POST', `/api/tasks/${t.id}/status`, { status: cmd === 'park' ? 'parked' : 'archived' }); console.log(`#${t.num} ${cmd === 'park' ? 'parked' : 'archived'}.`); break; }
+  case 'park': { const t = await task(rest[0]); await call('POST', `/api/tasks/${t.id}/status`, { status: 'parked' }); console.log(`#${t.num} set aside.`); break; }
+  // archive = done: ends the agent's session too (otherwise its next turn would bring the task back)
+  case 'archive': { const t = await task(rest[0]); await call('POST', `/api/tasks/${t.id}/kill`, {}); console.log(`#${t.num} ended and archived.`); break; }
   default: console.log(HELP);
 }
