@@ -1,6 +1,8 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { TMUX_SOCKET } from './config.ts';
+import { writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { TB_DIR, TMUX_SOCKET } from './config.ts';
 
 const exec = promisify(execFile);
 export const TMUX_BIN = process.env.TASKBOARD_TMUX || 'tmux';
@@ -44,6 +46,30 @@ export async function hasSession(name: string): Promise<boolean | null> {
 
 // Server-wide options. escape-time 0 keeps Esc instant (Claude Code and Codex use Esc to interrupt).
 // window-size latest lets the most recently active client decide the size when several windows attach.
+// Mouse selection for programs that do not read the mouse themselves (Codex; Claude Code handles its own):
+// tmux's defaults copy into its own buffer and drop the highlight the moment the mouse is released. These bindings
+// keep the selection highlighted and copy it to the macOS clipboard (pbcopy); a click, Esc or q leaves the selection.
+// Written to a file and loaded with source-file because the nested commands do not pass well as arguments.
+export const COPY_BINDINGS = `
+set -g mouse on
+set -g set-clipboard on
+set -as terminal-features 'xterm*:clipboard'
+bind -T root DoubleClick1Pane select-pane -t = \\; if -F "#{||:#{pane_in_mode},#{mouse_any_flag}}" { send -M } { copy-mode -H ; send -X select-word ; send -X copy-pipe-no-clear "pbcopy" }
+bind -T root TripleClick1Pane select-pane -t = \\; if -F "#{||:#{pane_in_mode},#{mouse_any_flag}}" { send -M } { copy-mode -H ; send -X select-line ; send -X copy-pipe-no-clear "pbcopy" }
+${['copy-mode', 'copy-mode-vi'].map(t => `
+bind -T ${t} MouseDragEnd1Pane send -X copy-pipe-no-clear "pbcopy"
+bind -T ${t} DoubleClick1Pane select-pane \\; send -X select-word \\; send -X copy-pipe-no-clear "pbcopy"
+bind -T ${t} TripleClick1Pane select-pane \\; send -X select-line \\; send -X copy-pipe-no-clear "pbcopy"
+bind -T ${t} MouseDown1Pane select-pane \\; send -X cancel
+bind -T ${t} Escape send -X cancel`).join('')}
+`;
+
+export async function loadCopyBindings() {
+  const f = join(TB_DIR, 'tmux-copy.conf');
+  writeFileSync(f, COPY_BINDINGS);
+  await tmuxQuiet('source-file', f);
+}
+
 export async function configureServer(bellHookCommand: string) {
   const opts: string[][] = [
     ['set-option', '-g', 'escape-time', '0'],
@@ -65,6 +91,7 @@ export async function configureServer(bellHookCommand: string) {
     ['set-hook', '-g', 'alert-bell', bellHookCommand],
   ];
   for (const o of opts) await tmuxQuiet(...o);
+  await loadCopyBindings();
 }
 
 export async function newSession(name: string, cwd: string, env: Record<string, string>, command: string[], onFirst: (hook: string) => Promise<void>) {
