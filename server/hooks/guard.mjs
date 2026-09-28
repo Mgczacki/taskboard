@@ -40,8 +40,10 @@ if (/\b(rm|mv|rsync\s+--delete)\b[^\n]*(~|\$HOME|\/Users\/[^/\s]+)\/\.taskboard(
 // indirections such as kill $(cat ~/.taskboard/server.pid) or pgrep -f server/index | xargs kill. Paths of sandboxes
 // and worktrees (taskboard-sandbox, taskboard-wt) are not the real server and are ignored.
 {
-  const c = cmd.replace(/taskboard-(sandbox|wt)[^\s'"]*/g, '');
-  if (/\b(kill|pkill|killall)\b/.test(c) && /server\.pid|server[\\/\[\]]*index|index\.ts|\btsx\b|\.taskboard\b|\btaskboard\b/i.test(c)) reasons.push('this stop command names the real Taskboard server');
+  // tmux kill-server / kill-session are judged by the socket rule above; a bare "taskboard" (the repository folder
+  // ~/taskboard) is not the server
+  const c = cmd.replace(/taskboard-(sandbox|wt)[^\s'"]*/g, '').replace(/\bkill-(server|session|pane|window)\b/g, '');
+  if (/\b(kill|pkill|killall)\b/.test(c) && /server\.pid|server[\\/\[\]]*index|index\.ts|\btsx\b|\.taskboard\b/i.test(c)) reasons.push('this stop command names the real Taskboard server');
 }
 // whole command: killing whatever listens on the real server's port (lsof -ti tcp:4317 | xargs kill, fuser -k)
 const port = process.env.TASKBOARD_PORT || '4317';

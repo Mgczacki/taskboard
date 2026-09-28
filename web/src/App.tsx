@@ -22,6 +22,8 @@ function parseHash(): { page: Page; view?: string } {
   return { page: (['list', 'board', 'canvas', 'graph', 'review', 'accounts', 'settings'].includes(h) ? h : 'list') as Page };
 }
 export const SOLO = new URLSearchParams(location.search).get('solo') === '1';
+// inside the Mac app (desktop/preload.cjs sets this): ⌘T is New task there; a browser keeps ⌘T for its tabs
+const IN_APP = !!(window as unknown as { taskboardApp?: { isApp: boolean } }).taskboardApp?.isApp;
 export interface Toast { id: number; text: string; action?: { label: string; fn: () => void } }
 
 export function App() {
@@ -140,7 +142,7 @@ export function App() {
     <div className={`app ${railHidden || hideChrome ? 'rail-off' : ''}`}>
       {!railHidden && !hideChrome && <aside className="rail">
         <div className="brand" title={machineName ? `Taskboard on ${machineName}` : undefined}><Logo />Taskboard<small>{connected ? (machineName || 'v0.2') : 'offline'}</small></div>
-        <button className="newtask" onClick={() => setNewOpen(true)}>＋ New task <kbd>N</kbd></button>
+        <button className="newtask" onClick={() => setNewOpen(true)} title={IN_APP ? 'New task: Command-T, from anywhere (N also works outside a terminal)' : 'New task: N (outside a terminal)'}>＋ New task <kbd>{IN_APP ? '⌘T' : 'N'}</kbd></button>
         <div className="rail-item ctl-item" onClick={openController} title="The controller agent manages the other agents. Shortcut: Command-K (or C)">{controller ? <Dot s={controller.status} /> : <span className="dot idle" />}<span className="t"><b>Controller</b>{controller ? '' : ' · start'}</span>{controller?.remoteUrl && <a className="rc-link" href={controller.remoteUrl} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} title="Remote Control is on: open the controller on claude.ai or the Claude mobile app">📱</a>}<kbd>⌘K</kbd></div>
         <button className="importbtn" onClick={() => setImportOpen(true)} title="Bring in Claude Code and Codex sessions you started outside Taskboard">⇪ Import sessions</button>
         <nav className="nav">

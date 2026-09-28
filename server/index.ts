@@ -600,9 +600,14 @@ async function reconcile() {
     if (!s) { store.update(t.id, { status: 'suspended', interrupted: t.status === 'working' ? 'The session ended while the agent was working.' : undefined, statusSource: 'The tmux session is gone (restart or crash). Opening the task resumes it.' }); continue; }
     if (s.dead) { store.update(t.id, { status: 'suspended', statusSource: 'The agent exited. Resume to continue the conversation.' }); continue; }
     if (!!t.unscrollable !== s.unscrollable) store.update(t.id, { unscrollable: s.unscrollable || undefined });
-    if ((Date.now() - Date.parse(t.updated) < 90000 && !events.sessionStarted.has(t.id) && ['working', 'idle'].includes(t.status))
-      || (t.status === 'needs-you' && t.statusSource?.startsWith(events.SCREEN_SOURCE)))
-      events.screenCheck(t, await tmux.capture(t.session, 30));
+    // Questions the CLIs ask before any hook can fire (trust this folder, sign in, update) are read from the screen:
+    // during the first 90 s after the agent was launched, and afterwards for as long as such a question keeps the task
+    // in "needs you". Only the bottom 15 non-empty lines of the visible screen count (where a question waiting for an
+    // answer sits); history and answered text further up must not bring it back.
+    const launched = store.launchedAt.get(t.id) || Date.parse(t.created) || 0;
+    const screenQuestion = t.status === 'needs-you' && t.statusSource?.startsWith(events.SCREEN_SOURCE);
+    if (screenQuestion || (Date.now() - launched < 90000 && !events.sessionStarted.has(t.id) && ['working', 'idle'].includes(t.status)))
+      events.screenCheck(t, (await tmux.capture(t.session, 0)).split('\n').filter(l => l.trim()).slice(-15).join('\n'));
     if (t.agent === 'codex' && t.sessionId) {
       let tr = t.transcript;
       if (!tr) { tr = importer.transcriptFor('codex', t.sessionId); if (tr) store.update(t.id, { transcript: tr }); }
