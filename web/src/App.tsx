@@ -37,9 +37,17 @@ export function App() {
   const init = parseHash();
   const [page, setPage] = useState<Page>(SOLO ? 'canvas' : init.page);
   const [view, setViewState] = useState<string>(init.view || localStorage.getItem('tb-view') || 'live');
-  const [openId, setOpenIdRaw] = useState<string | null>(null);
-  const [openTab, setOpenTab] = useState<'terminal' | 'log' | 'docs' | undefined>();
+  // the open task panel is kept in the address (?open=<id>&tab=…), so a reload or a reopened window shows it again
+  const initParams = new URLSearchParams(location.search);
+  const [openId, setOpenIdRaw] = useState<string | null>(initParams.get('open'));
+  const [openTab, setOpenTab] = useState<'terminal' | 'log' | 'docs' | undefined>((initParams.get('tab') as 'terminal' | 'log' | 'docs') || undefined);
   const setOpenId = (id: string | null, tab?: 'terminal' | 'log' | 'docs') => { setOpenTab(tab); setOpenIdRaw(id); };
+  useEffect(() => {
+    const u = new URL(location.href);
+    if (openId) u.searchParams.set('open', openId); else u.searchParams.delete('open');
+    if (openId && openTab) u.searchParams.set('tab', openTab); else u.searchParams.delete('tab');
+    if (u.href !== location.href) history.replaceState(null, '', u);
+  }, [openId, openTab]);
   const [newOpen, setNewOpen] = useState(false);
   const [importOpen, setImportOpen] = useState(() => location.hash === '#import');
   const [triage, setTriage] = useState(false);

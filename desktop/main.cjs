@@ -7,7 +7,8 @@
 // - its own menus, which leave Taskboard's shortcuts (⌘K, ⌘S, N, C, T…) to the page
 // - pop-out group windows as app windows; links to other sites open in your browser
 // - a waiting page while the server does not answer, which reconnects by itself
-// - window size and position kept between launches; optional opening at login
+// - every open window (where it is, and where you are in it) comes back after quitting, a Taskboard update or a
+//   restart of the Mac; opens at login by default
 // - no title bar: the window buttons appear when the pointer is near the top edge, and hide again after
 // - New Window (⌘N), New Window for a group, in the File menu, the Dock menu and the menu-bar item
 const { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, nativeImage, screen, shell } = require('electron');
@@ -54,46 +55,85 @@ async function serverAnswers() {
   try { const r = await fetch(SERVER + '/', { signal: AbortSignal.timeout(2000) }); return r.ok; } catch { return false; }
 }
 
-// Show the dashboard when the server answers, otherwise the waiting page (which is replaced as soon as it answers).
-async function load() {
-  if (!win) return;
-  serverUp = await serverAnswers();
-  if (serverUp) win.loadURL(SERVER + '/');
-  else win.loadFile(join(__dirname, 'offline.html'));
+// ---------- windows, and restoring them ----------
+// Every window has a target: the dashboard address it shows, including where you are in it (page, canvas view, open
+// task: the page keeps these in its address). While the server does not answer, a window shows the waiting page and
+// keeps its target; when the server answers again, it goes back to the target.
+// The list of open windows (targets and positions) is saved in settings.windows whenever something changes, so after
+// quitting, a crash, a Taskboard update or a restart of the Mac, the app reopens every window where it was.
+const targets = new WeakMap();
+const OFFLINE = join(__dirname, 'offline.html');
+function loadInto(w, url) {
+  targets.set(w, sameOrigin(url) ? url : `${SERVER}/`);
+  if (serverUp) w.loadURL(targets.get(w)); else w.loadFile(OFFLINE);
+}
+function backOnline() { for (const w of BrowserWindow.getAllWindows()) if (!w.isDestroyed() && w.webContents.getURL().startsWith('file:')) w.loadURL(targets.get(w) || `${SERVER}/`); }
+
+let saveTimer = null;
+function saveSessionNow() {
+  settings.windows = BrowserWindow.getAllWindows().filter(w => !w.isDestroyed() && targets.has(w)).map(w => ({
+    url: targets.get(w), bounds: w.isMaximized() || w.isFullScreen() || w.isMinimized() ? (w.__normal || w.getBounds()) : w.getBounds(),
+    main: w === win, visible: w.isVisible(), fullScreen: w.isFullScreen(), maximized: w.isMaximized(),
+  }));
+  saveSettings();
+}
+function saveSession() {
+  if (quitting) return; // windows closing during quit must not erase the list
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(saveSessionNow, 400);
 }
 
-function createWindow() {
-  const b = settings.bounds || {};
+function track(w) {
+  const keep = () => { if (!w.isMaximized() && !w.isFullScreen() && !w.isMinimized()) w.__normal = w.getBounds(); saveSession(); };
+  w.on('resize', keep); w.on('move', keep); w.on('show', saveSession); w.on('hide', saveSession);
+  w.on('enter-full-screen', saveSession); w.on('leave-full-screen', saveSession); w.on('maximize', saveSession); w.on('unmaximize', saveSession);
+  w.on('closed', saveSession);
+  // the page moved (another view, a task opened): remember its address, not the waiting page's
+  const nav = (_e, url) => { if (sameOrigin(url)) { targets.set(w, url); saveSession(); } };
+  w.webContents.on('did-navigate', nav); w.webContents.on('did-navigate-in-page', nav);
+  // the server went away (restart, release) or the page failed: waiting page, which the poll replaces when it is back
+  w.webContents.on('did-fail-load', (_e, code, _d, url) => { if (code !== -3 && sameOrigin(url)) w.loadFile(OFFLINE); });
+  w.webContents.on('render-process-gone', () => setTimeout(() => loadInto(w, targets.get(w) || `${SERVER}/`), 1000));
+}
+
+function place(w, s) { if (s?.maximized) w.maximize(); if (s?.fullScreen) w.setFullScreen(true); }
+
+// The main window: closing it hides it (the Dock badge, menu-bar item and shortcut keep working).
+function createWindow(saved) {
+  const b = saved?.bounds || settings.bounds || {};
   win = new BrowserWindow({
     width: b.width || 1600, height: b.height || 1000, x: b.x, y: b.y, minWidth: 700, minHeight: 450,
     title: 'Taskboard', show: false, ...chrome,
   });
   win.setWindowButtonVisibility(false);
-  win.once('ready-to-show', () => { if (!settings.startHidden) win.show(); settings.startHidden = false; });
-  let t = null;
-  const remember = () => { clearTimeout(t); t = setTimeout(() => { if (win && !win.isMinimized() && !win.isFullScreen()) { settings.bounds = win.getBounds(); saveSettings(); } }, 500); };
-  win.on('resize', remember); win.on('move', remember);
-  // closing the window hides it: the Dock badge, menu-bar item and shortcut keep working
+  win.once('ready-to-show', () => { if (saved?.visible !== false && !settings.startHidden) { win.show(); place(win, saved); } settings.startHidden = false; });
   win.on('close', e => { if (!quitting) { e.preventDefault(); win.hide(); } });
-  // the server went away (restart, release) or the page failed: go to the waiting page, which retries
-  win.webContents.on('did-fail-load', (_e, code, _d, url) => { if (code !== -3 && sameOrigin(url)) win.loadFile(join(__dirname, 'offline.html')); });
-  win.webContents.on('render-process-gone', () => setTimeout(load, 1000));
-  load();
+  track(win);
+  loadInto(win, saved?.url || `${SERVER}/`);
 }
 
 // Another window: the whole dashboard, or one canvas view on its own (?solo=1, like the page's pop-out windows).
-// Extra windows close for real; only the main window hides on close.
-function openWindow(url, size) {
+// Extra windows close for real.
+function openWindow(url, size, saved) {
   const from = BrowserWindow.getFocusedWindow() || win;
   const at = from ? from.getBounds() : { x: 80, y: 80, width: 1500, height: 950 };
-  const w = new BrowserWindow({ x: at.x + 28, y: at.y + 28, width: size?.width || at.width, height: size?.height || at.height, minWidth: 600, minHeight: 400, title: 'Taskboard', ...chrome });
+  const b = saved?.bounds || { x: at.x + 28, y: at.y + 28, width: size?.width || at.width, height: size?.height || at.height };
+  const w = new BrowserWindow({ ...b, minWidth: 600, minHeight: 400, title: 'Taskboard', show: !saved, ...chrome });
   w.setWindowButtonVisibility(false);
-  w.webContents.on('did-fail-load', (_e, code, _d, u) => { if (code !== -3 && sameOrigin(u)) w.loadFile(join(__dirname, 'offline.html')); });
-  if (serverUp) w.loadURL(url); else w.loadFile(join(__dirname, 'offline.html'));
+  if (saved) w.once('ready-to-show', () => { if (saved.visible !== false) { w.show(); place(w, saved); } });
+  track(w);
+  loadInto(w, url);
   return w;
 }
 const newWindow = view => openWindow(view ? `${SERVER}/?solo=1#canvas:${encodeURIComponent(view)}` : `${SERVER}/`);
 ipcMain.on('new-window', (_e, view) => newWindow(view));
+
+// Reopen the windows of the last session (the main one first), or one main window the first time.
+function restoreSession() {
+  const saved = Array.isArray(settings.windows) ? settings.windows.filter(x => x && sameOrigin(x.url)) : [];
+  createWindow(saved.find(x => x.main));
+  for (const x of saved.filter(x => !x.main)) openWindow(x.url, null, x);
+}
 
 // Show the window buttons while the pointer is within 40 px of a window's top edge (or the window is full screen).
 const buttonsShown = new WeakMap();
@@ -110,7 +150,7 @@ function trackButtons() {
   }
 }
 
-function show() { if (!win) createWindow(); if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
+function show() { if (!win || win.isDestroyed()) createWindow(); if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
 function toggle() { if (win && win.isVisible() && win.isFocused()) win.hide(); else show(); }
 
 // Ask the page to open a task, triage, the controller or the New task dialog (App.tsx listens for 'taskboard:open'),
@@ -132,7 +172,7 @@ async function poll() {
   } catch { /* server down */ }
   const wasUp = serverUp;
   serverUp = !!tasks;
-  if (serverUp && !wasUp && win && win.webContents.getURL().startsWith('file:')) load(); // came back: leave the waiting page
+  if (serverUp && !wasUp) backOnline(); // came back: every window leaves the waiting page for where it was
   waiting = (tasks || []).filter(t => ATTN.includes(t.status) && t.role !== 'controller').sort((a, b) => (b.waitMin || 0) - (a.waitMin || 0));
   const unread = (tasks || []).filter(t => t.status === 'unread' && t.role !== 'controller').length;
   app.dock?.setBadge(waiting.length ? String(waiting.length) : '');
@@ -177,7 +217,7 @@ function trayMenu(unread) {
     { label: 'Open at login', type: 'checkbox', checked: app.getLoginItemSettings().openAtLogin, click: m => { app.setLoginItemSettings({ openAtLogin: m.checked, openAsHidden: true }); } },
     { label: `Show/hide shortcut: ${accel()}`, enabled: false },
     { type: 'separator' },
-    { label: 'Quit the app (the server and agents keep running)', click: () => { quitting = true; app.quit(); } },
+    { label: 'Quit the app (the server and agents keep running)', click: () => app.quit() },
   );
   return Menu.buildFromTemplate(items);
 }
@@ -190,7 +230,7 @@ function appMenu() {
     { label: 'Taskboard', submenu: [
       { role: 'about' }, { type: 'separator' },
       { label: 'Hide Taskboard', accelerator: 'Command+H', click: () => win && win.hide() }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' },
-      { label: 'Quit (the server and agents keep running)', accelerator: 'Command+Q', click: () => { quitting = true; app.quit(); } },
+      { label: 'Quit (the server and agents keep running)', accelerator: 'Command+Q', click: () => app.quit() },
     ] },
     { label: 'File', submenu: [
       // menu shortcuts are handled before the page, so ⌘T works while a terminal has the keyboard
@@ -204,7 +244,7 @@ function appMenu() {
     ] },
     { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
     { label: 'View', submenu: [
-      { label: 'Reload', accelerator: 'Command+R', click: () => load() },
+      { label: 'Reload', accelerator: 'Command+R', click: () => { const w = BrowserWindow.getFocusedWindow(); if (w) loadInto(w, targets.get(w) || `${SERVER}/`); } },
       { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' }, { type: 'separator' },
       { role: 'togglefullscreen' }, { role: 'toggleDevTools' },
     ] },
@@ -218,7 +258,8 @@ function appMenu() {
 
 app.on('second-instance', show);
 app.on('activate', show);
-app.on('before-quit', () => { quitting = true; });
+// save the final window list before quitting (while windows still exist), then stop saving
+app.on('before-quit', () => { clearTimeout(saveTimer); quitting = false; saveSessionNow(); quitting = true; });
 app.on('will-quit', () => globalShortcut.unregisterAll());
 
 app.whenReady().then(() => {
@@ -231,7 +272,10 @@ app.whenReady().then(() => {
   tray = new Tray(icon);
   tray.on('click', () => tray.popUpContextMenu());
   if (!globalShortcut.register(settings.shortcut, toggle)) console.error(`Shortcut ${settings.shortcut} is taken by another app; change "shortcut" in ${settingsFile()}`);
-  createWindow();
+  // open at login by default (the windows come back after a restart of the Mac); the menu-bar menu can turn it off
+  if (settings.loginDefaultApplied !== true) { app.setLoginItemSettings({ openAtLogin: true }); settings.loginDefaultApplied = true; saveSettings(); }
+  serverUp = false;
+  serverAnswers().then(up => { serverUp = up; restoreSession(); });
   poll(); setInterval(poll, 3000);
   setInterval(trackButtons, 120);
 });

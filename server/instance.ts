@@ -5,7 +5,7 @@
 //   checkout that agents edit.
 // - sandbox: any server started with TASKBOARD_DIR set (`pnpm sandbox`). It must not share the port, folders or tmux
 //   socket of production.
-import { copyFileSync, chmodSync, mkdirSync, readdirSync, realpathSync } from 'node:fs';
+import { copyFileSync, chmodSync, mkdirSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { join, sep } from 'node:path';
 import { HOME, PORT, ROOT, TB_DIR, TMUX_SOCKET, VAULT } from './config.ts';
 
@@ -36,4 +36,6 @@ export function installRuntimeFiles() {
   mkdirSync(RUNTIME_HOOKS, { recursive: true }); mkdirSync(RUNTIME_BIN, { recursive: true });
   for (const f of readdirSync(join(ROOT, 'server', 'hooks'))) if (f.endsWith('.mjs')) copyFileSync(join(ROOT, 'server', 'hooks', f), join(RUNTIME_HOOKS, f));
   copyFileSync(join(ROOT, 'bin', 'tb'), join(RUNTIME_BIN, 'tb')); chmodSync(join(RUNTIME_BIN, 'tb'), 0o755);
+  // tb uses ES module syntax; without this file next to it Node reads it as CommonJS and every tb command fails
+  writeFileSync(join(RUNTIME_BIN, 'package.json'), '{ "type": "module" }\n');
 }

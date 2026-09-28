@@ -65,7 +65,11 @@ window. It contains no server: the server keeps running under launchd, and quitt
   plus Triage and Controller.
 - Control-Option-Command-T shows or hides the window from any app (change `shortcut` in
   `~/Library/Application Support/taskboard-desktop/settings.json`).
-- Closing the main window only hides it; ⌘Q quits the app. "Open at login" is in the menu-bar menu.
+- Closing the main window only hides it; ⌘Q quits the app.
+- Every open window comes back where it was — position, size, and where you were in it (page, canvas view, open task
+  panel) — after quitting, a crash, a Taskboard update or a restart of the Mac. The app opens at login by default
+  (turn it off with "Open at login" in the menu-bar menu). The list is kept in
+  `~/Library/Application Support/taskboard-desktop/settings.json`.
 - No title bar: the window buttons appear when the pointer is near the top edge. Drag the window by its top bar or
   the top of the sidebar.
 - File → New Task (⌘T) opens the New task dialog, also while a terminal has the keyboard (in a browser, use N).
