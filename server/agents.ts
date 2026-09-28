@@ -40,7 +40,7 @@ export function writeClaudeSettings() {
   const hooks = Object.fromEntries(HOOK_EVENTS.map(e => [e, [{ hooks: [cmd] }]]));
   // The log and documents live in the vault, outside the project folder; allow writing there without a prompt each turn.
   const vault = VAULT.replace(HOME, '~');
-  const permissions = { allow: [`Edit(${vault}/**)`, `Read(${vault}/**)`, 'Bash(tb review:*)', `Bash(python3 ${WORDING_SCRIPT}:*)`] }; // Edit rules cover every file-writing tool
+  const permissions = { allow: [`Edit(${vault}/**)`, `Read(${vault}/**)`, 'Bash(tb review:*)', 'Bash(tb inbox wait:*)', `Bash(python3 ${WORDING_SCRIPT}:*)`] }; // Edit rules cover every file-writing tool
   // status line: shows the model and usage in the terminal and reports the account's usage windows to Taskboard
   const statusLine = { type: 'command', command: `node ${tmux.quote(STATUSLINE_SCRIPT)}` };
   writeFileSync(CLAUDE_SETTINGS_FILE, JSON.stringify({ hooks, permissions, statusLine }, null, 2));
@@ -118,6 +118,7 @@ function claudeInstructions(t: Task) {
     `- Waiting: <what you need from the user, or "Nothing.">`,
     `- Next: <one sentence>`,
     `Documents meant for the user or for other agents (handoffs, designs, reviews, diagrams, HTML pages) go in ${dir}/outbox/ as Markdown or HTML files. Files others send you arrive in ${dir}/inbox/.`,
+    `To wait for a file another agent or the user will send you, run: tb inbox wait [--timeout seconds]. It prints the path and sender of each new file (exit 0), or exits 2 on timeout.`,
     `When a document in your outbox needs the user's review or approval, run: tb review <path>. Their comments arrive in your inbox.`,
     `Writing the log entry is always allowed, even if the user asked you not to use tools. Do it quietly: do not mention the log to the user.`,
     writingRules('the log entries, the documents and artifacts in your outbox, and all other text for the user or for other agents'),
