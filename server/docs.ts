@@ -75,13 +75,25 @@ export function removeFromInbox(taskId: string, name: string) {
   const f = join(inboxDir(taskId), basename(name)); if (existsSync(f)) unlinkSync(f);
 }
 
-// Text for the agent about files it has not been told about; clears the list.
-export function takeInboxNotice(taskId: string): string | null {
+// Inbox files the agent has not been told about, with who sent each; clears the list.
+// Used by the prompt hook, by /inbox/tell and by `tb inbox wait`, so each file is reported once.
+export interface InboxArrival { name: string; path: string; from: { task: string; num?: number; title?: string } | null }
+export function takePending(taskId: string): InboxArrival[] {
   const pending = readJson<string[]>(pendingFile(taskId), []);
-  if (!pending.length) return null;
+  if (!pending.length) return [];
   writeFileSync(pendingFile(taskId), '[]');
   const sent = readJson<Record<string, { task: string }>>(sentFile(taskId), {});
-  const lines = pending.map(n => { const s = sent[n]; const t = s && store.get(s.task); return `- ${join(inboxDir(taskId), n)}${t ? ` (from task #${t.num} "${t.title}")` : ''}`; });
+  return pending.map(n => {
+    const s = sent[n]; const t = s && store.get(s.task);
+    return { name: n, path: join(inboxDir(taskId), n), from: s ? { task: s.task, num: t?.num, title: t?.title } : null };
+  });
+}
+
+// Text for the agent about files it has not been told about; clears the list.
+export function takeInboxNotice(taskId: string): string | null {
+  const pending = takePending(taskId);
+  if (!pending.length) return null;
+  const lines = pending.map(f => `- ${f.path}${f.from?.num ? ` (from task #${f.from.num} "${f.from.title}")` : ''}`);
   return `New file${pending.length > 1 ? 's' : ''} in your Taskboard inbox. Read ${pending.length > 1 ? 'them' : 'it'} before continuing if relevant:\n${lines.join('\n')}`;
 }
 

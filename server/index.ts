@@ -311,6 +311,12 @@ app.post('/api/docs/send', (req, res) => {
   } catch (e) { fail(res, e); }
 });
 app.post('/api/tasks/:id/inbox/remove', (req, res) => { docs.removeFromInbox(req.params.id, req.body.name); store.touch(req.params.id); res.json({}); });
+// New inbox files the agent has not been told about (for `tb inbox wait`). Clears the pending list,
+// so the prompt hook does not report the same files again.
+app.post('/api/tasks/:id/inbox/take', (req, res) => {
+  if (!store.get(req.params.id)) return res.status(404).json({ error: 'no such task' });
+  res.json({ files: docs.takePending(req.params.id) });
+});
 // Type the inbox notice into the agent's terminal (needed for Codex, which has no prompt hook here).
 app.post('/api/tasks/:id/inbox/tell', async (req, res) => {
   const t = store.get(req.params.id); if (!t) return res.status(404).end();

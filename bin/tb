@@ -58,6 +58,8 @@ const HELP = `tb — Taskboard command line
   tb group list | tb group add <group> <task…> | tb group rm <group> <task…>
   tb doc send <task>:<file> <task>   send a document from one task's outbox to another task's inbox
   tb review <file>                   ask the user to review a document from your outbox
+  tb inbox wait [--timeout seconds]  wait until a file arrives in your inbox (uses TASK_ID; default 3600 s);
+                                     prints each file's path and sender; exit 0 = files, 2 = timed out
   tb park|archive <task>      park = set aside: off Needs you / Unread until the agent works or finishes again; archive = done
 <task> is a number (12 or #12) or a task id.`;
 
@@ -142,6 +144,19 @@ switch (cmd) {
     const [src, dst] = rest.slice(1); const [fromRef, name] = src.split(':');
     const from = await task(fromRef), to = await task(dst);
     const r = await call('POST', '/api/docs/send', { from: from.id, name, to: to.id }); console.log(`Copied to ${r.path}`);
+    break;
+  }
+  case 'inbox': {
+    if (rest[0] !== 'wait') { console.log(HELP); break; }
+    const id = process.env.TASK_ID; if (!id) { console.error('tb inbox wait: TASK_ID is not set (run it inside a Taskboard task)'); process.exit(1); }
+    const timeout = Number(flag('--timeout', '3600')) * 1000, start = Date.now();
+    const sender = f => !f ? 'unknown sender' : f.task === 'you' ? 'the user' : f.task === '__review' ? 'the Review page (the user\'s comments)' : f.num ? `task #${f.num} "${f.title}"` : `task ${f.task}`;
+    for (;;) {
+      const { files } = await call('POST', `/api/tasks/${id}/inbox/take`);
+      if (files.length) { console.log(files.map(f => `${f.path}  (from ${sender(f.from)})`).join('\n')); break; }
+      if (Date.now() - start >= timeout) { console.log('tb inbox wait: timed out, no new files'); process.exit(2); }
+      await sleep(Math.min(2000, Math.max(0, timeout - (Date.now() - start))));
+    }
     break;
   }
   case 'review': {
