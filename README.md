@@ -68,6 +68,7 @@ window. It contains no server: the server keeps running under launchd, and quitt
 - Closing the main window only hides it; ⌘Q quits the app. "Open at login" is in the menu-bar menu.
 - No title bar: the window buttons appear when the pointer is near the top edge. Drag the window by its top bar or
   the top of the sidebar.
+- File → New Task (⌘T) opens the New task dialog, also while a terminal has the keyboard (in a browser, use N).
 - New windows: File → New Window (⌘N), New Window for Group (one canvas tab on its own), New Canvas Window (⇧⌘N);
   the same in the Dock icon's right-click menu and the menu-bar item. Window lists all open windows.
 - Taskboard's own shortcuts (⌘K, ⌘S, N, C, T, ?) reach the page; pop-out group windows open as app windows; links to
@@ -167,6 +168,10 @@ bottom-right exits), `⌃⌥G` next group tab, `⌃⌥⇧G` new group, `⌃⌥N`
   the Accounts page, in the controller's panel, and as 📱 next to Controller in the sidebar. A changed name or setting is
   applied by restarting the controller between turns; it resumes the same conversation and keeps the same link.
   For this to work while you are away, the server must be running: install `scripts/install-launchd.sh`.
+- **Settings page:** whether the controller, and separately other agents, may start, type into, set aside and archive
+  tasks through `tb` without an approval card (defaults: controller yes, other agents no). The controller's Claude Code
+  settings allow every `tb` command and a Codex controller runs with `-a never`, so this page is the only place that
+  decides. Releasing, rolling back and stopping the server stay blocked for every agent.
 - **Controller (⌘K):** an agent session in `~/AgentVault/controller` (Claude Code or Codex: choose its account on the
   Accounts page; the account decides the agent) that manages agents with the `tb` command.
   Starting agents, typing into them, parking and archiving wait for your **Approve / Deny** card on the dashboard,

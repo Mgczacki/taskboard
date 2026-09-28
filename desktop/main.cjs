@@ -113,11 +113,13 @@ function trackButtons() {
 function show() { if (!win) createWindow(); if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
 function toggle() { if (win && win.isVisible() && win.isFocused()) win.hide(); else show(); }
 
-// Ask the page to open a task, triage or the controller (App.tsx listens for 'taskboard:open').
+// Ask the page to open a task, triage, the controller or the New task dialog (App.tsx listens for 'taskboard:open'),
+// in the window you are using (the main window when the call comes from the menu bar or Dock).
 function openInPage(detail) {
-  show();
-  if (!serverUp) return;
-  win.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('taskboard:open', { detail: ${JSON.stringify(detail)} }))`).catch(() => {});
+  const focused = BrowserWindow.getFocusedWindow();
+  const target = focused && !focused.isDestroyed() ? focused : (show(), win);
+  if (!serverUp || !target) return;
+  target.webContents.executeJavaScript(`window.dispatchEvent(new CustomEvent('taskboard:open', { detail: ${JSON.stringify(detail)} }))`).catch(() => {});
 }
 
 // ---------- waiting count: Dock badge and menu bar, from the server's task list ----------
@@ -166,6 +168,7 @@ function trayMenu(unread) {
   items.push(
     { type: 'separator' },
     { label: 'Open Taskboard', accelerator: settings.shortcut.replace('Command', 'Cmd'), click: show },
+    { label: 'New Task…', enabled: serverUp, click: () => { show(); openInPage({ newTask: true }); } },
     { label: 'New Window', click: () => newWindow() },
     ...(groups.length ? [{ label: 'New Window for Group', submenu: groupItems() }] : []),
     { label: 'Triage (everything waiting)', enabled: serverUp, click: () => openInPage({ triage: true }) },
@@ -190,6 +193,9 @@ function appMenu() {
       { label: 'Quit (the server and agents keep running)', accelerator: 'Command+Q', click: () => { quitting = true; app.quit(); } },
     ] },
     { label: 'File', submenu: [
+      // menu shortcuts are handled before the page, so ⌘T works while a terminal has the keyboard
+      { label: 'New Task…', accelerator: 'Command+T', click: () => openInPage({ newTask: true }) },
+      { type: 'separator' },
       { label: 'New Window', accelerator: 'Command+N', click: () => newWindow() },
       { label: 'New Window for Group', enabled: groups.length > 0, submenu: groups.length ? groupItems() : [{ label: 'No groups yet', enabled: false }] },
       { label: 'New Canvas Window', accelerator: 'Shift+Command+N', click: () => newWindow('live') },

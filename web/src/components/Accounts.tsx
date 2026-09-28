@@ -37,7 +37,7 @@ const short = (p: string) => p.replace(/^\/Users\/[^/]+/, '~');
 
 // This machine's controller: its name (shown in the Claude app as "Taskboard controller · <name>"), whether it starts
 // with Taskboard, and Remote Control (Claude Code only).
-function ControllerBox({ ctl, setErr }: { ctl?: Task; setErr: (s: string) => void }) {
+export function ControllerBox({ ctl, setErr }: { ctl?: Task; setErr: (s: string) => void }) {
   const [info, setInfo] = useState<MachineInfo | null>(null);
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);

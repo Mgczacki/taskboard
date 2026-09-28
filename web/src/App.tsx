@@ -12,13 +12,14 @@ import { BoardView, ListView } from './components/Views';
 import { GraphView } from './components/Graph';
 import { ReviewPage } from './components/Review';
 import { AccountsPage } from './components/Accounts';
+import { SettingsPage } from './components/Settings';
 
-type Page = 'list' | 'board' | 'canvas' | 'graph' | 'review' | 'accounts';
+type Page = 'list' | 'board' | 'canvas' | 'graph' | 'review' | 'accounts' | 'settings';
 // #list · #board · #canvas · #canvas:<view>  (view = g:<group> | needs | live | t:<id,id>)
 function parseHash(): { page: Page; view?: string } {
   const h = decodeURIComponent(location.hash.slice(1));
   if (h.startsWith('canvas:')) return { page: 'canvas', view: h.slice(7) };
-  return { page: (['list', 'board', 'canvas', 'graph', 'review', 'accounts'].includes(h) ? h : 'list') as Page };
+  return { page: (['list', 'board', 'canvas', 'graph', 'review', 'accounts', 'settings'].includes(h) ? h : 'list') as Page };
 }
 export const SOLO = new URLSearchParams(location.search).get('solo') === '1';
 export interface Toast { id: number; text: string; action?: { label: string; fn: () => void } }
@@ -72,7 +73,8 @@ export function App() {
   // The Mac app (desktop/main.cjs) opens a task, triage or the controller from its menu-bar item with this event.
   useEffect(() => {
     const on = (e: Event) => {
-      const d = (e as CustomEvent<{ task?: string; triage?: boolean; controller?: boolean }>).detail || {};
+      const d = (e as CustomEvent<{ task?: string; triage?: boolean; controller?: boolean; newTask?: boolean }>).detail || {};
+      if (d.newTask) setNewOpen(true);
       if (d.task) setOpenId(d.task);
       if (d.triage) setTriage(true);
       if (d.controller && openId !== 'controller') openController();
@@ -96,6 +98,8 @@ export function App() {
     const on = (e: KeyboardEvent) => {
       const inTerm = (e.target as HTMLElement)?.closest?.('.xterm');
       const typing = (e.target as HTMLElement)?.closest?.('input,textarea,select,[contenteditable=true]');
+      // Command-T: new task, also from inside a terminal (the Mac app sends it from its File menu; a browser keeps ⌘T for tabs)
+      if (e.metaKey && !e.altKey && !e.ctrlKey && !e.shiftKey && e.code === 'KeyT') { e.preventDefault(); e.stopPropagation(); setNewOpen(true); return; }
       if (e.metaKey && !e.altKey && !e.ctrlKey && e.code === 'KeyS') { e.preventDefault(); if (!SOLO) setRailHidden(h => !h); return; }
       if (e.ctrlKey && e.altKey && e.code === 'KeyQ') { e.preventDefault(); setTriage(x => !x); return; }
       // controller: Command-K works everywhere, also while a terminal has focus (Control-Option-K still works too)
@@ -132,7 +136,7 @@ export function App() {
         <div className="rail-item ctl-item" onClick={openController} title="The controller agent manages the other agents. Shortcut: Command-K (or C)">{controller ? <Dot s={controller.status} /> : <span className="dot idle" />}<span className="t"><b>Controller</b>{controller ? '' : ' · start'}</span>{controller?.remoteUrl && <a className="rc-link" href={controller.remoteUrl} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} title="Remote Control is on: open the controller on claude.ai or the Claude mobile app">📱</a>}<kbd>⌘K</kbd></div>
         <button className="importbtn" onClick={() => setImportOpen(true)} title="Bring in Claude Code and Codex sessions you started outside Taskboard">⇪ Import sessions</button>
         <nav className="nav">
-          {(['list', 'board', 'graph', 'canvas', 'review', 'accounts'] as Page[]).map(p => <a key={p} className={page === p ? 'on' : ''} onClick={() => go(p)}>{p[0].toUpperCase() + p.slice(1)}{p === 'list' && <span className="n">{tasks.filter(t => t.status !== 'archived').length}</span>}{p === 'review' && reviewCount > 0 && <span className="n" style={{ color: 'var(--st-review)' }}>{reviewCount}</span>}</a>)}
+          {(['list', 'board', 'graph', 'canvas', 'review', 'accounts', 'settings'] as Page[]).map(p => <a key={p} className={page === p ? 'on' : ''} onClick={() => go(p)}>{p[0].toUpperCase() + p.slice(1)}{p === 'list' && <span className="n">{tasks.filter(t => t.status !== 'archived').length}</span>}{p === 'review' && reviewCount > 0 && <span className="n" style={{ color: 'var(--st-review)' }}>{reviewCount}</span>}</a>)}
         </nav>
         <div className="rail-scroll">
           <div className="rail-sec"><h6>Needs you<span>{needs.length}</span></h6>{needs.map(item)}{!needs.length && <div className="rail-empty">Nothing waiting</div>}</div>
@@ -171,6 +175,7 @@ export function App() {
           {page === 'list' && <ListView tasks={tasks} groups={groups} open={setOpenId} showArchived={showArchived} selected={selected} toggleSel={toggleSel} />}
           {page === 'board' && <BoardView tasks={tasks} groups={groups} open={setOpenId} openDocs={id => setOpenId(id, 'docs')} selected={selected} toggleSel={toggleSel} newGroup={() => setGroupPrompt([])} toast={toast} />}
           {page === 'accounts' && <AccountsPage tasks={allTasks} />}
+          {page === 'settings' && <SettingsPage tasks={allTasks} />}
           {page === 'review' && <ReviewPage tasks={tasks} open={(id, tab) => setOpenId(id, tab)} />}
           {page === 'graph' && <GraphView tasks={tasks} groups={groups} open={(id, tab) => setOpenId(id, tab)} />}
           {page === 'canvas' && <Canvas tasks={tasks} groups={groups} view={view} setView={setView} openPanel={setOpenId} selected={selected} toggleSel={toggleSel} clearSel={() => setSelected(new Set())} solo={SOLO} focusMode={focusMode} setFocusMode={setFocusMode} toast={toast} />}
@@ -200,8 +205,10 @@ export function App() {
 const KEYS: [string, string, string][] = [
   ['Anywhere', '⌘K', 'Open the controller (Command-K). Also works inside a terminal.'],
   ['Anywhere', '⌘S', 'Hide or show the sidebar (Command-S)'],
+  ['Mac app', '⌘T', 'New task (Command-T), also from inside a terminal'],
+  ['Mac app', '⌘N / ⇧⌘N', 'New window / new canvas window (Command-N / Shift-Command-N)'],
   ['Anywhere', '⌃⌥Q', 'Triage: everything waiting on you (Control-Option-Q)'],
-  ['Outside a terminal', 'N', 'New task'],
+  ['Outside a terminal', 'N', 'New task (in the Mac app, ⌘T works everywhere)'],
   ['Outside a terminal', 'C', 'Open the controller (on the Review page C adds a comment instead)'],
   ['Outside a terminal', 'T', 'Triage'],
   ['Outside a terminal', '?', 'This list'],

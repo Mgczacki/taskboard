@@ -48,7 +48,10 @@ export function writeClaudeSettings() {
   writeFileSync(CLAUDE_SETTINGS_FILE, JSON.stringify({ hooks, permissions, statusLine }, null, 2));
   // The controller: reading and organising run without asking; anything that acts on another agent asks you.
   const read = ['info', 'list', 'show', 'log', 'tail', 'result', 'wait', 'group', 'doc send', 'help'].map(c => `Bash(tb ${c}:*)`);
-  writeFileSync(CONTROLLER_SETTINGS_FILE, JSON.stringify({ hooks, statusLine, permissions: { allow: [...permissions.allow, ...read, 'Bash(tb)'], ask: ['Bash(tb send:*)', 'Bash(tb new:*)', 'Bash(tb park:*)', 'Bash(tb archive:*)'] } }, null, 2));
+  // Every `tb` command runs without a Claude Code prompt (also in auto mode): whether the controller may act on
+  // other tasks is decided in one place, Taskboard's Settings page (approval cards on the dashboard).
+  const tbAll = ['Bash(tb)', 'Bash(tb:*)', 'Bash(~/.taskboard/bin/tb:*)', 'Bash(~/.local/bin/tb:*)'];
+  writeFileSync(CONTROLLER_SETTINGS_FILE, JSON.stringify({ hooks, statusLine, permissions: { allow: [...permissions.allow, ...read, ...tbAll] } }, null, 2));
   // The writing rules are copied into the vault, where every agent can read them without a permission prompt.
   for (const f of ['plain-english.md', 'check_wording.py']) copyFileSync(join(ROOT, 'writing', f), join(DOCS_DIR, f));
 }
@@ -78,14 +81,15 @@ Use the \`tb\` command (run \`tb\` alone for help). Tasks are numbers like 12 or
 - You cannot use account limit resets. If an agent hit a limit, tell the user; they decide on the dashboard.
 - Never start more than 5 agents from one request without asking.
 - Never send to a task whose status is working unless the user says to interrupt it.
-- Starting agents, typing into other agents, parking and archiving wait for the user's Approve / Deny on the dashboard; \`tb\` prints
-  that it is waiting and returns the answer. That is expected.
+${machine.get().permissions.controllerNeedsApproval
+  ? '- Starting agents, typing into other agents, parking and archiving wait for the user\'s Approve / Deny on the dashboard; `tb` prints\n  that it is waiting and returns the answer. That is expected.'
+  : '- You may start, type into, set aside and archive tasks directly with `tb`; the user allowed this in Taskboard\'s Settings. Act only on\n  what the user asked for, and tell them what you did.'}
 
 ## How you write
 ${writingRules('your reports to the user, the messages that you send to tasks, and the prompts for new agents')}
 `;
 // what the controller's command line depends on; when it changes, the running controller is restarted between turns
-export const controllerLaunchKey = (agent: string) => JSON.stringify({ agent, label: machine.controllerLabel(), remote: agent === 'claude' && machine.get().controller.remoteControl });
+export const controllerLaunchKey = (agent: string) => JSON.stringify({ agent, label: machine.controllerLabel(), remote: agent === 'claude' && machine.get().controller.remoteControl, approval: machine.get().permissions.controllerNeedsApproval });
 
 export async function startController(): Promise<Task> {
   mkdirSync(join(CONTROLLER_DIR, 'plans'), { recursive: true });
@@ -105,7 +109,8 @@ export async function startController(): Promise<Task> {
       ? ['claude', '--settings', CONTROLLER_SETTINGS_FILE, ...(resume && t.sessionId ? ['--resume', t.sessionId] : t.sessionId ? ['--session-id', t.sessionId] : []),
         '--name', machine.controllerLabel(), ...(machine.get().controller.remoteControl ? ['--remote-control', machine.controllerLabel()] : [])]
       // Codex: tb talks to the Taskboard server on 127.0.0.1, which its sandbox blocks unless network access is on
-      : [...command(t, null, !!t.sessionId), '-c', 'sandbox_workspace_write.network_access=true'];
+      // no Codex approval prompts for the controller: Taskboard's Settings page decides what it may do
+      : [...command(t, null, !!t.sessionId), '-c', 'sandbox_workspace_write.network_access=true', '-a', 'never'];
     await tmux.newSession(t.session, CONTROLLER_DIR, baseEnv(t), c, async () => { await ensureTmuxConfigured(); });
     await ensureTmuxConfigured();
   } finally { launching.delete(t.id); }

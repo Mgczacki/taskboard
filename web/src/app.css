@@ -322,3 +322,5 @@ body.in-app .brand a, body.in-app .brand button { -webkit-app-region: no-drag; }
 body.in-app .brand { transition: padding-left .15s ease; }
 body.in-app.app-buttons .brand { padding-left: 84px; }
 body.in-app.app-buttons .app:not(:has(.rail)) .top { padding-left: 84px; }
+
+.set-h { margin: 18px 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); }

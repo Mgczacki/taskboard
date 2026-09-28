@@ -100,7 +100,10 @@ async function guarded(req: express.Request, res: express.Response, summary: str
   // x-tb-actor — waits for your approval. (Agents run as you and can read the token, so this guards against mistakes,
   // not against an agent that deliberately calls the API without `tb`.)
   const actor = req.get('x-tb-actor') || '';
-  if (req.get('origin') || !actor) { try { res.json(await run()); } catch (e) { fail(res, e); } return; }
+  // Settings page: the controller and other agents can each be allowed to act without an approval card
+  const p = machine.get().permissions;
+  const needs = actor === 'controller' ? p.controllerNeedsApproval : p.agentsNeedApproval;
+  if (req.get('origin') || !actor || !needs) { try { res.json(await run()); } catch (e) { fail(res, e); } return; }
   const a = approvals.request({ actor, action, summary, detail, payload: req.body }, async () => describe(await run()));
   if (store.get(actor)) store.update(actor, { status: 'needs-you', ask: `Approve: ${summary}`, statusSource: 'Waiting for your approval on the dashboard.' });
   res.status(202).json({ approval: a });
@@ -155,8 +158,8 @@ app.get('/api/info', (_req, res) => res.json(info()));
 app.patch('/api/info', async (req, res) => {
   if (!req.get('origin')) return res.status(403).json({ error: 'Machine settings are changed on the dashboard.' });
   const before = JSON.stringify(machine.get());
-  const { name, autostart, remoteControl } = req.body;
-  machine.update({ name, autostart, remoteControl });
+  const { name, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval } = req.body;
+  machine.update({ name, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval });
   // the running controller picks up a new name or Remote Control setting at its next restart, which keepController()
   // does as soon as it is between turns
   void before;
