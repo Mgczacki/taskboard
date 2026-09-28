@@ -47,7 +47,8 @@ export function Canvas({ tasks, groups, view, setView, openPanel, selected, togg
   useEffect(() => { localStorage.setItem(lk('layout'), layout); localStorage.setItem(lk('visible'), String(visible)); }, [layout, visible, view]);
   useEffect(() => { const ro = new ResizeObserver(() => setW(stage.current?.clientWidth || 1200)); if (stage.current) ro.observe(stage.current); return () => ro.disconnect(); }, []);
 
-  const live = (t?: Task) => !!t && t.status !== 'archived';
+  // windows are for running agents: archived and suspended tasks are left out (suspended ones: see the Resume button)
+  const live = (t?: Task) => !!t && t.status !== 'archived' && t.status !== 'suspended';
   const liveSet = useCallback(() => view === 'needs' ? tasks.filter(t => ATTN.includes(t.status) || t.status === 'unread').map(t => t.id) : tasks.filter(t => live(t) && t.status !== 'parked').map(t => t.id), [tasks, view]);
   useEffect(() => { if ((view === 'needs' || view === 'live') && !frozen && tasks.length) setFrozen(liveSet()); }, [view, frozen, tasks.length, liveSet]);
   const group = view.startsWith('g:') ? groups.find(g => g.id === view.slice(2)) : undefined;
@@ -56,6 +57,7 @@ export function Canvas({ tasks, groups, view, setView, openPanel, selected, togg
     base = [...base, ...extra.filter(x => !base.includes(x))];
     return base.filter(id => live(tasks.find(t => t.id === id)));
   }, [view, group, frozen, extra, tasks]);
+  const suspendedHere = (view.startsWith('g:') ? (group?.tasks || []) : view.startsWith('t:') ? view.slice(2).split(',') : []).map(id => tasks.find(t => t.id === id)).filter((t): t is Task => !!t && t.status === 'suspended');
   const newInSmart = (view === 'needs' || view === 'live') && frozen ? liveSet().filter(x => !frozen.includes(x)).length : 0;
 
   const wins = ids.map(id => tasks.find(t => t.id === id)!).filter(Boolean);
@@ -166,6 +168,7 @@ export function Canvas({ tasks, groups, view, setView, openPanel, selected, togg
         {newInSmart > 0 && <button className="btn" onClick={() => { setFrozen(liveSet()); }} title="Windows never appear on their own while you work">{newInSmart} new · refresh</button>}
         <span className="sp" />
         <span className="lbl">{wins.length} windows{focusedTask ? ` · typing into #${focusedTask.num}` : ''}</span>
+        {suspendedHere.length > 0 && <button className="btn" title={`Not running: ${suspendedHere.map(t => '#' + t.num + ' ' + t.title).join(', ')}. Resume starts their agents again and continues their conversations.`} onClick={() => suspendedHere.forEach(t => api.resume(t.id).catch(() => {}))}>{suspendedHere.length} suspended · Resume</button>}
         <button className="btn" onClick={() => setFocusMode(!focusMode)}>Focus mode <kbd>⌃⌥F</kbd></button>
       </div>
       {menu === 'new' && <NewGroupMenu tasks={tasks} onScreen={ids} selected={[...selected].filter(id => tasks.some(t => t.id === id))} close={() => setMenu(null)} done={g => { clearSel(); setMenu(null); setView('g:' + g.id); toast(`Group “${g.name}” created`); }} />}

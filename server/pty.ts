@@ -12,6 +12,12 @@ const quiet = (session: string) => quietUntil.set(session, Date.now() + 3000);
 
 const tmuxSync = (...args: string[]) => { try { return execFileSync(TMUX_BIN, ['-L', TMUX_SOCKET, ...args], { encoding: 'utf8', maxBuffer: 64 << 20 }); } catch { return ''; } };
 
+// Size the task's tmux window to this browser terminal. With several clients on one session (the task panel, a canvas
+// tile, another window), tmux would otherwise use the size of whichever client was used last, and a terminal of another
+// size shows a cut-off part of the screen (Codex draws at the bottom, so that part can be empty). Called when a terminal
+// attaches, is resized, or gets the keyboard; it also fixes that window's size for clients attached from other terminals.
+const sizeWindow = (session: string, cols: number, rows: number) => tmuxSync('resize-window', '-t', '=' + session + ':', '-x', String(Math.max(20, cols)), '-y', String(Math.max(5, rows)));
+
 export function attach(ws: WebSocket, session: string, cols: number, rows: number) {
   quiet(session);
   // also set here: a tmux server started by an earlier Taskboard version lacks these
@@ -20,6 +26,7 @@ export function attach(ws: WebSocket, session: string, cols: number, rows: numbe
     name: 'xterm-256color', cols: Math.max(20, cols), rows: Math.max(5, rows),
     env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' } as Record<string, string>,
   });
+  sizeWindow(session, cols, rows);
   // coalesce output: one WebSocket message per 8 ms instead of one per read from the pseudo-terminal
   let buf = '', timer: NodeJS.Timeout | null = null;
   const flush = () => { timer = null; if (buf && ws.readyState === ws.OPEN) ws.send(buf); buf = ''; };
@@ -31,7 +38,8 @@ export function attach(ws: WebSocket, session: string, cols: number, rows: numbe
     if (!isBinary && s.charCodeAt(0) === 0) {
       try {
         const m = JSON.parse(s.slice(1));
-        if (m.t === 'resize') { quiet(session); p.resize(Math.max(20, m.cols), Math.max(5, m.rows)); }
+        if (m.t === 'resize') { quiet(session); cols = m.cols; rows = m.rows; p.resize(Math.max(20, cols), Math.max(5, rows)); sizeWindow(session, cols, rows); }
+        if (m.t === 'focus') sizeWindow(session, cols, rows);
       } catch { /* ignore malformed control message */ }
       return;
     }

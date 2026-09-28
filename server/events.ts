@@ -105,10 +105,16 @@ const SCREEN_QUESTIONS: [RegExp, string][] = [
   [/Select login method|Please log in|Sign in with ChatGPT/i, 'Asks you to sign in. Answer in the terminal.'],
   [/Update available[\s\S]*(Update now|Skip)/i, 'Offers an update before starting. Answer in the terminal (Skip continues).'],
 ];
+export const SCREEN_SOURCE = 'Read from the terminal';
 export function screenCheck(t: Task, screen: string) {
-  if (t.status === 'needs-you') return;
+  if (t.status === 'needs-you') {
+    // a question read from the screen: once it is no longer there, it was answered and the agent carries on
+    if (t.statusSource?.startsWith(SCREEN_SOURCE) && !SCREEN_QUESTIONS.some(([re]) => re.test(screen)))
+      store.update(t.id, { status: 'working', ask: '', statusSource: `The question on screen was answered (seen at ${clock()}).` });
+    return;
+  }
   for (const [re, ask] of SCREEN_QUESTIONS) if (re.test(screen)) {
-    store.update(t.id, { status: 'needs-you', ask, statusSource: `Read from the terminal at ${clock()} (no hook fires for this question).` });
+    store.update(t.id, { status: 'needs-you', ask, statusSource: `${SCREEN_SOURCE} at ${clock()} (no hook fires for this question).` });
     return;
   }
 }

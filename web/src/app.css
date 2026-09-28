@@ -324,3 +324,8 @@ body.in-app.app-buttons .brand { padding-left: 84px; }
 body.in-app.app-buttons .app:not(:has(.rail)) .top { padding-left: 84px; }
 
 .set-h { margin: 18px 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); }
+
+/* task description above the panel's terminal: two lines, click for all (scrolls, at most 40% of the window) */
+.term-brief span { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; flex: 1; }
+.term-brief.open span { display: block; -webkit-line-clamp: unset; max-height: 40vh; overflow: auto; }
+.term-brief .more { flex: none; font-style: normal; font-size: 11px; color: var(--accent); align-self: flex-end; }

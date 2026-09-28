@@ -28,6 +28,9 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, initialTab }: {
 
   const act = (p: Promise<unknown>) => p.catch(e => setErr(String(e.message || e)));
   const [confirmRm, setConfirmRm] = useState(false);
+  // the task description starts folded to two lines so the terminal keeps its space
+  const [briefOpen, setBriefOpen] = useState(false);
+  useEffect(() => setBriefOpen(false), [t.id]);
   const [dropping, setDropping] = useState(false);
   const [dropMsg, setDropMsg] = useState('');
 
@@ -97,7 +100,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, initialTab }: {
         {tab === 'terminal' && t.openElsewhere && <div className="empty" style={{ padding: 20 }}>The terminal for this session belongs to {t.openElsewhere?.tty}. Last message from the agent:<pre className="logtext" style={{ marginTop: 10 }}>{t.now || '—'}</pre></div>}
         {tab === 'terminal' && !t.openElsewhere && (t.status === 'suspended'
           ? <div className="empty" style={{ padding: 20 }}>Resuming with {t.agent === 'claude' ? 'claude --resume' : 'codex resume'} {t.sessionId}…</div>
-          : <div className="term-wrap"><div className="term-brief open"><b>Task</b><span>{t.desc}</span></div><Terminal taskId={t.id} autoFocus /></div>)}
+          : <div className="term-wrap"><div className={`term-brief ${briefOpen ? 'open' : ''}`} onClick={() => setBriefOpen(o => !o)} title={briefOpen ? 'Click to show only the first lines' : 'Click to show the whole task description'}><b>Task</b><span>{t.desc}</span><i className="more">{briefOpen ? 'less' : 'more'}</i></div><Terminal taskId={t.id} autoFocus /></div>)}
         {tab === 'log' && <pre className="logtext">{log || 'No log entries yet.'}</pre>}
       </div>
     </aside>

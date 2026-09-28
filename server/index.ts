@@ -600,7 +600,8 @@ async function reconcile() {
     if (!s) { store.update(t.id, { status: 'suspended', interrupted: t.status === 'working' ? 'The session ended while the agent was working.' : undefined, statusSource: 'The tmux session is gone (restart or crash). Opening the task resumes it.' }); continue; }
     if (s.dead) { store.update(t.id, { status: 'suspended', statusSource: 'The agent exited. Resume to continue the conversation.' }); continue; }
     if (!!t.unscrollable !== s.unscrollable) store.update(t.id, { unscrollable: s.unscrollable || undefined });
-    if (Date.now() - Date.parse(t.updated) < 90000 && !events.sessionStarted.has(t.id) && ['working', 'idle'].includes(t.status))
+    if ((Date.now() - Date.parse(t.updated) < 90000 && !events.sessionStarted.has(t.id) && ['working', 'idle'].includes(t.status))
+      || (t.status === 'needs-you' && t.statusSource?.startsWith(events.SCREEN_SOURCE)))
       events.screenCheck(t, await tmux.capture(t.session, 30));
     if (t.agent === 'codex' && t.sessionId) {
       let tr = t.transcript;

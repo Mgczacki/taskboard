@@ -37,6 +37,8 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
     const open = () => {
       ws = new WebSocket(`${proto}://${location.host}/ws/term?${session ? 'session=' + encodeURIComponent(session) : 'task=' + encodeURIComponent(taskId)}&cols=${term.cols}&rows=${term.rows}`);
       ws.onmessage = e => term.write(typeof e.data === 'string' ? e.data : new Uint8Array(e.data));
+      // this terminal decides the tmux window size while it is the one you opened or typed in last
+      ws.onopen = () => sendFocus();
       ws.onclose = ev => { if (!closed && ev.code !== 4004) setTimeout(open, 1500); };
     };
     open();
@@ -52,7 +54,8 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
     const sendSize = () => { if (ws && ws.readyState === 1) ws.send('\x00' + JSON.stringify({ t: 'resize', cols: term.cols, rows: term.rows })); };
     const ro = new ResizeObserver(() => { try { fit.fit(); sendSize(); } catch { /* hidden */ } });
     ro.observe(el);
-    const onF = () => onFocus && onFocus();
+    const sendFocus = () => { if (ws && ws.readyState === 1) ws.send('\x00' + JSON.stringify({ t: 'focus' })); };
+    const onF = () => { sendFocus(); if (onFocus) onFocus(); };
     term.textarea?.addEventListener('focus', onF);
     if (autoFocus) setTimeout(() => term.focus(), 50);
 
