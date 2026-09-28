@@ -3,6 +3,30 @@
 A local board for many Claude Code and Codex agents. Each agent runs unmodified in its own tmux session;
 Taskboard shows what each one is doing, which ones need you, and lets you open any of them as a live terminal.
 
+## Install (from this repository)
+
+Requirements: macOS, [Homebrew](https://brew.sh), and Claude Code and/or Codex installed and signed in.
+
+```sh
+brew install node pnpm tmux                       # Node 20.19+ recommended (22 LTS is fine)
+git clone https://github.com/Mgczacki/taskboard.git ~/taskboard
+cd ~/taskboard
+pnpm install
+pnpm release                                      # build a release and start the server on http://127.0.0.1:4317
+sh scripts/install-launchd.sh                     # keep the server running: starts at login, restarts if it stops
+pnpm app                                          # build the Mac app and install it as ~/Applications/Taskboard.app
+mkdir -p ~/.local/bin && ln -sfn ~/.taskboard/bin/tb ~/.local/bin/tb   # the `tb` command for you and the agents
+```
+
+Then open **Taskboard** from Spotlight, Raycast, Launchpad or `~/Applications` (drag it to the Dock to keep it there).
+The browser works too: <http://127.0.0.1:4317>.
+
+- **Update:** `git pull && pnpm install && pnpm release` (the server), and `pnpm app` (the Mac app, if `desktop/` changed).
+- **Is it installed?** `ls ~/Applications/Taskboard.app` for the app; `launchctl print gui/$(id -u)/com.taskboard.server | grep state`
+  for the server; `curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:4317/` should print 200.
+- `pnpm app` downloads Electron from its GitHub releases and checks it against the published SHA-256 sums (Electron's
+  own installer needs Node 22.12+, so the build does this itself on older Node).
+
 ## Run it
 
 The real Taskboard runs from a **release**: a frozen copy of the code in `~/.taskboard/releases/<id>`, reached through
@@ -31,6 +55,25 @@ sh scripts/install-launchd.sh    # once: run the release as a login service that
 - **Open an agent from a normal terminal:** `tmux -L taskboard attach -t task-<number>` (the task panel has a copy button).
 - **Node:** Node 20.19 or newer is recommended; on 20.18 pnpm skips Vite's native bundler unless installing with
   `--force` (the release script does that).
+
+## Mac app
+
+`desktop/` is an Electron app (installed as `~/Applications/Taskboard.app`) that shows the dashboard in its own
+window. It contains no server: the server keeps running under launchd, and quitting the app stops nothing.
+
+- Dock badge and menu-bar item with the number of tasks waiting on you; the menu lists them (click one to open it),
+  plus Triage and Controller.
+- Control-Option-Command-T shows or hides the window from any app (change `shortcut` in
+  `~/Library/Application Support/taskboard-desktop/settings.json`).
+- Closing the main window only hides it; ⌘Q quits the app. "Open at login" is in the menu-bar menu.
+- No title bar: the window buttons appear when the pointer is near the top edge. Drag the window by its top bar or
+  the top of the sidebar.
+- New windows: File → New Window (⌘N), New Window for Group (one canvas tab on its own), New Canvas Window (⇧⌘N);
+  the same in the Dock icon's right-click menu and the menu-bar item. Window lists all open windows.
+- Taskboard's own shortcuts (⌘K, ⌘S, N, C, T, ?) reach the page; pop-out group windows open as app windows; links to
+  other sites open in your browser. While the server does not answer, a waiting page reconnects by itself.
+- Rebuild and reinstall: `pnpm app` (or `cd desktop && pnpm build && pnpm install-app`). (Electron's own download script needs
+  Node 22; on Node 20 the Electron binary was downloaded by hand and checked against its published SHA-256.)
 
 ## Developing Taskboard inside Taskboard
 

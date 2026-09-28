@@ -7,12 +7,17 @@
   "scripts": {
     "start": "electron .",
     "icons": "node scripts/make-icons.cjs",
-    "build": "node scripts/make-icons.cjs && electron-packager . Taskboard --platform=darwin --arch=arm64 --icon=build/icon.icns --out=out --overwrite --app-bundle-id=com.taskboard.desktop --ignore='^/out' --ignore='^/scripts' --prune=true",
-    "install-app": "node scripts/install-app.cjs"
+    "build": "node scripts/ensure-electron.cjs && node scripts/make-icons.cjs && electron-packager . Taskboard --platform=darwin --arch=$(node -p process.arch) --icon=build/icon.icns --out=out --overwrite --app-bundle-id=com.taskboard.desktop --ignore='^/out' --ignore='^/scripts' --ignore='^/node_modules' --ignore='^/build/icon' --prune=false",
+    "install-app": "node scripts/install-app.cjs",
+    "setup": "pnpm install && pnpm build && pnpm install-app"
   },
   "devDependencies": {
     "@electron/packager": "18.4.4",
     "electron": "44.4.5"
   },
-  "pnpm": { "onlyBuiltDependencies": ["electron"] }
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron"
+    ]
+  }
 }

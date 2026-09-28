@@ -5,7 +5,7 @@ const { existsSync, mkdirSync, rmSync } = require('node:fs');
 const { homedir } = require('node:os');
 const { join } = require('node:path');
 
-const built = join(__dirname, '..', 'out', 'Taskboard-darwin-arm64', 'Taskboard.app');
+const built = join(__dirname, '..', 'out', `Taskboard-darwin-${process.arch}`, 'Taskboard.app');
 if (!existsSync(built)) { console.error('Build it first: pnpm build'); process.exit(1); }
 const dest = join(homedir(), 'Applications', 'Taskboard.app');
 try { execFileSync('osascript', ['-e', 'tell application id "com.taskboard.desktop" to quit'], { stdio: 'ignore' }); } catch { /* not running */ }

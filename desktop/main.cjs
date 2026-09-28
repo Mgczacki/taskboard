@@ -8,7 +8,9 @@
 // - pop-out group windows as app windows; links to other sites open in your browser
 // - a waiting page while the server does not answer, which reconnects by itself
 // - window size and position kept between launches; optional opening at login
-const { app, BrowserWindow, Menu, Tray, globalShortcut, nativeImage, shell } = require('electron');
+// - no title bar: the window buttons appear when the pointer is near the top edge, and hide again after
+// - New Window (⌘N), New Window for a group, in the File menu, the Dock menu and the menu-bar item
+const { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, nativeImage, screen, shell } = require('electron');
 const { readFileSync, writeFileSync } = require('node:fs');
 const { homedir } = require('node:os');
 const { join } = require('node:path');
@@ -29,13 +31,16 @@ function saveSettings() { try { writeFileSync(settingsFile(), JSON.stringify(set
 let win = null, tray = null, quitting = false, serverUp = false, waiting = [];
 
 const sameOrigin = url => { try { return new URL(url).origin === SERVER; } catch { return false; } };
-const webPreferences = { contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false };
+const webPreferences = { contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false, preload: join(__dirname, 'preload.cjs') };
+// every window: no title bar; the traffic-light buttons sit inside the page and are shown only near the top edge
+const chrome = { titleBarStyle: 'hidden', trafficLightPosition: { x: 14, y: 14 }, backgroundColor: '#0d1117', webPreferences };
+let groups = [];
 
 function guard(contents) {
   // pop-out windows of the dashboard stay in the app; everything else opens in the default browser
   contents.setWindowOpenHandler(({ url }) => {
-    if (sameOrigin(url)) return { action: 'allow', overrideBrowserWindowOptions: { width: 1500, height: 950, backgroundColor: '#0d1117', webPreferences } };
-    if (/^https?:/.test(url)) shell.openExternal(url);
+    if (sameOrigin(url)) openWindow(url, { width: 1500, height: 950 });
+    else if (/^https?:/.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });
   contents.on('will-navigate', (e, url) => {
@@ -61,8 +66,9 @@ function createWindow() {
   const b = settings.bounds || {};
   win = new BrowserWindow({
     width: b.width || 1600, height: b.height || 1000, x: b.x, y: b.y, minWidth: 700, minHeight: 450,
-    title: 'Taskboard', backgroundColor: '#0d1117', show: false, webPreferences,
+    title: 'Taskboard', show: false, ...chrome,
   });
+  win.setWindowButtonVisibility(false);
   win.once('ready-to-show', () => { if (!settings.startHidden) win.show(); settings.startHidden = false; });
   let t = null;
   const remember = () => { clearTimeout(t); t = setTimeout(() => { if (win && !win.isMinimized() && !win.isFullScreen()) { settings.bounds = win.getBounds(); saveSettings(); } }, 500); };
@@ -73,6 +79,35 @@ function createWindow() {
   win.webContents.on('did-fail-load', (_e, code, _d, url) => { if (code !== -3 && sameOrigin(url)) win.loadFile(join(__dirname, 'offline.html')); });
   win.webContents.on('render-process-gone', () => setTimeout(load, 1000));
   load();
+}
+
+// Another window: the whole dashboard, or one canvas view on its own (?solo=1, like the page's pop-out windows).
+// Extra windows close for real; only the main window hides on close.
+function openWindow(url, size) {
+  const from = BrowserWindow.getFocusedWindow() || win;
+  const at = from ? from.getBounds() : { x: 80, y: 80, width: 1500, height: 950 };
+  const w = new BrowserWindow({ x: at.x + 28, y: at.y + 28, width: size?.width || at.width, height: size?.height || at.height, minWidth: 600, minHeight: 400, title: 'Taskboard', ...chrome });
+  w.setWindowButtonVisibility(false);
+  w.webContents.on('did-fail-load', (_e, code, _d, u) => { if (code !== -3 && sameOrigin(u)) w.loadFile(join(__dirname, 'offline.html')); });
+  if (serverUp) w.loadURL(url); else w.loadFile(join(__dirname, 'offline.html'));
+  return w;
+}
+const newWindow = view => openWindow(view ? `${SERVER}/?solo=1#canvas:${encodeURIComponent(view)}` : `${SERVER}/`);
+ipcMain.on('new-window', (_e, view) => newWindow(view));
+
+// Show the window buttons while the pointer is within 40 px of a window's top edge (or the window is full screen).
+const buttonsShown = new WeakMap();
+function trackButtons() {
+  const p = screen.getCursorScreenPoint();
+  for (const w of BrowserWindow.getAllWindows()) {
+    if (w.isDestroyed() || !w.isVisible()) continue;
+    const b = w.getBounds();
+    const near = w.isFullScreen() || (p.x >= b.x && p.x <= b.x + b.width && p.y >= b.y && p.y <= b.y + 40);
+    if (buttonsShown.get(w) === near) continue;
+    buttonsShown.set(w, near);
+    w.setWindowButtonVisibility(near);
+    w.webContents.send('chrome', { buttons: near });
+  }
 }
 
 function show() { if (!win) createWindow(); if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
@@ -99,6 +134,19 @@ async function poll() {
   waiting = (tasks || []).filter(t => ATTN.includes(t.status) && t.role !== 'controller').sort((a, b) => (b.waitMin || 0) - (a.waitMin || 0));
   const unread = (tasks || []).filter(t => t.status === 'unread' && t.role !== 'controller').length;
   app.dock?.setBadge(waiting.length ? String(waiting.length) : '');
+  // groups for the New Window menus (rebuilt only when they change)
+  try {
+    const token = readFileSync(TOKEN_FILE, 'utf8').trim();
+    const r = serverUp && await fetch(SERVER + '/api/groups', { headers: { 'x-taskboard-token': token }, signal: AbortSignal.timeout(3000) });
+    const next = r && r.ok ? (await r.json()).map(g => ({ id: g.id, name: g.name })) : groups;
+    if (JSON.stringify(next) !== JSON.stringify(groups)) { groups = next; Menu.setApplicationMenu(appMenu()); }
+  } catch { /* keep the old list */ }
+  // Dock menu (right-click the Dock icon): new windows and what is waiting
+  app.dock?.setMenu(Menu.buildFromTemplate([
+    { label: 'New Window', click: () => newWindow() },
+    ...(groups.length ? [{ label: 'New Window for Group', submenu: groupItems() }] : []),
+    ...(waiting.length ? [{ type: 'separator' }, ...waiting.slice(0, 8).map(t => ({ label: `#${t.num} ${t.title.slice(0, 40)} — ${STATUS_WORDS[t.status] || t.status}`, click: () => openInPage({ task: t.id }) }))] : []),
+  ]));
   if (tray) {
     tray.setTitle(!serverUp ? ' off' : waiting.length ? ` ${waiting.length}` : '');
     tray.setToolTip(!serverUp ? 'Taskboard: server not answering' : `Taskboard: ${waiting.length} waiting on you · ${unread} done, unread`);
@@ -118,6 +166,8 @@ function trayMenu(unread) {
   items.push(
     { type: 'separator' },
     { label: 'Open Taskboard', accelerator: settings.shortcut.replace('Command', 'Cmd'), click: show },
+    { label: 'New Window', click: () => newWindow() },
+    ...(groups.length ? [{ label: 'New Window for Group', submenu: groupItems() }] : []),
     { label: 'Triage (everything waiting)', enabled: serverUp, click: () => openInPage({ triage: true }) },
     { label: 'Controller', enabled: serverUp, click: () => openInPage({ controller: true }) },
     { type: 'separator' },
@@ -129,13 +179,22 @@ function trayMenu(unread) {
   return Menu.buildFromTemplate(items);
 }
 
-// ---------- menus: standard ones, without ⌘K / ⌘S / ⌘N so those reach the page ----------
+const groupItems = () => groups.map(g => ({ label: g.name, click: () => newWindow('g:' + g.id) }));
+
+// ---------- menus: standard ones, without ⌘K / ⌘S so those reach the page ----------
 function appMenu() {
   return Menu.buildFromTemplate([
     { label: 'Taskboard', submenu: [
       { role: 'about' }, { type: 'separator' },
       { label: 'Hide Taskboard', accelerator: 'Command+H', click: () => win && win.hide() }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' },
       { label: 'Quit (the server and agents keep running)', accelerator: 'Command+Q', click: () => { quitting = true; app.quit(); } },
+    ] },
+    { label: 'File', submenu: [
+      { label: 'New Window', accelerator: 'Command+N', click: () => newWindow() },
+      { label: 'New Window for Group', enabled: groups.length > 0, submenu: groups.length ? groupItems() : [{ label: 'No groups yet', enabled: false }] },
+      { label: 'New Canvas Window', accelerator: 'Shift+Command+N', click: () => newWindow('live') },
+      { type: 'separator' },
+      { role: 'close' },
     ] },
     { label: 'Edit', submenu: [{ role: 'undo' }, { role: 'redo' }, { type: 'separator' }, { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' }] },
     { label: 'View', submenu: [
@@ -168,4 +227,5 @@ app.whenReady().then(() => {
   if (!globalShortcut.register(settings.shortcut, toggle)) console.error(`Shortcut ${settings.shortcut} is taken by another app; change "shortcut" in ${settingsFile()}`);
   createWindow();
   poll(); setInterval(poll, 3000);
+  setInterval(trackButtons, 120);
 });

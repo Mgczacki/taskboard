@@ -13,7 +13,8 @@
     "stop": "node scripts/stop.mjs",
     "sandbox": "node scripts/sandbox.mjs",
     "release": "node scripts/release.mjs",
-    "rollback": "node scripts/rollback.mjs"
+    "rollback": "node scripts/rollback.mjs",
+    "app": "pnpm --dir desktop setup"
   },
   "dependencies": {
     "@xterm/addon-clipboard": "^0.2.0",

@@ -62,6 +62,13 @@ export function App() {
 
   const open = allTasks.find(t => t.id === openId);
   const openController = async () => { if (openId === 'controller') { setOpenId(null); return; } if (!controller || controller.status === 'suspended') await api.startController().catch(e => toast(String(e.message || e))); setOpenId('controller'); };
+  // Inside the Mac app: mark the page so CSS adds drag areas, and follow the window buttons (shown near the top edge).
+  useEffect(() => {
+    if (!(window as unknown as { taskboardApp?: { isApp: boolean } }).taskboardApp?.isApp) return;
+    document.body.classList.add('in-app');
+    const on = (e: Event) => document.body.classList.toggle('app-buttons', !!(e as CustomEvent<{ buttons: boolean }>).detail?.buttons);
+    addEventListener('taskboard:chrome', on); return () => removeEventListener('taskboard:chrome', on);
+  }, []);
   // The Mac app (desktop/main.cjs) opens a task, triage or the controller from its menu-bar item with this event.
   useEffect(() => {
     const on = (e: Event) => {
