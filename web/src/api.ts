@@ -27,6 +27,10 @@ export const STATUS_LABEL: Record<Status, string> = {
 export const ORDER: Status[] = ['needs-you', 'stopped', 'review', 'unread', 'working', 'idle', 'suspended', 'parked', 'archived'];
 export const ATTN: Status[] = ['needs-you', 'stopped', 'review'];
 
+// Reload open pages when Taskboard is updated (Settings; saved per browser or app, default on).
+let loadedBuild = '';
+export const autoReload = () => { try { return localStorage.getItem('tb-autoreload') !== 'off'; } catch { return true; } };
+export const setAutoReload = (on: boolean) => { try { localStorage.setItem('tb-autoreload', on ? 'on' : 'off'); } catch { /* storage off */ } };
 let tasks: Task[] = [];
 let groups: Group[] = [];
 let approvals: Approval[] = [];
@@ -46,6 +50,15 @@ function connect() {
   ws.onclose = () => { connected = false; publish(); setTimeout(connect, 1500); };
   ws.onmessage = e => {
     const m = JSON.parse(e.data);
+    if (m.type === 'hello') {
+      // the first build seen is the one this page runs; a different one after a reconnect means Taskboard was updated
+      if (!loadedBuild) loadedBuild = m.build;
+      else if (m.build !== loadedBuild) {
+        if (autoReload()) { location.reload(); return; }
+        dispatchEvent(new CustomEvent('taskboard:update'));
+      }
+      return;
+    }
     if (m.type === 'tasks') tasks = m.tasks;
     if (m.type === 'groups') groups = m.groups;
     if (m.type === 'approvals') approvals = m.approvals;

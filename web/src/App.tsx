@@ -30,6 +30,9 @@ export function App() {
   const { tasks: allTasks, groups, approvals, machines, connected } = useStore();
   const [addMachine, setAddMachine] = useState(false);
   const [keysHelp, setKeysHelp] = useState(false);
+  // Taskboard was updated while automatic reloading is off (Settings): offer a reload
+  const [updateReady, setUpdateReady] = useState(false);
+  useEffect(() => { const on = () => setUpdateReady(true); addEventListener('taskboard:update', on); return () => removeEventListener('taskboard:update', on); }, []);
   const [machineName, setMachineName] = useState('');
   const [role, setRole] = useState('production');
   useEffect(() => { api.info().then(i => { setMachineName(i.machine); setRole(i.role || 'production'); document.title = `Taskboard · ${i.machine}`; }).catch(() => {}); }, [connected]);
@@ -197,6 +200,7 @@ export function App() {
       {importOpen && <Import onClose={() => setImportOpen(false)} onDone={() => { setImportOpen(false); go('list'); }} />}
       {groupPrompt && <GroupPrompt ids={groupPrompt} close={() => setGroupPrompt(null)} done={(g, openWin) => { setGroupPrompt(null); setSelected(new Set()); toast(`Group “${g.name}” created`); if (openWin) openInWindow('g:' + g.id); else { setView('g:' + g.id); go('canvas'); } }} />}
       {role === 'sandbox' && <div className="sandbox-bar" title={`This is a sandbox: a separate test copy of Taskboard (${machineName}). Its agents and tasks are not your real ones.`}>Sandbox · {machineName} · not your real Taskboard</div>}
+      {updateReady && <div className="update-bar">A new version of Taskboard is ready. <button className="btn primary" onClick={() => location.reload()}>Reload</button><button className="btn ghost" onClick={() => setUpdateReady(false)}>Later</button></div>}
       {keysHelp && <KeysHelp close={() => setKeysHelp(false)} />}
       {addMachine && <AddMachine close={() => setAddMachine(false)} />}
       {triage && <Triage queue={queue} close={() => setTriage(false)} open={id => { setTriage(false); setOpenId(id); }} />}

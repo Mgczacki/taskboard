@@ -1,9 +1,10 @@
+import { createHash } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 // Taskboard server: tasks API, hook endpoints, live terminals and a change stream for the UI.
 // Listens on 127.0.0.1 only. Browser requests must come from the Taskboard UI's own origin;
 // hook scripts authenticate with the token in ~/.taskboard/token.
 import express from 'express';
-import { existsSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { createServer } from 'node:http';
 import { promisify } from 'node:util';
@@ -404,6 +405,9 @@ if (existsSync(dist)) {
 }
 
 // ---------- websockets: /ws/events (changes) and /ws/term?task=<id> ----------
+// Identifies the interface build this server serves (a hash of web/dist/index.html, which names the bundle files). A page
+// that connected to an older build reloads itself after a release (see web/src/api.ts).
+const BUILD_ID = (() => { try { return createHash('sha1').update(readFileSync(join(ROOT, 'web', 'dist', 'index.html'))).digest('hex').slice(0, 12); } catch { return 'none'; } })();
 const wss = new WebSocketServer({ noServer: true });
 const eventClients = new Set<import('ws').WebSocket>();
 
@@ -414,6 +418,7 @@ server.on('upgrade', (req, socket, head) => {
   wss.handleUpgrade(req, socket, head, ws => {
     if (url.pathname === '/ws/events') {
       eventClients.add(ws);
+      ws.send(JSON.stringify({ type: 'hello', build: BUILD_ID }));
       ws.send(JSON.stringify({ type: 'tasks', tasks: [...store.all().map(view), ...machines.remoteTasks()] }));
       ws.send(JSON.stringify({ type: 'groups', groups: groups.all() }));
       ws.send(JSON.stringify({ type: 'approvals', approvals: approvals.all() }));
