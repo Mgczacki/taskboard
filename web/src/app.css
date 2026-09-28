@@ -309,3 +309,5 @@ table.keys td:nth-child(2) { white-space: nowrap; }
 .ctl-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .ctl-row input { width: 240px; padding: 4px 8px; }
 .rc-link { margin-left: auto; margin-right: 6px; text-decoration: none; font-size: 12px; }
+.drawer-resize:hover, .drawer-resize.on { background: var(--accent); opacity: .5; }
+.drawer.resizing { user-select: none; cursor: ew-resize; }
