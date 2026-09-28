@@ -1,0 +1,22 @@
+import type { Status, Task } from '../api';
+import { ATTN, STATUS_LABEL, fmtWait } from '../api';
+
+export const Dot = ({ s }: { s: Status }) => <span className={`dot ${s}`} title={STATUS_LABEL[s]} />;
+export const AgentChip = ({ a }: { a: Task['agent'] }) => <span className={`chip agent-${a}`}>{a === 'claude' ? 'Claude Code' : 'Codex'}</span>;
+export const ByController = ({ t }: { t: Task }) => t.parent === 'controller' ? <span className="chip byctl" title="Started by the controller with tb new">↳ Controller</span> : null;
+// where the session runs, separate from its status: a terminal Taskboard does not own (imported while running)
+export const WhereChip = ({ t }: { t: Task }) => t.openElsewhere ? <span className="chip wchip" title={`Running in another terminal (${t.openElsewhere.tty}, process ${t.openElsewhere.pid}). Status is read from its transcript.`}>⧉ {t.openElsewhere.tty.replace(/^\/dev\//, '')}</span> : null;
+export const MachineChip = ({ t }: { t: Task }) => t.machine ? <span className="chip mchip" title={`Runs on ${t.machine.name}`}><span className="mdot" />{t.machine.name}</span> : null;
+export const StatusLabel = ({ s }: { s: Status }) => <span className={`st-label ${s}`}>{STATUS_LABEL[s]}</span>;
+
+// The three lines every task shows in the same place: goal (your words), where the agent is, what it waits for.
+export function ThreeLines({ t }: { t: Task }) {
+  const waiting = ATTN.includes(t.status) ? (t.ask || t.stopReason || '') : '';
+  return (
+    <div className="three">
+      <div><b>Goal</b><span>{t.goal || t.title}</span></div>
+      <div><b>Now</b><span>{t.now || (t.status === 'working' ? 'Working on it…' : '—')}</span></div>
+      {waiting && <div className="w"><b>Waiting</b><span>{waiting} <em>· {fmtWait(t.waitMin)}</em></span></div>}
+    </div>
+  );
+}

@@ -1,0 +1,58 @@
+/* Graph view: lanes of task cards and document nodes, joined by authorship and handoff edges. */
+.graph { position: absolute; inset: 0; display: flex; flex-direction: column; }
+.gtool { flex: none; height: 42px; display: flex; align-items: center; gap: 10px; padding: 0 12px; border-bottom: 1px solid var(--line); background: var(--bg); white-space: nowrap; overflow: hidden; }
+.gtool .lbl { font-size: 12px; color: var(--dim); }
+.gtool .sp { flex: 1; }
+.gtool .opt { font-size: 12.5px; }
+.gtool .lg { display: flex; align-items: center; gap: 12px; font-size: 12px; color: var(--muted); }
+.gtool .lg span { display: inline-flex; align-items: center; gap: 5px; }
+.gtool .zl { font: 12px var(--mono); color: var(--muted); width: 42px; text-align: center; }
+.gtool .cnt { font-size: 12px; color: var(--dim); }
+.gstage { position: relative; flex: 1; min-height: 0; overflow: hidden; background: var(--bg); cursor: grab; outline: none; }
+.gstage.panning { cursor: grabbing; }
+.gworld { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.gedges { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+
+.glane { position: absolute; left: 0; border-top: 1px solid var(--line); }
+.glane.last { border-bottom: 1px solid var(--line); }
+.glane.alt { background: color-mix(in srgb, var(--bg2) 75%, transparent); }
+.glane-label { position: absolute; left: 0; top: 0; bottom: 0; width: 180px; padding: 16px 16px 0 18px; border-right: 1px solid var(--line); box-sizing: border-box; }
+.glane-label .nm { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 650; color: var(--text); line-height: 1.3; }
+.glane-label .sw { width: 10px; height: 10px; border-radius: 3px; flex: none; }
+.glane-label .ct { font: 12px var(--mono); color: var(--dim); margin-top: 4px; }
+.glane-label .sum { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 8px; font: 12px var(--mono); color: var(--muted); }
+.glane-label .sum span { display: inline-flex; align-items: center; gap: 5px; }
+
+.gnode { position: absolute; background: var(--panel); border: 1px solid var(--line); border-radius: 8px; cursor: pointer; overflow: hidden; transition: opacity .15s, border-color .15s; box-sizing: border-box; }
+.gnode:hover { border-color: var(--line2); background: var(--panel2); }
+.gnode.sel { outline: 2px solid var(--accent); outline-offset: 2px; }
+.gnode.task { padding: 8px 10px 8px 14px; display: flex; flex-direction: column; gap: 3px; }
+.gnode.task::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--sc); }
+.gnode.task.needs-you, .gnode.task.stopped, .gnode.task.review { border-color: color-mix(in srgb, var(--sc) 55%, var(--line)); }
+.gnode.task.idle, .gnode.task.parked, .gnode.task.suspended, .gnode.task.archived { background: var(--bg2); }
+.gnode .r1 { display: flex; align-items: center; gap: 6px; min-height: 18px; }
+.gnode .num { font: 12px var(--mono); color: var(--dim); }
+.gnode .wait { margin-left: auto; font: 12px var(--mono); color: var(--sc); white-space: nowrap; }
+.gnode .ag { margin-left: auto; font: 12px var(--mono); color: var(--dim); }
+.gnode .wait + .ag { margin-left: 8px; }
+.gnode .ti { font-size: 13px; font-weight: 600; line-height: 1.3; color: var(--text); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.gnode .ln { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gnode .ln b { font-weight: 600; color: var(--sc); }
+.gnode .ft { display: flex; align-items: center; gap: 5px; margin-top: auto; font: 12px var(--mono); color: var(--dim); white-space: nowrap; overflow: hidden; }
+.gnode .ft i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; flex: none; }
+.gnode .ft .also { overflow: hidden; text-overflow: ellipsis; font-family: var(--sans); }
+.gnode .ft .io { margin-left: auto; color: var(--accent); flex: none; }
+
+.gnode.doc { padding: 9px 10px 8px 34px; border-radius: 4px 12px 4px 4px; background: var(--bg2); }
+.gnode.doc .ic { position: absolute; left: 11px; top: 11px; width: 14px; height: 17px; border: 1.5px solid var(--muted); border-radius: 2px 5px 2px 2px; box-sizing: border-box; }
+.gnode.doc .ic::after { content: ""; position: absolute; left: 2px; right: 2px; top: 5px; height: 5px; border-top: 1.5px solid var(--dim); border-bottom: 1.5px solid var(--dim); }
+.gnode.doc .dn { font: 12px var(--mono); color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gnode.doc .rv { font-size: 12px; margin-top: 4px; display: flex; align-items: center; gap: 6px; color: var(--dim); }
+.gnode.doc .rv .k { font: 10px var(--mono); padding: 0 4px; border: 1px solid var(--line2); border-radius: 3px; color: var(--muted); }
+
+.gedge { fill: none; stroke-width: 1.6; transition: opacity .15s; }
+.gedge.wrote { stroke: var(--line2); }
+.gedge.handoff { stroke: var(--accent); stroke-width: 1.9; }
+.gworld.focusing .gnode:not(.hl), .gworld.focusing .gedge:not(.hl) { opacity: .22; }
+.gworld.focusing .gedge.hl.wrote { stroke: var(--muted); }
+.gempty { position: absolute; left: 50%; top: 40%; transform: translate(-50%, -50%); color: var(--dim); font-size: 13px; text-align: center; }

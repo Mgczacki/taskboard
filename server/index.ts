@@ -1,0 +1,584 @@
+import { execFileSync } from 'node:child_process';
+// Taskboard server: tasks API, hook endpoints, live terminals and a change stream for the UI.
+// Listens on 127.0.0.1 only. Browser requests must come from the Taskboard UI's own origin;
+// hook scripts authenticate with the token in ~/.taskboard/token.
+import express from 'express';
+import { existsSync, readdirSync, statSync } from 'node:fs';
+import { execFile } from 'node:child_process';
+import { createServer } from 'node:http';
+import { promisify } from 'node:util';
+import { join } from 'node:path';
+import { WebSocketServer } from 'ws';
+import * as agents from './agents.ts';
+import { HOME, HOST, PORT, ROOT, TOKEN, URL_BASE } from './config.ts';
+import * as docs from './docs.ts';
+import * as events from './events.ts';
+import * as groups from './groups.ts';
+import * as importer from './importer.ts';
+import * as approvals from './approvals.ts';
+import * as accounts from './accounts.ts';
+import * as external from './external.ts';
+import * as machines from './machines.ts';
+import * as machine from './machine.ts';
+import { alreadyRunning, holdLock } from './lock.ts';
+import { hostname } from 'node:os';
+import WebSocket from 'ws';
+import { mountReview } from './review.ts';
+import { attach } from './pty.ts';
+import * as store from './store.ts';
+import * as tmux from './tmux.ts';
+
+const execFileP = promisify(execFile);
+store.loadAll();
+groups.load();
+// "open in another terminal" used to be a status; it is now only the openElsewhere field, and the status is read from the transcript
+for (const t of store.all()) if (t.openElsewhere && (t.status as string) === 'elsewhere' || t.openElsewhere && t.status === 'suspended')
+  store.update(t.id, { status: 'idle', transcript: t.transcript || importer.transcriptFor(t.agent, t.sessionId || '') });
+// one Taskboard server per machine (per ~/.taskboard): a second one exits instead of fighting over tmux and hooks
+const other = alreadyRunning();
+if (other) { console.error(`Taskboard is already running on this machine: process ${other.pid}, ${other.url} (started ${other.started}). Not starting a second server.`); process.exit(1); }
+holdLock();
+agents.writeClaudeSettings();
+await agents.configureIfRunning();
+
+const app = express();
+app.use(express.json({ limit: '2mb' }));
+
+const ALLOWED_ORIGINS = new Set([URL_BASE, `http://localhost:${PORT}`, 'http://localhost:5173', 'http://127.0.0.1:5173']);
+const originOk = (o?: string) => !o || ALLOWED_ORIGINS.has(o);
+const tokenOk = (req: express.Request) => req.get('x-taskboard-token') === TOKEN;
+
+// ---------- hooks (from agents) ----------
+app.post('/api/hooks/claude', (req, res) => {
+  if (!tokenOk(req)) return res.status(401).end();
+  res.json(events.claudeEvent(req.body.taskId, req.body.input || {}));
+});
+// Usage windows from the Claude Code status line of a Taskboard session; stored on that task's account.
+app.post('/api/hooks/usage', (req, res) => {
+  if (!tokenOk(req)) return res.status(401).end();
+  const t = store.get(String(req.body.taskId || '')); const rl = req.body.rate_limits || {};
+  if (t) {
+    const w = (label: string, x: any) => x && typeof x.used_percentage === 'number' ? [{ label, usedPct: Math.round(x.used_percentage), resetsAt: x.resets_at ? x.resets_at * 1000 : undefined }] : [];
+    const windows = [...w('5-hour', rl.five_hour), ...w('weekly', rl.seven_day)];
+    if (windows.length) accounts.setUsage(t.account || accounts.defaultFor(t.agent).id, { windows, at: new Date().toISOString(), source: 'Claude Code status line' });
+  }
+  res.json({});
+});
+app.post('/api/hooks/codex', (req, res) => {
+  if (!tokenOk(req)) return res.status(401).end();
+  events.codexEvent(req.body.taskId, req.body.payload || {}); res.json({});
+});
+app.post('/api/hooks/bell', (req, res) => {
+  if (!tokenOk(req)) return res.status(401).end();
+  events.bell(String(req.query.session || '')); res.json({});
+});
+
+// ---------- UI API ----------
+// Browser requests must come from Taskboard's own page. Anything else that changes state (tb, scripts) must send the token.
+app.use('/api', (req, res, next) => {
+  if (req.method === 'GET') return next();
+  const origin = req.get('origin');
+  if (origin ? !originOk(origin) : !tokenOk(req)) return res.status(403).json({ error: origin ? 'origin not allowed' : 'token required (see ~/.taskboard/token)' });
+  next();
+});
+
+// Actions the controller agent takes on other agents wait for your approval on the dashboard.
+// tb sends x-tb-actor with the calling task's id; the controller's requests get a 202 and an approval id to wait on.
+async function guarded(req: express.Request, res: express.Response, summary: string, detail: string, action: approvals.Approval['action'], run: () => Promise<unknown>, describe: (r: any) => string) {
+  if (req.get('x-tb-actor') !== 'controller') { try { res.json(await run()); } catch (e) { fail(res, e); } return; }
+  const a = approvals.request({ actor: 'controller', action, summary, detail, payload: req.body }, async () => describe(await run()));
+  store.update('controller', { status: 'needs-you', ask: `Approve: ${summary}`, statusSource: 'Waiting for your approval on the dashboard.' });
+  res.status(202).json({ approval: a });
+}
+app.get('/api/approvals', (_req, res) => res.json(approvals.all()));
+app.get('/api/approvals/:id', (req, res) => { const a = approvals.get(req.params.id); a ? res.json(a) : res.status(404).end(); });
+app.post('/api/approvals/:id/:decision', async (req, res) => {
+  // only you, from the dashboard, can decide
+  if (!req.get('origin')) return res.status(403).json({ error: 'approvals are decided on the dashboard' });
+  const a = await approvals.decide(req.params.id, req.params.decision === 'approve'); a ? res.json(a) : res.status(404).end();
+});
+
+// ---------- other machines ----------
+// Requests for a task id like "studio~fix-12" go to that machine's Taskboard server with its token.
+// The controller's actions on other machines still wait for your approval here.
+const GUARDED = /^\/api\/tasks(\/[^/]+\/(send|status|kill))?$/;
+app.use('/api', async (req, res, next) => {
+  let target: { machine: string; path: string } | null = null;
+  const m = req.path.match(/^\/tasks\/([^/]+)(\/.*)?$/);
+  if (m) { const s = machines.split(decodeURIComponent(m[1])); if (s) target = { machine: s.machine, path: `/api/tasks/${encodeURIComponent(s.id)}${m[2] || ''}` }; }
+  if (!target && req.path === '/tasks' && req.method === 'POST' && req.body?.machine && req.body.machine !== 'local') target = { machine: req.body.machine, path: '/api/tasks' };
+  if (!target && req.query.machine && req.query.machine !== 'local' && ['/folders', '/file', '/browse'].includes(req.path)) target = { machine: String(req.query.machine), path: '/api' + req.path };
+  if (!target) return next();
+  const mc = machines.get(target.machine); if (!mc) return res.status(404).json({ error: `Unknown machine ${target.machine}` });
+  const qs = new URLSearchParams(req.query as Record<string, string>); qs.delete('machine');
+  const path = target.path + (qs.toString() ? '?' + qs : '');
+  const body = req.method === 'GET' ? undefined : { ...req.body, machine: undefined };
+  const forward = async () => { const r = await machines.call(mc, req.method, path, body); if (r.status >= 400) throw new Error(typeof r.data === 'object' ? r.data.error : String(r.data)); return r; };
+  try {
+    if (req.method !== 'GET' && req.get('x-tb-actor') === 'controller' && GUARDED.test(target.path.replace(/\/api\/tasks\/[^/]+/, '/api/tasks/x'))) {
+      const summary = `${target.path.endsWith('/send') ? 'type into' : target.path === '/api/tasks' ? `start “${req.body.title}” on` : 'change a task on'} ${mc.name}`;
+      const a = approvals.request({ actor: 'controller', action: target.path === '/api/tasks' ? 'new' : 'send', summary, detail: JSON.stringify(body, null, 2), payload: body }, async () => { await forward(); return `Done on ${mc.name}.`; });
+      store.update('controller', { status: 'needs-you', ask: `Approve: ${summary}`, statusSource: 'Waiting for your approval on the dashboard.' });
+      return res.status(202).json({ approval: a });
+    }
+    const r = await machines.call(mc, req.method, path, body);
+    if (r.type.includes('json')) {
+      const tagIds = (x: any) => x && typeof x === 'object' && typeof x.id === 'string' && x.session ? { ...x, id: mc.id + machines.SEP + x.id, machine: { id: mc.id, name: mc.name } } : x;
+      res.status(r.status).json(tagIds(r.data));
+    } else res.status(r.status).type(r.type).send(r.data);
+  } catch (e) { res.status(502).json({ error: `${mc.name}: ${e instanceof Error ? e.message : String(e)}` }); }
+});
+// This machine: its name, the server, and the controller (tb info, the dashboard, other machines).
+const info = () => {
+  const c = store.get('controller');
+  return { machine: machine.get().name, host: hostname(), url: URL_BASE, pid: process.pid, settings: machine.get(),
+    controller: c ? { agent: c.agent, account: c.account, status: c.status, remoteUrl: c.agent === 'claude' && machine.get().controller.remoteControl ? c.remoteUrl : undefined, label: machine.controllerLabel() } : null,
+    tasks: store.all().filter(t => t.role !== 'controller' && t.status !== 'archived').length };
+};
+app.get('/api/info', (_req, res) => res.json(info()));
+// renaming the machine or turning Remote Control on/off: the controller follows at its next restart (between turns)
+app.patch('/api/info', async (req, res) => {
+  if (!req.get('origin')) return res.status(403).json({ error: 'Machine settings are changed on the dashboard.' });
+  const before = JSON.stringify(machine.get());
+  const { name, autostart, remoteControl } = req.body;
+  machine.update({ name, autostart, remoteControl });
+  // the running controller picks up a new name or Remote Control setting at its next restart, which keepController()
+  // does as soon as it is between turns
+  void before;
+  res.json(info());
+});
+app.get('/api/machines', (_req, res) => res.json([{ id: 'local', name: machine.get().name, url: URL_BASE, local: true, online: true }, ...machines.all().map(m => ({ id: m.id, name: m.name, url: m.url, online: !!machines.stateOf(m.id)?.online, latency: machines.stateOf(m.id)?.latency, lastSeen: machines.stateOf(m.id)?.lastSeen, error: machines.stateOf(m.id)?.error, tasks: machines.stateOf(m.id)?.tasks.length || 0 }))]));
+app.post('/api/machines', async (req, res) => {
+  const { name, url, token } = req.body; if (!name || !url || !token) return fail(res, 'name, url and token are required');
+  try { const r = await machines.call({ id: 'x', name, url: String(url).replace(/\/+$/, ''), token }, 'GET', '/api/machines'); if (r.status !== 200) throw new Error(`the server answered ${r.status}`); }
+  catch (e) { return fail(res, `Could not reach ${url}: ${e instanceof Error ? e.message : e}`); }
+  const m = machines.add(name, url, token); res.json({ id: m.id, name: m.name, url: m.url });
+});
+app.delete('/api/machines/:id', (req, res) => { machines.remove(req.params.id); res.json({}); });
+
+const view = (t: store.Task) => ({ ...t, docs: docs.counts(t.id), waitMin: Math.round((Date.now() - Date.parse(t.statusAt)) / 60000), attach: `tmux -L taskboard attach -t ${t.session}` });
+const fail = (res: express.Response, e: unknown) => res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
+
+app.get('/api/tasks', (_req, res) => res.json([...store.all().map(view), ...machines.remoteTasks()]));
+app.post('/api/controller/start', async (_req, res) => { try { res.json(view(await agents.startController())); } catch (e) { fail(res, e); } });
+// Which account the controller runs on: chosen by you on the dashboard only (not by the controller or tb).
+app.post('/api/controller/account', async (req, res) => {
+  if (!req.get('origin')) return res.status(403).json({ error: 'The controller account is chosen on the dashboard.' });
+  try { res.json(view(await agents.setControllerAccount(String(req.body.account || '')))); } catch (e) { fail(res, e); }
+});
+app.post('/api/tasks', async (req, res) => {
+  try {
+    const { title, desc, agent, folder, worktree, branch, parent, account } = req.body;
+    if (!title || !folder || !['claude', 'codex'].includes(agent)) throw new Error('title, folder and agent are required');
+    await guarded(req, res, `start “${title}” (${agent === 'claude' ? 'Claude Code' : 'Codex'})`, `Folder: ${folder}${worktree ? ` · new worktree ${branch || ''}` : ''}\nPrompt: ${desc || title}`, 'new',
+      async () => {
+        const t = await agents.startTask({ title, desc: desc || title, agent, folder, worktree, branch, parent, account });
+        if (req.body.group) { const g = groups.all().find(x => x.name === req.body.group || x.id === req.body.group) || groups.create(String(req.body.group)); groups.update(g.id, { tasks: [...g.tasks, t.id] }); }
+        return view(t);
+      }, (t: any) => `Started #${t.num} ${t.title} in ${t.cwd}${req.body.group ? ` (group ${req.body.group})` : ''}`);
+  } catch (e) { fail(res, e); }
+});
+app.post('/api/tasks/:id/status', async (req, res) => {
+  const s = req.body.status;
+  if (!['idle', 'parked', 'archived'].includes(s)) return fail(res, 'status must be idle, parked or archived');
+  const t0 = store.get(req.params.id); if (!t0) return res.status(404).end();
+  await guarded(req, res, `${s === 'archived' ? 'archive' : s === 'parked' ? 'park' : 'unpark'} #${t0.num} ${t0.title}`, '', 'status',
+    async () => view(store.update(t0.id, { status: s, statusSource: `Set at ${new Date().toTimeString().slice(0, 5)}.` })!), () => `#${t0.num} is now ${s}.`);
+});
+app.post('/api/tasks/:id/seen', (req, res) => {
+  const t = store.get(req.params.id); if (!t) return res.status(404).end();
+  store.update(t.id, { seenAt: new Date().toISOString(), ...(t.status === 'unread' ? { status: 'idle' as const } : {}) });
+  res.json({});
+});
+app.post('/api/tasks/:id/resume', async (req, res) => {
+  const t = store.get(req.params.id); if (!t) return res.status(404).end();
+  try { res.json(view(await agents.resumeTask(t, !!req.body.force))); } catch (e) { fail(res, e); }
+});
+// Move a session from another terminal to here. Stopping that process cuts off a turn in progress, so
+// when: 'after-turn' only records the wish; watchElsewhere() does the move once the transcript shows the turn ended.
+app.post('/api/tasks/:id/takeover', async (req, res) => {
+  const t = store.get(req.params.id); if (!t) return res.status(404).end();
+  try {
+    if (req.body.when === 'cancel') return res.json(view(store.update(t.id, { moveWhenDone: undefined })!));
+    if (req.body.when === 'after-turn' && t.openElsewhere && !['idle', 'unread'].includes(t.status))
+      return res.json(view(store.update(t.id, { moveWhenDone: true })!));
+    res.json(view(await agents.takeOver(t)));
+  } catch (e) { fail(res, e); }
+});
+// Restart the agent (same conversation). when: 'after-turn' waits until its current turn has ended; 'cancel' undoes that.
+app.post('/api/tasks/:id/restart', async (req, res) => {
+  const t = store.get(req.params.id); if (!t) return res.status(404).end();
+  if (t.openElsewhere) return fail(res, 'This session runs in another terminal; use “Move it here” instead.');
+  if (req.body.when === 'cancel') return res.json(view(store.update(t.id, { restartWhenDone: undefined })!));
+  if (req.body.when === 'after-turn' && !['idle', 'unread', 'suspended', 'stopped'].includes(t.status)) return res.json(view(store.update(t.id, { restartWhenDone: true })!));
+  try { await restartTask(t); res.json(view(store.get(t.id)!)); } catch (e) { fail(res, e); }
+});
+mountReview(app);
+
+// ---------- accounts ----------
+const acctView = async (a: accounts.Account, fresh = false) => ({ ...a, status: await accounts.status(a, fresh), running: store.all().filter(t => (t.account || accounts.defaultFor(t.agent).id) === a.id && !['archived', 'parked', 'suspended'].includes(t.status)).length });
+app.get('/api/accounts', async (req, res) => res.json(await Promise.all(accounts.all().map(a => acctView(a, req.query.fresh === '1')))));
+app.post('/api/accounts', async (req, res) => { try { const { agent, name } = req.body; if (!['claude', 'codex'].includes(agent) || !name) throw new Error('agent and name are required'); res.json(await acctView(accounts.create(agent, String(name)))); } catch (e) { fail(res, e); } });
+app.patch('/api/accounts/:id', (req, res) => res.json(accounts.update(req.params.id, req.body)));
+app.delete('/api/accounts/:id', (req, res) => { try { accounts.remove(req.params.id); res.json({}); } catch (e) { fail(res, e); } });
+app.post('/api/accounts/:id/login', async (req, res) => { const a = accounts.get(req.params.id); if (!a) return res.status(404).end(); try { res.json({ session: await agents.utilSession('login', a) }); } catch (e) { fail(res, e); } });
+app.post('/api/accounts/:id/clear-limit', (req, res) => { accounts.clearLimited(req.params.id); res.json({}); });
+// Limit resets are used only by you, from the dashboard: requests without a browser origin (tb, agents) are refused.
+app.post('/api/accounts/:id/reset', async (req, res) => {
+  if (!req.get('origin')) return res.status(403).json({ error: 'Limit resets can only be used from the dashboard.' });
+  const a = accounts.get(req.params.id); if (!a) return res.status(404).end();
+  if (a.agent !== 'claude') return res.json({ open: 'https://chatgpt.com/codex/settings/usage', note: 'Codex has no command-line reset; spend banked resets in the Codex app or on the usage page.' });
+  try { res.json({ session: await agents.utilSession('reset', a) }); } catch (e) { fail(res, e); }
+});
+app.post('/api/tasks/:id/move-account', async (req, res) => { const t = store.get(req.params.id); if (!t) return res.status(404).end(); try { res.json(view(await agents.moveAccount(t, req.body.account))); } catch (e) { fail(res, e); } });
+
+// ---------- groups ----------
+app.get('/api/groups', (_req, res) => res.json(groups.all()));
+app.post('/api/groups', (req, res) => {
+  const name = String(req.body.name || '').trim(); if (!name) return fail(res, 'name is required');
+  res.json(groups.create(name, req.body.tasks || []));
+});
+app.patch('/api/groups/:id', (req, res) => {
+  const { name, color, tasks, add, remove } = req.body; const g = groups.get(req.params.id); if (!g) return res.status(404).end();
+  let list = tasks ?? g.tasks;
+  if (add) list = [...list, ...[].concat(add)];
+  if (remove) list = list.filter((t: string) => ![].concat(remove).includes(t as never));
+  res.json(groups.update(g.id, { ...(name ? { name } : {}), ...(color ? { color } : {}), tasks: list }));
+});
+app.delete('/api/groups/:id', (req, res) => { const g = groups.remove(req.params.id); g ? res.json(g) : res.status(404).end(); });
+app.post('/api/groups/restore', (req, res) => { groups.restore(req.body); res.json({}); });
+
+app.get('/api/import', async (_req, res) => {
+  try { res.json(await importer.candidates(new Set(store.all().map(t => t.sessionId).filter(Boolean) as string[]))); } catch (e) { fail(res, e); }
+});
+app.post('/api/import', (req, res) => {
+  const made: unknown[] = [], errors: string[] = [];
+  for (const c of req.body.items || []) { try { made.push(view(agents.importSession(c))); } catch (e) { errors.push(e instanceof Error ? e.message : String(e)); } }
+  res.json({ made, errors });
+});
+app.post('/api/tasks/:id/send', async (req, res) => {
+  const t = store.get(req.params.id); if (!t) return res.status(404).end();
+  const text = String(req.body.text || '');
+  if (t.role === 'controller') { try { await tmux.sendKeys(t.session, text); res.json({}); } catch (e) { fail(res, e); } return; }
+  await guarded(req, res, `type into #${t.num} ${t.title}`, text, 'send', async () => { await tmux.sendKeys(t.session, text); return {}; }, () => `Typed into #${t.num}.`);
+});
+app.post('/api/tasks/:id/kill', async (req, res) => {
+  const t = store.get(req.params.id); if (!t) return res.status(404).end();
+  await guarded(req, res, `end and archive #${t.num} ${t.title}`, '', 'kill',
+    async () => { await tmux.killSession(t.session); return view(store.update(t.id, { status: 'archived', statusSource: 'Session ended and archived.' })!); }, () => `#${t.num} ended and archived.`);
+});
+// Remove a task from Taskboard (dashboard only). Ends its tmux session unless it runs in another terminal; the note
+// and folder go to ~/.taskboard/trash, and the conversation files of Claude Code / Codex stay where they are.
+app.delete('/api/tasks/:id', async (req, res) => {
+  if (!req.get('origin')) return res.status(403).json({ error: 'Tasks are removed on the dashboard.' });
+  const t = store.get(req.params.id); if (!t) return res.status(404).end();
+  if (t.role === 'controller') return fail(res, 'The controller cannot be removed.');
+  try {
+    if (!t.openElsewhere) await tmux.killSession(t.session);
+    for (const g of groups.groupsOf(t.id)) groups.update(g.id, { tasks: g.tasks.filter(x => x !== t.id) });
+    store.remove(t.id);
+    res.json({});
+  } catch (e) { fail(res, e); }
+});
+// ---------- inbox / outbox ----------
+// Files you drop on a task (raw body, name in ?name=) go into its inbox.
+app.post('/api/tasks/:id/inbox/upload', express.raw({ type: () => true, limit: '200mb' }), (req, res) => {
+  const t = store.get(req.params.id); if (!t) return res.status(404).end();
+  try { const path = docs.upload(t.id, String(req.query.name || 'file'), req.body as Buffer); store.touch(t.id); res.json({ path }); } catch (e) { fail(res, e); }
+});
+app.get('/api/tasks/:id/docs', (req, res) => { if (!store.get(req.params.id)) return res.status(404).end(); res.json(docs.docsFor(req.params.id)); });
+app.get('/api/docs/edges', (_req, res) => res.json(docs.edges()));
+app.get('/api/docs/all', (_req, res) => res.json(Object.fromEntries(store.all().map(t => [t.id, docs.docsFor(t.id).outbox.map(d => ({ name: d.name, path: d.path, kind: d.kind, mtime: d.mtime }))]))));
+app.post('/api/docs/send', (req, res) => {
+  try {
+    const { from, name, to } = req.body; if (!store.get(from) || !store.get(to)) throw new Error('unknown task');
+    const path = docs.send(from, name, to); store.touch(from); store.touch(to); res.json({ path });
+  } catch (e) { fail(res, e); }
+});
+app.post('/api/tasks/:id/inbox/remove', (req, res) => { docs.removeFromInbox(req.params.id, req.body.name); store.touch(req.params.id); res.json({}); });
+// Type the inbox notice into the agent's terminal (needed for Codex, which has no prompt hook here).
+app.post('/api/tasks/:id/inbox/tell', async (req, res) => {
+  const t = store.get(req.params.id); if (!t) return res.status(404).end();
+  const notice = docs.takeInboxNotice(t.id); if (!notice) return res.json({ told: false });
+  try { await tmux.sendKeys(t.session, notice.replace(/\n/g, ' ')); res.json({ told: true }); } catch (e) { fail(res, e); }
+});
+// Files from the vault. Served as a sandboxed document (opaque origin), so an agent-written HTML page
+// cannot call Taskboard's API.
+app.get('/api/file', (req, res) => {
+  const p = docs.safePath(String(req.query.path || '')); if (!p) return res.status(404).send('Not found');
+  res.set('Content-Security-Policy', 'sandbox allow-scripts allow-popups allow-forms');
+  res.set('X-Content-Type-Options', 'nosniff');
+  if (/\.html?$/i.test(p)) res.type('text/html'); else if (/\.(md|markdown|txt|log|json)$/i.test(p)) res.type('text/plain; charset=utf-8');
+  res.sendFile(p);
+});
+
+// What changed since you last opened the task: log entries, files changed in its folder, commits.
+app.get('/api/tasks/:id/since', async (req, res) => {
+  const t = store.get(req.params.id); if (!t) return res.status(404).end();
+  const since = t.seenAt ? Date.parse(t.seenAt) : Date.parse(t.created);
+  const entries: string[] = [];
+  for (const block of store.readLog(t.id).split(/\n(?=## )/)) {
+    const m = block.match(/^## (\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2})/);
+    if (m && Date.parse(m[1].replace(' ', 'T')) >= since - 60000) entries.push(block.trim());
+  }
+  const run = async (args: string[]) => { try { return (await execFileP('git', ['-C', t.cwd, ...args], { maxBuffer: 4 * 1024 * 1024 })).stdout; } catch { return ''; } };
+  const files: string[] = [];
+  for (const line of (await run(['status', '--porcelain'])).split('\n')) {
+    const f = line.slice(3).trim(); if (!f) continue;
+    try { if (statSync(join(t.cwd, f.replace(/^"|"$/g, ''))).mtimeMs >= since) files.push(f); } catch { files.push(f + ' (deleted)'); }
+  }
+  const commits = (await run(['log', `--since=${new Date(since).toISOString()}`, '--pretty=format:%h %s', '-n', '20'])).split('\n').filter(Boolean);
+  res.json({ since: new Date(since).toISOString(), first: !t.seenAt, entries, files: files.slice(0, 40), commits });
+});
+
+app.get('/api/tasks/:id/log', (req, res) => res.type('text/markdown').send(store.readLog(req.params.id)));
+app.get('/api/tasks/:id/peek', async (req, res) => {
+  const t = store.get(req.params.id); if (!t) return res.status(404).end();
+  res.type('text/plain').send(await tmux.capture(t.session, Math.min(500, Number(req.query.lines) || 30)));
+});
+
+// Folders to start in: the ones you used, most used first, plus git repositories found one level under ~ and ~/Documents/Repositories.
+// Folder browser for the New task dialog: the subfolders of one folder (hidden ones only when asked).
+app.get('/api/browse', (req, res) => {
+  const raw = String(req.query.path || '~');
+  const dir = raw === '~' || raw === '' ? HOME : raw.startsWith('~/') ? join(HOME, raw.slice(2)) : raw;
+  try {
+    const hidden = req.query.hidden === '1';
+    const dirs = readdirSync(dir, { withFileTypes: true })
+      .filter(d => (d.isDirectory() || (d.isSymbolicLink() && (() => { try { return statSync(join(dir, d.name)).isDirectory(); } catch { return false; } })())) && (hidden || !d.name.startsWith('.')))
+      .map(d => ({ name: d.name, git: existsSync(join(dir, d.name, '.git')) }))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: 'base' }));
+    const parent = dir === '/' ? null : join(dir, '..');
+    res.json({ path: dir, home: HOME, parent, git: existsSync(join(dir, '.git')), dirs });
+  } catch (e) { fail(res, `Cannot open ${dir}: ${e instanceof Error ? e.message : e}`); }
+});
+app.get('/api/folders', (_req, res) => {
+  const used = Object.entries(store.state.folders).map(([path, f]) => ({ path, ...f }));
+  const found: string[] = [];
+  for (const base of [HOME, join(HOME, 'Documents', 'Repositories'), join(HOME, 'code')]) {
+    if (!existsSync(base)) continue;
+    for (const d of readdirSync(base)) {
+      const p = join(base, d);
+      try { if (!d.startsWith('.') && statSync(p).isDirectory() && existsSync(join(p, '.git'))) found.push(p.replace(HOME, '~')); } catch { /* unreadable */ }
+    }
+  }
+  res.json({ used: used.sort((a, b) => Number(!!b.pinned) - Number(!!a.pinned) || b.uses - a.uses), found: found.filter(p => !store.state.folders[p]) });
+});
+app.post('/api/folders/pin', (req, res) => {
+  const { path, pinned } = req.body; const f = store.state.folders[path] || { uses: 0, last: '' };
+  store.state.folders[path] = { ...f, pinned: !!pinned }; store.saveState(); res.json({});
+});
+app.get('/api/ui', (_req, res) => res.json(store.state.ui));
+app.put('/api/ui', (req, res) => { store.state.ui = { ...store.state.ui, ...req.body }; store.saveState(); res.json({}); });
+
+// ---------- UI files ----------
+const dist = join(ROOT, 'web', 'dist');
+if (existsSync(dist)) {
+  // index.html must be checked on every load so a rebuilt interface is picked up; the hashed assets can be cached
+  app.use(express.static(dist, { setHeaders: (res, path) => { if (path.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache'); } }));
+  app.get(/^(?!\/api|\/ws).*/, (_req, res) => { res.setHeader('Cache-Control', 'no-cache'); res.sendFile(join(dist, 'index.html')); });
+}
+
+// ---------- websockets: /ws/events (changes) and /ws/term?task=<id> ----------
+const server = createServer(app);
+const wss = new WebSocketServer({ noServer: true });
+const eventClients = new Set<import('ws').WebSocket>();
+
+server.on('upgrade', (req, socket, head) => {
+  const url = new URL(req.url || '', URL_BASE);
+  // the dashboard is identified by its origin; anything else (another Taskboard server) must present the token
+  if (req.headers.origin ? !originOk(req.headers.origin) : (url.searchParams.get('token') !== TOKEN && req.headers['x-taskboard-token'] !== TOKEN)) return socket.destroy();
+  wss.handleUpgrade(req, socket, head, ws => {
+    if (url.pathname === '/ws/events') {
+      eventClients.add(ws);
+      ws.send(JSON.stringify({ type: 'tasks', tasks: [...store.all().map(view), ...machines.remoteTasks()] }));
+      ws.send(JSON.stringify({ type: 'groups', groups: groups.all() }));
+      ws.send(JSON.stringify({ type: 'approvals', approvals: approvals.all() }));
+      const opened = new Set<string>();
+      ws.on('message', m => {
+        // the UI reports which tasks are open, so a finished turn in an open task goes straight to "idle"
+        try { const x = JSON.parse(m.toString()); if (x.type === 'viewing') { opened.forEach(id => events.viewing.delete(id)); opened.clear(); for (const id of x.ids || []) { opened.add(id); events.viewing.add(id); } } } catch { /* ignore */ }
+      });
+      ws.on('close', () => { eventClients.delete(ws); opened.forEach(id => events.viewing.delete(id)); });
+    } else if (url.pathname === '/ws/term') {
+      const remote = machines.split(url.searchParams.get('task') || '');
+      if (remote) {
+        // pipe this terminal to the other machine's Taskboard server
+        const mc = machines.get(remote.machine); if (!mc) return ws.close(4004, 'unknown machine');
+        const up = new WebSocket(`${mc.url.replace(/^http/, 'ws')}/ws/term?task=${encodeURIComponent(remote.id)}&cols=${url.searchParams.get('cols') || 120}&rows=${url.searchParams.get('rows') || 40}&token=${encodeURIComponent(mc.token)}`);
+        const queue: string[] = [];
+        up.on('open', () => { queue.forEach(q => up.send(q)); queue.length = 0; });
+        up.on('message', d => { if (ws.readyState === ws.OPEN) ws.send(d.toString()); });
+        up.on('close', () => ws.close()); up.on('error', () => ws.close(4502, 'machine unreachable'));
+        ws.on('message', d => { const s = d.toString(); if (up.readyState === up.OPEN) up.send(s); else queue.push(s); });
+        ws.on('close', () => up.close());
+        return;
+      }
+      const util = url.searchParams.get('session') || '';
+      if (util.startsWith('util-')) return attach(ws, util, Number(url.searchParams.get('cols')) || 120, Number(url.searchParams.get('rows')) || 40);
+      const t = store.get(url.searchParams.get('task') || '');
+      if (!t) return ws.close(4004, 'no such task');
+      attach(ws, t.session, Number(url.searchParams.get('cols')) || 120, Number(url.searchParams.get('rows')) || 40);
+    } else ws.close();
+  });
+});
+
+// outbox / inbox files changed on disk → refresh that task's counts in every window
+const pendingTouch = new Map<string, NodeJS.Timeout>();
+try {
+  (await import('node:fs')).watch(store.taskDir(''), { recursive: true }, (_ev, file) => {
+    const m = String(file || '').match(/^([^/]+)\/(inbox|outbox)\//); if (!m) return;
+    clearTimeout(pendingTouch.get(m[1])); pendingTouch.set(m[1], setTimeout(() => store.touch(m[1]), 300));
+  });
+} catch (e) { console.error('watch', e); }
+approvals.onApprovalsChange(() => {
+  if (store.get('controller') && !approvals.pendingFor('controller').length && store.get('controller')!.status === 'needs-you' && store.get('controller')!.ask?.startsWith('Approve:'))
+    store.update('controller', { status: 'working', ask: '', statusSource: 'Your decision was sent back to the controller.' });
+  const msg = JSON.stringify({ type: 'approvals', approvals: approvals.all() });
+  for (const c of eventClients) if (c.readyState === c.OPEN) c.send(msg);
+});
+accounts.onAccountsChange(() => { for (const c of eventClients) if (c.readyState === c.OPEN) c.send(JSON.stringify({ type: 'accounts' })); });
+machines.onRemoteChange(changed => {
+  const msgs = changed.map(t => JSON.stringify({ type: 'task', task: t }));
+  msgs.push(JSON.stringify({ type: 'machines' }));
+  for (const c of eventClients) if (c.readyState === c.OPEN) msgs.forEach(m => c.send(m));
+});
+groups.onGroupsChange(() => {
+  const msg = JSON.stringify({ type: 'groups', groups: groups.all() });
+  for (const c of eventClients) if (c.readyState === c.OPEN) c.send(msg);
+});
+store.onTaskRemoved(id => {
+  const msg = JSON.stringify({ type: 'removed', id });
+  for (const c of eventClients) if (c.readyState === c.OPEN) c.send(msg);
+});
+store.onTaskChange(t => {
+  const msg = JSON.stringify({ type: 'task', task: view(t) });
+  for (const c of eventClients) if (c.readyState === c.OPEN) c.send(msg);
+});
+
+// ---------- watch tmux: sessions that ended, Codex output after a finished turn ----------
+// A session open in a terminal Taskboard does not own: follow it through its process and its transcript file.
+const ago = (ms: number) => { const s = Math.round(ms / 1000); return s < 60 ? `${s} s` : s < 3600 ? `${Math.round(s / 60)} min` : `${Math.round(s / 3600)} h`; };
+function watchElsewhere(t: store.Task) {
+  const e = t.openElsewhere;
+  const running = !!e && importer.alive(e.pid);
+  if (!running) {
+    store.update(t.id, { status: 'suspended', openElsewhere: undefined, statusSource: `Closed in ${e?.tty || 'the other terminal'} at ${new Date().toTimeString().slice(0, 5)}. Open this task to resume it here.` });
+    return;
+  }
+  if (!t.transcript) return;
+  const r = external.readState(t.agent, t.transcript);
+  if (!r) return;
+  // No hooks run in that terminal, so the status comes from the last records of the transcript:
+  // - the turn ended → done (unread until you open the task)
+  // - a tool call has had no result for 10 s → probably an approval prompt in that terminal
+  // - the file changed in the last 15 s, or the last record is a prompt or tool result → working
+  const quietFor = Date.now() - r.mtime, where = `${e!.tty} (process ${e!.pid})`, at = new Date(r.mtime).toTimeString().slice(0, 5);
+  let patch: Partial<store.Task>;
+  if (r.state === 'finished') {
+    const already = t.status === 'unread' || t.status === 'idle';
+    patch = { status: already ? t.status : events.viewing.has(t.id) ? 'idle' : 'unread', ask: '', now: r.text || t.now, statusSource: `Turn ended at ${at} in ${where}. Read from the transcript.` };
+  } else if (r.state === 'tool' && waitingForApproval(t, e!.pid, r)) {
+    patch = { status: 'needs-you', ask: `Probably waiting for your approval in ${e!.tty}: ${r.tool}`, statusSource: `A tool call has had no result since ${at} and no command is running under it, in ${where}.` };
+  } else if (r.state === 'tool' && Date.now() - (r.toolAt || r.mtime) > 30000) {
+    patch = { status: 'working', ask: '', statusSource: `Running ${r.tool} since ${at} in ${where} (a long command, or waiting for approval there).` };
+  } else if (r.state === 'aborted') {
+    patch = { status: 'idle', ask: '', statusSource: `Turn interrupted in ${where}.` };
+  } else if (quietFor < 15000 || r.state === 'busy' || r.state === 'tool') {
+    patch = { status: 'working', ask: '', statusSource: `Running in ${where}.` };
+  } else {
+    patch = { status: 'idle', ask: '', statusSource: `Running in ${where} · no output since ${at}.` };
+  }
+  if (Object.entries(patch).some(([k, v]) => (t as any)[k] !== v)) store.update(t.id, patch);
+  if (t.moveWhenDone && (r.state === 'finished' || r.state === 'aborted') && !movingNow.has(t.id)) {
+    movingNow.add(t.id);
+    agents.takeOver(store.get(t.id)!).then(() => store.update(t.id, { moveWhenDone: undefined }))
+      .catch(err => store.update(t.id, { moveWhenDone: undefined, statusSource: `Could not move it here: ${err instanceof Error ? err.message : err}` }))
+      .finally(() => movingNow.delete(t.id));
+  }
+}
+const movingNow = new Set<string>();
+// A tool call without a result is an approval prompt only if it has waited 30 s, is not a timed wait still within its
+// time (Codex), and — for Claude Code, which runs each command as a child shell — no command shell is running under it.
+function waitingForApproval(t: store.Task, pid: number, r: external.TranscriptState) {
+  const since = Date.now() - (r.toolAt || r.mtime);
+  if (since < 30000 || (r.waitMs && since < r.waitMs + 10000)) return false;
+  if (t.agent === 'codex') return false; // Codex runs commands in its background service, so a running command cannot be told apart
+  let kids = '';
+  try { kids = execFileSync('pgrep', ['-P', String(pid)], { encoding: 'utf8' }).trim().split('\n').join(','); } catch { return true; } // pgrep exits 1 when there are none
+  try { return !/(^|\/)(zsh|bash|sh) -c /m.test(execFileSync('ps', ['-o', 'command=', '-p', kids], { encoding: 'utf8' })); } catch { return false; }
+}
+
+// The controller is always running while Taskboard runs (unless you turned that off or archived it): if its session
+// is gone or the agent exited, start it again (at most once a minute). Its Remote Control address is read from its screen.
+let controllerStartedAt = 0;
+async function keepController(t: store.Task, s?: { dead: boolean }) {
+  if (agents.launching.has(t.id) || t.status === 'archived') return;
+  if ((!s || s.dead) && machine.get().controller.autostart) {
+    if (Date.now() - controllerStartedAt < 60000) return;
+    controllerStartedAt = Date.now();
+    try { await agents.startController(); console.log('controller restarted'); } catch (e) { console.error('controller restart failed', e); }
+    return;
+  }
+  // started with an older name / Remote Control setting: restart it (it resumes the same conversation), but not mid-turn
+  if (s && !s.dead && t.launchedAs !== agents.controllerLaunchKey(t.agent) && ['idle', 'unread'].includes(t.status) && Date.now() - controllerStartedAt > 60000) {
+    controllerStartedAt = Date.now();
+    await tmux.killSession(t.session); store.update(t.id, { remoteUrl: undefined });
+    try { await agents.startController(); console.log('controller restarted with new settings'); } catch (e) { console.error('controller restart failed', e); }
+    return;
+  }
+  // the controller folder is Taskboard's own (it only holds the controller instructions): accept the CLI's
+  // "trust this folder" question there, so an unattended start (at login, after a crash) does not stop on it
+  if (s && !s.dead && Date.now() - controllerStartedAt < 120000) {
+    const screen = await tmux.capture(t.session, 40);
+    if (t.agent === 'claude' && /Yes, I trust this folder/.test(screen)) { await tmux.tmux('send-keys', '-t', '=' + t.session + ':', 'Down'); await tmux.tmux('send-keys', '-t', '=' + t.session + ':', 'Enter'); return; }
+    if (t.agent === 'codex' && /Trust this folder\?/.test(screen) && /Trust and continue/.test(screen)) { await tmux.tmux('send-keys', '-t', '=' + t.session + ':', 'Enter'); return; }
+  }
+  if (s && !s.dead && t.agent === 'claude' && machine.get().controller.remoteControl) {
+    const m = (await tmux.capture(t.session, 60)).match(/https:\/\/claude\.ai\/code\/session_[A-Za-z0-9]+/);
+    if (m && m[0] !== t.remoteUrl) store.update(t.id, { remoteUrl: m[0] });
+  }
+}
+
+// Restart an agent in tmux with the current command line; it resumes the same conversation.
+async function restartTask(t: store.Task) {
+  store.update(t.id, { restartWhenDone: undefined });
+  await tmux.killSession(t.session);
+  try { await agents.resumeTask(store.get(t.id)!, true); } catch (e) { store.update(t.id, { status: 'suspended', statusSource: `Restart failed: ${e instanceof Error ? e.message : e}` }); }
+}
+
+async function reconcile() {
+  const sessions = await tmux.listSessions();
+  const byName = new Map(sessions.map(s => [s.name, s]));
+  for (const t of store.all()) {
+    if (t.role === 'controller') { await keepController(t, byName.get(t.session)); continue; }
+    if (t.openElsewhere && !['archived', 'parked'].includes(t.status)) { watchElsewhere(t); continue; }
+    if (['archived', 'parked', 'suspended'].includes(t.status) || agents.launching.has(t.id)) continue;
+    const s = byName.get(t.session);
+    if (!s) { store.update(t.id, { status: 'suspended', interrupted: t.status === 'working' ? 'The session ended while the agent was working.' : undefined, statusSource: 'The tmux session is gone (restart or crash). Opening the task resumes it.' }); continue; }
+    if (s.dead) { store.update(t.id, { status: 'suspended', statusSource: 'The agent exited. Resume to continue the conversation.' }); continue; }
+    if (!!t.unscrollable !== s.unscrollable) store.update(t.id, { unscrollable: s.unscrollable || undefined });
+    if (t.restartWhenDone && ['idle', 'unread'].includes(t.status)) { await restartTask(t); continue; }
+    if (Date.now() - Date.parse(t.updated) < 90000 && !events.sessionStarted.has(t.id) && ['working', 'idle'].includes(t.status))
+      events.screenCheck(t, await tmux.capture(t.session, 30));
+    if (t.agent === 'codex' && t.sessionId) {
+      let tr = t.transcript;
+      if (!tr) { tr = importer.transcriptFor('codex', t.sessionId); if (tr) store.update(t.id, { transcript: tr }); }
+      try { if (tr) events.codexActivity(t, statSync(tr).mtimeMs); } catch { /* moved */ }
+    }
+  }
+}
+await reconcile();
+// start the controller together with Taskboard
+if (machine.get().controller.autostart && store.get('controller')?.status !== 'archived') {
+  controllerStartedAt = Date.now();
+  agents.startController().then(() => console.log(`controller running as “${machine.controllerLabel()}”`)).catch(e => console.error('controller start failed', e));
+}
+// Codex usage: read from each Codex account's newest session file every minute
+accounts.refreshCodexUsage();
+setInterval(() => accounts.refreshCodexUsage(), 60000);
+setInterval(() => reconcile().catch(e => console.error('reconcile', e)), 2000);
+// "waiting N min" changes over time; push a refresh every minute
+setInterval(() => { const msg = JSON.stringify({ type: 'tasks', tasks: [...store.all().map(view), ...machines.remoteTasks()] }); for (const c of eventClients) if (c.readyState === c.OPEN) c.send(msg); }, 60000);
+
+server.listen(PORT, HOST, () => console.log(`Taskboard on ${URL_BASE}  (vault ${store.taskDir('').replace(/\/$/, '')})`));

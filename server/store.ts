@@ -1,0 +1,132 @@
+// Tasks are Markdown notes in the vault: ~/AgentVault/tasks/<id>.md (frontmatter = task fields, body = description).
+// Each task also has a folder ~/AgentVault/tasks/<id>/ with log.md (agent-written) and terminal.log (tmux pipe-pane).
+import matter from 'gray-matter';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
+import { basename, join } from 'node:path';
+import { TASKS_DIR, TB_DIR } from './config.ts';
+
+export type Status = 'working' | 'needs-you' | 'unread' | 'idle' | 'stopped' | 'review' | 'suspended' | 'parked' | 'archived';
+export type Agent = 'claude' | 'codex';
+
+export interface Task {
+  id: string;
+  num: number;
+  title: string;
+  agent: Agent;
+  status: Status;
+  cwd: string;
+  folder: string;          // the folder you picked; cwd differs when a worktree was created
+  branch?: string;
+  worktree?: boolean;
+  session: string;         // tmux session name
+  sessionId?: string;      // Claude session id / Codex thread id, used to resume
+  transcript?: string;
+  created: string;
+  updated: string;
+  statusAt: string;        // when the status last changed (drives "waiting 14 min")
+  statusSource?: string;
+  goal?: string;           // your words
+  now?: string;            // where the agent is (last assistant message)
+  ask?: string;            // what it waits for
+  stopReason?: string;
+  seenAt?: string;         // when you last opened the task
+  interrupted?: string;
+  groups?: string[];
+  account?: string;        // account id (settings folder) the agent runs with
+  role?: 'controller';     // the controller agent is a task with this role; it is kept out of the task lists
+  parent?: string;         // task id that started this one (the controller)
+  imported?: string;       // where the session came from, when it was imported
+  openElsewhere?: { pid: number; tty: string }; // imported while still open in another terminal
+  moveWhenDone?: boolean;
+  restartWhenDone?: boolean; // restart the agent (same conversation) as soon as its current turn ends
+  unscrollable?: boolean;    // running full screen without mouse support (Codex started before --no-alt-screen)
+  launchedAs?: string; // controller: the name / Remote Control / agent it was started with (restarted when these change)
+  remoteUrl?: string; // controller: its Remote Control address on claude.ai (read from its screen) // take the session over from that terminal as soon as its current turn ends
+  desc: string;
+}
+
+const now = () => new Date().toISOString();
+const tasks = new Map<string, Task>();
+const listeners = new Set<(t: Task) => void>();
+
+export function onTaskChange(fn: (t: Task) => void) { listeners.add(fn); return () => listeners.delete(fn); }
+export const taskDir = (id: string) => join(TASKS_DIR, id);
+export const logFile = (id: string) => join(taskDir(id), 'log.md');
+export const terminalLog = (id: string) => join(taskDir(id), 'terminal.log');
+
+function write(t: Task) {
+  const { desc, ...fm } = t;
+  const clean = Object.fromEntries(Object.entries(fm).filter(([, v]) => v !== undefined && v !== null && v !== ''));
+  writeFileSync(join(TASKS_DIR, t.id + '.md'), matter.stringify(`# ${t.title}\n\n${desc}\n`, clean));
+}
+
+export function loadAll() {
+  for (const f of readdirSync(TASKS_DIR)) {
+    if (!f.endsWith('.md')) continue;
+    try {
+      const { data, content } = matter(readFileSync(join(TASKS_DIR, f), 'utf8'));
+      const desc = content.replace(/^# .*\n+/, '').trim();
+      tasks.set(data.id, { ...(data as Task), desc });
+    } catch (e) { console.error('could not read task', f, e); }
+  }
+}
+
+export function all(): Task[] { return [...tasks.values()].sort((a, b) => b.num - a.num); }
+export function get(id: string) { return tasks.get(id); }
+
+export function nextNum(): number {
+  const file = join(TB_DIR, 'counter');
+  const n = (existsSync(file) ? Number(readFileSync(file, 'utf8')) : 0) + 1;
+  writeFileSync(file, String(n));
+  return n;
+}
+
+export function create(t: Omit<Task, 'created' | 'updated' | 'statusAt'>): Task {
+  const full: Task = { ...t, created: now(), updated: now(), statusAt: now() };
+  mkdirSync(taskDir(t.id), { recursive: true });
+  if (!existsSync(logFile(t.id))) writeFileSync(logFile(t.id), `# Log: ${t.title}\n`);
+  tasks.set(t.id, full); write(full); emit(full);
+  return full;
+}
+
+export function update(id: string, patch: Partial<Task>): Task | undefined {
+  const t = tasks.get(id); if (!t) return;
+  const statusChanged = patch.status && patch.status !== t.status;
+  Object.assign(t, patch, { updated: now() }, statusChanged ? { statusAt: now() } : {});
+  write(t); emit(t);
+  return t;
+}
+
+// Take a task off the board: its note and folder move to ~/.taskboard/trash/<id>-<time>/ (not deleted).
+// The agent's own conversation files (~/.claude, ~/.codex) are not touched.
+// when each agent was last started or resumed (a resume makes Codex write to its session file, which is not work)
+export const launchedAt = new Map<string, number>();
+
+export function remove(id: string) {
+  const dest = join(TB_DIR, 'trash', `${id}-${Date.now()}`);
+  mkdirSync(dest, { recursive: true });
+  for (const p of [join(TASKS_DIR, id + '.md'), taskDir(id)]) if (existsSync(p)) renameSync(p, join(dest, basename(p)));
+  tasks.delete(id);
+  for (const fn of removeListeners) fn(id);
+}
+const removeListeners = new Set<(id: string) => void>();
+export const onTaskRemoved = (fn: (id: string) => void) => { removeListeners.add(fn); };
+
+function emit(t: Task) { for (const fn of listeners) fn(t); }
+// tell listeners about a change that is not in the task note itself (for example new outbox files)
+export function touch(id: string) { const t = tasks.get(id); if (t) emit(t); }
+
+export function appendLog(id: string, entry: { did: string; wait?: string; next?: string }) {
+  const stamp = new Date().toLocaleString('sv-SE').slice(0, 16);
+  appendFileSync(logFile(id), `\n## ${stamp}\n- Did: ${entry.did}\n- Waiting: ${entry.wait || 'Nothing.'}\n- Next: ${entry.next || '—'}\n`);
+}
+
+export function readLog(id: string) {
+  const f = logFile(id); return existsSync(f) ? readFileSync(f, 'utf8') : '';
+}
+
+// Small persistent server state: folders you start tasks in, UI state.
+const stateFile = join(TB_DIR, 'state.json');
+export const state: { folders: Record<string, { uses: number; last: string; pinned?: boolean }>; ui: Record<string, unknown> } =
+  existsSync(stateFile) ? JSON.parse(readFileSync(stateFile, 'utf8')) : { folders: {}, ui: {} };
+export function saveState() { writeFileSync(stateFile, JSON.stringify(state, null, 2)); }

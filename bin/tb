@@ -1,0 +1,149 @@
+#!/usr/bin/env node
+// tb — the Taskboard command line. Used by agents (for example `tb review <file>`) and by the controller agent.
+// Talks to the local Taskboard server with the token in ~/.taskboard/token.
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join, resolve } from 'node:path';
+
+const URL_BASE = process.env.TB_URL || 'http://127.0.0.1:4317';
+const token = (() => { try { return readFileSync(process.env.TB_TOKEN_FILE || join(homedir(), '.taskboard', 'token'), 'utf8').trim(); } catch { return ''; } })();
+const args = process.argv.slice(2);
+const flag = (name, def) => { const i = args.indexOf(name); if (i < 0) return def; const v = args[i + 1]; args.splice(i, 2); return v; };
+const has = name => { const i = args.indexOf(name); if (i < 0) return false; args.splice(i, 1); return true; };
+
+async function call(method, path, body) {
+  const r = await fetch(URL_BASE + path, { method, headers: { 'content-type': 'application/json', 'x-taskboard-token': token, 'x-tb-actor': process.env.TASK_ID || '' }, body: body ? JSON.stringify(body) : undefined });
+  const text = await r.text(); let data; try { data = JSON.parse(text); } catch { data = text; }
+  if (!r.ok) { console.error(`tb: ${data && data.error ? data.error : r.statusText}`); process.exit(1); }
+  // 202: the action waits for the user's approval on the Taskboard dashboard
+  if (r.status === 202 && data.approval) {
+    console.log(`Waiting for the user to approve on the Taskboard dashboard: ${data.approval.summary}`);
+    for (;;) {
+      await new Promise(res => setTimeout(res, 2000));
+      const a = await (await fetch(`${URL_BASE}/api/approvals/${data.approval.id}`)).json();
+      if (a.state === 'pending') continue;
+      if (a.state !== 'approved') { console.error(`tb: not done: ${a.result || a.state}`); process.exit(3); }
+      console.log(a.result); return { approved: true };
+    }
+  }
+  return data;
+}
+let tasksCache;
+const tasks = async () => (tasksCache ||= await call('GET', '/api/tasks'));
+async function task(ref) {
+  const all = await tasks(); const n = String(ref || '').replace(/^#/, '');
+  const t = all.find(x => String(x.num) === n || x.id === ref);
+  if (!t) { console.error(`tb: no task ${ref}`); process.exit(1); }
+  return t;
+}
+const line = t => `#${String(t.num).padEnd(4)} ${t.status.padEnd(10)} ${t.agent.padEnd(6)} ${t.title}${t.ask ? `  — waiting: ${t.ask}` : ''}`;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+const HELP = `tb — Taskboard command line
+  tb info                            this machine's name, its Taskboard server and its controller
+  tb list [--status needs-you,working] [--group <name>] [--json]
+  tb show <task>                     task note, status and the last log entry
+  tb log <task…> [--last n]
+  tb tail <task> [-n lines]          last lines of the agent's terminal
+  tb result <task>                   the agent's last message and its outbox documents
+  tb wait <task…> [--until done|needs-you|any] [--timeout seconds]
+  tb send <task> "<text>"            type text into the agent's terminal and press Enter
+  tb new --agent claude|codex --folder <path> [--title <t>] [--worktree <branch>] [--group <name>] "<prompt>"
+  tb new --batch <plan.json>         [{ agent, folder, title, prompt, worktree?, group? }, …]
+  tb group list | tb group add <group> <task…> | tb group rm <group> <task…>
+  tb doc send <task>:<file> <task>   send a document from one task's outbox to another task's inbox
+  tb review <file>                   ask the user to review a document from your outbox
+  tb park|archive <task>      park = set aside: off Needs you / Unread until the agent works or finishes again; archive = done
+<task> is a number (12 or #12) or a task id.`;
+
+const [cmd, ...rest] = args;
+switch (cmd) {
+  case 'info': {
+    const i = await call('GET', '/api/info');
+    console.log(`Machine:     ${i.machine} (host ${i.host})`);
+    console.log(`Taskboard:   ${i.url} · process ${i.pid} · ${i.tasks} tasks`);
+    if (i.controller) console.log(`Controller:  “${i.controller.label}” · ${i.controller.agent} · ${i.controller.status}${i.controller.remoteUrl ? `\nRemote:      ${i.controller.remoteUrl}` : ''}`);
+    else console.log('Controller:  not started');
+    break;
+  }
+  case 'list': {
+    const status = flag('--status'), group = flag('--group'), json = has('--json');
+    let list = (await tasks()).filter(t => t.status !== 'archived');
+    if (status) list = list.filter(t => status.split(',').includes(t.status));
+    if (group) { const g = (await call('GET', '/api/groups')).find(x => x.name === group || x.id === group); list = list.filter(t => g && g.tasks.includes(t.id)); }
+    console.log(json ? JSON.stringify(list, null, 2) : list.map(line).join('\n') || 'No tasks.');
+    break;
+  }
+  case 'show': {
+    const t = await task(rest[0]); const log = await call('GET', `/api/tasks/${t.id}/log`);
+    console.log(`${line(t)}\nfolder: ${t.cwd}\ngoal: ${t.goal || t.title}\nnow: ${t.now || '—'}\nstatus: ${t.statusSource}\n\nLast log entry:\n${String(log).split(/\n(?=## )/).pop()}`);
+    break;
+  }
+  case 'log': {
+    const last = Number(flag('--last', '3'));
+    for (const r of args.slice(1)) { const t = await task(r); const log = String(await call('GET', `/api/tasks/${t.id}/log`)); console.log(`=== #${t.num} ${t.title}\n` + log.split(/\n(?=## )/).slice(-last).join('\n')); }
+    break;
+  }
+  case 'tail': {
+    const n = flag('-n', '30'); const t = await task(args[1]);
+    console.log(await call('GET', `/api/tasks/${t.id}/peek?lines=${n}`));
+    break;
+  }
+  case 'result': {
+    const t = await task(rest[0]); const d = await call('GET', `/api/tasks/${t.id}/docs`);
+    console.log(`#${t.num} ${t.title} — ${t.status}\n\n${t.now || '(no message yet)'}\n\nOutbox:\n${d.outbox.map(x => '  ' + x.path).join('\n') || '  (empty)'}`);
+    break;
+  }
+  case 'wait': {
+    const until = flag('--until', 'done'), timeout = Number(flag('--timeout', '3600')) * 1000;
+    const refs = args.slice(1), ids = []; for (const r of refs) ids.push((await task(r)).id);
+    const done = s => ['unread', 'idle', 'suspended', 'archived', 'parked', 'stopped'].includes(s);
+    const needs = s => ['needs-you', 'stopped', 'review'].includes(s);
+    const start = Date.now();
+    for (;;) {
+      tasksCache = undefined; const all = await tasks(); const ts = ids.map(id => all.find(t => t.id === id));
+      const hit = ts.filter(t => until === 'needs-you' ? needs(t.status) : until === 'any' ? (done(t.status) || needs(t.status)) : done(t.status));
+      if (until === 'done' ? hit.length === ts.length : hit.length) { console.log(hit.map(line).join('\n')); break; }
+      if (Date.now() - start > timeout) { console.log('tb wait: timed out\n' + ts.map(line).join('\n')); process.exit(2); }
+      await sleep(3000);
+    }
+    break;
+  }
+  case 'send': { const t = await task(rest[0]); await call('POST', `/api/tasks/${t.id}/send`, { text: rest.slice(1).join(' ') }); console.log(`Sent to #${t.num}.`); break; }
+  case 'new': {
+    const batch = flag('--batch');
+    const specs = batch ? JSON.parse(readFileSync(batch, 'utf8')) : [{ agent: flag('--agent', 'claude'), folder: flag('--folder'), title: flag('--title'), worktree: flag('--worktree'), group: flag('--group'), prompt: args.slice(1).join(' ') }];
+    for (const s of specs) {
+      if (!s.folder || !s.prompt) { console.error('tb new: --folder and a prompt are required'); process.exit(1); }
+      const t = await call('POST', '/api/tasks', { title: s.title || s.prompt.slice(0, 60), desc: s.prompt, agent: s.agent || 'claude', folder: resolve(s.folder.replace(/^~/, homedir())), worktree: !!s.worktree, branch: s.worktree || undefined, parent: process.env.TASK_ID || undefined, group: s.group || undefined, account: s.account || undefined });
+      if (t.approved) continue;
+      console.log(`Started #${t.num} ${t.title} (${t.agent}) in ${t.cwd}`);
+    }
+    break;
+  }
+  case 'group': {
+    const [sub, name, ...refs] = rest; const gs = await call('GET', '/api/groups');
+    if (sub === 'list') { console.log(gs.map(g => `${g.name} (${g.tasks.length})`).join('\n') || 'No groups.'); break; }
+    let g = gs.find(x => x.name === name || x.id === name);
+    if (!g && sub === 'add') g = await call('POST', '/api/groups', { name });
+    if (!g) { console.error(`tb: no group ${name}`); process.exit(1); }
+    const ids = []; for (const r of refs) ids.push((await task(r)).id);
+    await call('PATCH', `/api/groups/${g.id}`, sub === 'add' ? { add: ids } : { remove: ids });
+    console.log(`${g.name}: ${sub === 'add' ? 'added' : 'removed'} ${refs.join(', ')}`);
+    break;
+  }
+  case 'doc': {
+    if (rest[0] !== 'send') { console.log(HELP); break; }
+    const [src, dst] = rest.slice(1); const [fromRef, name] = src.split(':');
+    const from = await task(fromRef), to = await task(dst);
+    const r = await call('POST', '/api/docs/send', { from: from.id, name, to: to.id }); console.log(`Copied to ${r.path}`);
+    break;
+  }
+  case 'review': {
+    const path = resolve(rest[0] || ''); await call('POST', '/api/review/request', { path, task: process.env.TASK_ID });
+    console.log('Marked for review. The user sees it on the Review page; their comments will arrive in your inbox.');
+    break;
+  }
+  case 'park': case 'archive': { const t = await task(rest[0]); await call('POST', `/api/tasks/${t.id}/status`, { status: cmd === 'park' ? 'parked' : 'archived' }); console.log(`#${t.num} ${cmd === 'park' ? 'parked' : 'archived'}.`); break; }
+  default: console.log(HELP);
+}

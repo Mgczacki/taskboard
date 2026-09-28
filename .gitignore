@@ -1,0 +1,41 @@
+# dependencies
+node_modules/
+
+# build output
+dist/
+web/dist/
+build/
+*.tsbuildinfo
+.vite/
+
+# environment files and secrets
+.env
+.env.*
+!.env.example
+token
+*.token
+*.pem
+*.key
+*.p12
+secrets/
+
+# logs
+*.log
+logs/
+npm-debug.log*
+pnpm-debug.log*
+
+# local databases and runtime data
+*.db
+*.sqlite
+*.sqlite3
+*.db-journal
+.taskboard/
+
+# editor and OS files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+__pycache__/
+*.pyc

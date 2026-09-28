@@ -1,0 +1,76 @@
+// Sessions running in a terminal Taskboard does not own send no hooks, so their state is read from the end of
+// their transcript file: Claude Code's ~/.claude/projects/…/<session>.jsonl or Codex's rollout-….jsonl.
+import { closeSync, openSync, readSync, statSync } from 'node:fs';
+
+export interface TranscriptState {
+  // 'finished': the agent ended its turn · 'tool': a tool call has no result yet (running, or waiting for approval)
+  // 'busy': the last record is a prompt or a tool result, so the agent is thinking · 'aborted': the turn was interrupted
+  state: 'finished' | 'tool' | 'busy' | 'aborted' | 'unknown';
+  text?: string;   // last message from the agent
+  tool?: string;   // the pending tool call, e.g. "Bash: npm test"
+  toolAt?: number; // when that call was made
+  waitMs?: number; // the call's own timeout, for Codex calls that wait on purpose (duration_ms)
+  mtime: number;   // when the transcript file last changed
+}
+
+function tailLines(path: string, bytes = 262144): string[] {
+  const size = statSync(path).size, start = Math.max(0, size - bytes), buf = Buffer.alloc(size - start);
+  const fd = openSync(path, 'r'); try { readSync(fd, buf, 0, buf.length, start); } finally { closeSync(fd); }
+  const lines = buf.toString('utf8').split('\n');
+  if (start > 0) lines.shift(); // first line is cut
+  return lines.filter(Boolean);
+}
+const parse = (l: string) => { try { return JSON.parse(l); } catch { return null; } };
+const short = (s: string, n = 140) => s.replace(/\s+/g, ' ').trim().slice(0, n);
+
+function claude(lines: string[]): Omit<TranscriptState, 'mtime'> {
+  let text: string | undefined;
+  // walk backwards over the conversation records; attachments, system notes and bookkeeping records are skipped
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const o = parse(lines[i]); if (!o || (o.type !== 'user' && o.type !== 'assistant')) continue;
+    const c = o.message?.content;
+    const parts: any[] = Array.isArray(c) ? c : [{ type: 'text', text: String(c ?? '') }];
+    if (o.type === 'assistant') {
+      const tu = parts.find(p => p.type === 'tool_use');
+      if (tu) return { state: 'tool', toolAt: Date.parse(o.timestamp) || undefined, tool: `${tu.name}${tu.input?.command ? ': ' + short(String(tu.input.command), 80) : tu.input?.file_path ? ': ' + tu.input.file_path : ''}` };
+      const tx = parts.filter(p => p.type === 'text').map(p => p.text).join('\n');
+      if (tx) text = text ?? short(tx, 400);
+      if (o.message?.stop_reason === 'end_turn' || tx) return { state: 'finished', text };
+      continue; // thinking-only record: keep looking
+    }
+    if (parts.some(p => p.type === 'text' && /\[Request interrupted by user/.test(p.text || ''))) return { state: 'aborted' };
+    return { state: 'busy' };
+  }
+  return { state: 'unknown' };
+}
+
+function codex(lines: string[]): Omit<TranscriptState, 'mtime'> {
+  let text: string | undefined, pendingCall: string | undefined, callAt: number | undefined, waitMs: number | undefined;
+  const outputs = new Set<string>();
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const o = parse(lines[i]); const p = o?.payload; if (!p) continue;
+    if (o.type === 'event_msg') {
+      if (p.type === 'task_complete') return { state: 'finished', text: text ?? (p.last_agent_message ? short(p.last_agent_message, 400) : undefined) };
+      if (p.type === 'turn_aborted') return { state: 'aborted' };
+      if (p.type === 'agent_message' && !text && p.message) text = short(p.message, 400);
+      if (p.type === 'task_started' || p.type === 'user_message') return pendingCall ? { state: 'tool', tool: pendingCall, toolAt: callAt, waitMs } : { state: 'busy' };
+    }
+    if (o.type === 'response_item') {
+      if (p.type === 'custom_tool_call_output' || p.type === 'function_call_output') outputs.add(p.call_id);
+      if ((p.type === 'custom_tool_call' || p.type === 'function_call') && !pendingCall && !outputs.has(p.call_id)) {
+        let cmd = ''; try { const a = typeof p.input === 'string' ? p.input : JSON.parse(p.arguments || '{}').cmd ?? p.arguments; cmd = Array.isArray(a) ? a.join(' ') : String(a ?? ''); } catch { cmd = String(p.arguments ?? ''); }
+        pendingCall = `${p.name}${cmd ? ': ' + short(cmd, 80) : ''}`; callAt = Date.parse(o.timestamp) || undefined;
+        try { const d = JSON.parse(p.arguments || '{}').duration_ms ?? JSON.parse(p.arguments || '{}').timeout_ms; if (typeof d === 'number') waitMs = d; } catch { /* not JSON */ }
+      }
+    }
+  }
+  // no turn start within the part read: a long turn still in progress, as long as there were model or tool records
+  return pendingCall ? { state: 'tool', tool: pendingCall, toolAt: callAt, waitMs } : outputs.size || text ? { state: 'busy', text } : { state: 'unknown' };
+}
+
+export function readState(agent: 'claude' | 'codex', path: string): TranscriptState | null {
+  try {
+    const mtime = statSync(path).mtimeMs, lines = tailLines(path);
+    return { ...(agent === 'claude' ? claude(lines) : codex(lines)), mtime };
+  } catch { return null; }
+}
