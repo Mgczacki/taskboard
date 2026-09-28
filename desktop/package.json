@@ -1,0 +1,18 @@
+{
+  "name": "taskboard-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Taskboard as a Mac app: a window onto the local Taskboard server, with a Dock badge, a menu-bar item and a global shortcut.",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "icons": "node scripts/make-icons.cjs",
+    "build": "node scripts/make-icons.cjs && electron-packager . Taskboard --platform=darwin --arch=arm64 --icon=build/icon.icns --out=out --overwrite --app-bundle-id=com.taskboard.desktop --ignore='^/out' --ignore='^/scripts' --prune=true",
+    "install-app": "node scripts/install-app.cjs"
+  },
+  "devDependencies": {
+    "@electron/packager": "18.4.4",
+    "electron": "44.4.5"
+  },
+  "pnpm": { "onlyBuiltDependencies": ["electron"] }
+}

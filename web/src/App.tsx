@@ -28,7 +28,8 @@ export function App() {
   const [addMachine, setAddMachine] = useState(false);
   const [keysHelp, setKeysHelp] = useState(false);
   const [machineName, setMachineName] = useState('');
-  useEffect(() => { api.info().then(i => { setMachineName(i.machine); document.title = `Taskboard · ${i.machine}`; }).catch(() => {}); }, [connected]);
+  const [role, setRole] = useState('production');
+  useEffect(() => { api.info().then(i => { setMachineName(i.machine); setRole(i.role || 'production'); document.title = `Taskboard · ${i.machine}`; }).catch(() => {}); }, [connected]);
   // the controller agent is reached with ⌃⌥K and the sidebar; it is not one of the tasks on the board
   const controller = allTasks.find(t => t.role === 'controller');
   const tasks = useMemo(() => allTasks.filter(t => t.role !== 'controller'), [allTasks]);
@@ -61,6 +62,16 @@ export function App() {
 
   const open = allTasks.find(t => t.id === openId);
   const openController = async () => { if (openId === 'controller') { setOpenId(null); return; } if (!controller || controller.status === 'suspended') await api.startController().catch(e => toast(String(e.message || e))); setOpenId('controller'); };
+  // The Mac app (desktop/main.cjs) opens a task, triage or the controller from its menu-bar item with this event.
+  useEffect(() => {
+    const on = (e: Event) => {
+      const d = (e as CustomEvent<{ task?: string; triage?: boolean; controller?: boolean }>).detail || {};
+      if (d.task) setOpenId(d.task);
+      if (d.triage) setTriage(true);
+      if (d.controller && openId !== 'controller') openController();
+    };
+    addEventListener('taskboard:open', on); return () => removeEventListener('taskboard:open', on);
+  }, [openId, controller?.status]);
   const queue = useMemo(() => tasks.filter(t => ATTN.includes(t.status)).sort((a, b) => b.waitMin - a.waitMin), [tasks]);
   const needs = tasks.filter(t => t.status === 'needs-you'), unread = tasks.filter(t => t.status === 'unread');
   const canvasIds = useMemo(() => {
@@ -163,6 +174,7 @@ export function App() {
       {newOpen && <NewTask onClose={() => setNewOpen(false)} onStarted={id => { setNewOpen(false); setOpenId(id); }} />}
       {importOpen && <Import onClose={() => setImportOpen(false)} onDone={() => { setImportOpen(false); go('list'); }} />}
       {groupPrompt && <GroupPrompt ids={groupPrompt} close={() => setGroupPrompt(null)} done={(g, openWin) => { setGroupPrompt(null); setSelected(new Set()); toast(`Group “${g.name}” created`); if (openWin) openInWindow('g:' + g.id); else { setView('g:' + g.id); go('canvas'); } }} />}
+      {role === 'sandbox' && <div className="sandbox-bar" title={`This is a sandbox: a separate test copy of Taskboard (${machineName}). Its agents and tasks are not your real ones.`}>Sandbox · {machineName} · not your real Taskboard</div>}
       {keysHelp && <KeysHelp close={() => setKeysHelp(false)} />}
       {addMachine && <AddMachine close={() => setAddMachine(false)} />}
       {triage && <Triage queue={queue} close={() => setTriage(false)} open={id => { setTriage(false); setOpenId(id); }} />}

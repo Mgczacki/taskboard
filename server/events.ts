@@ -32,6 +32,8 @@ function describeTool(name: string, input: any): string {
 
 export function claudeEvent(taskId: string, input: any): { output?: unknown } {
   const t = store.get(taskId); if (!t) return {};
+  // an archived task stays archived whatever its agent still reports
+  if (t.status === 'archived') return {};
   const ev = input.hook_event_name;
   switch (ev) {
     case 'SessionStart':
@@ -39,6 +41,7 @@ export function claudeEvent(taskId: string, input: any): { output?: unknown } {
       store.update(t.id, { sessionId: input.session_id || t.sessionId, transcript: input.transcript_path, ...(t.status === 'suspended' ? { status: 'idle' as const } : {}) });
       break;
     case 'UserPromptSubmit':
+      answerBeforeLog.delete(t.id); // a saved answer belongs to the previous turn only
       turnStart.set(t.id, Date.now()); blockedOnce.delete(t.id);
       store.update(t.id, { status: 'working', ask: '', stopReason: undefined, interrupted: undefined, statusSource: `Claude Code UserPromptSubmit hook at ${clock()}.` });
       { const notice = docs.takeInboxNotice(t.id); if (notice) return { output: { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: notice } } }; }
@@ -73,6 +76,7 @@ export function claudeEvent(taskId: string, input: any): { output?: unknown } {
       break;
     }
     case 'StopFailure':
+      answerBeforeLog.delete(t.id);
       if (/rate|limit|quota|billing/i.test(String(input.error_type || input.error || ''))) accounts.markLimited(t.account || accounts.defaultFor(t.agent).id, `${input.error_type || 'limit'} on #${t.num}`);
       store.update(t.id, { status: 'stopped', stopReason: input.error_type || input.error || 'API error', statusSource: `Claude Code StopFailure at ${clock()}: ${input.error_type || 'error'}.` });
       break;
@@ -81,7 +85,7 @@ export function claudeEvent(taskId: string, input: any): { output?: unknown } {
 }
 
 export function codexEvent(taskId: string, p: any) {
-  const t = store.get(taskId); if (!t) return;
+  const t = store.get(taskId); if (!t || t.status === 'archived') return;
   if (p.type !== 'agent-turn-complete') return;
   accounts.clearLimited(t.account);
   const msg: string = p['last-assistant-message'] || '';

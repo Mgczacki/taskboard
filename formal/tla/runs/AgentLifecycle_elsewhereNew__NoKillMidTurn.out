@@ -1,0 +1,109 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 110 and seed 6385517149365716938 with 10 workers on 10 cores with 14564MB heap and 64MB offheap memory [pid: 91872] (Mac OS X 14.5 aarch64, Homebrew 17.0.19 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /Users/mariogarrido/taskboard/formal/tla/AgentLifecycle.tla
+Parsing file /private/var/folders/cz/_lh4d7h151zg6qwyqggqjyl80000gn/T/Naturals.tla
+Parsing file /private/var/folders/cz/_lh4d7h151zg6qwyqggqjyl80000gn/T/Sequences.tla
+Parsing file /private/var/folders/cz/_lh4d7h151zg6qwyqggqjyl80000gn/T/TLC.tla
+Parsing file /private/var/folders/cz/_lh4d7h151zg6qwyqggqjyl80000gn/T/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module AgentLifecycle
+Starting... (2026-09-28 06:23:12)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-28 06:23:12.
+Error: Invariant NoKillMidTurn is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ proc = "idle"
+/\ restartWD = FALSE
+/\ trSeen = FALSE
+/\ requests = 0
+/\ moved = FALSE
+/\ moveWD = FALSE
+/\ faults = 0
+/\ ctlGen = 0
+/\ settingsStale = FALSE
+/\ asks = 0
+/\ prompts = 0
+/\ badKill = "none"
+/\ exits = 0
+/\ hookQ = <<>>
+/\ tr = "finished"
+/\ crashes = 0
+/\ rateOK = TRUE
+/\ changes = 0
+/\ status = "idle"
+/\ srvUp = TRUE
+
+State 2: <Prompt line 129, col 3 to line 133, col 151 of module AgentLifecycle>
+/\ proc = "turn"
+/\ restartWD = FALSE
+/\ trSeen = FALSE
+/\ requests = 0
+/\ moved = FALSE
+/\ moveWD = FALSE
+/\ faults = 0
+/\ ctlGen = 0
+/\ settingsStale = FALSE
+/\ asks = 0
+/\ prompts = 1
+/\ badKill = "none"
+/\ exits = 0
+/\ hookQ = <<>>
+/\ tr = "finished"
+/\ crashes = 0
+/\ rateOK = TRUE
+/\ changes = 0
+/\ status = "idle"
+/\ srvUp = TRUE
+
+State 3: <AskApproval line 140, col 3 to line 143, col 162 of module AgentLifecycle>
+/\ proc = "approval"
+/\ restartWD = FALSE
+/\ trSeen = FALSE
+/\ requests = 0
+/\ moved = FALSE
+/\ moveWD = FALSE
+/\ faults = 0
+/\ ctlGen = 0
+/\ settingsStale = FALSE
+/\ asks = 1
+/\ prompts = 1
+/\ badKill = "none"
+/\ exits = 0
+/\ hookQ = <<>>
+/\ tr = "finished"
+/\ crashes = 0
+/\ rateOK = TRUE
+/\ changes = 0
+/\ status = "idle"
+/\ srvUp = TRUE
+
+State 4: <RequestMove line 296, col 3 to line 301, col 95 of module AgentLifecycle>
+/\ proc = "idle"
+/\ restartWD = FALSE
+/\ trSeen = FALSE
+/\ requests = 1
+/\ moved = TRUE
+/\ moveWD = FALSE
+/\ faults = 0
+/\ ctlGen = 0
+/\ settingsStale = FALSE
+/\ asks = 1
+/\ prompts = 1
+/\ badKill = "move"
+/\ exits = 0
+/\ hookQ = <<>>
+/\ tr = "finished"
+/\ crashes = 0
+/\ rateOK = TRUE
+/\ changes = 0
+/\ status = "idle"
+/\ srvUp = TRUE
+
+153 states generated, 73 distinct states found, 35 states left on queue.
+The depth of the complete state graph search is 7.
+The average outdegree of the complete state graph is 2 (minimum is 1, the maximum 4 and the 95th percentile is 4).
+Finished in 00s at (2026-09-28 06:23:12)

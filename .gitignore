@@ -39,3 +39,5 @@ pnpm-debug.log*
 *.swp
 __pycache__/
 *.pyc
+desktop/out/
+desktop/build/

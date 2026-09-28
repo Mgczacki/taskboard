@@ -1,0 +1,45 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 104 and seed -2135719221575086112 with 10 workers on 10 cores with 14564MB heap and 64MB offheap memory [pid: 95588] (Mac OS X 14.5 aarch64, Homebrew 17.0.19 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /Users/mariogarrido/taskboard/formal/tla/Approvals.tla
+Parsing file /private/var/folders/cz/_lh4d7h151zg6qwyqggqjyl80000gn/T/Naturals.tla
+Semantic processing of module Naturals
+Semantic processing of module Approvals
+Starting... (2026-09-28 06:26:14)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-28 06:26:14.
+Error: Invariant NoExecWithoutApproval is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ deniedEver = <<FALSE, FALSE>>
+/\ bypassed = FALSE
+/\ clicks = 0
+/\ crashes = 0
+/\ pre = <<0, 0>>
+/\ errEver = <<FALSE, FALSE>>
+/\ cid = 0
+/\ execs = <<0, 0>>
+/\ nextId = 1
+/\ appr = <<"absent", "absent">>
+/\ srvUp = TRUE
+/\ client = "idle"
+/\ post = <<0, 0>>
+
+State 2: <Bypass line 85, col 3 to line 88, col 79 of module Approvals>
+/\ deniedEver = <<FALSE, FALSE>>
+/\ bypassed = TRUE
+/\ clicks = 0
+/\ crashes = 0
+/\ pre = <<0, 0>>
+/\ errEver = <<FALSE, FALSE>>
+/\ cid = 1
+/\ execs = <<1, 0>>
+/\ nextId = 2
+/\ appr = <<"absent", "absent">>
+/\ srvUp = TRUE
+/\ client = "ok"
+/\ post = <<0, 0>>
+
+80 states generated, 62 distinct states found, 35 states left on queue.
+The depth of the complete state graph search is 7.
+The average outdegree of the complete state graph is 3 (minimum is 0, the maximum 8 and the 95th percentile is 8).
+Finished in 00s at (2026-09-28 06:26:14)

@@ -15,7 +15,7 @@ export interface ImportCandidate {
   updated: string; source?: string; running?: { pid: number; tty: string; exact: boolean };
 }
 
-export interface MachineInfo { machine: string; host: string; url: string; settings: { name: string; controller: { autostart: boolean; remoteControl: boolean } }; controller: null | { agent: string; account?: string; status: string; remoteUrl?: string; label: string } }
+export interface MachineInfo { role?: 'production' | 'sandbox'; root?: string; machine: string; host: string; url: string; settings: { name: string; controller: { autostart: boolean; remoteControl: boolean } }; controller: null | { agent: string; account?: string; status: string; remoteUrl?: string; label: string } }
 export interface Machine { id: string; name: string; url: string; local?: boolean; online: boolean; latency?: number; lastSeen?: string; error?: string; tasks?: number }
 export interface Approval { id: string; actor: string; action: string; summary: string; detail: string; created: string; state: 'pending' | 'approved' | 'denied' | 'failed'; result?: string }
 export interface Group { id: string; name: string; color: string; tasks: string[]; created: string }

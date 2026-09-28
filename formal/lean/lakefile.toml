@@ -1,0 +1,5 @@
+name = "taskboard_formal"
+defaultTargets = ["Taskboard"]
+
+[[lean_lib]]
+name = "Taskboard"

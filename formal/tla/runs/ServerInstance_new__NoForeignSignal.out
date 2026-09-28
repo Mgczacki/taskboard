@@ -1,0 +1,91 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 84 and seed -7470705967441377154 with 10 workers on 10 cores with 14564MB heap and 64MB offheap memory [pid: 81311] (Mac OS X 14.5 aarch64, Homebrew 17.0.19 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /Users/mariogarrido/taskboard/formal/tla/ServerInstance.tla
+Parsing file /private/var/folders/cz/_lh4d7h151zg6qwyqggqjyl80000gn/T/Naturals.tla
+Parsing file /private/var/folders/cz/_lh4d7h151zg6qwyqggqjyl80000gn/T/FiniteSets.tla
+Parsing file /private/var/folders/cz/_lh4d7h151zg6qwyqggqjyl80000gn/T/TLC.tla
+Parsing file /private/var/folders/cz/_lh4d7h151zg6qwyqggqjyl80000gn/T/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module ServerInstance
+Starting... (2026-09-28 06:14:24)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-28 06:14:25.
+Error: Invariant NoForeignSignal is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ manual = 0
+/\ attempts = [s1 |-> 0, s2 |-> 0]
+/\ pc = [s1 |-> "down", s2 |-> "down"]
+/\ file = <<"none", "-">>
+/\ signalledForeign = FALSE
+/\ crashes = 0
+/\ port = "free"
+/\ staleOwner = "dead"
+
+State 2: <LaunchdStart line 123, col 17 to line 123, col 53 of module ServerInstance>
+/\ manual = 0
+/\ attempts = [s1 |-> 0, s2 |-> 0]
+/\ pc = [s1 |-> "create", s2 |-> "down"]
+/\ file = <<"none", "-">>
+/\ signalledForeign = FALSE
+/\ crashes = 0
+/\ port = "free"
+/\ staleOwner = "dead"
+
+State 3: <Create line 140, col 3 to line 143, col 80 of module ServerInstance>
+/\ manual = 0
+/\ attempts = [s1 |-> 0, s2 |-> 0]
+/\ pc = [s1 |-> "write", s2 |-> "down"]
+/\ file = <<"s1", "e">>
+/\ signalledForeign = FALSE
+/\ crashes = 0
+/\ port = "free"
+/\ staleOwner = "dead"
+
+State 4: <Write line 147, col 3 to line 150, col 80 of module ServerInstance>
+/\ manual = 0
+/\ attempts = [s1 |-> 0, s2 |-> 0]
+/\ pc = [s1 |-> "startup", s2 |-> "down"]
+/\ file = <<"s1", "f">>
+/\ signalledForeign = FALSE
+/\ crashes = 0
+/\ port = "free"
+/\ staleOwner = "dead"
+
+State 5: <Crash line 203, col 3 to line 206, col 53 of module ServerInstance>
+/\ manual = 0
+/\ attempts = [s1 |-> 0, s2 |-> 0]
+/\ pc = [s1 |-> "down", s2 |-> "down"]
+/\ file = <<"stale", "-">>
+/\ signalledForeign = FALSE
+/\ crashes = 1
+/\ port = "free"
+/\ staleOwner = "dead"
+
+State 6: <PidReuse line 227, col 3 to line 229, col 78 of module ServerInstance>
+/\ manual = 0
+/\ attempts = [s1 |-> 0, s2 |-> 0]
+/\ pc = [s1 |-> "down", s2 |-> "down"]
+/\ file = <<"stale", "-">>
+/\ signalledForeign = FALSE
+/\ crashes = 1
+/\ port = "free"
+/\ staleOwner = "foreign"
+
+State 7: <StopScript line 210, col 3 to line 223, col 59 of module ServerInstance>
+/\ manual = 0
+/\ attempts = [s1 |-> 0, s2 |-> 0]
+/\ pc = [s1 |-> "down", s2 |-> "down"]
+/\ file = <<"stale", "-">>
+/\ signalledForeign = TRUE
+/\ crashes = 2
+/\ port = "free"
+/\ staleOwner = "dead"
+
+270 states generated, 153 distinct states found, 75 states left on queue.
+The depth of the complete state graph search is 9.
+The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 5 and the 95th percentile is 4).
+Finished in 00s at (2026-09-28 06:14:25)

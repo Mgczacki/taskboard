@@ -27,7 +27,10 @@ if (!existsSync(tokenFile)) writeFileSync(tokenFile, randomBytes(24).toString('h
 export const TOKEN = readFileSync(tokenFile, 'utf8').trim();
 export const TOKEN_FILE = tokenFile;
 
-export const HOOK_SCRIPT = join(ROOT, 'server', 'hooks', 'claude-hook.mjs');
-export const STATUSLINE_SCRIPT = join(ROOT, 'server', 'hooks', 'claude-statusline.mjs');
-export const CODEX_NOTIFY_SCRIPT = join(ROOT, 'server', 'hooks', 'codex-notify.mjs');
+export const HOOK_SCRIPT = join(TB_DIR, 'hooks', 'claude-hook.mjs');
+// The scripts the agents' CLIs run are copied to TB_DIR/hooks at start (see instance.ts), so running agents keep a
+// working path when the server's code is replaced by a new release.
+export const GUARD_SCRIPT = join(TB_DIR, 'hooks', 'guard.mjs');
+export const STATUSLINE_SCRIPT = join(TB_DIR, 'hooks', 'claude-statusline.mjs');
+export const CODEX_NOTIFY_SCRIPT = join(TB_DIR, 'hooks', 'codex-notify.mjs');
 export const CLAUDE_SETTINGS_FILE = join(TB_DIR, 'claude-settings.json');

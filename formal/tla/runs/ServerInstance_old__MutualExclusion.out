@@ -1,0 +1,91 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 0 and seed -5865048878450493790 with 10 workers on 10 cores with 14564MB heap and 64MB offheap memory [pid: 81146] (Mac OS X 14.5 aarch64, Homebrew 17.0.19 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /Users/mariogarrido/taskboard/formal/tla/ServerInstance.tla
+Parsing file /private/var/folders/cz/_lh4d7h151zg6qwyqggqjyl80000gn/T/Naturals.tla
+Parsing file /private/var/folders/cz/_lh4d7h151zg6qwyqggqjyl80000gn/T/FiniteSets.tla
+Parsing file /private/var/folders/cz/_lh4d7h151zg6qwyqggqjyl80000gn/T/TLC.tla
+Parsing file /private/var/folders/cz/_lh4d7h151zg6qwyqggqjyl80000gn/T/Sequences.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module ServerInstance
+Starting... (2026-09-28 06:14:16)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-28 06:14:16.
+Error: Invariant MutualExclusion is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ manual = 0
+/\ attempts = [s1 |-> 0, s2 |-> 0]
+/\ pc = [s1 |-> "down", s2 |-> "down"]
+/\ file = <<"none", "-">>
+/\ signalledForeign = FALSE
+/\ crashes = 0
+/\ port = "free"
+/\ staleOwner = "dead"
+
+State 2: <ManualStart line 124, col 19 to line 124, col 96 of module ServerInstance>
+/\ manual = 1
+/\ attempts = [s1 |-> 0, s2 |-> 0]
+/\ pc = [s1 |-> "down", s2 |-> "oldRead"]
+/\ file = <<"none", "-">>
+/\ signalledForeign = FALSE
+/\ crashes = 0
+/\ port = "free"
+/\ staleOwner = "dead"
+
+State 3: <LaunchdStart line 123, col 17 to line 123, col 53 of module ServerInstance>
+/\ manual = 1
+/\ attempts = [s1 |-> 0, s2 |-> 0]
+/\ pc = [s1 |-> "oldRead", s2 |-> "oldRead"]
+/\ file = <<"none", "-">>
+/\ signalledForeign = FALSE
+/\ crashes = 0
+/\ port = "free"
+/\ staleOwner = "dead"
+
+State 4: <OldRead line 128, col 3 to line 130, col 86 of module ServerInstance>
+/\ manual = 1
+/\ attempts = [s1 |-> 0, s2 |-> 0]
+/\ pc = [s1 |-> "oldWrite", s2 |-> "oldRead"]
+/\ file = <<"none", "-">>
+/\ signalledForeign = FALSE
+/\ crashes = 0
+/\ port = "free"
+/\ staleOwner = "dead"
+
+State 5: <OldRead line 128, col 3 to line 130, col 86 of module ServerInstance>
+/\ manual = 1
+/\ attempts = [s1 |-> 0, s2 |-> 0]
+/\ pc = [s1 |-> "oldWrite", s2 |-> "oldWrite"]
+/\ file = <<"none", "-">>
+/\ signalledForeign = FALSE
+/\ crashes = 0
+/\ port = "free"
+/\ staleOwner = "dead"
+
+State 6: <OldWrite line 132, col 3 to line 135, col 80 of module ServerInstance>
+/\ manual = 1
+/\ attempts = [s1 |-> 0, s2 |-> 0]
+/\ pc = [s1 |-> "startup", s2 |-> "oldWrite"]
+/\ file = <<"s1", "f">>
+/\ signalledForeign = FALSE
+/\ crashes = 0
+/\ port = "free"
+/\ staleOwner = "dead"
+
+State 7: <OldWrite line 132, col 3 to line 135, col 80 of module ServerInstance>
+/\ manual = 1
+/\ attempts = [s1 |-> 0, s2 |-> 0]
+/\ pc = [s1 |-> "startup", s2 |-> "startup"]
+/\ file = <<"s2", "f">>
+/\ signalledForeign = FALSE
+/\ crashes = 0
+/\ port = "free"
+/\ staleOwner = "dead"
+
+463 states generated, 204 distinct states found, 72 states left on queue.
+The depth of the complete state graph search is 9.
+The average outdegree of the complete state graph is 2 (minimum is 0, the maximum 5 and the 95th percentile is 4).
+Finished in 00s at (2026-09-28 06:14:16)

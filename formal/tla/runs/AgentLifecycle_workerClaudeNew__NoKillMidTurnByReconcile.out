@@ -1,0 +1,197 @@
+TLC2 Version 2.19 of 08 August 2024 (rev: 5a47802)
+Running breadth-first search Model-Checking with fp 4 and seed -4535437002508529188 with 10 workers on 10 cores with 14564MB heap and 64MB offheap memory [pid: 92004] (Mac OS X 14.5 aarch64, Homebrew 17.0.19 x86_64, MSBDiskFPSet, DiskStateQueue).
+Parsing file /Users/mariogarrido/taskboard/formal/tla/AgentLifecycle.tla
+Parsing file /private/var/folders/cz/_lh4d7h151zg6qwyqggqjyl80000gn/T/Naturals.tla
+Parsing file /private/var/folders/cz/_lh4d7h151zg6qwyqggqjyl80000gn/T/Sequences.tla
+Parsing file /private/var/folders/cz/_lh4d7h151zg6qwyqggqjyl80000gn/T/TLC.tla
+Parsing file /private/var/folders/cz/_lh4d7h151zg6qwyqggqjyl80000gn/T/FiniteSets.tla
+Semantic processing of module Naturals
+Semantic processing of module Sequences
+Semantic processing of module FiniteSets
+Semantic processing of module TLC
+Semantic processing of module AgentLifecycle
+Starting... (2026-09-28 06:23:18)
+Computing initial states...
+Finished computing initial states: 1 distinct state generated at 2026-09-28 06:23:18.
+Error: Invariant NoKillMidTurnByReconcile is violated.
+Error: The behavior up to this point is:
+State 1: <Initial predicate>
+/\ proc = "idle"
+/\ restartWD = FALSE
+/\ trSeen = FALSE
+/\ requests = 0
+/\ moved = FALSE
+/\ moveWD = FALSE
+/\ faults = 0
+/\ ctlGen = 0
+/\ settingsStale = FALSE
+/\ asks = 0
+/\ prompts = 0
+/\ badKill = "none"
+/\ exits = 0
+/\ hookQ = <<>>
+/\ tr = "finished"
+/\ crashes = 0
+/\ rateOK = TRUE
+/\ changes = 0
+/\ status = "idle"
+/\ srvUp = TRUE
+
+State 2: <Prompt line 129, col 3 to line 133, col 151 of module AgentLifecycle>
+/\ proc = "turn"
+/\ restartWD = FALSE
+/\ trSeen = FALSE
+/\ requests = 0
+/\ moved = FALSE
+/\ moveWD = FALSE
+/\ faults = 0
+/\ ctlGen = 0
+/\ settingsStale = FALSE
+/\ asks = 0
+/\ prompts = 1
+/\ badKill = "none"
+/\ exits = 0
+/\ hookQ = <<"UPS">>
+/\ tr = "finished"
+/\ crashes = 0
+/\ rateOK = TRUE
+/\ changes = 0
+/\ status = "idle"
+/\ srvUp = TRUE
+
+State 3: <Deliver line 179, col 3 to line 188, col 170 of module AgentLifecycle>
+/\ proc = "turn"
+/\ restartWD = FALSE
+/\ trSeen = FALSE
+/\ requests = 0
+/\ moved = FALSE
+/\ moveWD = FALSE
+/\ faults = 0
+/\ ctlGen = 0
+/\ settingsStale = FALSE
+/\ asks = 0
+/\ prompts = 1
+/\ badKill = "none"
+/\ exits = 0
+/\ hookQ = <<>>
+/\ tr = "finished"
+/\ crashes = 0
+/\ rateOK = TRUE
+/\ changes = 0
+/\ status = "working"
+/\ srvUp = TRUE
+
+State 4: <FinishTurn line 150, col 3 to line 153, col 168 of module AgentLifecycle>
+/\ proc = "idle"
+/\ restartWD = FALSE
+/\ trSeen = FALSE
+/\ requests = 0
+/\ moved = FALSE
+/\ moveWD = FALSE
+/\ faults = 0
+/\ ctlGen = 0
+/\ settingsStale = FALSE
+/\ asks = 0
+/\ prompts = 1
+/\ badKill = "none"
+/\ exits = 0
+/\ hookQ = <<"Stop">>
+/\ tr = "finished"
+/\ crashes = 0
+/\ rateOK = TRUE
+/\ changes = 0
+/\ status = "working"
+/\ srvUp = TRUE
+
+State 5: <RequestRestart line 285, col 3 to line 293, col 99 of module AgentLifecycle>
+/\ proc = "idle"
+/\ restartWD = TRUE
+/\ trSeen = FALSE
+/\ requests = 1
+/\ moved = FALSE
+/\ moveWD = FALSE
+/\ faults = 0
+/\ ctlGen = 0
+/\ settingsStale = FALSE
+/\ asks = 0
+/\ prompts = 1
+/\ badKill = "none"
+/\ exits = 0
+/\ hookQ = <<"Stop">>
+/\ tr = "finished"
+/\ crashes = 0
+/\ rateOK = TRUE
+/\ changes = 0
+/\ status = "working"
+/\ srvUp = TRUE
+
+State 6: <Deliver line 179, col 3 to line 188, col 170 of module AgentLifecycle>
+/\ proc = "idle"
+/\ restartWD = TRUE
+/\ trSeen = FALSE
+/\ requests = 1
+/\ moved = FALSE
+/\ moveWD = FALSE
+/\ faults = 0
+/\ ctlGen = 0
+/\ settingsStale = FALSE
+/\ asks = 0
+/\ prompts = 1
+/\ badKill = "none"
+/\ exits = 0
+/\ hookQ = <<>>
+/\ tr = "finished"
+/\ crashes = 0
+/\ rateOK = TRUE
+/\ changes = 0
+/\ status = "idle"
+/\ srvUp = TRUE
+
+State 7: <Prompt line 129, col 3 to line 133, col 151 of module AgentLifecycle>
+/\ proc = "turn"
+/\ restartWD = TRUE
+/\ trSeen = FALSE
+/\ requests = 1
+/\ moved = FALSE
+/\ moveWD = FALSE
+/\ faults = 0
+/\ ctlGen = 0
+/\ settingsStale = FALSE
+/\ asks = 0
+/\ prompts = 2
+/\ badKill = "none"
+/\ exits = 0
+/\ hookQ = <<"UPS">>
+/\ tr = "finished"
+/\ crashes = 0
+/\ rateOK = TRUE
+/\ changes = 0
+/\ status = "idle"
+/\ srvUp = TRUE
+
+State 8: <Reconcile line 271, col 3 to line 276, col 78 of module AgentLifecycle>
+/\ proc = "idle"
+/\ restartWD = FALSE
+/\ trSeen = FALSE
+/\ requests = 1
+/\ moved = FALSE
+/\ moveWD = FALSE
+/\ faults = 0
+/\ ctlGen = 0
+/\ settingsStale = FALSE
+/\ asks = 0
+/\ prompts = 2
+/\ badKill = "afterTurn"
+/\ exits = 0
+/\ hookQ = <<>>
+/\ tr = "finished"
+/\ crashes = 0
+/\ rateOK = TRUE
+/\ changes = 0
+/\ status = "idle"
+/\ srvUp = TRUE
+
+780 states generated, 396 distinct states found, 131 states left on queue.
+The depth of the complete state graph search is 10.
+The average outdegree of the complete state graph is 1 (minimum is 0, the maximum 5 and the 95th percentile is 3).
+Finished in 00s at (2026-09-28 06:23:18)

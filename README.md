@@ -5,17 +5,46 @@ Taskboard shows what each one is doing, which ones need you, and lets you open a
 
 ## Run it
 
+The real Taskboard runs from a **release**: a frozen copy of the code in `~/.taskboard/releases/<id>`, reached through
+the link `~/.taskboard/app`. The checkout `~/taskboard` (where you and agents change the code) never runs as the real
+server; it refuses to. launchd starts the release at login and restarts it within seconds if it stops.
+
 ```sh
 cd ~/taskboard
 pnpm install
-pnpm build          # builds the web interface into web/dist
-pnpm start          # serves it on http://127.0.0.1:4317
+pnpm release                     # copy → install → typecheck → build → start check → switch → restart
+sh scripts/install-launchd.sh    # once: run the release as a login service that restarts by itself
 ```
 
-- Stop: `pkill -f "tsx server/index.ts"`. The agents keep running in tmux; start the server again to reconnect.
-- Server log: `~/.taskboard/server.log` (when started with `nohup … > ~/.taskboard/server.log`).
-- Development with live reload: `pnpm dev` (server on 4317, interface on http://localhost:5173).
-- Open any agent from a normal terminal: `tmux -L taskboard attach -t task-<number>` (the task panel has a copy button).
+- **Update:** `pnpm release` again. If the new release does not answer within 30 s, it switches back by itself.
+  `pnpm release --ref <commit>` releases a commit instead of the current files; `--no-switch` only builds and checks.
+- **Go back:** `pnpm rollback` (the release before) or `pnpm rollback <id>`; `pnpm rollback --list` shows them.
+- **Try code without touching the real one:** `pnpm sandbox` starts the current folder's code on its own port, folders
+  (in the system temp folder) and tmux socket, without a controller, and prints its address; its pages show an orange
+  "Sandbox" bar. `pnpm sandbox stop [--clean]`, `pnpm sandbox list`. `pnpm dev` is a sandbox that restarts on code
+  changes, with the Vite interface.
+- **Stop / restart the real one:** `launchctl kickstart -k gui/$(id -u)/com.taskboard.server` restarts it. Without the
+  login service, `pnpm stop` stops exactly the process in `~/.taskboard/server.pid`. Never use `pkill -f` patterns.
+  Agents keep running in tmux in every case and reconnect when the server is back.
+- **Remove the login service:** `launchctl bootout gui/$(id -u)/com.taskboard.server && rm ~/Library/LaunchAgents/com.taskboard.server.plist`
+- **Log:** `~/.taskboard/server.log` (it says when and why the server stopped).
+- **Open an agent from a normal terminal:** `tmux -L taskboard attach -t task-<number>` (the task panel has a copy button).
+- **Node:** Node 20.19 or newer is recommended; on 20.18 pnpm skips Vite's native bundler unless installing with
+  `--force` (the release script does that).
+
+## Developing Taskboard inside Taskboard
+
+Agents that work on Taskboard itself run inside the real one, so the setup keeps the two apart:
+
+- The real server runs a release copy, so editing, rebuilding or breaking `~/taskboard` changes nothing that runs.
+- Only you release or roll back (the agents' guard blocks `pnpm release` / `pnpm rollback`).
+- Every test copy is a sandbox with its own port, folders and tmux socket; a sandbox refuses to start on the real
+  port, `~/.taskboard`, `~/AgentVault` or the `taskboard` tmux socket.
+- One server per `~/.taskboard` (an exclusive lock file); a second one exits with a message.
+- A PreToolUse hook (`server/hooks/guard.mjs`) blocks Claude Code agents from stopping the real server or its tmux
+  sessions, deleting `~/.taskboard`, or releasing (Codex has no such hook; the other rules still apply to it).
+- If the server stops anyway, launchd starts it again, and the agents never depended on it (they run in tmux).
+- Instructions for agents: `CLAUDE.md` / `AGENTS.md` in the repository.
 
 ## Pages and keys
 
@@ -46,11 +75,20 @@ bottom-right exits), `⌃⌥G` next group tab, `⌃⌥⇧G` new group, `⌃⌥N`
   - Questions that appear before any hook can fire (trust this folder, update available, sign in) are read from the
     screen during the first 90 seconds.
 - **Your global Claude Code and Codex settings are not changed.**
+- **Task instructions:** Claude Code tasks get them with `--append-system-prompt`. Codex tasks get the same text with
+  `-c developer_instructions=…`, except that Codex is told Taskboard copies the first paragraph of its last reply into `log.md`.
+- **Plain English rules:** every agent's instructions and the controller's `CLAUDE.md` / `AGENTS.md` tell it to write
+  log entries, outbox documents, artifacts and messages with the ASD-STE100 writing rules. The full rules and a word
+  scan are in `writing/` (from the `kiss` skill in sekai-superhuman-knowledge). The server copies them to
+  `~/AgentVault/docs/` at start, where agents read them without a permission prompt.
 - **Tasks are Markdown notes** in `~/AgentVault/tasks/<id>.md`. Each task folder has `log.md` (Did / Waiting / Next per
   turn; the Stop hook asks once if the agent forgot), `terminal.log` (all output), `outbox/` and `inbox/`.
 - **Inbox / outbox:** agents save documents (Markdown or HTML) in their `outbox/`. Sending copies a file into another
   task's `inbox/`; Claude Code is told on its next prompt, Codex via "Tell the agent now". HTML opens in a floating
   preview (sandboxed) or in the browser.
+- **tmux listing:** tmux is always run with a UTF-8 locale and its session list uses a printable separator; a task
+  is only marked Suspended after tmux confirms its session is gone, and a Suspended task whose session is running
+  goes back to its status by itself.
 - **Terminals:** tmux mouse mode is on, so the mouse wheel scrolls: Claude Code scrolls its own view, and Codex (started
   with `--no-alt-screen`) scrolls through tmux's history. Drag to select copies to the clipboard; ⌥-drag selects directly.
   Terminals draw with WebGL, and output is sent in batches every 8 ms.
