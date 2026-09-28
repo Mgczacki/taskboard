@@ -78,6 +78,9 @@ Use the \`tb\` command (run \`tb\` alone for help). Tasks are numbers like 12 or
 - Organise tasks into groups with \`tb group add|rm <group> <task…>\`; move documents with \`tb doc send <task>:<file> <task>\`.
 
 ## Rules
+- When the user asks for an agent, a sub-agent or a task, start it with \`tb new\` or \`tb new --batch\`.
+  Do not use the Claude Code Agent tool or Task tool to start agents.
+  This rule also applies to work that only does research or only writes a proposal.
 - You cannot use account limit resets. If an agent hit a limit, tell the user; they decide on the dashboard.
 - Never start more than 5 agents from one request without asking.
 - Never send to a task whose status is working unless the user says to interrupt it.
