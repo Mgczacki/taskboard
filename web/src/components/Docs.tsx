@@ -42,7 +42,7 @@ export function DocsTab({ t, tasks }: { t: Task; tasks: Task[] }) {
       </div>
       <button className="btn" onClick={() => openDoc(x)} title={x.kind === 'html' ? 'Preview in a floating window (Space)' : 'Read (Space)'}>{x.kind === 'html' ? 'Preview' : 'Read'}</button>
       <button className="btn" onClick={() => openInBrowser(x.path)} title="Open in a browser tab (Enter)">Open ↗</button>
-      {box === 'outbox' && <select value="" onChange={async e => { const to = e.target.value; if (!to) return; await api.sendDoc(t.id, x.name, to); const tt = tasks.find(y => y.id === to)!; setMsg(`Sent to #${tt.num}. ${tt.agent === 'claude' ? 'Claude Code sees it on its next prompt.' : tt.agent === 'antigravity' ? 'Antigravity is told at the end of its current turn; if it is idle, use “Tell the agent” in its panel.' : 'Use “Tell the agent” in its panel so Codex reads it.'}`); load(); }}>
+      {box === 'outbox' && <select value="" onChange={async e => { const to = e.target.value; if (!to) return; try { const result = await api.sendDoc(t.id, x.name, to); const tt = tasks.find(y => y.id === to)!; setMsg(`Sent to #${tt.num}.${result.resumed ? ' The task resumed.' : ' The agent received the notice.'}`); load(); } catch (error) { setMsg((error as Error).message); load(); } }}>
         <option value="">Send to task…</option>{others.map(o => <option key={o.id} value={o.id}>#{o.num} {o.title}</option>)}
       </select>}
       {box === 'inbox' && <button className="btn ghost" onClick={async () => { await api.removeInbox(t.id, x.name); load(); }}>Remove</button>}
@@ -53,7 +53,7 @@ export function DocsTab({ t, tasks }: { t: Task; tasks: Task[] }) {
       {msg && <div className="banner">{msg} <button className="btn ghost" onClick={() => setMsg('')}>OK</button></div>}
       <div className="lk-sec"><h3>Inbox · {d.inbox.length}{!t.machine && <label className="btn addfiles">＋ Add files…<input type="file" multiple hidden onChange={async e => { if (e.target.files?.length) { await uploadAll(t.id, e.target.files, setMsg); e.target.value = ''; load(); } }} /></label>}</h3>
         {d.inbox.length ? d.inbox.map(x => row(x, 'inbox')) : <div className="empty">Nothing here yet. Drop files anywhere on this panel (or use Add files…), or send a document from another task's outbox.</div>}
-        {d.inbox.length > 0 && <div className="empty" style={{ marginTop: 6 }}>{t.agent === 'claude' ? 'Claude Code is told about new files on its next prompt.' : t.agent === 'antigravity' ? 'Antigravity is told about new files at the end of its current turn. If it is idle: ' : 'Codex has no prompt hook here: '}{t.agent !== 'claude' && <button className="btn" onClick={async () => { const r = await api.tellInbox(t.id); setMsg(r.told ? 'Typed the notice into the terminal.' : 'The agent was already told about every file.'); }}>Tell the agent now</button>}</div>}
+        {d.inbox.length > 0 && <div className="empty" style={{ marginTop: 6 }}>Tell the agent about pending files. <button className="btn" onClick={async () => { try { const r = await api.tellInbox(t.id); setMsg(r.told ? `Sent.${r.resumed ? ' The task resumed.' : ''}` : 'The agent was already told about every file.'); } catch (error) { setMsg((error as Error).message); } }}>Tell the agent now</button></div>}
       </div>
       <div className="lk-sec"><h3>Outbox · {d.outbox.length}</h3>
         {d.outbox.length ? d.outbox.map(x => row(x, 'outbox')) : <div className="empty">The agent has not written documents yet. It saves them to <code>{t.id}/outbox/</code> in the vault, and they appear here.</div>}

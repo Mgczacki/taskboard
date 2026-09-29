@@ -415,6 +415,52 @@ export async function resumeTask(t: Task, force = false): Promise<Task> {
   return store.update(t.id, { status: 'idle', statusSource: `Resumed with ${resumeCommand(t.agent)} ${t.sessionId}.` })!;
 }
 
+function checkResumeAccount(t: Task) {
+  const account = accounts.get(t.account) || accounts.defaultFor(t.agent);
+  const active = runningOn(account.id) - (['working', 'needs-you', 'unread', 'idle', 'review', 'stopped'].includes(t.status) ? 1 : 0);
+  if (account.limited || accounts.fullUntil(account) || active >= account.maxParallel)
+    throw new Error(`Account ${account.id} is at its usage or parallel task limit. Move the task to another account.`);
+}
+
+const delivering = new Set<string>();
+const blockingQuestion = /trust this folder|Do you trust the (files|contents)|Select login method|Please log in|Sign in with ChatGPT|Update available[\s\S]*(Update now|Skip)|approval requested|Allow this action|Approve this tool/i;
+const readyPrompt = /(?:^|\n)\s*[❯›>]\s*(?:$|\n)|\? for shortcuts/i;
+
+// Resume before typing into a task whose tmux session has ended.
+export async function sendTaskText(t: Task, text: string): Promise<{ resumed: boolean }> {
+  if (delivering.has(t.id)) throw new Error('A message is already being sent to this task.');
+  delivering.add(t.id);
+  try {
+    if (t.status === 'archived' || t.status === 'parked') throw new Error('This task is archived or set aside. Resume it from the task panel first.');
+    if (t.openElsewhere) throw new Error('This task is open in another terminal. Move it here before sending a message.');
+    const sessions = await tmux.listSessions();
+    if (!sessions) throw new Error('Could not check the task session. Try again.');
+    const session = sessions.find(s => s.name === t.session);
+    let resumed = false;
+    if (!session || session.dead) {
+      checkResumeAccount(t);
+      await resumeTask(t);
+      resumed = true;
+      let ready = false;
+      for (let i = 0; i < 60; i++) {
+        const live = (await tmux.listSessions())?.find(s => s.name === t.session);
+        if (!live || live.dead) throw new Error('The agent stopped before it could receive the message.');
+        const screen = (await tmux.capture(t.session, 0)).split('\n').filter(line => line.trim()).slice(-15).join('\n');
+        if (blockingQuestion.test(screen)) throw new Error('The agent asks a question in its terminal. Answer it before sending feedback.');
+        if (readyPrompt.test(screen)) { ready = true; break; }
+        await new Promise(r => setTimeout(r, 250));
+      }
+      if (!ready) throw new Error('The agent did not reach its input prompt. Open its terminal and try again.');
+    }
+    const current = store.get(t.id)!;
+    const screen = (await tmux.capture(t.session, 0)).split('\n').filter(line => line.trim()).slice(-15).join('\n');
+    if (current.status === 'needs-you' || blockingQuestion.test(screen))
+      throw new Error('The agent asks a question in its terminal. Answer it before sending feedback.');
+    await tmux.sendKeys(t.session, text.replace(/\n/g, ' '));
+    return { resumed };
+  } finally { delivering.delete(t.id); }
+}
+
 export const resumeCommand = (agent: Agent) => agent === 'claude' ? 'claude --resume' : agent === 'codex' ? 'codex resume' : 'agy --conversation';
 export const agentName = (agent: Agent) => agent === 'claude' ? 'Claude Code' : agent === 'codex' ? 'Codex' : 'Antigravity';
 

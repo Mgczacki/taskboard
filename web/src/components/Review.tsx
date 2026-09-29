@@ -8,6 +8,8 @@ import { fmtWait } from '../api';
 import { fileUrl } from './Docs';
 import { AgentChip, Kbd } from './ui';
 import { hit, useKeymap } from '../keys';
+import { api } from '../api';
+import { loadAccounts, type Account } from './Accounts';
 import '../review.css';
 
 interface Comment { id: string; v: number; block: number; quote: string; text: string; at: string; sent?: boolean }
@@ -86,6 +88,10 @@ export function InboxPage({ tasks, open }: { tasks: Task[]; open: (id: string, t
   const [general, setGeneral] = useState('');
   const [selBtn, setSelBtn] = useState<{ x: number; y: number; block: number; quote: string } | null>(null);
   const [msg, setMsg] = useState('');
+  const [sending, setSending] = useState(false);
+  const [moveOpen, setMoveOpen] = useState(false);
+  const [accounts, setAccounts] = useState<Account[]>([]);
+  const [moveTo, setMoveTo] = useState('');
   const docRef = useRef<HTMLDivElement>(null);
 
   const load = useCallback(() => fetch(`/api/review${dismissed ? '?dismissed=1' : ''}`).then(r => r.json()).then((x: Item[]) => { setItems(x); setSel(s => s && x.some(i => i.id === s) ? s : x[0]?.id || null); }).catch(() => setItems([])), [dismissed]);
@@ -108,7 +114,22 @@ export function InboxPage({ tasks, open }: { tasks: Task[]; open: (id: string, t
 
   const act = async (p: Promise<unknown>, ok?: string) => { try { await p; if (ok) setMsg(ok); load(); } catch (e) { setMsg((e as Error).message); } };
   const addComment = async (block: number, quote: string, t: string) => { if (!item || !t.trim()) return; await act(send('POST', `/api/review/${item.id}/comment`, { block, quote, text: t.trim() })); };
-  const sendFeedback = () => item && !item.dismissedAt && act(send('POST', `/api/review/${item.id}/feedback`), `Comments sent to #${item.taskNum}. The agent was told where to find them.`);
+  const sendFeedback = async () => {
+    if (!item || item.dismissedAt || sending) return;
+    setSending(true); setMsg('Resuming or contacting the agent…'); setMoveOpen(false);
+    try {
+      const result = await send('POST', `/api/review/${item.id}/feedback`) as { resumed: boolean };
+      setMsg(result.resumed ? 'Sent. The task resumed.' : 'Sent. The agent received the comments.');
+      load();
+    } catch (e) {
+      const error = (e as Error).message;
+      setMsg(error);
+      if (/usage or parallel task limit/.test(error)) {
+        setMoveOpen(true);
+        loadAccounts().then(setAccounts).catch(() => setAccounts([]));
+      }
+    } finally { setSending(false); }
+  };
   const accept = () => item && !item.dismissedAt && act(send('POST', `/api/review/${item.id}/accept`), 'Accepted.');
 
   // select text in a block → "Comment" button next to it
@@ -180,11 +201,24 @@ export function InboxPage({ tasks, open }: { tasks: Task[]; open: (id: string, t
             {item.dismissedAt ? <button className="btn" onClick={() => act(send('POST', `/api/review/${item.id}/restore`))}>Restore to inbox</button> : item.state === 'accepted'
               ? <button className="btn" onClick={() => act(send('POST', `/api/review/${item.id}/reopen`))}>Reopen</button>
               : <><button className="btn" onClick={accept}>Accept <Kbd id="reviewAccept" /></button>
-                <button className="btn primary" disabled={!unsent.length} onClick={sendFeedback}>Send feedback to #{item.taskNum} {unsent.length > 0 && `(${unsent.length})`} <Kbd id="reviewSend" /></button></>}
+                <button className="btn primary" disabled={!unsent.length || sending} onClick={sendFeedback}>{sending ? 'Resuming…' : `Send feedback to #${item.taskNum}`} {unsent.length > 0 && `(${unsent.length})`} <Kbd id="reviewSend" /></button></>}
           </div>
           {item.state === 'changes' && <div className="banner">You sent comments on version {item.version}. The agent is revising; the next version appears here when it runs <code>tb review</code> again.</div>}
           {item.state === 'accepted' && <div className="banner">Accepted.</div>}
           {msg && <div className="banner">{msg} <button className="btn ghost" onClick={() => setMsg('')}>OK</button></div>}
+          {moveOpen && task && <div className="banner">
+            <label htmlFor="review-move-account">Move task to another account</label>
+            <select id="review-move-account" value={moveTo} onChange={e => setMoveTo(e.target.value)}>
+              <option value="">Choose an account</option>
+              {accounts.filter(a => a.id !== (task.account || `${task.agent}-default`)).map(a => <option key={a.id} value={a.id} disabled={!a.status.signedIn || !!a.limited || a.running >= a.maxParallel}>{a.name} ({a.agent})</option>)}
+            </select>
+            <button className="btn" disabled={!moveTo || sending} onClick={async () => {
+              setSending(true); setMsg('Moving the task…');
+              try { await api.moveAccount(task.id, moveTo); setMoveOpen(false); setMsg('The task moved. Send feedback again.'); load(); }
+              catch (e) { setMsg((e as Error).message); }
+              finally { setSending(false); }
+            }}>Move task</button>
+          </div>}
         </header>
 
         <div className="rv-body">

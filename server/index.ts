@@ -348,7 +348,11 @@ app.post('/api/tasks/:id/send', async (req, res) => {
   const t = store.get(req.params.id); if (!t) return res.status(404).end();
   const text = String(req.body.text || '');
   if (t.role === 'controller') { try { await tmux.sendKeys(t.session, text); res.json({}); } catch (e) { fail(res, e); } return; }
-  await guarded(req, res, `type into #${t.num} ${t.title}`, text, 'send', async () => { await tmux.sendKeys(t.session, text); return {}; }, () => `Typed into #${t.num}.`);
+  await guarded(req, res, `type into #${t.num} ${t.title}`, text, 'send', async () => {
+    const delivery = await agents.sendTaskText(t, text);
+    store.update(t.id, { status: 'working', ask: '', statusSource: `Message sent by you${delivery.resumed ? ' after resuming the task' : ''}.` });
+    return delivery;
+  }, () => `Typed into #${t.num}.`);
 });
 app.post('/api/tasks/:id/kill', async (req, res) => {
   const t = store.get(req.params.id); if (!t) return res.status(404).end();
@@ -377,11 +381,18 @@ app.post('/api/tasks/:id/inbox/upload', express.raw({ type: () => true, limit: '
 app.get('/api/tasks/:id/docs', (req, res) => { if (!store.get(req.params.id)) return res.status(404).end(); res.json(docs.docsFor(req.params.id)); });
 app.get('/api/docs/edges', (_req, res) => res.json(docs.edges()));
 app.get('/api/docs/all', (_req, res) => res.json(Object.fromEntries(store.all().map(t => [t.id, docs.docsFor(t.id).outbox.map(d => ({ name: d.name, path: d.path, kind: d.kind, mtime: d.mtime }))]))));
-app.post('/api/docs/send', (req, res) => {
+app.post('/api/docs/send', async (req, res) => {
+  let path: string | undefined;
   try {
     const { from, name, to } = req.body; if (!store.get(from) || !store.get(to)) throw new Error('unknown task');
-    const path = docs.send(from, name, to); store.touch(from); store.touch(to); res.json({ path });
-  } catch (e) { fail(res, e); }
+    path = docs.send(from, name, to); store.touch(from); store.touch(to);
+    const target = store.get(to)!;
+    const pending = docs.pendingInboxNotice(to)!;
+    const delivery = await agents.sendTaskText(target, pending.notice);
+    docs.acknowledgeInboxNotice(to, pending.names);
+    store.update(to, { status: 'working', ask: '', statusSource: 'An inbox file was sent to the agent.' });
+    res.json({ path, resumed: delivery.resumed });
+  } catch (e) { fail(res, path ? `The file was copied to ${path}, but the agent was not told: ${e instanceof Error ? e.message : e}` : e); }
 });
 app.post('/api/tasks/:id/inbox/remove', (req, res) => { docs.removeFromInbox(req.params.id, req.body.name); store.touch(req.params.id); res.json({}); });
 // New inbox files the agent has not been told about (for `tb inbox wait`). Clears the pending list,
@@ -394,8 +405,13 @@ app.post('/api/tasks/:id/inbox/take', (req, res) => {
 // Antigravity task, which is told only at the end of a turn).
 app.post('/api/tasks/:id/inbox/tell', async (req, res) => {
   const t = store.get(req.params.id); if (!t) return res.status(404).end();
-  const notice = docs.takeInboxNotice(t.id); if (!notice) return res.json({ told: false });
-  try { await tmux.sendKeys(t.session, notice.replace(/\n/g, ' ')); res.json({ told: true }); } catch (e) { fail(res, e); }
+  const pending = docs.pendingInboxNotice(t.id); if (!pending) return res.json({ told: false });
+  try {
+    const delivery = await agents.sendTaskText(t, pending.notice);
+    docs.acknowledgeInboxNotice(t.id, pending.names);
+    store.update(t.id, { status: 'working', ask: '', statusSource: 'Inbox notice sent to the agent.' });
+    res.json({ told: true, resumed: delivery.resumed });
+  } catch (e) { fail(res, e); }
 });
 // Files from the vault. Served as a sandboxed document (opaque origin), so an agent-written HTML page
 // cannot call Taskboard's API.
