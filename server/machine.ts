@@ -28,7 +28,7 @@ function defaultName() {
 
 export const DEFAULT_ROUTING_RULES = `Use Claude Code or Codex for deep planning and hard coding work.
 Use Antigravity for routine work. Do not use it for deep planning.
-When Claude's 5-hour or weekly usage exceeds 70%, use Codex for deep planning.
+When Claude's usage is high, use Codex for deep planning.
 Avoid accounts at their limit or running their maximum number of tasks.`;
 let settings: MachineSettings = { name: process.env.TASKBOARD_MACHINE_NAME || defaultName(), routingRules: DEFAULT_ROUTING_RULES, controller: { autostart: true, remoteControl: true }, permissions: { controllerNeedsApproval: false, agentsNeedApproval: true, trustWorkspaces: true, autoReview: true }, ask: { agent: 'claude', account: 'claude-default', model: 'sonnet' }, review: { account: 'claude-default', model: 'sonnet' } };
 if (existsSync(FILE)) {
