@@ -88,15 +88,17 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
   const needBefore = per ? wins.slice(0, pg * per).filter(needsYou).length : 0;
   const needAfter = per ? wins.slice((pg + 1) * per).filter(needsYou).length : 0;
   const shown = maxId ? wins.filter(t => t.id === maxId) : pageWins;
-  // with pages every page has the same tile size, so a short last page does not resize the tmux windows
-  const slots = per && !maxId ? per : shown.length;
+  const tileCount = shown.length;
   const fit = Math.max(1, Math.floor((W - 8) / (MINW + 8)));
-  const vis = layout !== 'columns' ? shown.length : per ? slots : visible === 'auto' ? Math.min(shown.length, fit) : Math.min(shown.length, visible);
-  const gridCols = Math.max(1, Math.min(slots || 1, Math.round(Math.sqrt(slots * (W / 900)))));
+  const vis = per || layout !== 'columns' ? tileCount : visible === 'auto' ? Math.min(tileCount, fit) : Math.min(tileCount, visible);
+  const gridCols = Math.max(1, Math.min(tileCount || 1, Math.round(Math.sqrt(tileCount * (W / 900)))));
+  const lastRow = tileCount % gridCols || gridCols;
+  // Give each tile in the last grid row an equal share of the full width.
+  const gridTracks = gridCols * lastRow;
   const style: React.CSSProperties = maxId ? { gridTemplateColumns: '1fr' }
     : layout === 'columns' ? { gridAutoFlow: 'column', gridAutoColumns: `calc((100% - ${(Math.max(1, vis) - 1) * 8}px) / ${Math.max(1, vis)})`, overflowX: 'auto' }
-    : layout === 'grid' ? { gridTemplateColumns: `repeat(${gridCols}, 1fr)` }
-    : { gridTemplateRows: `repeat(${slots || 1}, minmax(160px, 1fr))`, overflowY: 'auto' };
+    : layout === 'grid' ? { gridTemplateColumns: `repeat(${gridTracks}, 1fr)` }
+    : { gridTemplateRows: `repeat(${tileCount || 1}, minmax(160px, 1fr))`, overflowY: 'auto' };
 
   const addToView = (id: string) => { if (group) api.updateGroup(group.id, { add: id }); else { setExtra(e => [...e, id]); setHidden(h => h.filter(x => x !== id)); } };
   const removeFromView = (id: string) => {
@@ -267,7 +269,7 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
       <div className="stage-grid" ref={stage} style={style}>
         {!wins.length && <div className="emptyview"><h2>{group ? `“${group.name}” is empty` : view === 'ungrouped' && !hidden.length ? 'Every live task is in a group' : 'No windows'}</h2><p>Use <b>＋ Add window</b>, drag a window's header onto a tab, or <b>Show on canvas</b> in a task's panel.</p></div>}
         {shown.map((t, i) => (
-          <div key={t.id} data-win={t.id} className={`win ${t.status} ${focused === t.id ? 'focus' : ''} ${selected.has(t.id) ? 'selected' : ''}`} onMouseDown={() => { setFocused(t.id); if (t.status === 'unread') api.seen(t.id); }}>
+          <div key={t.id} data-win={t.id} className={`win ${t.status} ${focused === t.id ? 'focus' : ''} ${selected.has(t.id) ? 'selected' : ''}`} style={layout === 'grid' && !maxId ? { gridColumn: `span ${i < tileCount - lastRow ? lastRow : gridCols}` } : undefined} onMouseDown={() => { setFocused(t.id); if (t.status === 'unread') api.seen(t.id); }}>
             <div className="wh" onPointerDown={e => startDrag(e, t.id)} onDoubleClick={() => setMaxId(m => m ? null : t.id)}>
               <span className="ix">{i + 1}</span><Dot s={t.status} /><span className="n">#{t.num}</span><span className="ti">{t.title}</span>
               <span className={`st st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} />
