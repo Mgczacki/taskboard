@@ -97,6 +97,22 @@ export function takeInboxNotice(taskId: string): string | null {
   return `New file${pending.length > 1 ? 's' : ''} in your Taskboard inbox. Read ${pending.length > 1 ? 'them' : 'it'} before continuing if relevant:\n${lines.join('\n')}`;
 }
 
+export function pendingInboxNotice(taskId: string): { notice: string; names: string[] } | null {
+  const names = readJson<string[]>(pendingFile(taskId), []);
+  if (!names.length) return null;
+  const sent = readJson<Record<string, { task: string }>>(sentFile(taskId), {});
+  const lines = names.map(name => {
+    const sender = store.get(sent[name]?.task);
+    return `- ${join(inboxDir(taskId), name)}${sender ? ` (from task #${sender.num} "${sender.title}")` : ''}`;
+  });
+  return { notice: `New file${names.length > 1 ? 's' : ''} in your Taskboard inbox. Read ${names.length > 1 ? 'them' : 'it'} before continuing if relevant:\n${lines.join('\n')}`, names };
+}
+
+export function acknowledgeInboxNotice(taskId: string, names: string[]) {
+  const delivered = new Set(names);
+  writeFileSync(pendingFile(taskId), JSON.stringify(readJson<string[]>(pendingFile(taskId), []).filter(name => !delivered.has(name))));
+}
+
 // Every send between tasks, for the graph: document → receiving task.
 export function edges() {
   const out: { from: string; to: string; name: string; at: string }[] = [];

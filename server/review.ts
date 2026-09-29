@@ -8,8 +8,8 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from
 import { basename, extname, join } from 'node:path';
 import { TB_DIR } from './config.ts';
 import * as docs from './docs.ts';
+import * as agents from './agents.ts';
 import * as store from './store.ts';
-import * as tmux from './tmux.ts';
 
 export interface Comment { id: string; v: number; block: number; quote: string; text: string; at: string; sent?: boolean }
 export interface ReviewItem {
@@ -129,14 +129,14 @@ export function mountReview(app: Express) {
     let sent: Record<string, unknown> = {}; try { sent = JSON.parse(readFileSync(sentFile, 'utf8')); } catch { /* none yet */ }
     sent[fname] = { task: '__review', at: now(), orig: fname };
     writeFileSync(sentFile, JSON.stringify(sent, null, 2));
-    open.forEach(c => { c.sent = true; });
-    x.state = 'changes'; x.updated = now(); save(all);
     try {
-      await tmux.sendKeys(t.session, `Review comments on ${x.name} (version ${x.version}) are in your inbox: ${target}. Revise the document, then run tb review ${x.path} again.`);
-    } catch { /* the session may be suspended; the file is still in the inbox */ }
-    store.update(t.id, { status: 'working', ask: '', statusSource: `Review feedback sent by you at ${clock()}.` });
-    store.touch(t.id);
-    res.json({ path: target });
+      const delivery = await agents.sendTaskText(t, `Review comments on ${x.name} (version ${x.version}) are in your inbox: ${target}. Revise the document, then run tb review ${x.path} again.`);
+      open.forEach(c => { c.sent = true; });
+      x.state = 'changes'; x.updated = now(); save(all);
+      store.update(t.id, { status: 'working', ask: '', statusSource: `Review feedback sent by you at ${clock()}.` });
+      store.touch(t.id);
+      res.json({ path: target, resumed: delivery.resumed });
+    } catch (e) { res.status(409).json({ error: e instanceof Error ? e.message : String(e), path: target }); }
   });
 
   app.post('/api/review/:id/accept', (req, res) => {
