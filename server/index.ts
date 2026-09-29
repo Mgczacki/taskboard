@@ -29,6 +29,7 @@ import WebSocket from 'ws';
 import { mountReview, pendingFor } from './review.ts';
 import { attach } from './pty.ts';
 import * as store from './store.ts';
+import * as stats from './stats.ts';
 import * as tmux from './tmux.ts';
 
 const execFileP = promisify(execFile);
@@ -128,6 +129,9 @@ async function guarded(req: express.Request, res: express.Response, summary: str
   res.status(202).json({ approval: a });
 }
 app.get('/api/approvals', (_req, res) => res.json(approvals.all()));
+app.get('/api/stats', (req, res) => {
+  try { res.json(stats.get(String(req.query.timeZone || 'UTC'))); } catch { res.status(400).json({ error: 'Invalid time zone.' }); }
+});
 app.get('/api/approvals/:id', (req, res) => { const a = approvals.get(req.params.id); a ? res.json(a) : res.status(404).end(); });
 app.post('/api/approvals/:id/:decision', async (req, res) => {
   // only you, from the dashboard, can decide

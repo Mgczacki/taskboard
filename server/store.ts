@@ -94,7 +94,11 @@ export function update(id: string, patch: Partial<Task>): Task | undefined {
   const t = tasks.get(id); if (!t) return;
   const statusChanged = patch.status && patch.status !== t.status;
   Object.assign(t, patch, { updated: now() }, statusChanged ? { statusAt: now() } : {});
-  write(t); emit(t);
+  write(t);
+  if (statusChanged && t.status === 'archived' && t.role !== 'controller')
+    try { appendFileSync(join(TB_DIR, 'daily-archive-events.jsonl'), JSON.stringify({ id: t.id, at: t.statusAt }) + '\n'); }
+    catch (e) { console.error('could not record archive date', e); }
+  emit(t);
   return t;
 }
 
