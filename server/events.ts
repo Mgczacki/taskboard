@@ -1,9 +1,10 @@
 // Turning hook events into task status. Status must be trustworthy, so each rule is tied to a specific event.
 import { statSync } from 'node:fs';
 import * as docs from './docs.ts';
+import * as review from './review.ts';
 import * as accounts from './accounts.ts';
-import * as store from './store.ts';
 import * as external from './external.ts';
+import * as store from './store.ts';
 import type { Task } from './store.ts';
 
 const turnStart = new Map<string, number>();   // task id -> when the current turn began
@@ -17,8 +18,10 @@ const endsWithQuestion = (s = '') => /\?\s*$/.test(s.trim());
 const clock = () => new Date().toTimeString().slice(0, 5);
 
 function finishedStatus(t: Task, msg: string) {
-  // a document waiting for your review keeps the task in 'review' until you act on it
-  if (t.status === 'review') return { status: 'review' as const, ask: t.ask || '' };
+  // a document waiting for your review puts the task back in 'review' at the end of every turn until you act on it.
+  // The review list decides, not the status: a new turn changes the status to 'working' in the meantime.
+  const pending = review.pendingFor(t.id);
+  if (pending) return { status: 'review' as const, ask: `Review ${pending.name}` };
   if (endsWithQuestion(msg)) return { status: 'needs-you' as const, ask: lastSentence(msg) };
   return { status: viewing.has(t.id) ? 'idle' as const : 'unread' as const, ask: '' };
 }
@@ -31,6 +34,20 @@ function describeTool(name: string, input: any): string {
   return name;
 }
 
+// The user cleared the conversation (/clear in Claude Code, /new in Codex). The agent now waits for a prompt in a new
+// session, so the status, question and last message of the old conversation no longer apply. Goal and description stay.
+function clearedPatch(t: Task, newId: string | undefined, how: string): Partial<Task> {
+  turnStart.delete(t.id); blockedOnce.delete(t.id); answerBeforeLog.delete(t.id);
+  store.appendLog(t.id, { did: `The user cleared the conversation (${how}). New session ${newId || 'unknown'}.`, next: 'Wait for the next prompt.' });
+  return {
+    pastSessions: t.sessionId && t.sessionId !== newId ? [...(t.pastSessions || []), t.sessionId] : t.pastSessions,
+    // a document waiting for review, or a parked task, keeps its status
+    ...(['review', 'parked'].includes(t.status) ? {} : { status: 'idle' as const, ask: '' }),
+    now: undefined, stopReason: undefined, interrupted: undefined,
+    statusSource: `Conversation cleared (${how}) at ${clock()}.`,
+  };
+}
+
 export function claudeEvent(taskId: string, input: any): { output?: unknown } {
   const t = store.get(taskId); if (!t) return {};
   // an archived task stays archived whatever its agent still reports
@@ -39,7 +56,9 @@ export function claudeEvent(taskId: string, input: any): { output?: unknown } {
   switch (ev) {
     case 'SessionStart':
       sessionStarted.add(t.id);
-      store.update(t.id, { sessionId: input.session_id || t.sessionId, transcript: input.transcript_path, ...(t.status === 'suspended' ? { status: 'idle' as const } : {}) });
+      // source is startup, resume, clear or compact; only clear starts a new conversation in the same process
+      store.update(t.id, { sessionId: input.session_id || t.sessionId, transcript: input.transcript_path, ...(t.status === 'suspended' ? { status: 'idle' as const } : {}),
+        ...(input.source === 'clear' ? clearedPatch(t, input.session_id, '/clear') : {}) });
       break;
     case 'UserPromptSubmit':
       answerBeforeLog.delete(t.id); // a saved answer belongs to the previous turn only
@@ -92,7 +111,13 @@ export function codexEvent(taskId: string, p: any) {
   const msg: string = p['last-assistant-message'] || '';
   // Codex also runs a short internal turn to name the conversation; its reply is JSON like {"title": "..."}.
   if (/^\s*\{\s*"title"\s*:/.test(msg)) return;
-  store.update(t.id, { sessionId: p['thread-id'] || t.sessionId, ...finishedStatus(t, msg), now: firstPara(msg) || t.now, statusSource: `Codex notify (agent-turn-complete) at ${clock()}.` });
+  // Codex sends no event for /new. A turn that ends in another thread shows it, one turn late. The transcript is the old
+  // thread's rollout file, so it is cleared and the watcher (index.ts reconcile) looks up the new thread's file.
+  const thread: string | undefined = p['thread-id'];
+  if (t.sessionId && thread && thread !== t.sessionId) store.update(t.id, { ...clearedPatch(t, thread, '/new'), transcript: undefined });
+  // questions Codex asked during the turn can still be open on screen; codexQuestionCheck sets the status when they close
+  const status = codexQuestionsOpen(store.get(t.id)!) ? {} : { ...finishedStatus(t, msg), statusSource: `Codex notify (agent-turn-complete) at ${clock()}.` };
+  store.update(t.id, { sessionId: p['thread-id'] || t.sessionId, ...status, now: firstPara(msg) || t.now });
   if (msg) store.appendLog(t.id, { did: firstPara(msg).slice(0, 200), wait: endsWithQuestion(msg) ? lastSentence(msg) : 'Nothing.' });
   lastCodexEvent.set(t.id, Date.now());
 }
@@ -212,11 +237,37 @@ export function bell(session: string) {
 
 // Codex has no "prompt submitted" event here. Its transcript file only changes when the conversation does
 // (a prompt, a tool call, a reply), never for screen redraws, so a change after a finished turn means it is working again.
+// This includes 'review', as Claude's UserPromptSubmit does; finishedStatus sets 'review' again when the turn ends.
 export function codexActivity(t: Task, transcriptMtime: number) {
   if (Date.now() - (store.launchedAt.get(t.id) || 0) < 20000) return; // starting or resuming, not working
   const last = Math.max(lastCodexEvent.get(t.id) || 0, Date.parse(t.statusAt) || 0, (store.launchedAt.get(t.id) || 0) + 20000);
-  if (transcriptMtime > last + 1500 && ['unread', 'idle', 'needs-you'].includes(t.status)) {
+  // a question read from the screen stays until the screen no longer shows it (screenCheck, codexQuestionCheck)
+  const fromScreen = t.statusSource?.startsWith(SCREEN_SOURCE) || codexQuestionsOpen(t);
+  if (transcriptMtime > last + 1500 && ['unread', 'idle', 'needs-you', 'review'].includes(t.status) && !fromScreen) {
     store.update(t.id, { status: 'working', ask: '', statusSource: `Codex transcript changed at ${clock()}.` });
     lastCodexEvent.set(t.id, transcriptMtime);
   }
+}
+
+// Codex can ask questions without ending its turn (the request_user_input_async tool). It keeps working, and the
+// questions wait above the input box ("? 3 questions" / "shift+← to answer"). No hook fires for them, and the rollout
+// file does not record the answers, so the screen is the only place that shows whether they are still open.
+const CODEX_QUESTIONS = /\?\s+(\d+)\s+questions?\b[^\n]*\n[^\n]*to answer/;
+const CODEX_QUESTION_SOURCE = 'Codex questions on screen';
+export const codexQuestionsOpen = (t: Task) => t.status === 'needs-you' && !!t.statusSource?.startsWith(CODEX_QUESTION_SOURCE);
+export function codexQuestionCheck(t: Task, screen: string) {
+  const m = screen.match(CODEX_QUESTIONS);
+  if (codexQuestionsOpen(t)) {
+    if (m) return;
+    // answered or dismissed: the rollout file shows whether the turn is still running
+    const r = t.transcript ? external.readState('codex', t.transcript) : null;
+    const done = r && ['finished', 'aborted'].includes(r.state);
+    store.update(t.id, { ...(done ? finishedStatus(t, r.text || '') : { status: 'working' as const, ask: '' }), statusSource: `Codex questions answered or dismissed (seen at ${clock()}).` });
+    return;
+  }
+  if (!m || !['working', 'unread', 'idle', 'review'].includes(t.status)) return;
+  const titles = t.transcript ? external.codexQuestions(t.transcript) : [];
+  const n = Number(m[1]);
+  const ask = `Codex asked ${n} question${n === 1 ? '' : 's'} and keeps working${titles.length ? `: ${titles.join(' / ')}` : '.'} Answer in the terminal (shift+←).`;
+  store.update(t.id, { status: 'needs-you', ask, statusSource: `${CODEX_QUESTION_SOURCE} at ${clock()} (request_user_input_async sends no event).` });
 }

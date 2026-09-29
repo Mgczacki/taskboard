@@ -3,12 +3,17 @@
 // Grid, Rows. Every command is ⌃⌥ + key so typing into agents is not affected.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Group, Task } from '../api';
-import { ATTN, STATUS_LABEL, api } from '../api';
+import { ATTN, STATUS_LABEL, api, confirmEnd } from '../api';
 import { AgentChip, Dot, MachineChip, WhereChip } from './ui';
 import { Terminal } from './Terminal';
+import { AskPanel } from './Ask';
 
 type Layout = 'columns' | 'grid' | 'rows';
 const MINW = 640;
+const PER_PAGE = ['off', 2, 3, 4, 6, 8] as const;
+const GESTURE_GAP = 150;  // ms without a wheel event that ends one trackpad swipe
+const AXIS_LOCK = 8;      // px a swipe moves before it is locked to one axis
+const PAGE_SWIPE = 60;    // px a horizontal swipe moves before it changes the page
 const GCOLORS = ['#e3b341', '#58a6ff', '#3fb950', '#db61a2', '#a371f7', '#f78166', '#2dd4bf', '#8b949e'];
 
 // view ids: g:<group id> · needs · live · t:<id,id,...>
@@ -33,6 +38,8 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
   const lk = (k: string) => `tb-cv-${view}-${k}`;
   const [layout, setLayout] = useState<Layout>(() => (localStorage.getItem(lk('layout')) as Layout) || 'columns');
   const [visible, setVisible] = useState<number | 'auto'>(() => { const v = localStorage.getItem(lk('visible')); return v && v !== 'auto' ? Number(v) : 'auto'; });
+  const [perPage, setPerPage] = useState<number | 'off'>(() => { const v = localStorage.getItem(lk('perpage')); return v && v !== 'off' ? Number(v) : 'off'; });
+  const [page, setPage] = useState(() => Number(localStorage.getItem(lk('page'))) || 0);
   const [focused, setFocused] = useState<string | null>(null);
   const [maxId, setMaxId] = useState<string | null>(null);
   const [font, setFont] = useState<Record<string, number>>({});
@@ -41,11 +48,14 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
   const [extra, setExtra] = useState<string[]>([]);
   const [dropTab, setDropTab] = useState<string | null>(null);
   const [reveal, setReveal] = useState(false);
+  const [ending, setEnding] = useState<string | null>(null); // the window whose header asks "End & archive?"
+  const [asking, setAsking] = useState<Set<string>>(new Set()); // tiles with the Ask panel open
+  const toggleAsk = (id: string) => setAsking(s => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const stage = useRef<HTMLDivElement>(null);
   const [W, setW] = useState(1200);
 
-  useEffect(() => { setLayout((localStorage.getItem(lk('layout')) as Layout) || 'columns'); const v = localStorage.getItem(lk('visible')); setVisible(v && v !== 'auto' ? Number(v) : 'auto'); setFrozen(null); setExtra([]); setMaxId(null); setFocused(null); }, [view]);
-  useEffect(() => { localStorage.setItem(lk('layout'), layout); localStorage.setItem(lk('visible'), String(visible)); }, [layout, visible, view]);
+  useEffect(() => { setLayout((localStorage.getItem(lk('layout')) as Layout) || 'columns'); const v = localStorage.getItem(lk('visible')); setVisible(v && v !== 'auto' ? Number(v) : 'auto'); const pp = localStorage.getItem(lk('perpage')); setPerPage(pp && pp !== 'off' ? Number(pp) : 'off'); setPage(Number(localStorage.getItem(lk('page'))) || 0); setFrozen(null); setExtra([]); setMaxId(null); setFocused(null); }, [view]);
+  useEffect(() => { localStorage.setItem(lk('layout'), layout); localStorage.setItem(lk('visible'), String(visible)); localStorage.setItem(lk('perpage'), String(perPage)); localStorage.setItem(lk('page'), String(page)); }, [layout, visible, perPage, page, view]);
   useEffect(() => { const ro = new ResizeObserver(() => setW(stage.current?.clientWidth || 1200)); if (stage.current) ro.observe(stage.current); return () => ro.disconnect(); }, []);
 
   // windows are for running agents: archived and suspended tasks are left out (suspended ones: see the Resume button)
@@ -62,14 +72,26 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
   const newInSmart = (view === 'needs' || view === 'live') && frozen ? liveSet().filter(x => !frozen.includes(x)).length : 0;
 
   const wins = ids.map(id => tasks.find(t => t.id === id)!).filter(Boolean);
-  const shown = maxId ? wins.filter(t => t.id === maxId) : wins;
+  // pages: only the tiles of one page are on screen (and connected); the others wait
+  const per = perPage === 'off' ? 0 : perPage;
+  const pageCount = per ? Math.max(1, Math.ceil(wins.length / per)) : 1;
+  const pg = Math.min(page, pageCount - 1);
+  useEffect(() => { if (wins.length && page !== pg) setPage(pg); }, [wins.length, page, pg]); // wait for the tasks before clamping a saved page
+  const pageWins = per ? wins.slice(pg * per, (pg + 1) * per) : wins;
+  const pageOf = (id: string) => per ? Math.floor(wins.findIndex(t => t.id === id) / per) : 0;
+  const needsYou = (t: Task) => ATTN.includes(t.status);
+  const needBefore = per ? wins.slice(0, pg * per).filter(needsYou).length : 0;
+  const needAfter = per ? wins.slice((pg + 1) * per).filter(needsYou).length : 0;
+  const shown = maxId ? wins.filter(t => t.id === maxId) : pageWins;
+  // with pages every page has the same tile size, so a short last page does not resize the tmux windows
+  const slots = per && !maxId ? per : shown.length;
   const fit = Math.max(1, Math.floor((W - 8) / (MINW + 8)));
-  const vis = layout !== 'columns' ? shown.length : visible === 'auto' ? Math.min(shown.length, fit) : Math.min(shown.length, visible);
-  const gridCols = Math.max(1, Math.min(shown.length || 1, Math.round(Math.sqrt(shown.length * (W / 900)))));
+  const vis = layout !== 'columns' ? shown.length : per ? slots : visible === 'auto' ? Math.min(shown.length, fit) : Math.min(shown.length, visible);
+  const gridCols = Math.max(1, Math.min(slots || 1, Math.round(Math.sqrt(slots * (W / 900)))));
   const style: React.CSSProperties = maxId ? { gridTemplateColumns: '1fr' }
     : layout === 'columns' ? { gridAutoFlow: 'column', gridAutoColumns: `calc((100% - ${(Math.max(1, vis) - 1) * 8}px) / ${Math.max(1, vis)})`, overflowX: 'auto' }
     : layout === 'grid' ? { gridTemplateColumns: `repeat(${gridCols}, 1fr)` }
-    : { gridTemplateRows: `repeat(${shown.length || 1}, minmax(160px, 1fr))`, overflowY: 'auto' };
+    : { gridTemplateRows: `repeat(${slots || 1}, minmax(160px, 1fr))`, overflowY: 'auto' };
 
   const addToView = (id: string) => { if (group) api.updateGroup(group.id, { add: id }); else setExtra(e => [...e, id]); };
   const removeFromView = (id: string) => {
@@ -77,12 +99,59 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
     else if (view.startsWith('t:')) setView('t:' + view.slice(2).split(',').filter(x => x !== id).join(','));
     else { setFrozen(f => (f || []).filter(x => x !== id)); setExtra(e => e.filter(x => x !== id)); }
   };
+  // ends the tmux session and archives the task (as in its panel); the window then leaves the canvas by itself
+  const endTask = (t: Task) => {
+    setEnding(null);
+    api.kill(t.id).then(() => {
+      if (panelTaskId === t.id) openPanel(null);
+      toast(`#${t.num} ended and archived.`, { label: 'Restore', fn: () => { api.setStatus(t.id, 'idle'); } });
+    }, e => toast(`Could not end #${t.num}: ${e.message || e}`));
+  };
 
-  const focus = useCallback((id: string) => {
+  // a tile on another page is mounted only after the page changes, so look for it after the next render
+  const focus = (id: string) => {
     setFocused(id);
-    const el = stage.current?.querySelector(`[data-win="${id}"]`) as HTMLElement | null;
-    el?.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' });
-    setTimeout(() => (el?.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null)?.focus(), 30);
+    if (per && !maxId) setPage(pageOf(id));
+    setTimeout(() => {
+      const el = stage.current?.querySelector(`[data-win="${id}"]`) as HTMLElement | null;
+      el?.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' });
+      setTimeout(() => (el?.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null)?.focus(), 30);
+    }, 0);
+  };
+  const turnPage = (d: number) => setPage(p => Math.max(0, Math.min(pageCount - 1, p + d)));
+  const nextNeedy = () => { const l = wins.filter((t, i) => needsYou(t) && Math.floor(i / per) !== pg); return l.find(t => pageOf(t.id) > pg) || l[0]; };
+
+  // Wheel over the canvas. tmux runs with mouse on, so xterm.js cancels every wheel event over a terminal, horizontal
+  // ones included. This listener runs first (capture phase). It locks each swipe to the axis it starts on: a vertical
+  // swipe goes on to the terminal, a horizontal one scrolls the canvas (or, with pages, turns one page) and never
+  // reaches the terminal. Shift + a vertical mouse wheel counts as horizontal.
+  const gesture = useRef({ last: -1e9, axis: null as null | 'x' | 'y', dx: 0, dy: 0, moved: 0, paged: false });
+  const onWheel = useRef<(e: WheelEvent) => void>(() => {});
+  onWheel.current = e => {
+    const g = gesture.current;
+    if (e.timeStamp - g.last > GESTURE_GAP) Object.assign(g, { axis: null, dx: 0, dy: 0, moved: 0, paged: false });
+    g.last = e.timeStamp;
+    const unit = e.deltaMode === 1 ? 16 : e.deltaMode === 2 ? (stage.current?.clientWidth || 800) : 1;
+    let dx = e.deltaX * unit, dy = e.deltaY * unit;
+    if (e.shiftKey && !dx) { dx = dy; dy = 0; }
+    if (!g.axis) {
+      g.dx += dx; g.dy += dy;
+      if (Math.max(Math.abs(g.dx), Math.abs(g.dy)) >= AXIS_LOCK) { g.axis = Math.abs(g.dx) > Math.abs(g.dy) ? 'x' : 'y'; if (g.axis === 'x') dx = g.dx; }
+      else if (Math.abs(dx) <= Math.abs(dy)) return;
+      else { e.preventDefault(); e.stopPropagation(); return; }
+    }
+    if (g.axis === 'y') return;
+    e.preventDefault(); e.stopPropagation();
+    if (per && !maxId) {
+      g.moved += dx;
+      if (!g.paged && Math.abs(g.moved) >= PAGE_SWIPE) { g.paged = true; turnPage(Math.sign(g.moved)); }
+    } else if (stage.current) stage.current.scrollLeft += dx;
+  };
+  useEffect(() => {
+    const el = stage.current; if (!el) return;
+    const on = (e: WheelEvent) => onWheel.current(e);
+    el.addEventListener('wheel', on, { capture: true, passive: false });
+    return () => el.removeEventListener('wheel', on, { capture: true });
   }, []);
 
   const tabs = [...groups.map(g => 'g:' + g.id), 'needs', 'live'];
@@ -100,10 +169,12 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
       else if (e.code === 'KeyF') setFocusMode(!focusMode);
       else if (e.code === 'KeyG' && e.shiftKey) setMenu('new');
       else if (e.code === 'KeyG' && !solo) setView(tabs[(tabs.indexOf(view) + 1) % tabs.length]);
+      else if (e.code === 'PageDown' || e.code === 'BracketRight') { if (per) turnPage(1); else hit = false; }
+      else if (e.code === 'PageUp' || e.code === 'BracketLeft') { if (per) turnPage(-1); else hit = false; }
       else if (e.code === 'KeyN') { const w = wins.filter(t => ATTN.includes(t.status)); if (w.length) focus(w[(w.findIndex(t => t.id === focused) + 1) % w.length].id); }
       else if (e.code === 'Period' || e.code === 'Comma') { if (focused) setFont(f => ({ ...f, [focused]: Math.max(10, Math.min(20, (f[focused] || 13) + (e.code === 'Period' ? 1 : -1))) })); }
       else if (e.code === 'KeyW') { if (focused) removeFromView(focused); }
-      else if (/^Digit[1-9]$/.test(e.code)) { const t = wins[Number(e.code.slice(5)) - 1]; if (t) { if (maxId) setMaxId(t.id); focus(t.id); } }
+      else if (/^Digit[1-9]$/.test(e.code)) { const t = (maxId ? wins : pageWins)[Number(e.code.slice(5)) - 1]; if (t) { if (maxId) setMaxId(t.id); focus(t.id); } }
       else hit = false;
       if (hit) { e.preventDefault(); e.stopPropagation(); }
     };
@@ -165,10 +236,17 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
           {menu === 'add' && <div className="menu" onMouseLeave={() => setMenu(null)}><div className="mh">{group ? `Add to “${group.name}”` : 'Show here'}</div>{off.length ? off.map(t => <div className="mi" key={t.id} onClick={() => { addToView(t.id); setMenu(null); setTimeout(() => focus(t.id), 80); }}><Dot s={t.status} />#{t.num} {t.title}</div>) : <div className="mi">Every live task is already here.</div>}</div>}
         </div>
         <div className="seg">{(['columns', 'grid', 'rows'] as Layout[]).map(l => <button key={l} className={layout === l ? 'on' : ''} onClick={() => setLayout(l)}>{l[0].toUpperCase() + l.slice(1)}</button>)}</div>
-        {layout === 'columns' && <><span className="lbl">Visible</span><div className="seg">{(['auto', 2, 3, 4, 5] as const).map(v => <button key={v} className={visible === v ? 'on' : ''} onClick={() => setVisible(v)}>{v === 'auto' ? 'Auto' : v}</button>)}</div></>}
+        {layout === 'columns' && !per && <><span className="lbl">Visible</span><div className="seg">{(['auto', 2, 3, 4, 5] as const).map(v => <button key={v} className={visible === v ? 'on' : ''} onClick={() => setVisible(v)}>{v === 'auto' ? 'Auto' : v}</button>)}</div></>}
+        <span className="lbl">Per page</span><div className="seg">{PER_PAGE.map(v => <button key={v} className={perPage === v ? 'on' : ''} onClick={() => { setPerPage(v); setPage(0); }} title={v === 'off' ? 'Show every window' : `Show ${v} windows at a time`}>{v === 'off' ? 'Off' : v}</button>)}</div>
+        {per > 0 && pageCount > 1 && <div className="pager">
+          <button className="btn" disabled={pg === 0} onClick={() => turnPage(-1)} title="Previous page (⌃⌥PageUp or ⌃⌥[)">‹{needBefore > 0 && <span className="pw">● {needBefore}</span>}</button>
+          <span className="lbl" title={`Page ${pg + 1} of ${pageCount}`}>Page {pg + 1}/{pageCount} · windows {pg * per + 1}–{Math.min(wins.length, (pg + 1) * per)} of {wins.length}</span>
+          <button className="btn" disabled={pg === pageCount - 1} onClick={() => turnPage(1)} title="Next page (⌃⌥PageDown or ⌃⌥])">{needAfter > 0 && <span className="pw">● {needAfter}</span>}›</button>
+          {needBefore + needAfter > 0 && <button className="btn pneed" onClick={() => { const t = nextNeedy(); if (t) focus(t.id); }} title="Go to the next window on another page that needs you">● {needBefore + needAfter} need you on other pages</button>}
+        </div>}
         {newInSmart > 0 && <button className="btn" onClick={() => { setFrozen(liveSet()); }} title="Windows never appear on their own while you work">{newInSmart} new · refresh</button>}
         <span className="sp" />
-        <span className="lbl">{wins.length} windows{focusedTask ? ` · typing into #${focusedTask.num}` : ''}</span>
+        <span className="lbl">{per && pageCount > 1 ? '' : `${wins.length} windows`}{focusedTask ? `${per && pageCount > 1 ? '' : ' · '}typing into #${focusedTask.num}` : ''}</span>
         {suspendedHere.length > 0 && <button className="btn" title={`Not running: ${suspendedHere.map(t => '#' + t.num + ' ' + t.title).join(', ')}. Resume starts their agents again and continues their conversations.`} onClick={() => suspendedHere.forEach(t => api.resume(t.id).catch(() => {}))}>{suspendedHere.length} suspended · Resume</button>}
         <button className="btn" onClick={() => setFocusMode(!focusMode)}>Focus mode <kbd>⌃⌥F</kbd></button>
       </div>
@@ -181,12 +259,15 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
             <div className="wh" onPointerDown={e => startDrag(e, t.id)} onDoubleClick={() => setMaxId(m => m ? null : t.id)}>
               <span className="ix">{i + 1}</span><Dot s={t.status} /><span className="n">#{t.num}</span><span className="ti">{t.title}</span>
               <span className={`st st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} />
+              {ending === t.id ? <><span className="sel-warn">End & archive?</span><button className="b" onClick={() => endTask(t)}>Yes, end it</button><button className="b" onClick={() => setEnding(null)}>Cancel</button></> : <>
               {(t.status === 'suspended' || t.openElsewhere) && <button className="b" onClick={() => openPanel(t.id)}>{t.openElsewhere ? 'Options…' : 'Resume…'}</button>}
+              <button className={`b ${asking.has(t.id) ? 'on' : ''}`} title="Ask a separate agent about this session. This agent does not see the question." onClick={() => toggleAsk(t.id)}>?</button>
               <button className="b" title="Maximize (⌃⌥↩)" onClick={() => setMaxId(m => m ? null : t.id)}>{maxId === t.id ? '⤡' : '⤢'}</button>
               <button className="b" title="Task panel" onClick={() => openPanel(t.id)}>☰</button>
-              <button className="b" title="Remove from this view (⌃⌥W). The agent keeps running." onClick={() => removeFromView(t.id)}>✕</button>
+              {t.role !== 'controller' && <button className="b" title={t.openElsewhere ? 'End & archive: archives the task; the session in the other terminal keeps running' : 'End & archive: ends the tmux session and archives the task'} onClick={() => confirmEnd() ? setEnding(t.id) : endTask(t)}>⏻</button>}
+              <button className="b" title="Remove from this view (⌃⌥W). The agent keeps running." onClick={() => removeFromView(t.id)}>✕</button></>}
             </div>
-            <div className="wb">{t.openElsewhere ? <div className="empty" style={{ padding: 16 }}>Running in another terminal ({t.openElsewhere?.tty}). <button className="btn" onClick={() => openPanel(t.id)}>Options…</button></div>
+            <div className="wb">{asking.has(t.id) && <AskPanel task={t} close={() => toggleAsk(t.id)} />}{t.openElsewhere ? <div className="empty" style={{ padding: 16 }}>Running in another terminal ({t.openElsewhere?.tty}). <button className="btn" onClick={() => openPanel(t.id)}>Options…</button></div>
               : t.status === 'suspended' ? <div className="empty" style={{ padding: 16 }}>Suspended. <button className="btn" onClick={() => openPanel(t.id)}>Resume…</button></div>
               // a tmux window has one size: while this task's panel is open, the panel shows the terminal and the tile waits
               : t.id === panelTaskId ? <div className="tile-in-panel"><div>Shown in the task panel.</div><div className="sub">One terminal per task at a time, so neither is cut off. Closing the panel brings it back here.</div><button className="btn" onClick={() => openPanel(null)}>Show it here instead</button></div>

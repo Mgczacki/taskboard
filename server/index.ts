@@ -17,6 +17,7 @@ import * as events from './events.ts';
 import * as groups from './groups.ts';
 import * as importer from './importer.ts';
 import * as approvals from './approvals.ts';
+import * as ask from './ask.ts';
 import * as accounts from './accounts.ts';
 import * as external from './external.ts';
 import * as machines from './machines.ts';
@@ -25,7 +26,7 @@ import { acquire } from './lock.ts';
 import { ROLE, installRuntimeFiles, refuseReason } from './instance.ts';
 import { hostname } from 'node:os';
 import WebSocket from 'ws';
-import { mountReview } from './review.ts';
+import { mountReview, pendingFor } from './review.ts';
 import { attach } from './pty.ts';
 import * as store from './store.ts';
 import * as tmux from './tmux.ts';
@@ -176,8 +177,9 @@ app.get('/api/info', (_req, res) => res.json(info()));
 app.patch('/api/info', async (req, res) => {
   if (!req.get('origin')) return res.status(403).json({ error: 'Machine settings are changed on the dashboard.' });
   const before = JSON.stringify(machine.get());
-  const { name, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval } = req.body;
-  machine.update({ name, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval });
+  const { name, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval, askAccount, askModel } = req.body;
+  if (askAccount && accounts.get(askAccount)?.agent !== 'claude') return res.status(400).json({ error: 'Pick a Claude Code account for questions.' });
+  machine.update({ name, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval, askAccount, askModel });
   // the running controller picks up a new name or Remote Control setting at its next restart, which keepController()
   // does as soon as it is between turns
   void before;
@@ -286,7 +288,7 @@ app.delete('/api/groups/:id', (req, res) => { const g = groups.remove(req.params
 app.post('/api/groups/restore', (req, res) => { groups.restore(req.body); res.json({}); });
 
 app.get('/api/import', async (_req, res) => {
-  try { res.json(await importer.candidates(new Set(store.all().map(t => t.sessionId).filter(Boolean) as string[]))); } catch (e) { fail(res, e); }
+  try { res.json(await importer.candidates(new Set(store.all().flatMap(t => [t.sessionId, ...(t.pastSessions || [])]).filter(Boolean) as string[]))); } catch (e) { fail(res, e); }
 });
 app.post('/api/import', (req, res) => {
   const made: unknown[] = [], errors: string[] = [];
@@ -376,6 +378,18 @@ app.get('/api/tasks/:id/since', async (req, res) => {
 });
 
 app.get('/api/tasks/:id/log', (req, res) => res.type('text/markdown').send(store.readLog(req.params.id)));
+// Questions about a task, answered by a separate read-only agent (server/ask.ts). The dashboard asks, directly or through
+// another machine's Taskboard server (which sends no origin and no x-tb-actor); agents do not, because each question
+// uses the account's usage.
+app.get('/api/tasks/:id/ask', (req, res) => { if (!store.get(req.params.id)) return res.status(404).end(); res.json(ask.get(req.params.id)); });
+app.post('/api/tasks/:id/ask', async (req, res) => {
+  if (!req.get('origin') && req.get('x-tb-actor')) return res.status(403).json({ error: 'Questions are asked on the dashboard.' });
+  const t = store.get(req.params.id); if (!t) return res.status(404).end();
+  const q = String(req.body?.question || '').trim(); if (!q) return fail(res, 'Type a question.');
+  try { res.json(await ask.ask(t, q)); } catch (e) { fail(res, e); }
+});
+app.post('/api/tasks/:id/ask/stop', (req, res) => { ask.stop(req.params.id); res.json({ ok: true }); });
+app.delete('/api/tasks/:id/ask', (req, res) => { if (!store.get(req.params.id)) return res.status(404).end(); res.json(ask.clear(req.params.id)); });
 app.get('/api/tasks/:id/peek', async (req, res) => {
   const t = store.get(req.params.id); if (!t) return res.status(404).end();
   res.type('text/plain').send(await tmux.capture(t.session, Math.min(500, Number(req.query.lines) || 30)));
@@ -607,7 +621,8 @@ function betweenTurns(t: store.Task) {
   return Date.now() - Math.max(last, store.launchedAt.get(t.id) || 0) >= QUIET_MS;
 }
 let lastListWarn = 0;
-async function reconcile() {
+// first: the run at server start, before the status is read from the transcripts (see below)
+async function reconcile(first = false) {
   const sessions = await tmux.listSessions();
   if (!sessions) { if (Date.now() - lastListWarn > 60000) { lastListWarn = Date.now(); console.error(`${new Date().toISOString()} tmux did not answer; skipping status checks`); } return; }
   const byName = new Map(sessions.map(s => [s.name, s]));
@@ -643,23 +658,32 @@ async function reconcile() {
     }
     if (t.agent === 'codex' && t.sessionId) {
       let tr = t.transcript;
-      if (!tr) { tr = importer.transcriptFor('codex', t.sessionId); if (tr) store.update(t.id, { transcript: tr }); }
-      try { if (tr) events.codexActivity(t, statSync(tr).mtimeMs); } catch { /* moved */ }
+      if (!tr) { tr = importer.transcriptFor('codex', t.sessionId, (accounts.get(t.account) || accounts.defaultFor('codex')).dir); if (tr) store.update(t.id, { transcript: tr }); }
+      let mtime = 0;
+      // at start, a rollout file that changed while the server was down is read by the transcript check instead
+      try { if (tr) { mtime = statSync(tr).mtimeMs; if (!first) events.codexActivity(t, mtime); } } catch { /* moved */ }
+      // Questions Codex asks while it keeps working are only visible on screen. Read the screen while they are open,
+      // and for 10 s after the rollout file or the status changed (the questions appear right after the call is written).
+      const c = store.get(t.id)!;
+      if (events.codexQuestionsOpen(c) || Date.now() - Math.max(mtime, Date.parse(c.statusAt) || 0) < 10000)
+        events.codexQuestionCheck(c, (await tmux.capture(c.session, 0)).split('\n').filter(l => l.trim()).slice(-15).join('\n'));
     }
     // after the activity checks above, so a new Codex turn is seen first
     const cur = store.get(t.id)!;
     if (cur.restartWhenDone && betweenTurns(cur)) { await restartTask(cur); continue; }
   }
 }
-await reconcile();
+await reconcile(true);
 // Events sent while the server was down are lost; take the status from the transcripts once at start.
 for (const t of store.all()) {
-  if (!t.transcript || t.openElsewhere || !['working', 'needs-you', 'idle', 'unread'].includes(t.status)) continue;
+  if (!t.transcript || t.openElsewhere || !['working', 'needs-you', 'idle', 'unread', 'review'].includes(t.status)) continue;
   const r = external.readState(t.agent, t.transcript); if (!r) continue;
   const newer = (r.at ?? 0) > (Date.parse(t.statusAt) || 0); // compare conversation records, not file writes
-  if (r.state === 'finished' && ['working', 'needs-you'].includes(t.status) && newer)
-    store.update(t.id, { status: 'unread', ask: '', now: r.text || t.now, statusSource: 'Turn ended while Taskboard was restarting (read from the transcript).' });
-  else if ((r.state === 'busy' || r.state === 'tool') && ['idle', 'unread'].includes(t.status) && newer)
+  if (r.state === 'finished' && ['working', 'needs-you'].includes(t.status) && newer) {
+    const pending = pendingFor(t.id); // a document still waiting for review
+    store.update(t.id, { status: pending ? 'review' : 'unread', ask: pending ? `Review ${pending.name}` : '', now: r.text || t.now, statusSource: 'Turn ended while Taskboard was restarting (read from the transcript).' });
+  }
+  else if ((r.state === 'busy' || r.state === 'tool') && ['idle', 'unread', 'review'].includes(t.status) && newer)
     store.update(t.id, { status: 'working', statusSource: 'Started working while Taskboard was restarting (read from the transcript).' });
 }
 // start the controller together with Taskboard

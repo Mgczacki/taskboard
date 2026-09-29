@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import { closeSync, existsSync, openSync, readSync, readdirSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { promisify } from 'node:util';
-import { AGY_HOME, HOME } from './config.ts';
+import { AGY_HOME, HOME, TB_DIR } from './config.ts';
 
 const exec = promisify(execFile);
 const DAYS = 14;
@@ -155,7 +155,7 @@ const argAfter = (args: string[], flag: string) => { const i = args.indexOf(flag
 
 export async function candidates(knownSessionIds: Set<string>): Promise<Candidate[]> {
   const [cc, cx, ag, procs] = await Promise.all([Promise.resolve(claudeCandidates()), codexCandidates(), antigravityCandidates(), runningAgents()]);
-  const list = [...cc, ...cx, ...ag].filter(c => !knownSessionIds.has(c.sessionId) && c.cwd && !/^\/(private\/)?(tmp|var\/folders)\//.test(c.cwd));
+  const list = [...cc, ...cx, ...ag].filter(c => !knownSessionIds.has(c.sessionId) && c.cwd && !/^\/(private\/)?(tmp|var\/folders)\//.test(c.cwd) && !c.cwd.startsWith(join(TB_DIR, 'ask')));
   for (const p of procs) {
     // exact: the session id is on the command line (codex resume <id>, claude --resume <id>, agy --conversation <id>)
     const exactId = p.agent === 'codex' ? (p.args[1] === 'resume' ? p.args[2] : undefined) : p.agent === 'antigravity' ? argAfter(p.args, '--conversation')
@@ -169,10 +169,12 @@ export async function candidates(knownSessionIds: Set<string>): Promise<Candidat
   return list.sort((a, b) => Number(!!b.running) - Number(!!a.running) || b.updated.localeCompare(a.updated));
 }
 
-// Where a session's transcript lives, for tasks imported before the path was recorded.
-export function transcriptFor(agent: Agent, sessionId: string): string | undefined {
+// Where a session's transcript lives, for tasks imported before the path was recorded. accountDir is the task's
+// account folder (CLAUDE_CONFIG_DIR / CODEX_HOME); without it, the default folder is searched.
+export function transcriptFor(agent: Agent, sessionId: string, accountDir?: string): string | undefined {
   if (agent === 'antigravity') { const f = join(AGY_HOME, 'brain', sessionId, '.system_generated', 'logs', 'transcript_full.jsonl'); return existsSync(f) ? f : undefined; }
-  const root = agent === 'claude' ? join(process.env.CLAUDE_CONFIG_DIR || join(HOME, '.claude'), 'projects') : join(process.env.CODEX_HOME || join(HOME, '.codex'), 'sessions');
+  const base = accountDir || (agent === 'claude' ? process.env.CLAUDE_CONFIG_DIR || join(HOME, '.claude') : process.env.CODEX_HOME || join(HOME, '.codex'));
+  const root = join(base, agent === 'claude' ? 'projects' : 'sessions');
   const walk = (d: string, depth: number): string | undefined => {
     let entries: string[] = []; try { entries = readdirSync(d); } catch { return; }
     for (const e of entries) {

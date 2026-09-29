@@ -106,3 +106,17 @@ export function readState(agent: 'claude' | 'codex' | 'antigravity', path: strin
     return { ...(agent === 'claude' ? claude(lines) : agent === 'codex' ? codex(lines) : antigravity(lines)), mtime, at };
   } catch { return null; }
 }
+
+// The question titles of the newest request_user_input_async call in a Codex rollout file. Codex records the call and
+// an immediate {"accepted":true} result, but not the answers, so this cannot tell whether the questions are still open.
+export function codexQuestions(path: string): string[] {
+  try {
+    const lines = tailLines(path);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const p = parse(lines[i])?.payload;
+      if (p?.type === 'function_call' && p.name === 'request_user_input_async')
+        return (JSON.parse(p.arguments || '{}').questions || []).map((q: any) => short(String(q.title || ''), 200)).filter(Boolean);
+    }
+  } catch { /* moved or not JSON */ }
+  return [];
+}
