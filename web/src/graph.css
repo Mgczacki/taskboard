@@ -56,3 +56,46 @@
 .gworld.focusing .gnode:not(.hl), .gworld.focusing .gedge:not(.hl) { opacity: .22; }
 .gworld.focusing .gedge.hl.wrote { stroke: var(--muted); }
 .gempty { position: absolute; left: 50%; top: 40%; transform: translate(-50%, -50%); color: var(--dim); font-size: 13px; text-align: center; }
+
+/* People lane: Slack members and the Controller, You and Unknown sender nodes, joined to tasks by message edges. */
+.gnode.person, .gnode.source { padding: 10px 12px 8px 56px; display: flex; flex-direction: column; justify-content: center; gap: 2px; }
+.gnode.person { border-radius: 31px; border-color: color-mix(in srgb, var(--st-review) 40%, var(--line)); }
+.gnode.source { background: var(--bg2); }
+.gnode .gface, .gpanel-head .gface { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); }
+.gface { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; flex: none; background: var(--panel2); }
+.gface.ini { display: inline-flex; align-items: center; justify-content: center; background: var(--fc); color: var(--bg); font: 600 12.5px var(--sans); }
+.gface.src { width: 36px; height: 36px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; background: var(--line2); color: var(--text); font: 600 13px var(--sans); }
+.gnode .pn { font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gnode .pc { font: 12px var(--mono); color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gedge.message { stroke: var(--st-review); stroke-width: 1.9; }
+.gedge.message.pending { stroke-dasharray: 5 4; }
+.gclick { cursor: pointer; }
+.gclick .ghit { fill: none; stroke: transparent; stroke-width: 12; pointer-events: stroke; }
+.gclick .gcount { pointer-events: all; }
+.gcount rect { fill: var(--panel2); stroke: var(--st-review); }
+.gcount text { fill: var(--text); font: 11px var(--mono); text-anchor: middle; }
+.gclick:hover .gedge.message { stroke-width: 3; }
+.gworld.focusing .gclick:not(.hl) { opacity: .22; }
+
+/* Message panel at the right side of the Graph (GraphMail.tsx). */
+.gpanel { position: absolute; top: 42px; right: 0; bottom: 0; width: min(440px, 100%); z-index: 5; display: flex; flex-direction: column; background: var(--panel); border-left: 1px solid var(--line); box-shadow: -12px 0 30px rgba(0,0,0,.35); }
+.gpanel-head { position: relative; display: flex; align-items: center; gap: 10px; padding: 12px 12px 12px 60px; min-height: 60px; border-bottom: 1px solid var(--line); box-sizing: border-box; }
+.gpanel-head .who { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.gpanel-head .who b { font-size: 14px; }
+.gpanel-head .who span { font: 12px var(--mono); color: var(--dim); overflow-wrap: anywhere; }
+.gpanel-note { padding: 8px 14px; font-size: 12.5px; color: var(--muted); border-bottom: 1px solid var(--line); }
+.gpanel-list { flex: 1; overflow-y: auto; padding: 4px 8px 16px; }
+.gmsg { border-bottom: 1px solid var(--line); }
+.gmsg.open { background: var(--bg2); border-radius: 6px; }
+.gmsg-row { display: flex; flex-direction: column; gap: 2px; width: 100%; padding: 9px 6px; text-align: left; background: none; border: 0; color: var(--text); font: inherit; cursor: pointer; }
+.gmsg-row:hover { background: var(--hover); }
+.gmsg-row b { font-size: 13px; font-weight: 600; }
+.gmsg-row .dir { font: 11px var(--mono); color: var(--st-review); }
+.gmsg-row .meta { font: 12px var(--mono); color: var(--dim); }
+.gmsg-row .pv { font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gmsg-full { padding: 0 8px 12px; font-size: 12.5px; }
+.gmsg-full dl { display: grid; grid-template-columns: 120px 1fr; gap: 3px 10px; margin: 4px 0 8px; }
+.gmsg-full dt { color: var(--dim); }
+.gmsg-full dd { margin: 0; overflow-wrap: anywhere; }
+.gmsg-full pre { background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 10px; font: 12.5px/1.5 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 50vh; overflow-y: auto; margin: 0 0 8px; }
+.glink { background: none; border: 0; padding: 0; color: var(--accent); font: inherit; cursor: pointer; text-decoration: underline; }

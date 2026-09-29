@@ -3,7 +3,7 @@ import type { Task } from '../api';
 import { InboxPage as Documents } from './Review';
 import type { DocumentLink } from '../documentLinks';
 import '../mail.css';
-interface Message {
+export interface Message {
   id: string; direction: 'inbox' | 'outbox'; from: string; to: string; subject: string; body: string; hash: string;
   created: string; dismissedAt?: string; sendStartedAt?: string; sentAt?: string; sending?: boolean; error?: string;
   proposedBy?: { actor: 'user' | 'controller' | 'task'; task?: string; agent?: string };
@@ -14,7 +14,7 @@ interface Message {
   approver?: 'user' | 'controller' | 'nobody'; trusted?: boolean;
 }
 interface Mailbox { messages: Message[]; contacts: { user: string; name: string; status?: string }[]; requests: { user: string; name: string }[]; staged: { id: string; name: string; size: number; hash: string }[]; identity: { user: string; name?: string; needsReconnect?: boolean } | null; trustedSenders: { user: string; name: string }[]; levels: { incoming: number; outgoing: number }; error?: string }
-function sentState(m: Message) {
+export function sentState(m: Message) {
   if (m.sentAt) return 'Sent';
   if (m.sending && m.error) return 'Delivery uncertain';
   if (m.sending) return 'Sending';
@@ -26,7 +26,7 @@ function sentState(m: Message) {
 }
 function taskLabel(id: string, tasks: Task[]) { const t = tasks.find(x => x.id === id); return t ? `#${t.num} ${t.title}` : id; }
 // What happens next to an incoming message, from the server's permission levels
-function inboxState(m: Message, tasks: Task[]) {
+export function inboxState(m: Message, tasks: Task[]) {
   if (m.rejectedAt) return 'Rejected. No agent receives it.';
   if (m.approval) return `Approved by ${m.approval.by === 'user' ? 'you' : 'the controller'}.`;
   if (!m.review) return m.error ? 'The check failed. No agent receives it.' : 'Waiting for the controller check.';
@@ -38,8 +38,8 @@ function inboxState(m: Message, tasks: Task[]) {
   if (m.proposedRoute) return 'The controller says that no task needs this message.';
   return 'Waiting for your approval. The controller has not proposed a task yet.';
 }
-function date(at?: string) { return at ? new Date(at).toLocaleString() : 'Unknown'; }
-function proposer(m: Message, tasks: Task[]) {
+export function date(at?: string) { return at ? new Date(at).toLocaleString() : 'Unknown'; }
+export function proposer(m: Message, tasks: Task[]) {
   if (!m.proposedBy) return 'Unknown';
   if (m.proposedBy.actor !== 'task') return m.proposedBy.actor === 'user' ? 'User' : 'Controller';
   const task = tasks.find(t => t.id === m.proposedBy?.task);

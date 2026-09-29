@@ -14,6 +14,7 @@ import { reviewMessage } from './review.ts';
 import { extractText, publicFile, routeFile, stageBytes, stagePath, verifyFile } from './files.ts';
 import { approvalValid, approverFor, combinedVerdict, isTrusted, worse, type Levels } from './policy.ts';
 import { mailCards } from './cards.ts';
+import { Avatars, isSlackUser } from './avatars.ts';
 
 // Set by mountMail: makes the approval cards again after the permission levels change on the Settings page.
 let levelsChanged = () => {};
@@ -207,6 +208,34 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
     });
     return { matches: matches.slice(0, 10), hasMore: matches.length > 10 };
   }));
+  // The Graph page (web/src/components/Graph.tsx): the Slack people in the mailbox and a short record of each message
+  // with them. The full text stays out of this list. The page loads one message with GET /api/mail/:id on a click.
+  const avatars = new Avatars(join(TB_DIR, 'avatars'), slack);
+  app.get('/api/mail/graph', endpoint(req => {
+    user(req);
+    const d = store.read(), persons = new Set<string>();
+    const messages = d.messages.flatMap(m => {
+      const person = m.direction === 'outbox' ? m.to : m.from;
+      if (!isSlackUser(person) || (m.direction === 'inbox' && m.source !== 'slack')) return [];
+      persons.add(person);
+      const { body, files, hash, ...rest } = present(m, req);
+      return [{ ...rest, person, files: files?.length || 0, preview: Array.from(body.replace(/\s+/g, ' ').trim()).slice(0, 120).join('') }];
+    });
+    const people = [...persons].map(u => {
+      const name = d.contacts.find(c => c.user === u)?.name || avatars.name(u);
+      if (!name) avatars.warm(u);
+      return { user: u, name: name || u, picture: `/api/mail/avatar/${u}` };
+    });
+    return { people, messages };
+  }));
+  // A profile picture from TB_DIR/avatars. Only the dashboard can load it (an <img> request sends the Referer header).
+  app.get('/api/mail/avatar/:user', async (req, res) => {
+    if (!human(req)) return res.status(403).end();
+    const picture = await avatars.picture(String(req.params.user)).catch(() => undefined);
+    if (!picture) return res.status(404).end();
+    res.set('Cache-Control', 'private, max-age=86400').set('Content-Security-Policy', "default-src 'none'").set('X-Content-Type-Options', 'nosniff');
+    res.type(picture.type).send(readFileSync(picture.path));
+  });
   app.post('/api/mail/files/stage', endpoint(req => {
     user(req);
     if ((store.read().staged || []).length >= 10) throw new Error('Remove a staged file before adding another');
@@ -359,6 +388,9 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
     if (levels().incoming === 1) throw new Error('The user routes each message at this level. Propose a task with tb mail propose-route.');
     return routeMessage(m, String(req.body.task || ''), 'controller');
   }));
+  // One message with its full text, for the message panel of the Graph page. Registered last so that it does not
+  // match the other GET routes with one path segment.
+  app.get('/api/mail/:id', endpoint(req => { user(req); return present(store.get(String(req.params.id)), req); }));
   cards.sync();
   return () => { if (timer) clearInterval(timer); };
 }
