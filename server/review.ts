@@ -27,6 +27,11 @@ const now = () => new Date().toISOString();
 const clock = () => new Date().toTimeString().slice(0, 5);
 const newId = () => randomBytes(6).toString('hex');
 
+// The newest document from this task that still waits for the user (not yet answered with feedback or accepted).
+export function pendingFor(taskId: string): ReviewItem | undefined {
+  return Object.values(load()).filter(x => x.task === taskId && x.state === 'pending').sort((a, b) => b.requestedAt.localeCompare(a.requestedAt))[0];
+}
+
 export function mountReview(app: Express) {
   app.post('/api/review/request', (req, res) => {
     const path = docs.safePath(String(req.body.path || ''));

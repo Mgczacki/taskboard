@@ -1,17 +1,20 @@
-// Import sessions you started outside Taskboard. Nothing in ~/.claude or ~/.codex is changed:
-// Claude Code transcripts are read as files, Codex's thread list is read from its database in read-only mode.
+// Import sessions you started outside Taskboard. Nothing in ~/.claude, ~/.codex or ~/.gemini is changed:
+// Claude Code transcripts are read as files, the Codex and Antigravity conversation lists are read from their
+// databases in read-only mode.
 // An imported session becomes a Suspended task; opening it resumes the same conversation inside Taskboard.
 import { execFile } from 'node:child_process';
 import { closeSync, existsSync, openSync, readSync, readdirSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { promisify } from 'node:util';
-import { HOME } from './config.ts';
+import { AGY_HOME, HOME, TB_DIR } from './config.ts';
+import * as tmux from './tmux.ts';
 
 const exec = promisify(execFile);
 const DAYS = 14;
+type Agent = 'claude' | 'codex' | 'antigravity';
 
 export interface Candidate {
-  agent: 'claude' | 'codex';
+  agent: Agent;
   sessionId: string;
   title: string;
   cwd: string;
@@ -98,8 +101,34 @@ async function codexCandidates(): Promise<Candidate[]> {
   } catch (e) { console.error('codex import', e); return []; }
 }
 
+// ---------- Antigravity: conversation_summaries in ~/.gemini/antigravity-cli/conversation_summaries.db (read-only) ----------
+// The database uses a write-ahead log. While agy runs, the -wal file holds the newest rows and a plain read-only open
+// works. When no agy runs there is no -wal file and a read-only open fails (SQLite cannot create the -shm file), but
+// then every row is in the main file, so it is opened as immutable.
+async function antigravityCandidates(): Promise<Candidate[]> {
+  const db = join(AGY_HOME, 'conversation_summaries.db');
+  if (!existsSync(db)) return [];
+  const target = existsSync(db + '-wal') ? ['-readonly', db] : [`file:${db}?immutable=1`];
+  const since = new Date(Date.now() - DAYS * 86400000).toISOString().replace('T', ' ');
+  // nesting_depth 0: conversations you started, not the ones agy starts for its own subagents
+  const sql = `select conversation_id, title, preview, workspace_uris, last_modified_time from conversation_summaries
+    where nesting_depth = 0 and killed = 0 and step_count > 0 and last_modified_time > '${since}' order by last_modified_time desc limit 300`;
+  try {
+    const { stdout } = await exec('sqlite3', ['-json', ...target, sql], { maxBuffer: 32 * 1024 * 1024 });
+    const rows = stdout.trim() ? JSON.parse(stdout) : [];
+    return rows.map((r: any) => {
+      let cwd = ''; try { cwd = decodeURIComponent(new URL(JSON.parse(r.workspace_uris)[0]).pathname); } catch { /* no workspace */ }
+      return {
+        agent: 'antigravity' as const, sessionId: r.conversation_id, title: clip(r.title || r.preview, 90), cwd,
+        firstPrompt: clip(r.preview, 400), updated: new Date(Date.parse(String(r.last_modified_time).replace(' ', 'T'))).toISOString(),
+        transcript: transcriptFor('antigravity', r.conversation_id),
+      };
+    });
+  } catch (e) { console.error('antigravity import', e); return []; }
+}
+
 // ---------- which sessions are open in a terminal right now ----------
-interface Proc { pid: number; tty: string; agent: 'claude' | 'codex'; args: string[]; cwd?: string }
+interface Proc { pid: number; tty: string; agent: Agent; args: string[]; cwd?: string }
 async function runningAgents(): Promise<Proc[]> {
   const { stdout } = await exec('ps', ['-Ao', 'pid=,tty=,args=']);
   const procs: Proc[] = [];
@@ -107,9 +136,9 @@ async function runningAgents(): Promise<Proc[]> {
     const m = line.trim().match(/^(\d+)\s+(\S+)\s+(.*)$/); if (!m) continue;
     const [, pid, tty, cmd] = m; if (tty === '??') continue;
     const args = cmd.split(/\s+/); const name = basename(args[0]);
-    if (name !== 'claude' && name !== 'codex') continue;
-    if (['daemon', 'bg-spare', 'app-server', 'sandbox', 'mcp-server', 'exec'].includes(args[1] || '')) continue;
-    procs.push({ pid: Number(pid), tty, agent: name, args });
+    if (name !== 'claude' && name !== 'codex' && name !== 'agy') continue;
+    if (['daemon', 'bg-spare', 'app-server', 'sandbox', 'mcp-server', 'exec', 'plugin', 'models', 'remote-control', 'mic-serve', 'update'].includes(args[1] || '')) continue;
+    procs.push({ pid: Number(pid), tty, agent: name === 'agy' ? 'antigravity' : name, args });
   }
   if (procs.length) {
     try {
@@ -126,11 +155,17 @@ async function runningAgents(): Promise<Proc[]> {
 const argAfter = (args: string[], flag: string) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : undefined; };
 
 export async function candidates(knownSessionIds: Set<string>): Promise<Candidate[]> {
-  const [cc, cx, procs] = await Promise.all([Promise.resolve(claudeCandidates()), codexCandidates(), runningAgents()]);
-  const list = [...cc, ...cx].filter(c => !knownSessionIds.has(c.sessionId) && c.cwd && !/^\/(private\/)?(tmp|var\/folders)\//.test(c.cwd));
+  const [cc, cx, ag, procs, panes] = await Promise.all([
+    Promise.resolve(claudeCandidates()), codexCandidates(), antigravityCandidates(), runningAgents(),
+    tmux.tmux('list-panes', '-a', '-F', '#{pane_tty}').catch(() => ''),
+  ]);
+  const ownTtys = new Set(panes.split('\n').filter(Boolean).map(tty => basename(tty.trim())));
+  const list = [...cc, ...cx, ...ag].filter(c => !knownSessionIds.has(c.sessionId) && c.cwd && !/^\/(private\/)?(tmp|var\/folders)\//.test(c.cwd) && !c.cwd.startsWith(join(TB_DIR, 'ask')));
   for (const p of procs) {
-    // exact: the session id is on the command line (codex resume <id>, claude --resume <id>)
-    const exactId = p.agent === 'codex' ? (p.args[1] === 'resume' ? p.args[2] : undefined) : (argAfter(p.args, '--resume') || argAfter(p.args, '-r') || argAfter(p.args, '--session-id'));
+    if (ownTtys.has(p.tty)) continue; // a Taskboard agent in this tmux server is not an external session
+    // exact: the session id is on the command line (codex resume <id>, claude --resume <id>, agy --conversation <id>)
+    const exactId = p.agent === 'codex' ? (p.args[1] === 'resume' ? p.args[2] : undefined) : p.agent === 'antigravity' ? argAfter(p.args, '--conversation')
+      : (argAfter(p.args, '--resume') || argAfter(p.args, '-r') || argAfter(p.args, '--session-id'));
     let c = exactId ? list.find(x => x.sessionId === exactId) : undefined;
     let exact = !!c;
     // otherwise: the most recent session of that agent in the process's folder
@@ -140,9 +175,12 @@ export async function candidates(knownSessionIds: Set<string>): Promise<Candidat
   return list.sort((a, b) => Number(!!b.running) - Number(!!a.running) || b.updated.localeCompare(a.updated));
 }
 
-// Where a session's transcript lives, for tasks imported before the path was recorded.
-export function transcriptFor(agent: 'claude' | 'codex', sessionId: string): string | undefined {
-  const root = agent === 'claude' ? join(process.env.CLAUDE_CONFIG_DIR || join(HOME, '.claude'), 'projects') : join(process.env.CODEX_HOME || join(HOME, '.codex'), 'sessions');
+// Where a session's transcript lives, for tasks imported before the path was recorded. accountDir is the task's
+// account folder (CLAUDE_CONFIG_DIR / CODEX_HOME); without it, the default folder is searched.
+export function transcriptFor(agent: Agent, sessionId: string, accountDir?: string): string | undefined {
+  if (agent === 'antigravity') { const f = join(AGY_HOME, 'brain', sessionId, '.system_generated', 'logs', 'transcript_full.jsonl'); return existsSync(f) ? f : undefined; }
+  const base = accountDir || (agent === 'claude' ? process.env.CLAUDE_CONFIG_DIR || join(HOME, '.claude') : process.env.CODEX_HOME || join(HOME, '.codex'));
+  const root = join(base, agent === 'claude' ? 'projects' : 'sessions');
   const walk = (d: string, depth: number): string | undefined => {
     let entries: string[] = []; try { entries = readdirSync(d); } catch { return; }
     for (const e of entries) {

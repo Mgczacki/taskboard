@@ -1,23 +1,29 @@
 // Client state: the task list, kept current by the server's /ws/events stream.
 import { useSyncExternalStore } from 'react';
 
+export type Agent = 'claude' | 'codex' | 'antigravity';
+export const AGENT_NAME: Record<Agent, string> = { claude: 'Claude Code', codex: 'Codex', antigravity: 'Antigravity' };
+export const AGENTS = Object.keys(AGENT_NAME) as Agent[];
 export type Status = 'working' | 'needs-you' | 'unread' | 'idle' | 'stopped' | 'review' | 'suspended' | 'parked' | 'archived';
 export interface Task {
-  id: string; num: number; title: string; agent: 'claude' | 'codex'; status: Status;
+  id: string; num: number; title: string; agent: Agent; status: Status;
   cwd: string; folder: string; branch?: string; worktree?: boolean; session: string; sessionId?: string;
   created: string; updated: string; statusAt: string; statusSource?: string;
   goal?: string; now?: string; ask?: string; stopReason?: string; interrupted?: string; desc: string;
-  waitMin: number; attach: string; docs?: { inbox: number; outbox: number }; role?: 'controller'; parent?: string; account?: string; machine?: { id: string; name: string }; imported?: string; openElsewhere?: { pid: number; tty: string }; moveWhenDone?: boolean; remoteUrl?: string; restartWhenDone?: boolean; unscrollable?: boolean;
+  waitMin: number; attach: string; docs?: { inbox: number; outbox: number }; role?: 'controller'; parent?: string; account?: string; model?: string; machine?: { id: string; name: string }; imported?: string; openElsewhere?: { pid: number; tty: string }; moveWhenDone?: boolean; remoteUrl?: string; restartWhenDone?: boolean; unscrollable?: boolean;
 }
 
 export interface ImportCandidate {
-  agent: 'claude' | 'codex'; sessionId: string; title: string; cwd: string; branch?: string; firstPrompt?: string; lastMessage?: string;
+  agent: Agent; sessionId: string; title: string; cwd: string; branch?: string; firstPrompt?: string; lastMessage?: string;
   updated: string; source?: string; running?: { pid: number; tty: string; exact: boolean };
 }
 
-export interface MachineInfo { role?: 'production' | 'sandbox'; root?: string; machine: string; host: string; url: string; settings: { name: string; controller: { autostart: boolean; remoteControl: boolean }; permissions: { controllerNeedsApproval: boolean; agentsNeedApproval: boolean } }; controller: null | { agent: string; account?: string; status: string; remoteUrl?: string; label: string } }
+export interface MachineInfo { role?: 'production' | 'sandbox'; root?: string; machine: string; host: string; url: string; settings: { name: string; routingRules: string; controller: { autostart: boolean; remoteControl: boolean }; permissions: { controllerNeedsApproval: boolean; agentsNeedApproval: boolean; trustWorkspaces: boolean; autoReview: boolean }; ask: { agent: 'claude' | 'codex'; account: string; model: string }; review: { account: string; model: string } }; controller: null | { agent: string; account?: string; status: string; remoteUrl?: string; label: string } }
 export interface Machine { id: string; name: string; url: string; local?: boolean; online: boolean; latency?: number; lastSeen?: string; error?: string; tasks?: number }
 export interface Approval { id: string; actor: string; action: string; summary: string; detail: string; created: string; state: 'pending' | 'approved' | 'denied' | 'failed'; result?: string }
+// questions about a task, answered by a separate read-only agent (server/ask.ts)
+export interface AskItem { q: string; a?: string; state: 'running' | 'done' | 'failed' | 'stopped'; steps: string[]; costUsd?: number; ms?: number; agent?: 'claude' | 'codex'; model: string; account: string; at: string }
+export interface AskThread { sessionId?: string; items: AskItem[] }
 export interface Group { id: string; name: string; color: string; tasks: string[]; created: string }
 
 export const STATUS_LABEL: Record<Status, string> = {
@@ -31,6 +37,9 @@ export const ATTN: Status[] = ['needs-you', 'stopped', 'review'];
 let loadedBuild = '';
 export const autoReload = () => { try { return localStorage.getItem('tb-autoreload') !== 'off'; } catch { return true; } };
 export const setAutoReload = (on: boolean) => { try { localStorage.setItem('tb-autoreload', on ? 'on' : 'off'); } catch { /* storage off */ } };
+// Ask before a canvas window's End & archive button acts (Settings; saved per browser or app, default off).
+export const confirmEnd = () => { try { return localStorage.getItem('tb-confirm-end') === 'on'; } catch { return false; } };
+export const setConfirmEnd = (on: boolean) => { try { localStorage.setItem('tb-confirm-end', on ? 'on' : 'off'); } catch { /* storage off */ } };
 let tasks: Task[] = [];
 let groups: Group[] = [];
 let approvals: Approval[] = [];
@@ -87,7 +96,7 @@ async function call<T = unknown>(method: string, path: string, body?: unknown): 
   return data as T;
 }
 export const api = {
-  create: (b: { title: string; desc: string; agent: string; folder: string; worktree?: boolean; branch?: string; account?: string; machine?: string }) => call<Task>('POST', '/api/tasks', b),
+  create: (b: { title: string; desc: string; agent: string; folder: string; worktree?: boolean; branch?: string; account?: string; model?: string; machine?: string }) => call<Task>('POST', '/api/tasks', b),
   setStatus: (id: string, status: string) => call('POST', `/api/tasks/${id}/status`, { status }),
   seen: (id: string) => call('POST', `/api/tasks/${id}/seen`, {}),
   resume: (id: string, force = false) => call<Task>('POST', `/api/tasks/${id}/resume`, { force }),
@@ -98,7 +107,7 @@ export const api = {
   restart: (id: string, when: 'now' | 'after-turn' | 'cancel') => call<Task>('POST', `/api/tasks/${encodeURIComponent(id)}/restart`, { when }),
   remove: (id: string) => call('DELETE', `/api/tasks/${encodeURIComponent(id)}`),
   info: () => call<MachineInfo>('GET', '/api/info'),
-  updateInfo: (patch: { name?: string; autostart?: boolean; remoteControl?: boolean; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean }) => call<MachineInfo>('PATCH', '/api/info', patch),
+  updateInfo: (patch: { name?: string; routingRules?: string; autostart?: boolean; remoteControl?: boolean; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string }) => call<MachineInfo>('PATCH', '/api/info', patch),
   setControllerAccount: (account: string) => call<Task>('POST', '/api/controller/account', { account }),
   // sent as raw bytes; octet-stream so the server's JSON parser leaves .json files alone
   upload: async (id: string, file: File) => {
@@ -124,6 +133,10 @@ export const api = {
   updateGroup: (id: string, patch: { name?: string; color?: string; tasks?: string[]; add?: string | string[]; remove?: string | string[] }) => call<Group>('PATCH', `/api/groups/${id}`, patch),
   deleteGroup: (id: string) => call<Group>('DELETE', `/api/groups/${id}`),
   restoreGroup: (g: Group) => call('POST', '/api/groups/restore', g),
+  askThread: (id: string) => call<AskThread>('GET', `/api/tasks/${encodeURIComponent(id)}/ask`),
+  ask: (id: string, question: string) => call<AskThread>('POST', `/api/tasks/${encodeURIComponent(id)}/ask`, { question }),
+  askStop: (id: string) => call('POST', `/api/tasks/${encodeURIComponent(id)}/ask/stop`, {}),
+  askClear: (id: string) => call<AskThread>('DELETE', `/api/tasks/${encodeURIComponent(id)}/ask`),
   getUi: () => call<Record<string, unknown>>('GET', '/api/ui'),
   putUi: (x: Record<string, unknown>) => call('PUT', '/api/ui', x),
 };

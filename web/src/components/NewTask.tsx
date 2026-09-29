@@ -1,12 +1,13 @@
 // New task: title, first prompt, folder (used before or found), agent, optional worktree.
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { api } from '../api';
+import { AGENTS, AGENT_NAME, api } from '../api';
+import type { Agent } from '../api';
 import { loadAccounts, usageText, type Account } from './Accounts';
 
 export function NewTask({ onClose, onStarted, initialFolder }: { onClose: () => void; onStarted: (id: string) => void; initialFolder?: string }) {
   const [title, setTitle] = useState('');
   const [desc, setDesc] = useState('');
-  const [agent, setAgent] = useState<'claude' | 'codex'>(() => (localStorage.getItem('tb-agent') as 'claude' | 'codex') || 'claude');
+  const [agent, setAgent] = useState<Agent>(() => (localStorage.getItem('tb-agent') as Agent) || 'claude');
   const [folder, setFolder] = useState(initialFolder || '');
   const [q, setQ] = useState('');
   const [worktree, setWorktree] = useState(false);
@@ -52,7 +53,7 @@ export function NewTask({ onClose, onStarted, initialFolder }: { onClose: () => 
   const cmd = useMemo(() => {
     const cwd = worktree ? `${folder}-wt/${slug}` : folder;
     return (worktree ? `git -C ${folder} worktree add ${cwd} -b ${branch || 'task/' + slug}\n` : '') +
-      `tmux -L taskboard new-session -d -s task-N -c ${cwd} \\\n  -e TASK_ID=… -e TASK_DIR=~/AgentVault/tasks/… \\\n  ${agent === 'claude' ? 'claude --settings ~/.taskboard/claude-settings.json --session-id <uuid> …' : 'codex -c notify=[…] …'} "<your prompt>"`;
+      `tmux -L taskboard new-session -d -s task-N -c ${cwd} \\\n  -e TASK_ID=… -e TASK_DIR=~/AgentVault/tasks/… \\\n  ${agent === 'claude' ? 'claude --settings ~/.taskboard/claude-settings.json --session-id <uuid> …' : agent === 'codex' ? 'codex -c notify=[…] …' : 'agy --add-dir ~/AgentVault -i'} "<your prompt>"`;
   }, [folder, worktree, branch, slug, agent]);
 
   const go = async () => {
@@ -112,7 +113,7 @@ export function NewTask({ onClose, onStarted, initialFolder }: { onClose: () => 
             </div>}
           </div>
           <div className="row2">
-            <div className="field"><label>Agent</label><div className="seg"><button className={agent === 'claude' ? 'on' : ''} onClick={() => setAgent('claude')}>Claude Code</button><button className={agent === 'codex' ? 'on' : ''} onClick={() => setAgent('codex')}>Codex</button></div></div>
+            <div className="field"><label>Agent</label><div className="seg">{AGENTS.map(a => <button key={a} className={agent === a ? 'on' : ''} onClick={() => setAgent(a)}>{AGENT_NAME[a]}</button>)}</div></div>
             <div className="field"><label>Working copy</label>
               <label className="opt"><input type="radio" checked={!worktree} onChange={() => setWorktree(false)} /> Use the folder as is</label>
               <label className="opt"><input type="radio" checked={worktree} onChange={() => setWorktree(true)} /> New git worktree on branch <input type="text" value={branch} placeholder={`task/${slug}`} onChange={e => setBranch(e.target.value)} style={{ width: 160, padding: '3px 6px', font: '11.5px var(--mono)' }} /></label>

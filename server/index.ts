@@ -4,31 +4,35 @@ import { execFileSync } from 'node:child_process';
 // Listens on 127.0.0.1 only. Browser requests must come from the Taskboard UI's own origin;
 // hook scripts authenticate with the token in ~/.taskboard/token.
 import express from 'express';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { createServer } from 'node:http';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { WebSocketServer } from 'ws';
 import * as agents from './agents.ts';
-import { HOME, HOST, PORT, ROOT, TOKEN, URL_BASE } from './config.ts';
+import { HOME, HOST, PORT, ROOT, TB_DIR, TOKEN, URL_BASE } from './config.ts';
 import * as docs from './docs.ts';
 import * as events from './events.ts';
 import * as groups from './groups.ts';
 import * as importer from './importer.ts';
 import * as approvals from './approvals.ts';
+import * as ask from './ask.ts';
 import * as accounts from './accounts.ts';
 import * as external from './external.ts';
 import * as machines from './machines.ts';
 import * as machine from './machine.ts';
+import * as trust from './trust.ts';
+import * as agyReview from './agy-review.ts';
 import { acquire } from './lock.ts';
 import { ROLE, installRuntimeFiles, refuseReason } from './instance.ts';
 import { hostname } from 'node:os';
 import WebSocket from 'ws';
 import { mountMail } from './mail/routes.ts';
-import { mountReview } from './review.ts';
+import { mountReview, pendingFor } from './review.ts';
 import { attach } from './pty.ts';
 import * as store from './store.ts';
+import * as stats from './stats.ts';
 import * as tmux from './tmux.ts';
 
 const execFileP = promisify(execFile);
@@ -53,6 +57,7 @@ for (const t of store.all()) if (t.openElsewhere && (t.status as string) === 'el
   store.update(t.id, { status: 'idle', transcript: t.transcript || importer.transcriptFor(t.agent, t.sessionId || '') });
 installRuntimeFiles();
 agents.writeClaudeSettings();
+agents.installAgyPlugin();
 await agents.configureIfRunning();
 
 app.use(express.json({ limit: '2mb' }));
@@ -70,10 +75,34 @@ app.post('/api/hooks/claude', (req, res) => {
 app.post('/api/hooks/usage', (req, res) => {
   if (!tokenOk(req)) return res.status(401).end();
   const t = store.get(String(req.body.taskId || '')); const rl = req.body.rate_limits || {};
-  if (t) {
+  if (t && t.agent === 'claude' && !events.movingTasks.has(t.id)) {
     const w = (label: string, x: any) => x && typeof x.used_percentage === 'number' ? [{ label, usedPct: Math.round(x.used_percentage), resetsAt: x.resets_at ? x.resets_at * 1000 : undefined }] : [];
     const windows = [...w('5-hour', rl.five_hour), ...w('weekly', rl.seven_day)];
     if (windows.length) accounts.setUsage(t.account || accounts.defaultFor(t.agent).id, { windows, at: new Date().toISOString(), source: 'Claude Code status line' });
+  }
+  res.json({});
+});
+app.post('/api/hooks/antigravity', async (req, res) => {
+  if (!tokenOk(req)) return res.status(401).end();
+  const taskId = String(req.body.taskId || '');
+  const event = String(req.body.event || '');
+  const input = req.body.input || {};
+  const result = events.antigravityEvent(taskId, event, input);
+  if (event === 'PreToolUse' && machine.get().permissions.autoReview) {
+    const t = store.get(taskId);
+    if (t?.agent === 'antigravity') return res.json({ output: await agyReview.review(t, input) });
+  }
+  res.json(result);
+});
+// Quota from the Antigravity status line of a Taskboard session: one bucket per model family ("gemini-weekly",
+// "3p-weekly"), each with remaining_fraction (1 = unused) and reset_time. Stored on that task's account.
+app.post('/api/hooks/agy-usage', (req, res) => {
+  if (!tokenOk(req)) return res.status(401).end();
+  const t = store.get(String(req.body.taskId || '')); const q = req.body.quota || {};
+  if (t && t.agent === 'antigravity' && !events.movingTasks.has(t.id)) {
+    const windows = Object.entries(q).filter(([, w]: [string, any]) => typeof w?.remaining_fraction === 'number')
+      .map(([k, w]: [string, any]) => ({ label: k.replace(/-/g, ' '), usedPct: Math.round((1 - w.remaining_fraction) * 100), resetsAt: Date.parse(w.reset_time) || undefined }));
+    if (windows.length) accounts.setUsage(t.account || accounts.defaultFor(t.agent).id, { windows, at: new Date().toISOString(), source: 'Antigravity status line', plan: req.body.plan || undefined });
   }
   res.json({});
 });
@@ -111,11 +140,30 @@ async function guarded(req: express.Request, res: express.Response, summary: str
   res.status(202).json({ approval: a });
 }
 app.get('/api/approvals', (_req, res) => res.json(approvals.all()));
+app.get('/api/stats', (req, res) => {
+  try { res.json(stats.get(String(req.query.timeZone || 'UTC'))); } catch { res.status(400).json({ error: 'Invalid time zone.' }); }
+});
 app.get('/api/approvals/:id', (req, res) => { const a = approvals.get(req.params.id); a ? res.json(a) : res.status(404).end(); });
 app.post('/api/approvals/:id/:decision', async (req, res) => {
   // only you, from the dashboard, can decide
   if (!req.get('origin')) return res.status(403).json({ error: 'approvals are decided on the dashboard' });
   const a = await approvals.decide(req.params.id, req.params.decision === 'approve'); a ? res.json(a) : res.status(404).end();
+});
+// A release always needs a dashboard decision, even when other task actions run without approval.
+app.post('/api/release/request', (req, res) => {
+  const actor = req.get('x-tb-actor') || '';
+  const task = store.get(actor);
+  if (!/^[a-zA-Z0-9_-]+$/.test(actor) || !task || task.role === 'controller')
+    return res.status(403).json({ error: 'A Taskboard task must request the release.' });
+  const approval = approvals.request({ actor, action: 'release', summary: 'release Taskboard',
+    detail: `Task: #${task.num} ${task.title}\nCommand: pnpm release`, payload: {} }, async () => {
+    const dir = join(TB_DIR, 'release-permits');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, actor + '.json'), JSON.stringify({ taskId: actor, expiresAt: Date.now() + 120_000 }), { mode: 0o600 });
+    return `Task #${task.num} may run pnpm release once within two minutes.`;
+  });
+  store.update(actor, { status: 'needs-you', ask: 'Approve: release Taskboard', statusSource: 'Waiting for your approval on the dashboard.' });
+  res.status(202).json({ approval });
 });
 
 // ---------- other machines ----------
@@ -159,13 +207,18 @@ app.get('/api/info', (_req, res) => res.json(info()));
 // renaming the machine or turning Remote Control on/off: the controller follows at its next restart (between turns)
 app.patch('/api/info', async (req, res) => {
   if (!req.get('origin')) return res.status(403).json({ error: 'Machine settings are changed on the dashboard.' });
-  const before = JSON.stringify(machine.get());
-  const { name, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval } = req.body;
-  machine.update({ name, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval });
-  // the running controller picks up a new name or Remote Control setting at its next restart, which keepController()
-  // does as soon as it is between turns
-  void before;
-  res.json(info());
+  try {
+    const { name, routingRules, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, askAgent, askAccount, askModel, reviewAccount, reviewModel } = req.body;
+    if (askAgent && !['claude', 'codex'].includes(askAgent)) return res.status(400).json({ error: 'Antigravity does not have verified read-only Ask controls.' });
+    const agent = askAgent || machine.get().ask.agent;
+    if (askAccount && accounts.get(askAccount)?.agent !== agent) return res.status(400).json({ error: `Pick a ${agent} account for questions.` });
+    if (askModel && (typeof askModel !== 'string' || !(agent === 'claude' ? ['sonnet', 'haiku', 'opus'].includes(askModel) : /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(askModel))))
+      return res.status(400).json({ error: 'Pick a valid model for questions.' });
+    if (reviewAccount && accounts.get(reviewAccount)?.agent !== 'claude') return res.status(400).json({ error: 'Pick a Claude Code account for auto review.' });
+    machine.update({ name, routingRules, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, askAgent, askAccount, askModel, reviewAccount, reviewModel });
+    if (trustWorkspaces === false) trust.restore();
+    res.json(info());
+  } catch (e) { fail(res, e); }
 });
 app.get('/api/machines', (_req, res) => res.json([{ id: 'local', name: machine.get().name, url: URL_BASE, local: true, online: true }, ...machines.all().map(m => ({ id: m.id, name: m.name, url: m.url, online: !!machines.stateOf(m.id)?.online, latency: machines.stateOf(m.id)?.latency, lastSeen: machines.stateOf(m.id)?.lastSeen, error: machines.stateOf(m.id)?.error, tasks: machines.stateOf(m.id)?.tasks.length || 0 }))]));
 app.post('/api/machines', async (req, res) => {
@@ -188,11 +241,11 @@ app.post('/api/controller/account', async (req, res) => {
 });
 app.post('/api/tasks', async (req, res) => {
   try {
-    const { title, desc, agent, folder, worktree, branch, parent, account } = req.body;
-    if (!title || !folder || !['claude', 'codex'].includes(agent)) throw new Error('title, folder and agent are required');
-    await guarded(req, res, `start “${title}” (${agent === 'claude' ? 'Claude Code' : 'Codex'})`, `Folder: ${folder}${worktree ? ` · new worktree ${branch || ''}` : ''}\nPrompt: ${desc || title}`, 'new',
+    const { title, desc, agent, folder, worktree, branch, parent, account, model } = req.body;
+    if (!title || !folder || !['claude', 'codex', 'antigravity'].includes(agent)) throw new Error('title, folder and agent are required');
+    await guarded(req, res, `start “${title}” (${agents.agentName(agent)})`, `Folder: ${folder}${worktree ? ` · new worktree ${branch || ''}` : ''}\nAccount: ${account && account !== 'auto' ? account : 'automatic'}\nModel: ${model || 'agent default'}\nPrompt: ${desc || title}`, 'new',
       async () => {
-        const t = await agents.startTask({ title, desc: desc || title, agent, folder, worktree, branch, parent, account });
+        const t = await agents.startTask({ title, desc: desc || title, agent, folder, worktree, branch, parent, account, model });
         if (req.body.group) { const g = groups.all().find(x => x.name === req.body.group || x.id === req.body.group) || groups.create(String(req.body.group)); groups.update(g.id, { tasks: [...g.tasks, t.id] }); }
         return view(t);
       }, (t: any) => `Started #${t.num} ${t.title} in ${t.cwd}${req.body.group ? ` (group ${req.body.group})` : ''}`);
@@ -240,7 +293,7 @@ mountMail(app);
 const acctView = async (a: accounts.Account, fresh = false) => ({ ...a, status: await accounts.status(a, fresh), running: store.all().filter(t => (t.account || accounts.defaultFor(t.agent).id) === a.id && !['archived', 'parked', 'suspended'].includes(t.status)).length });
 app.get('/api/accounts', async (req, res) => res.json(await Promise.all(accounts.all().map(a => acctView(a, req.query.fresh === '1')))));
 app.post('/api/accounts', async (req, res) => { try { const { agent, name } = req.body; if (!['claude', 'codex'].includes(agent) || !name) throw new Error('agent and name are required'); res.json(await acctView(accounts.create(agent, String(name)))); } catch (e) { fail(res, e); } });
-app.patch('/api/accounts/:id', (req, res) => res.json(accounts.update(req.params.id, req.body)));
+app.patch('/api/accounts/:id', (req, res) => { try { const a = accounts.update(req.params.id, req.body); a ? res.json(a) : res.status(404).end(); } catch (e) { fail(res, e); } });
 app.delete('/api/accounts/:id', (req, res) => { try { accounts.remove(req.params.id); res.json({}); } catch (e) { fail(res, e); } });
 app.post('/api/accounts/:id/login', async (req, res) => { const a = accounts.get(req.params.id); if (!a) return res.status(404).end(); try { res.json({ session: await agents.utilSession('login', a) }); } catch (e) { fail(res, e); } });
 app.post('/api/accounts/:id/clear-limit', (req, res) => { accounts.clearLimited(req.params.id); res.json({}); });
@@ -248,10 +301,19 @@ app.post('/api/accounts/:id/clear-limit', (req, res) => { accounts.clearLimited(
 app.post('/api/accounts/:id/reset', async (req, res) => {
   if (!req.get('origin')) return res.status(403).json({ error: 'Limit resets can only be used from the dashboard.' });
   const a = accounts.get(req.params.id); if (!a) return res.status(404).end();
-  if (a.agent !== 'claude') return res.json({ open: 'https://chatgpt.com/codex/settings/usage', note: 'Codex has no command-line reset; spend banked resets in the Codex app or on the usage page.' });
+  if (a.agent === 'codex') return res.json({ open: 'https://chatgpt.com/codex/settings/usage', note: 'Codex has no command-line reset; spend banked resets in the Codex app or on the usage page.' });
+  if (a.agent === 'antigravity') return res.json({ open: 'https://antigravity.google/docs/cli/credits/', note: 'Antigravity has no limit reset. Its quota resets on its own; run /credits in agy to see or buy AI credits.' });
   try { res.json({ session: await agents.utilSession('reset', a) }); } catch (e) { fail(res, e); }
 });
-app.post('/api/tasks/:id/move-account', async (req, res) => { const t = store.get(req.params.id); if (!t) return res.status(404).end(); try { res.json(view(await agents.moveAccount(t, req.body.account))); } catch (e) { fail(res, e); } });
+app.post('/api/tasks/:id/move-account', async (req, res) => {
+  const t = store.get(req.params.id); if (!t) return res.status(404).end();
+  const account = accounts.get(req.body.account);
+  if (!account) return fail(res, new Error('Unknown account.'));
+  if (req.body.instruction !== undefined && typeof req.body.instruction !== 'string') return fail(res, new Error('The move instruction must be text.'));
+  const instruction = req.body.instruction || '';
+  await guarded(req, res, `move #${t.num} to ${account.name}`, `Continue with ${agents.agentName(account.agent)} in ${t.cwd}.\n${instruction}`, 'move',
+    async () => view(await agents.moveAccount(t, account.id, instruction)), r => `Moved #${r.num} to ${account.name} (${r.agent}).`);
+});
 
 // ---------- groups ----------
 app.get('/api/groups', (_req, res) => res.json(groups.all()));
@@ -323,7 +385,8 @@ app.post('/api/tasks/:id/inbox/take', (req, res) => {
   if (!store.get(req.params.id)) return res.status(404).json({ error: 'no such task' });
   res.json({ files: docs.takePending(req.params.id) });
 });
-// Type the inbox notice into the agent's terminal (needed for Codex, which has no prompt hook here).
+// Type the inbox notice into the agent's terminal (needed for Codex, which has no prompt hook here, and for an idle
+// Antigravity task, which is told only at the end of a turn).
 app.post('/api/tasks/:id/inbox/tell', async (req, res) => {
   const t = store.get(req.params.id); if (!t) return res.status(404).end();
   const notice = docs.takeInboxNotice(t.id); if (!notice) return res.json({ told: false });
@@ -359,6 +422,18 @@ app.get('/api/tasks/:id/since', async (req, res) => {
 });
 
 app.get('/api/tasks/:id/log', (req, res) => res.type('text/markdown').send(store.readLog(req.params.id)));
+// Questions about a task, answered by a separate read-only agent (server/ask.ts). The dashboard asks, directly or through
+// another machine's Taskboard server (which sends no origin and no x-tb-actor); agents do not, because each question
+// uses the account's usage.
+app.get('/api/tasks/:id/ask', (req, res) => { if (!store.get(req.params.id)) return res.status(404).end(); res.json(ask.get(req.params.id)); });
+app.post('/api/tasks/:id/ask', async (req, res) => {
+  if (!req.get('origin') && req.get('x-tb-actor')) return res.status(403).json({ error: 'Questions are asked on the dashboard.' });
+  const t = store.get(req.params.id); if (!t) return res.status(404).end();
+  const q = String(req.body?.question || '').trim(); if (!q) return fail(res, 'Type a question.');
+  try { res.json(await ask.ask(t, q)); } catch (e) { fail(res, e); }
+});
+app.post('/api/tasks/:id/ask/stop', (req, res) => { ask.stop(req.params.id); res.json({ ok: true }); });
+app.delete('/api/tasks/:id/ask', (req, res) => { if (!store.get(req.params.id)) return res.status(404).end(); res.json(ask.clear(req.params.id)); });
 app.get('/api/tasks/:id/peek', async (req, res) => {
   const t = store.get(req.params.id); if (!t) return res.status(404).end();
   res.type('text/plain').send(await tmux.capture(t.session, Math.min(500, Number(req.query.lines) || 30)));
@@ -462,8 +537,10 @@ try {
   });
 } catch (e) { console.error('watch', e); }
 approvals.onApprovalsChange(() => {
-  if (store.get('controller') && !approvals.pendingFor('controller').length && store.get('controller')!.status === 'needs-you' && store.get('controller')!.ask?.startsWith('Approve:'))
-    store.update('controller', { status: 'working', ask: '', statusSource: 'Your decision was sent back to the controller.' });
+  for (const t of store.all()) {
+    if (!approvals.pendingFor(t.id).length && t.status === 'needs-you' && t.ask?.startsWith('Approve:'))
+      store.update(t.id, { status: 'working', ask: '', statusSource: 'Your decision was sent back to the task.' });
+  }
   const msg = JSON.stringify({ type: 'approvals', approvals: approvals.all() });
   for (const c of eventClients) if (c.readyState === c.OPEN) c.send(msg);
 });
@@ -559,10 +636,12 @@ async function keepController(t: store.Task, s?: { dead: boolean }) {
   }
   // the controller folder is Taskboard's own (it only holds the controller instructions): accept the CLI's
   // "trust this folder" question there, so an unattended start (at login, after a crash) does not stop on it
-  if (s && !s.dead && Date.now() - controllerStartedAt < 120000) {
+  // (also after a change of the controller's account on the Accounts page, which launches it without a restart here)
+  if (s && !s.dead && Date.now() - Math.max(controllerStartedAt, store.launchedAt.get(t.id) || 0) < 120000) {
     const screen = await tmux.capture(t.session, 40);
     if (t.agent === 'claude' && /Yes, I trust this folder/.test(screen)) { await tmux.tmux('send-keys', '-t', '=' + t.session + ':', 'Down'); await tmux.tmux('send-keys', '-t', '=' + t.session + ':', 'Enter'); return; }
     if (t.agent === 'codex' && /Trust this folder\?/.test(screen) && /Trust and continue/.test(screen)) { await tmux.tmux('send-keys', '-t', '=' + t.session + ':', 'Enter'); return; }
+    if (t.agent === 'antigravity' && /Do you trust the contents of this project\?/.test(screen) && /Yes, I trust this folder/.test(screen)) { await tmux.tmux('send-keys', '-t', '=' + t.session + ':', 'Enter'); return; }
   }
   if (s && !s.dead && t.agent === 'claude' && machine.get().controller.remoteControl) {
     const m = (await tmux.capture(t.session, 60)).match(/https:\/\/claude\.ai\/code\/session_[A-Za-z0-9]+/);
@@ -588,7 +667,8 @@ function betweenTurns(t: store.Task) {
   return Date.now() - Math.max(last, store.launchedAt.get(t.id) || 0) >= QUIET_MS;
 }
 let lastListWarn = 0;
-async function reconcile() {
+// first: the run at server start, before the status is read from the transcripts (see below)
+async function reconcile(first = false) {
   const sessions = await tmux.listSessions();
   if (!sessions) { if (Date.now() - lastListWarn > 60000) { lastListWarn = Date.now(); console.error(`${new Date().toISOString()} tmux did not answer; skipping status checks`); } return; }
   const byName = new Map(sessions.map(s => [s.name, s]));
@@ -615,25 +695,41 @@ async function reconcile() {
     const screenQuestion = t.status === 'needs-you' && t.statusSource?.startsWith(events.SCREEN_SOURCE);
     if (screenQuestion || (Date.now() - launched < 90000 && !events.sessionStarted.has(t.id) && ['working', 'idle'].includes(t.status)))
       events.screenCheck(t, (await tmux.capture(t.session, 0)).split('\n').filter(l => l.trim()).slice(-15).join('\n'));
+    // Antigravity: type in the first prompt once the trust question is answered; read approval questions from the screen
+    // while a tool call waits (agy has no event for either)
+    if (t.agent === 'antigravity' && (agents.pendingPrompt.has(t.id) || t.status === 'working')) {
+      const screen = (await tmux.capture(t.session, 0)).split('\n').filter(l => l.trim()).slice(-20).join('\n');
+      await agents.typePendingPrompt(t, screen);
+      events.agyApprovalCheck(store.get(t.id)!, screen);
+    }
     if (t.agent === 'codex' && t.sessionId) {
       let tr = t.transcript;
-      if (!tr) { tr = importer.transcriptFor('codex', t.sessionId); if (tr) store.update(t.id, { transcript: tr }); }
-      try { if (tr) events.codexActivity(t, statSync(tr).mtimeMs); } catch { /* moved */ }
+      if (!tr) { tr = importer.transcriptFor('codex', t.sessionId, (accounts.get(t.account) || accounts.defaultFor('codex')).dir); if (tr) store.update(t.id, { transcript: tr }); }
+      let mtime = 0;
+      // at start, a rollout file that changed while the server was down is read by the transcript check instead
+      try { if (tr) { mtime = statSync(tr).mtimeMs; if (!first) events.codexActivity(t, mtime); } } catch { /* moved */ }
+      // Questions Codex asks while it keeps working are only visible on screen. Read the screen while they are open,
+      // and for 10 s after the rollout file or the status changed (the questions appear right after the call is written).
+      const c = store.get(t.id)!;
+      if (events.codexQuestionsOpen(c) || Date.now() - Math.max(mtime, Date.parse(c.statusAt) || 0) < 10000)
+        events.codexQuestionCheck(c, (await tmux.capture(c.session, 0)).split('\n').filter(l => l.trim()).slice(-15).join('\n'));
     }
     // after the activity checks above, so a new Codex turn is seen first
     const cur = store.get(t.id)!;
     if (cur.restartWhenDone && betweenTurns(cur)) { await restartTask(cur); continue; }
   }
 }
-await reconcile();
+await reconcile(true);
 // Events sent while the server was down are lost; take the status from the transcripts once at start.
 for (const t of store.all()) {
-  if (!t.transcript || t.openElsewhere || !['working', 'needs-you', 'idle', 'unread'].includes(t.status)) continue;
+  if (!t.transcript || t.openElsewhere || !['working', 'needs-you', 'idle', 'unread', 'review'].includes(t.status)) continue;
   const r = external.readState(t.agent, t.transcript); if (!r) continue;
   const newer = (r.at ?? 0) > (Date.parse(t.statusAt) || 0); // compare conversation records, not file writes
-  if (r.state === 'finished' && ['working', 'needs-you'].includes(t.status) && newer)
-    store.update(t.id, { status: 'unread', ask: '', now: r.text || t.now, statusSource: 'Turn ended while Taskboard was restarting (read from the transcript).' });
-  else if ((r.state === 'busy' || r.state === 'tool') && ['idle', 'unread'].includes(t.status) && newer)
+  if (r.state === 'finished' && ['working', 'needs-you'].includes(t.status) && newer) {
+    const pending = pendingFor(t.id); // a document still waiting for review
+    store.update(t.id, { status: pending ? 'review' : 'unread', ask: pending ? `Review ${pending.name}` : '', now: r.text || t.now, statusSource: 'Turn ended while Taskboard was restarting (read from the transcript).' });
+  }
+  else if ((r.state === 'busy' || r.state === 'tool') && ['idle', 'unread', 'review'].includes(t.status) && newer)
     store.update(t.id, { status: 'working', statusSource: 'Started working while Taskboard was restarting (read from the transcript).' });
 }
 // start the controller together with Taskboard

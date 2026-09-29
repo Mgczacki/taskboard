@@ -1,16 +1,18 @@
 // Accounts: each account is a settings folder (CLAUDE_CONFIG_DIR for Claude Code, CODEX_HOME for Codex), so several
 // accounts run side by side and each task uses one. The CLIs log in themselves; Taskboard never reads credential files,
-// it only asks `claude auth status` / `codex login status`.
+// it only asks `claude auth status` / `codex login status` / `agy models`. Antigravity has only its default account:
+// agy keeps its sign-in in the macOS keychain and has no setting for another settings folder.
 import { execFile } from 'node:child_process';
 import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { promisify } from 'node:util';
-import { HOME, TB_DIR } from './config.ts';
+import { AGY_HOME, HOME, TB_DIR, agyBin } from './config.ts';
 
 const exec = promisify(execFile);
-export type AgentKind = 'claude' | 'codex';
+export type AgentKind = 'claude' | 'codex' | 'antigravity';
 export interface Account {
   id: string; agent: AgentKind; name: string; dir: string; isDefault?: boolean; maxParallel: number;
+  routingRules?: string;
   limited?: { at: string; note: string };   // hit a usage limit; cleared when a turn on it succeeds
   usage?: Usage;                              // latest usage windows reported for this account
   created: string;
@@ -30,6 +32,7 @@ let accounts: Account[] = existsSync(FILE) ? JSON.parse(readFileSync(FILE, 'utf8
 const defaults: Account[] = [
   { id: 'claude-default', agent: 'claude', name: 'Claude Code (default)', dir: join(HOME, '.claude'), isDefault: true, maxParallel: 8, created: new Date(0).toISOString() },
   { id: 'codex-default', agent: 'codex', name: 'Codex (default)', dir: join(HOME, '.codex'), isDefault: true, maxParallel: 8, created: new Date(0).toISOString() },
+  { id: 'antigravity-default', agent: 'antigravity', name: 'Antigravity (default)', dir: AGY_HOME, isDefault: true, maxParallel: 8, created: new Date(0).toISOString() },
 ];
 for (const d of defaults) if (!accounts.some(a => a.id === d.id)) accounts.push(d);
 const save = () => { writeFileSync(FILE, JSON.stringify(accounts, null, 2)); emit(); };
@@ -40,6 +43,7 @@ export const defaultFor = (agent: AgentKind) => accounts.find(a => a.agent === a
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || 'account';
 
 export function create(agent: AgentKind, name: string): Account {
+  if (agent === 'antigravity') throw new Error('Antigravity has one account only: agy keeps its sign-in in the keychain, not in a settings folder.');
   const base = `${agent}-${slug(name)}`; let id = base, n = 2;
   while (accounts.some(a => a.id === id)) id = `${base}-${n++}`;
   const dir = join(HOME, (agent === 'claude' ? '.claude-' : '.codex-') + id.replace(/^(claude|codex)-/, ''));
@@ -48,12 +52,22 @@ export function create(agent: AgentKind, name: string): Account {
   accounts.push(a); save(); return a;
 }
 export function remove(id: string) { const a = get(id); if (!a || a.isDefault) throw new Error('The default accounts cannot be removed.'); accounts = accounts.filter(x => x.id !== id); save(); }
-export function update(id: string, patch: Partial<Pick<Account, 'name' | 'maxParallel'>>) { const a = get(id); if (a) { Object.assign(a, patch); save(); } return a; }
+export function update(id: string, patch: Partial<Pick<Account, 'name' | 'maxParallel' | 'routingRules'>>) {
+  const a = get(id); if (!a) return;
+  if (patch.name !== undefined) a.name = String(patch.name).trim().slice(0, 80);
+  if (patch.maxParallel !== undefined) {
+    const n = Number(patch.maxParallel);
+    if (!Number.isInteger(n) || n < 1 || n > 100) throw new Error('maxParallel must be an integer from 1 to 100.');
+    a.maxParallel = n;
+  }
+  if (patch.routingRules !== undefined) a.routingRules = String(patch.routingRules).trim().slice(0, 500);
+  save(); return a;
+}
 
 // Environment that points a CLI at an account's folder (nothing for the default folders).
 export function envFor(a?: Account): Record<string, string> {
   if (!a || a.isDefault) return {};
-  return a.agent === 'claude' ? { CLAUDE_CONFIG_DIR: a.dir } : { CODEX_HOME: a.dir };
+  return a.agent === 'claude' ? { CLAUDE_CONFIG_DIR: a.dir } : a.agent === 'codex' ? { CODEX_HOME: a.dir } : {};
 }
 
 const statusCache = new Map<string, AccountStatus>();
@@ -65,6 +79,11 @@ export async function status(a: Account, fresh = false): Promise<AccountStatus> 
     if (a.agent === 'claude') {
       const { stdout } = await exec('claude', ['auth', 'status'], { env, timeout: 15000 });
       const j = JSON.parse(stdout); s = { signedIn: !!j.loggedIn, who: j.email || j.orgName || j.authMethod, checkedAt: Date.now() };
+    } else if (a.agent === 'antigravity') {
+      // `agy models` lists the models when signed in; otherwise it prints "Please sign in to view available models."
+      const { stdout, stderr } = await exec(agyBin(), ['models'], { env, timeout: 20000 }).catch(e => ({ stdout: String(e.stdout || ''), stderr: String(e.stderr || '') }));
+      const out = stdout + stderr; const n = out.split('\n').filter(l => l.includes('\t')).length;
+      s = { signedIn: n > 0 && !/sign in/i.test(out), who: n > 0 ? `${n} models available` : undefined, checkedAt: Date.now() };
     } else {
       mkdirSync(a.dir, { recursive: true });
       const { stdout, stderr } = await exec('codex', ['login', 'status'], { env, timeout: 15000 }).catch(e => ({ stdout: String(e.stdout || ''), stderr: String(e.stderr || '') }));
@@ -132,10 +151,22 @@ export async function pick(agent: AgentKind, running: (id: string) => number): P
     if (!(await status(a)).signedIn) { skipped.push(`${a.name} is not signed in`); continue; }
     ok.push(a);
   }
-  if (!ok.length) return { account: defaultFor(agent), why: `No account available (${skipped.join('; ')}); using the default.` };
+  if (!ok.length) throw new Error(`No ${agent} account is available (${skipped.join('; ')}).`);
   // fewest running first; then the lowest usage; then the default account
   const best = ok.sort((x, y) => running(x.id) - running(y.id) || peak(x) - peak(y) || Number(!!y.isDefault) - Number(!!x.isDefault))[0];
   return { account: best, why: `${best.name} (${running(best.id)} running${best.usage ? `, ${peak(best)}% used` : ''})${skipped.length ? ` — skipped: ${skipped.join('; ')}` : ''}` };
+}
+
+export function usageSummary(running: (id: string) => number): string {
+  refreshCodexUsage();
+  const lines = accounts.map(a => {
+    const windows = a.usage?.windows.map(w => {
+      const reset = w.resetsAt ? `@${new Date(w.resetsAt).toISOString().slice(5, 16)}Z` : '';
+      return `${w.label}=${w.resetsAt && w.resetsAt <= Date.now() ? 'reset' : `${w.usedPct}%`}${reset}`;
+    }).join(', ') || 'usage unknown';
+    return `${a.id} (${a.name}; ${a.agent}) ${running(a.id)}/${a.maxParallel} ${a.limited ? 'limited ' : ''}${windows} data=${a.usage?.at.slice(5, 16) || 'unknown'}`;
+  });
+  return `[Account usage]\n${lines.join('\n')}`;
 }
 
 // Copy a Claude Code session transcript into another account's folder so `claude --resume` finds it there.

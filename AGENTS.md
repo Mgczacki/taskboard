@@ -9,14 +9,21 @@ updates and the user loses the dashboard. Never stop, restart or rebuild it as p
 - `kill` the process in `~/.taskboard/server.pid`, or whatever listens on port 4317.
 - `tmux -L taskboard kill-server` or `kill-session` on that socket: it holds the real agents.
 - `pnpm start` in a checkout: it refuses (the real Taskboard runs from a release in `~/.taskboard/releases`).
-- `pnpm release`, `pnpm rollback`, or anything that changes `~/.taskboard` (the real server's folder).
+- `pnpm rollback`, or any direct change to `~/.taskboard` (the real server's folder).
+- `pnpm release` without a release permit from the user's dashboard approval.
 - `launchctl` commands for `com.taskboard.server`.
 
 A PreToolUse hook blocks most of these for Claude Code sessions started by Taskboard; do not work around it.
 
 ## Test servers
 Use `pnpm sandbox` (own port, folders and tmux socket, no controller; `pnpm sandbox stop` ends exactly it) or
-`pnpm dev` for live reload. `pnpm release` / `pnpm rollback` change the real Taskboard: only the user runs them.
+`pnpm dev` for live reload. A release changes the real Taskboard. Only the user decides when to release it.
+
+When the user explicitly asks for a release or rebuild, the controller starts a task with `tb new`.
+The task prompt states that the user explicitly authorized the release. The controller never starts a release on its own.
+The task runs `tb release-request`. The user approves the release card on the dashboard.
+The task then runs `pnpm release` within two minutes. The approval allows one release command for that task.
+Only the user runs `pnpm rollback`.
 
 The manual equivalent, if you need it — every test server gets its own port, folders and tmux socket, runs in the
 background, and is stopped by its own pid:

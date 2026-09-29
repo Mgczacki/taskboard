@@ -2,12 +2,13 @@
 // limit resets are used only by you, from this page.
 import { useEffect, useState } from 'react';
 import { api } from '../api';
-import type { MachineInfo, Task } from '../api';
-import { fmtWait } from '../api';
+import type { Agent, MachineInfo, Task } from '../api';
+import { AGENTS, AGENT_NAME, fmtWait } from '../api';
 import { Terminal } from './Terminal';
 
 export interface Account {
-  id: string; agent: 'claude' | 'codex'; name: string; dir: string; isDefault?: boolean; maxParallel: number;
+  id: string; agent: Agent; name: string; dir: string; isDefault?: boolean; maxParallel: number;
+  routingRules?: string;
   limited?: { at: string; note: string }; status: { signedIn: boolean; who?: string }; running: number;
   usage?: { windows: { label: string; usedPct: number; resetsAt?: number }[]; at: string; source: string; plan?: string };
 }
@@ -19,7 +20,7 @@ const resetText = (ms?: number) => {
   return mins < 0 ? 'reset' : mins < 60 * 20 ? `resets in ${fmtWait(mins)} (${d.toTimeString().slice(0, 5)})` : `resets ${d.toLocaleDateString(undefined, { weekday: 'short' })} ${d.toTimeString().slice(0, 5)}`;
 };
 function UsageBars({ a }: { a: Account }) {
-  if (!a.usage) return <span className="sub">{a.agent === 'claude' ? 'Shows up once a Taskboard Claude Code session on this account runs (read from its status line).' : 'Shows up once this account has a Codex session (read from its session files).'}</span>;
+  if (!a.usage) return <span className="sub">{a.agent === 'claude' ? 'Shows up once a Taskboard Claude Code session on this account runs (read from its status line).' : a.agent === 'codex' ? 'Shows up once this account has a Codex session (read from its session files).' : 'Shows up once a Taskboard Antigravity session runs (read from its status line).'}</span>;
   const ago = Math.round((Date.now() - Date.parse(a.usage.at)) / 60000);
   return <div className="usage">
     {a.usage.windows.map(w => { const done = !!w.resetsAt && w.resetsAt < Date.now(); const pct = done ? 0 : w.usedPct; return (
@@ -63,7 +64,7 @@ export function AccountsPage({ tasks }: { tasks: Task[] }) {
   const [list, setList] = useState<Account[]>([]);
   const [term, setTerm] = useState<null | { title: string; session: string; note: string }>(null);
   const [confirm, setConfirm] = useState<Account | null>(null);
-  const [adding, setAdding] = useState<{ agent: 'claude' | 'codex'; name: string } | null>(null);
+  const [adding, setAdding] = useState<{ agent: 'claude' | 'codex'; name: string } | null>(null); // Antigravity has one account only
   const [err, setErr] = useState('');
   const [movingCtl, setMovingCtl] = useState(false);
   const ctl = tasks.find(t => t.role === 'controller');
@@ -71,7 +72,7 @@ export function AccountsPage({ tasks }: { tasks: Task[] }) {
   useEffect(() => { load(); const i = setInterval(() => load(), 15000); return () => clearInterval(i); }, []);
   useEffect(() => { load(); }, [tasks.length]);
 
-  const signIn = async (a: Account) => { try { const r = await post(`/api/accounts/${a.id}/login`); setTerm({ title: `Sign in: ${a.name}`, session: r.session, note: a.agent === 'claude' ? 'Follow the steps in the terminal; the browser opens on this Mac. Close this window when it says you are signed in.' : 'Follow the steps in the terminal (it prints a link or a device code). Close this window when it says you are logged in.' }); } catch (e) { setErr(String((e as Error).message)); } };
+  const signIn = async (a: Account) => { try { const r = await post(`/api/accounts/${a.id}/login`); setTerm({ title: `Sign in: ${a.name}`, session: r.session, note: a.agent === 'claude' ? 'Follow the steps in the terminal; the browser opens on this Mac. Close this window when it says you are signed in.' : a.agent === 'antigravity' ? 'agy starts and asks you to sign in with Google in the browser. When it shows its prompt, type /exit and close this window.' : 'Follow the steps in the terminal (it prints a link or a device code). Close this window when it says you are logged in.' }); } catch (e) { setErr(String((e as Error).message)); } };
   const reset = async (a: Account) => {
     setConfirm(null);
     try {
@@ -80,12 +81,19 @@ export function AccountsPage({ tasks }: { tasks: Task[] }) {
       setTerm({ title: `Limit reset: ${a.name}`, session: r.session, note: 'Claude Code runs /limit-reset here. It clears the 5-hour limit once a week; the weekly limit still applies. Close this window when it is done.' });
     } catch (e) { setErr(String((e as Error).message)); }
   };
-  const tasksOn = (a: Account) => tasks.filter(t => (t.account || (t.agent === 'claude' ? 'claude-default' : 'codex-default')) === a.id && t.status !== 'archived');
+  const tasksOn = (a: Account) => tasks.filter(t => (t.account || `${t.agent}-default`) === a.id && t.status !== 'archived');
+  const saveRule = async (a: Account, value: string) => {
+    try {
+      const r = await fetch(`/api/accounts/${a.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ routingRules: value }) });
+      const data = await r.json(); if (!r.ok) throw new Error(data.error || r.statusText);
+      setList(current => current.map(x => x.id === a.id ? { ...x, routingRules: data.routingRules } : x));
+    } catch (e) { setErr(String((e as Error).message || e)); }
+  };
 
   return (
     <div className="acc-page">
       <div className="acc-head">
-        <div><h2>Accounts</h2><p>Each account is its own settings folder (<code>CLAUDE_CONFIG_DIR</code> for Claude Code, <code>CODEX_HOME</code> for Codex), so accounts run side by side and each task uses one. New tasks pick the least busy signed-in account that is not at its limit, unless you choose one.</p></div>
+        <div><h2>Accounts</h2><p>Each account is its own settings folder (<code>CLAUDE_CONFIG_DIR</code> for Claude Code, <code>CODEX_HOME</code> for Codex), so accounts run side by side and each task uses one. Antigravity has one account only, because <code>agy</code> keeps its sign-in in the keychain. New tasks pick the least busy signed-in account that is not at its limit, unless you choose one.</p></div>
         <div style={{ display: 'flex', gap: 8 }}><button className="btn" onClick={() => load(true)}>Check sign-ins</button><button className="btn primary" onClick={() => setAdding({ agent: 'claude', name: '' })}>＋ Add account</button></div>
       </div>
       {err && <div className="banner">{err} <button className="btn ghost" onClick={() => setErr('')}>OK</button></div>}
@@ -93,7 +101,7 @@ export function AccountsPage({ tasks }: { tasks: Task[] }) {
       <div className="ctl-acct">
         <b>Controller runs on</b>
         <select className="acct-sel" value={ctl?.account || 'claude-default'} disabled={movingCtl} onChange={async e => { setMovingCtl(true); try { await api.setControllerAccount(e.target.value); } catch (x) { setErr(String((x as Error).message || x)); } setMovingCtl(false); load(); }}>
-          {(['claude', 'codex'] as const).map(ag => <optgroup key={ag} label={ag === 'claude' ? 'Claude Code' : 'Codex'}>
+          {AGENTS.map(ag => <optgroup key={ag} label={AGENT_NAME[ag]}>
             {list.filter(a => a.agent === ag).map(a => <option key={a.id} value={a.id} disabled={!a.status.signedIn}>{a.name}{a.status.signedIn ? '' : ' (not signed in)'}{a.limited ? ' · at its limit' : ''}{usageText(a) ? ' · ' + usageText(a) : ''}</option>)}
           </optgroup>)}
         </select>
@@ -102,7 +110,7 @@ export function AccountsPage({ tasks }: { tasks: Task[] }) {
       <div className="tb"><table><colgroup><col style={{ width: '20%' }} /><col style={{ width: '16%' }} /><col style={{ width: '30%' }} /><col style={{ width: 90 }} /><col /></colgroup><tbody>
         {list.map(a => (
           <tr key={a.id} className="r">
-            <td><span className={`chip agent-${a.agent}`}>{a.agent === 'claude' ? 'Claude Code' : 'Codex'}</span> <b>{a.name}</b><div className="mono" style={{ marginTop: 4 }}>{short(a.dir)}</div></td>
+            <td><span className={`chip agent-${a.agent}`}>{AGENT_NAME[a.agent]}</span> <b>{a.name}</b><div className="mono" style={{ marginTop: 4 }}>{short(a.dir)}</div><label className="sub">Routing rule<input className="routing-rule" type="text" maxLength={500} defaultValue={a.routingRules || ''} key={`${a.id}:${a.routingRules || ''}`} placeholder="When should the controller use this account?" onBlur={e => { if (e.target.value !== (a.routingRules || '')) void saveRule(a, e.target.value); }} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} /></label></td>
             <td>{a.status.signedIn ? <span className="st-label unread">✓ signed in</span> : <span className="st-label needs-you">not signed in</span>}<div className="sub">{a.status.who || ''}</div></td>
             <td>{a.limited && <><span className="st-label stopped">stopped by a limit</span><div className="sub">since {fmtWait(Math.round((Date.now() - Date.parse(a.limited.at)) / 60000))} ago · {a.limited.note}</div></>}<UsageBars a={a} /></td>
             <td className="mono">{a.running} / {a.maxParallel}<div className="sub">{tasksOn(a).map(t => '#' + t.num).slice(0, 6).join(' ')}</div></td>
@@ -137,10 +145,11 @@ export function AccountsPage({ tasks }: { tasks: Task[] }) {
             {confirm.agent === 'claude'
               ? <><div><b style={{ color: 'var(--text)' }}>What it does:</b> runs <code>/limit-reset</code> in a Claude Code session using <code>{short(confirm.dir)}</code>. It clears the 5-hour limit; the weekly limit still applies. Each account can do this about once a week, and some accounts do not have it yet.</div>
                 <div><b style={{ color: 'var(--text)' }}>Waiting on this account:</b> {tasksOn(confirm).filter(t => ['stopped', 'needs-you'].includes(t.status)).map(t => `#${t.num}`).join(', ') || 'nothing'}</div></>
-              : <div>Codex has no command-line reset. This opens the Codex usage page, where you can spend a banked reset.</div>}
+              : confirm.agent === 'codex' ? <div>Codex has no command-line reset. This opens the Codex usage page, where you can spend a banked reset.</div>
+              : <div>Antigravity has no limit reset. Its quota resets on its own. This opens the page about AI credits, which <code>/credits</code> in <code>agy</code> shows and sells.</div>}
             <div>Only you can do this; the controller agent cannot.</div>
           </div>
-          <footer><span style={{ flex: 1 }} /><button className="btn" onClick={() => setConfirm(null)}>Cancel</button><button className="btn primary" onClick={() => reset(confirm)}>{confirm.agent === 'claude' ? 'Run /limit-reset' : 'Open the usage page'}</button></footer>
+          <footer><span style={{ flex: 1 }} /><button className="btn" onClick={() => setConfirm(null)}>Cancel</button><button className="btn primary" onClick={() => reset(confirm)}>{confirm.agent === 'claude' ? 'Run /limit-reset' : confirm.agent === 'codex' ? 'Open the usage page' : 'Open the credits page'}</button></footer>
         </div>
       </div>}
 

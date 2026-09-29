@@ -1,5 +1,6 @@
 // Sessions running in a terminal Taskboard does not own send no hooks, so their state is read from the end of
-// their transcript file: Claude Code's ~/.claude/projects/…/<session>.jsonl or Codex's rollout-….jsonl.
+// their transcript file: Claude Code's ~/.claude/projects/…/<session>.jsonl, Codex's rollout-….jsonl, or Antigravity's
+// ~/.gemini/antigravity-cli/brain/<conversation>/.system_generated/logs/transcript_full.jsonl.
 import { closeSync, openSync, readSync, statSync } from 'node:fs';
 
 export interface TranscriptState {
@@ -71,12 +72,51 @@ function codex(lines: string[]): Omit<TranscriptState, 'mtime'> {
   return pendingCall ? { state: 'tool', tool: pendingCall, toolAt: callAt, waitMs } : outputs.size || text ? { state: 'busy', text } : { state: 'unknown' };
 }
 
-export function readState(agent: 'claude' | 'codex', path: string): TranscriptState | null {
+// Antigravity: one record per step, { step_index, type, status, created_at, content, tool_calls }. USER_INPUT is a
+// prompt, PLANNER_RESPONSE is a model step (a reply in content, or tool_calls), GENERIC is a tool result.
+function antigravity(lines: string[]): Omit<TranscriptState, 'mtime'> {
+  let hadResult = false;
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const o = parse(lines[i]); if (!o || typeof o.type !== 'string') continue;
+    if (o.type === 'GENERIC') { hadResult = true; continue; }
+    if (o.type === 'USER_INPUT') return { state: 'busy' };
+    if (o.type !== 'PLANNER_RESPONSE') continue;
+    const tc = Array.isArray(o.tool_calls) ? o.tool_calls[0] : undefined;
+    if (tc) {
+      if (hadResult) return { state: 'busy' };
+      const cmd = tc.args?.CommandLine;
+      return { state: 'tool', toolAt: Date.parse(o.created_at) || undefined, tool: `${tc.name}${cmd ? ': ' + short(String(cmd), 80) : ''}` };
+    }
+    if (typeof o.content === 'string' && o.content.trim()) return { state: 'finished', text: short(o.content, 400) };
+    // a step with thinking only: keep looking
+  }
+  return { state: 'unknown' };
+}
+
+export function readState(agent: 'claude' | 'codex' | 'antigravity', path: string): TranscriptState | null {
   try {
     const mtime = statSync(path).mtimeMs, lines = tailLines(path);
     // time of the newest conversation record, for comparisons that bookkeeping writes must not affect
     let at: number | undefined;
-    for (let i = lines.length - 1; i >= 0 && at === undefined; i--) { const o = parse(lines[i]); if (o && (o.type === 'user' || o.type === 'assistant' || o.type === 'response_item' || o.type === 'event_msg') && o.timestamp) at = Date.parse(o.timestamp); }
-    return { ...(agent === 'claude' ? claude(lines) : codex(lines)), mtime, at };
+    for (let i = lines.length - 1; i >= 0 && at === undefined; i--) {
+      const o = parse(lines[i]); if (!o) continue;
+      if ((o.type === 'user' || o.type === 'assistant' || o.type === 'response_item' || o.type === 'event_msg') && o.timestamp) at = Date.parse(o.timestamp);
+      else if (agent === 'antigravity' && o.created_at) at = Date.parse(o.created_at);
+    }
+    return { ...(agent === 'claude' ? claude(lines) : agent === 'codex' ? codex(lines) : antigravity(lines)), mtime, at };
   } catch { return null; }
+}
+
+// The question titles of the newest request_user_input_async call in a Codex rollout file. Codex records the call and
+// an immediate {"accepted":true} result, but not the answers, so this cannot tell whether the questions are still open.
+export function codexQuestions(path: string): string[] {
+  try {
+    const lines = tailLines(path);
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const p = parse(lines[i])?.payload;
+      if (p?.type === 'function_call' && p.name === 'request_user_input_async')
+        return (JSON.parse(p.arguments || '{}').questions || []).map((q: any) => short(String(q.title || ''), 200)).filter(Boolean);
+    }
+  } catch { /* moved or not JSON */ }
+  return [];
 }

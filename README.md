@@ -111,10 +111,12 @@ Agents that work on Taskboard itself run inside the real one, so the setup keeps
 | Inbox | Account messages and documents to review. Approve messages, dismiss items, restore dismissed items, or compose in Outbox. |
 | Accounts | Settings folders per account, sign-in, limit marks, and limit resets (only you can use them). |
 
-Keys (press `?` in the app for the full list, with key names written out): `⌘K` (Command-K) controller, also from inside
-a terminal · `N` new task · `C` controller · `T` triage (everything waiting on you, longest first) · `⌘S` hide the sidebar.
-Single letters work when the cursor is not in a terminal or text field. On the canvas: `⌃⌥←→` focus, `⌃⌥↩` maximize, `⌃⌥L` layout, `⌃⌥F` focus mode (Esc or the button
-bottom-right exits), `⌃⌥G` next group tab, `⌃⌥⇧G` new group, `⌃⌥N` next waiting, `⌃⌥.` / `⌃⌥,` text size, `⌃⌥W` remove window.
+Keys (press `?` in the app for the full list; change them on the Settings page): `⌘K` (Command-K) controller, also from inside
+a terminal · `N` new task · `C` controller · `T` or `⌃⌥Q` triage (everything waiting on you, longest first) · `⌃⌥U` canvas view Needs you + unread · `⌘S` hide the sidebar.
+Keys with ⌘ or ⌃ work everywhere, also inside a terminal. Single letters work when the cursor is not in a terminal or text field. On the canvas: `⌃⌥←→` focus, `⌃⌥↩` maximize, `⌃⌥L` layout, `⌃⌥F` focus mode (Esc or the button
+bottom-right exits), `⌃⌥G` / `⌃⌥⇥` / `⌘⇧]` next view, `⌃⌥⇧⇥` / `⌘⇧[` previous view, `⌃⌥⇧G` new group, `⌃⌥N` next waiting, `⌃⌥.` / `⌃⌥,` text size, `⌃⌥W` remove window, `⌃⌥PageUp` / `⌃⌥PageDown` (or `⌃⌥[` / `⌃⌥]`) previous / next page.
+A sideways swipe (or Shift + wheel) over a terminal scrolls the canvas, or turns one page when **Per page** is on.
+**Per page** sets the most tiles on a page. Tiles grow to fill a page with fewer tasks in Columns, Grid, and Rows.
 ⌘-click window headers or cards to select several. Drag a window header onto a group tab to add it.
 
 ## How it works
@@ -179,19 +181,21 @@ bottom-right exits), `⌃⌥G` next group tab, `⌃⌥⇧G` new group, `⌃⌥N`
   applied by restarting the controller between turns. It resumes the same conversation and keeps the same link.
   For this to work while you are away, the server must be running: install `scripts/install-launchd.sh`.
 - **Settings page:** whether the controller, and separately other agents, may start, type into, set aside and archive
-  tasks through `tb` without an approval card (defaults: controller yes, other agents no). The controller's Claude Code
-  settings allow every `tb` command and a Codex controller runs with `-a never`, so this page is the only place that
-  decides. Releasing, rolling back and stopping the server stay blocked for every agent.
-- **Controller (⌘K):** an agent session in `~/AgentVault/controller` (Claude Code or Codex: choose its account on the
-  Accounts page. The account decides the agent) that manages agents with the `tb` command.
-  Starting agents, typing into them, parking and archiving wait for your **Approve / Deny** card on the dashboard,
-  whatever Claude Code's permission mode is.
+  tasks through `tb` without an approval card (defaults: controller yes, other agents no). Taskboard checks these
+  settings for each action. Releasing, rolling back and stopping the server stay blocked for every agent.
+- **Controller (⌘K):** an agent session in `~/AgentVault/controller` that manages agents with the `tb` command.
+  Choose its account on the Accounts page. The account sets the controller's agent.
+  The Settings page controls whether its actions need an approval card.
+- **Task routing:** the Settings page stores machine rules in `~/.taskboard/machine.json`.
+  The Accounts page stores each account's rules in `~/.taskboard/accounts.json`.
+  The controller reads `tb accounts` before it starts work. A Claude Code controller also gets current usage in its prompt hook.
+  The user can choose an agent, account, or model in a request. `tb new` accepts `--account` and `--model`.
 - **`tb`** (linked into `~/.local/bin/tb`): `tb list`, `tb show`, `tb log`, `tb tail`, `tb result`, `tb wait`, `tb send`,
-  `tb new` (also `--batch plan.json`), `tb group`, `tb doc send`, `tb review`, `tb park|archive`. Run `tb` for help.
+  `tb accounts`, `tb new` (also `--batch plan.json`), `tb group`, `tb doc send`, `tb review`, `tb park|archive`. Run `tb` for help.
 - **Usage limits:** the Accounts page shows each account's windows (5-hour, weekly) with % used and reset time.
   Claude Code: reported by the status line Taskboard gives its sessions (sessions started before this was added show it
   after they are resumed). Codex: read from the newest session file of that account every minute. Automatic account
-  choice skips accounts at 100% until their reset and prefers the least used.
+  choice skips accounts at 100% until their reset. It prefers fewer assigned tasks, then lower usage.
 - **Accounts:** each account is a settings folder (`CLAUDE_CONFIG_DIR` / `CODEX_HOME`), so accounts run side by side.
   Automatic choice = the least busy signed-in account that is not at its limit. A Claude Code task stopped by a limit
   can move to another account (its transcript is copied and resumed there).
