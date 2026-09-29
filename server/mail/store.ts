@@ -3,6 +3,7 @@ import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, re
 import { dirname } from 'node:path';
 
 export type Verdict = 'communication' | 'action-request' | 'quarantine';
+export interface MailFile { id: string; name: string; size: number; hash: string; path: string; slackId?: string; longBody?: boolean; review?: { verdict: Verdict; reason: string; at: string }; routed?: { task: string; path: string; at: string } }
 export interface Message {
   id: string; direction: 'inbox' | 'outbox'; source: 'agent' | 'slack' | 'user';
   from: string; to: string; subject: string; body: string; hash: string;
@@ -12,11 +13,13 @@ export interface Message {
   rejectedAt?: string; sentAt?: string; slackTs?: string; slackChannel?: string;
   sending?: boolean; error?: string;
   routes: { task: string; path: string; at: string }[];
+  files?: MailFile[];
 }
-export interface Contact { user: string; name: string; channel: string; oldest: string }
-export interface MailData { version: 1; messages: Message[]; contacts: Contact[]; owner?: string; controllerApproval?: boolean }
-export function hashMessage(subject: string, body: string, to: string) {
-  return createHash('sha256').update(JSON.stringify([subject, body, to])).digest('hex');
+export interface Contact { user: string; name: string; channel: string; oldest: string; status?: 'requested' | 'active' | 'needs-request'; requestId?: string }
+export interface ContactRequest { user: string; name: string; channel: string; requestId: string; at: string }
+export interface MailData { version: 1; messages: Message[]; contacts: Contact[]; requests?: ContactRequest[]; requestCursors?: Record<string, string>; staged?: MailFile[]; owner?: string; controllerApproval?: boolean }
+export function hashMessage(subject: string, body: string, to: string, files: MailFile[] = []) {
+  return createHash('sha256').update(JSON.stringify([subject, body, to, files.map(f => [f.name, f.size, f.hash])])).digest('hex');
 }
 export function validText(value: unknown, limit: number, label: string): string {
   if (typeof value !== 'string' || !value.trim() || Buffer.byteLength(value, 'utf8') > limit || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value)) throw new Error(`Invalid ${label}`);
@@ -44,15 +47,15 @@ export class MailStore {
   update(id: string, fn: (m: Message) => void) {
     return this.change(data => { const m = data.messages.find(x => x.id === id); if (!m) throw new Error('No such message'); fn(m); m.updated = new Date().toISOString(); return m; });
   }
-  add(input: Pick<Message, 'direction' | 'source' | 'from' | 'to' | 'subject' | 'body'> & Partial<Pick<Message, 'id' | 'slackTs' | 'slackChannel'>>) {
-    validText(input.subject, 200, 'subject'); validText(input.body, 32768, 'message body');
+  add(input: Pick<Message, 'direction' | 'source' | 'from' | 'to' | 'subject' | 'body'> & Partial<Pick<Message, 'id' | 'slackTs' | 'slackChannel' | 'files'>>) {
+    validText(input.subject, 200, 'subject'); validText(input.body, 262144, 'message body');
     validText(input.from, 200, 'sender'); validText(input.to, 200, 'recipient');
     return this.change(data => {
       const duplicate = input.id && data.messages.find(m => m.id === input.id);
       if (duplicate) return duplicate;
       if (data.messages.length >= 10000) throw new Error('Mailbox is full');
       const now = new Date().toISOString();
-      const m: Message = { ...input, id: input.id || randomUUID(), hash: hashMessage(input.subject, input.body, input.to), created: now, updated: now, routes: [] };
+      const m: Message = { ...input, id: input.id || randomUUID(), hash: hashMessage(input.subject, input.body, input.to, input.files), created: now, updated: now, routes: [] };
       data.messages.push(m); return m;
     });
   }

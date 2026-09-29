@@ -114,43 +114,52 @@ This version uses the team's existing Taskboard app in Sekai. New members do not
 - Confirm that Slack shows the Sekai workspace and the Taskboard app.
 - Read the permissions and select **Allow**.
 - Return to Taskboard.
-- Confirm that the settings show **Connected as** followed by your Slack member ID.
+- Confirm that the settings show **Connected as** followed by your Slack name and member ID.
 
 If Slack requires administrator approval, ask your workspace administrator to approve the existing Taskboard app.
 
 Each member must complete their own authorization. Do not copy another person's credentials.
 
-The Slack permissions allow reading direct messages and sending as you. Taskboard fetches conversations only for contacts you add.
+The Slack permissions allow Taskboard to find people, read direct messages, send messages, upload files, and download files.
+
+Taskboard scans direct conversations for contact requests. It stores only Taskboard requests from people who are not contacts.
+
+Existing Slack connections must authorize the new file permissions before files can move through Inbox. Disconnect Slack, then connect it again.
 
 Taskboard sends message text to Claude for its separate content check. The checking process cannot use tools.
 
 ## Add contacts
 
-Use a Slack member ID, such as an ID beginning with `U`. A display name is not enough.
+Find a person by name in Inbox settings. Select **Send contact request** beside the correct result.
 
-Ask the recipient for their member ID. Their connected Taskboard shows that ID in Slack connection settings.
+The other person sees the request in their Inbox settings after Slack sync. They select **Accept** or **Decline**.
 
-- Enter the ID in **Slack member ID**.
-- Select **Add contact**.
-- Ask the other member to add your ID before you send a message.
+Taskboard permits messages after the sender sees that the contact is active. Existing contacts need a new request.
 
-Taskboard starts receiving messages from the time you add a contact.
+## Test with another member
 
-## Test with yourself
+Both members must connect Slack and accept contact requests.
 
-You can check the full delivery path without involving another person.
-
-- Add your own connected Slack member ID as a contact.
+- Search for the other member by name and send a request.
+- Ask the other member to accept the request in Inbox settings.
+- Wait for the contact to show **Active**.
 - Open **Outbox**.
-- Select yourself as the recipient.
+- Select the other member as the recipient.
 - Enter a subject and a harmless test message.
 - Select **Save draft for approval**.
 - Wait for the controller's content check.
 - Select **Approve**.
 - Select **Send approved message**.
-- Open **Messages**.
-- Select **Sync Slack and check messages**.
-- Confirm that your message appears in Inbox.
+- Ask the other member to open **Messages** and select **Sync Slack and check messages**.
+- Confirm that the message appears in their Inbox.
+
+To send a document, choose a TXT, MD, PDF, or DOCX file in Outbox. Taskboard limits each file to 10 MiB.
+
+The recipient's controller reads each incoming file as data. The user must approve a reviewed file and choose a task before that task receives it.
+
+Suspicious files stay in quarantine. Taskboard does not run incoming files.
+
+Taskboard sends message bodies over 30,000 bytes as text files. The body limit is 256 KiB.
 
 Taskboard also polls Slack every 60 seconds while the server runs.
 
@@ -173,7 +182,7 @@ A new document review request shows the document again, even if you dismissed it
 - If Inbox is missing, confirm that your installed release includes the Slack Inbox feature.
 - If Slack sign-in expires, return to Inbox and select **Connect Slack** again.
 - If review fails, check your Claude sign-in, then select **Retry controller review**.
-- If a message is missing, confirm that both members added each other's IDs before sending.
+- If a message is missing, confirm that both members accepted the contact request before sending.
 - If delivery is uncertain, check Slack before preparing another draft. Taskboard does not resend automatically.
 - If a Slack connection stops working, disconnect it and complete **Connect Slack** again.
 - If Taskboard does not open, inspect `~/.taskboard/server.log`.
@@ -182,4 +191,4 @@ Tasks and documents live in `~/AgentVault`. Server settings and credentials live
 
 Keep those folders when you update Taskboard. Never share credential files when asking for help.
 
-Next action: complete the self-test, then add the team members you want to message.
+Next action: send a contact request to a team member and test delivery after they accept it.

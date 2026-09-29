@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MailStore, type Message } from '../server/mail/store.ts';
-import { MailService, PREFIX } from '../server/mail/service.ts';
+import { MailService, PREFIX, CONTACT_PREFIX } from '../server/mail/service.ts';
 import { SlackClient, SLACK_APP_ID } from '../server/mail/slack.ts';
 
 const root = mkdtempSync(join(tmpdir(), 'tb-mail-tests-'));
@@ -30,7 +30,7 @@ test('approval requires exact content and review, and controller delegation is e
 
 test('Slack import uses provider identity, ignores other text, and does not duplicate deliveries', async () => {
   const s = new MailStore(join(root, 'import.json'));
-  s.change(d => { d.contacts.push({ user: 'U2', name: 'Other user', channel: 'D1', oldest: '0' }); });
+  s.change(d => { d.contacts.push({ user: 'U2', name: 'Other user', channel: 'D1', oldest: '0', status: 'active' }); });
   const event = { ts: '1', user: 'U2', bot_id: 'B_TASKBOARD', app_id: SLACK_APP_ID, text: PREFIX + JSON.stringify({ id: 'one', subject: 'Hello', body: 'Ordinary text', from: 'Uadmin' }) };
   const slack = { identity: () => ({ user: 'U1', team: 'T1' }), call: async () => ({ messages: [event, { ...event, ts: '2', user: 'U3' }, { ...event, ts: '3', text: 'Ordinary Slack text' }, { ...event, ts: '4', app_id: 'A_OTHER_APP' }] }) } as unknown as SlackClient;
   const service = new MailService(s, slack); await service.sync(); await service.sync();
@@ -42,7 +42,7 @@ test('Slack import uses provider identity, ignores other text, and does not dupl
 
 test('outbox never sends before approval and holds uncertain delivery without replay', async () => {
   const s = new MailStore(join(root, 'send.json')); const m = draft(s);
-  s.change(d => { d.contacts.push({ user: 'U2', name: 'Other user', channel: 'D1', oldest: '0' }); });
+  s.change(d => { d.contacts.push({ user: 'U2', name: 'Other user', channel: 'D1', oldest: '0', status: 'active' }); });
   let sends = 0;
   const slack = { identity: () => ({ user: 'U1', team: 'T1' }), call: async () => { sends++; throw new Error('network lost'); } } as unknown as SlackClient;
   const service = new MailService(s, slack);
@@ -64,10 +64,11 @@ test.after(() => rmSync(root, { recursive: true, force: true }));
 
 test('an interrupted history read resumes without losing or duplicating messages', async () => {
  const s=new MailStore(join(root,'history-recovery.json'));
- s.change(d=>{d.contacts.push({user:'U2',name:'Contact',channel:'D1',oldest:'0'});});
+ s.change(d=>{d.contacts.push({user:'U2',name:'Contact',channel:'D1',oldest:'0',status:'active'});});
  let offline=true;
  const event=(ts:string)=>({user:'U2',ts,text:PREFIX+JSON.stringify({id:'test-'+ts,subject:'Status',body:'Ready.'})});
- const slack={identity:()=>({user:'U1',team:'T1'}),call:async (_method:string,params:Record<string,string>)=>{
+ const slack={identity:()=>({user:'U1',team:'T1'}),call:async (method:string,params:Record<string,string>)=>{
+  if(method==='conversations.list')return {channels:[]};
   if(!params.cursor)return {messages:[event('2')],has_more:true,response_metadata:{next_cursor:'page-two'}};
   if(offline)throw new Error('offline');
   return {messages:[event('1')],has_more:false};
@@ -80,4 +81,25 @@ test('an interrupted history read resumes without losing or duplicating messages
  assert.equal(restartedStore.read().messages.length,2);
  assert.notEqual(restartedStore.read().contacts[0].oldest,'0');
  assert.ok(restartedStore.read().messages.every(m=>!m.approval&&m.routes.length===0));
+});
+
+test('contact requests need the other member to accept before messages flow', async () => {
+ const s = new MailStore(join(root, 'contacts.json'));
+ let acceptance = false;
+ const slack = {identity:()=>({user:'U1',team:'T1'}),call:async (method:string)=>{
+  if(method==='users.info')return {user:{id:'U2',team_id:'T1',real_name:'Other'}};
+  if(method==='conversations.open')return {channel:{id:'D1'}};
+  if(method==='chat.postMessage')return {ts:'1'};
+  if(method==='conversations.list')return {channels:[{id:'D1',user:'U2'}]};
+  if(method==='conversations.history')return {messages:acceptance?[{user:'U2',ts:'2',text:CONTACT_PREFIX+JSON.stringify({type:'accept',id:s.read().contacts[0].requestId})}]:[]};
+  return {};
+ }} as unknown as SlackClient;
+ const service = new MailService(s,slack);
+ await service.requestContact('U2');
+ assert.equal(s.read().contacts[0].status,'requested');
+ const m=draft(s);s.update(m.id,x=>{x.review=review;});s.approve(m.id,'user',m.hash);
+ await assert.rejects(service.send(m.id),/accept/);
+ acceptance=true;await service.sync();
+ assert.equal(s.read().contacts[0].status,'active');
+ assert.ok(Number(s.read().contacts[0].oldest)>=2);
 });

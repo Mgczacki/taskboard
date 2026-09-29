@@ -536,10 +536,11 @@ server.on('upgrade', (req, socket, head) => {
 // outbox / inbox files changed on disk → refresh that task's counts in every window
 const pendingTouch = new Map<string, NodeJS.Timeout>();
 try {
-  (await import('node:fs')).watch(store.taskDir(''), { recursive: true }, (_ev, file) => {
+  const watcher = (await import('node:fs')).watch(store.taskDir(''), { recursive: true }, (_ev, file) => {
     const m = String(file || '').match(/^([^/]+)\/(inbox|outbox)\//); if (!m) return;
     clearTimeout(pendingTouch.get(m[1])); pendingTouch.set(m[1], setTimeout(() => store.touch(m[1]), 300));
   });
+  watcher.on('error', e => console.error('watch', e));
 } catch (e) { console.error('watch', e); }
 approvals.onApprovalsChange(() => {
   for (const t of store.all()) {
