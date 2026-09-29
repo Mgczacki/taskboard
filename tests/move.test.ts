@@ -79,12 +79,21 @@ test('sandbox API and tb move preserve tasks and reject stale hooks', { timeout:
   const fake = `#!/usr/bin/env node
 const fs = require('node:fs'), path = require('node:path');
 const agent = path.basename(process.argv[1]);
+if (agent === 'codex' && process.argv.includes('app-server')) {
+  const rl = require('node:readline').createInterface({ input: process.stdin });
+  rl.on('line', line => {
+    const msg = JSON.parse(line);
+    if (msg.id === 1) console.log(JSON.stringify({ id: 1, result: {} }));
+    if (msg.id === 2) console.log(JSON.stringify({ id: 2, result: { data: [{ hooks: [{ source: 'sessionFlags', eventName: 'preToolUse', command: 'node "$TB_HOOKS_DIR/guard.mjs"', key: '/<session-flags>/config.toml:pre_tool_use:0:0', currentHash: 'sha256:' + 'a'.repeat(64) }] }] } }));
+  });
+} else {
 if (process.argv.includes('status')) { console.log(agent === 'claude' ? '{"loggedIn":true}' : 'Logged in'); process.exit(0); }
 if (agent === 'agy' && (process.argv.includes('models') || process.argv.includes('plugin'))) { console.log('test\\tmodel'); process.exit(0); }
 fs.writeFileSync(path.join(process.env.TASK_DIR, 'launch.json'), JSON.stringify({ agent, args: process.argv.slice(2), cwd: process.cwd(), accountDir: process.env.CLAUDE_CONFIG_DIR || process.env.CODEX_HOME }));
 console.log(agent === 'agy' ? '? for shortcuts' : 'TEST_AGENT_READY');
 if (agent === 'agy') process.stdin.on('data', chunk => fs.appendFileSync(path.join(process.env.TASK_DIR, 'pasted.txt'), chunk));
 setInterval(() => {}, 1000);
+}
 `;
   for (const name of ['claude', 'codex', 'agy']) { const p = join(bin, name); writeFileSync(p, fake); chmodSync(p, 0o755); }
   const realTmux = execFileSync('which', ['tmux'], { encoding: 'utf8' }).trim();
@@ -94,12 +103,12 @@ const fs = require('node:fs'), cp = require('node:child_process');
 if (fs.existsSync(${JSON.stringify(join(root, 'fail-launch'))}) && process.argv.includes('new-session')) process.exit(1);
 const r = cp.spawnSync(${JSON.stringify(realTmux)}, process.argv.slice(2), { stdio: 'inherit' }); process.exit(r.status || 0);
 `); chmodSync(wrapper, 0o755);
-  const accounts = ['claude', 'codex', 'antigravity'].map(agent => ({ id: `${agent}-default`, agent, name: agent, dir: join(root, 'accounts', agent), isDefault: true, maxParallel: 8, created: new Date().toISOString(), limited: { at: new Date().toISOString(), note: 'Fixture limit' }, usage: { windows: [{ label: 'weekly', usedPct: 99 }], at: new Date().toISOString(), source: 'test' } }));
+  const accounts = ['claude', 'codex', 'antigravity'].map(agent => ({ id: `${agent}-default`, agent, name: agent, dir: join(root, 'accounts', agent), isDefault: false, maxParallel: 8, created: new Date().toISOString(), limited: { at: new Date().toISOString(), note: 'Fixture limit' }, usage: { windows: [{ label: 'weekly', usedPct: 99 }], at: new Date().toISOString(), source: 'test' } }));
   accounts.push({ ...accounts[0], id: 'claude-other', name: 'Claude other', dir: join(root, 'accounts', 'claude-other'), isDefault: false });
   accounts.push({ ...accounts[1], id: 'codex-other', name: 'Codex other', dir: join(root, 'accounts', 'codex-other'), isDefault: false });
   for (const a of accounts) mkdirSync(a.dir, { recursive: true });
   writeFileSync(join(root, 'state', 'accounts.json'), JSON.stringify(accounts));
-  writeFileSync(join(root, 'state', 'machine.json'), JSON.stringify({ name: 'move-test', controller: { autostart: false, remoteControl: false }, permissions: { controllerNeedsApproval: true, agentsNeedApproval: true } }));
+  writeFileSync(join(root, 'state', 'machine.json'), JSON.stringify({ name: 'move-test', controller: { autostart: false, remoteControl: false }, permissions: { controllerNeedsApproval: true, agentsNeedApproval: true, trustWorkspaces: false, autoReview: false } }));
   // The sandbox owns this listening socket and all task sessions.
   const net = await import('node:net'); const probe = net.createServer();
   await new Promise<void>(r => probe.listen(0, '127.0.0.1', r));

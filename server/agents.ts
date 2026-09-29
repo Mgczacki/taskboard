@@ -1,8 +1,7 @@
-// Starting and resuming agents. Taskboard never changes your global Claude Code or Codex settings:
-// hooks are passed per session with `claude --settings <file>` and `codex -c notify=[...]`. Antigravity (agy) has no
-// such flag, so Taskboard installs the agy plugin "taskboard" and a status line command once (see installAgyPlugin);
-// both do nothing in agy sessions that Taskboard did not start.
-import { execFile, execFileSync } from 'node:child_process';
+// Starting and resuming agents. Claude Code hooks use --settings, and Codex hooks use -c.
+// Taskboard records folder trust in each CLI's account settings. Codex also needs the exact guard hook hash in its
+// account config, because its hook trust check does not read -c overrides. Antigravity (agy) uses a Taskboard plugin.
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
@@ -17,6 +16,7 @@ import * as machine from './machine.ts';
 import { buildHandoff } from './handoff.ts';
 import { transcriptFor } from './importer.ts';
 import { movingTasks, resetSessionEvents } from './events.ts';
+import * as workspaceTrust from './trust.ts';
 
 const exec = promisify(execFile);
 
@@ -74,7 +74,7 @@ export function installAgyPlugin() {
   const h = (e: string) => ({ type: 'command', command: agyCmd('agy-hook.mjs', e), timeout: 10 });
   const hooks = { taskboard: {
     PreInvocation: [h('PreInvocation')], Stop: [h('Stop')],
-    PreToolUse: [{ matcher: '*', hooks: [h('PreToolUse')] }, { matcher: 'run_command', hooks: [{ type: 'command', command: agyCmd('guard.mjs', '--agy'), timeout: 5 }] }],
+    PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: agyCmd('agy-hook.mjs', 'PreToolUse'), timeout: 50 }] }, { matcher: 'run_command', hooks: [{ type: 'command', command: agyCmd('guard.mjs', '--agy'), timeout: 5 }] }],
     PostToolUse: [{ matcher: '*', hooks: [h('PostToolUse')] }],
   } };
   const plugin = { name: 'taskboard', description: 'Reports the state of agy sessions that Taskboard started to the Taskboard server. It does nothing in other agy sessions.' };
@@ -169,17 +169,14 @@ export async function startController(): Promise<Task> {
   // never closed on that basis (a listing problem once closed a running controller)
   if ((await tmux.hasSession(t.session)) !== false) { const s = (await tmux.listSessions())?.find(x => x.name === t!.session); if (!s || !s.dead) return t; await tmux.killSession(t.session); }
   const resume = t.agent === 'claude' ? !!t.transcript : !!t.sessionId;
+  if (machine.get().permissions.trustWorkspaces) workspaceTrust.trust(t);
   launching.add(t.id); store.launchedAt.set(t.id, Date.now());
   try {
     const c = t.agent === 'claude'
       // named after this machine; with Remote Control on it can be reached from claude.ai/code and the Claude mobile app
-      ? ['claude', '--settings', CONTROLLER_SETTINGS_FILE, ...(resume && t.sessionId ? ['--resume', t.sessionId] : t.sessionId ? ['--session-id', t.sessionId] : []),
+      ? ['claude', '--settings', CONTROLLER_SETTINGS_FILE, '--permission-mode', machine.get().permissions.autoReview ? 'auto' : 'default', ...(resume && t.sessionId ? ['--resume', t.sessionId] : t.sessionId ? ['--session-id', t.sessionId] : []),
         '--name', machine.controllerLabel(), ...(machine.get().controller.remoteControl ? ['--remote-control', machine.controllerLabel()] : [])]
-      // Antigravity: no approval prompts for the controller either
-      : t.agent === 'antigravity' ? [...command(t, null, !!t.sessionId), '--dangerously-skip-permissions']
-      // Codex: tb talks to the Taskboard server on 127.0.0.1, which its sandbox blocks unless network access is on
-      // no Codex approval prompts for the controller: Taskboard's Settings page decides what it may do
-      : [...command(t, null, !!t.sessionId), '-c', 'sandbox_workspace_write.network_access=true', '-a', 'never'];
+      : command(t, null, !!t.sessionId, await codexHookTrust(t));
     await tmux.newSession(t.session, CONTROLLER_DIR, baseEnv(t), c, async () => { await ensureTmuxConfigured(); });
     await ensureTmuxConfigured();
   } finally { launching.delete(t.id); }
@@ -236,20 +233,62 @@ function baseEnv(t: Task): Record<string, string> {
   return env;
 }
 
+// Keep this command identical across Taskboard servers. Codex identifies a hook from its command and settings.
+const codexHookCommand = () => 'node "$TB_HOOKS_DIR/guard.mjs"';
+const codexHookSetting = () => `hooks.PreToolUse=[{matcher="^Bash$",hooks=[{type="command",command=${JSON.stringify(codexHookCommand())},timeout=5}]}]`;
+async function codexHookTrust(t: Task): Promise<string[]> {
+  if (t.agent !== 'codex') return [];
+  return new Promise((resolve, reject) => {
+    const child = spawn('codex', ['app-server', '-c', codexHookSetting()], { cwd: t.cwd, env: { ...process.env, ...accounts.envFor(accounts.get(t.account)) }, stdio: ['pipe', 'pipe', 'ignore'] });
+    let buffer = '', done = false;
+    const finish = (error?: Error, flags?: string[]) => {
+      if (done) return;
+      done = true; clearTimeout(timer); child.kill('SIGTERM');
+      if (error) reject(error); else resolve(flags || []);
+    };
+    const send = (value: unknown) => child.stdin.write(JSON.stringify(value) + '\n');
+    const timer = setTimeout(() => finish(new Error('Codex did not list the Taskboard guard hook.')), 12000);
+    child.on('error', error => finish(error));
+    child.on('close', () => { if (!done) finish(new Error('Codex stopped before listing the Taskboard guard hook.')); });
+    child.stdout.on('data', chunk => {
+      buffer += chunk;
+      const lines = buffer.split('\n'); buffer = lines.pop() || '';
+      for (const line of lines) {
+        let msg: any; try { msg = JSON.parse(line); } catch { continue; }
+        if (msg.id === 1) {
+          send({ method: 'initialized' });
+          send({ id: 2, method: 'hooks/list', params: { cwds: [t.cwd] } });
+        }
+        if (msg.id === 2) {
+          const hooks = (msg.result?.data || []).flatMap((row: any) => row.hooks || []);
+          const guard = hooks.find((hook: any) => hook.source === 'sessionFlags' && hook.eventName === 'preToolUse' && hook.command === codexHookCommand());
+          if (!guard?.key || !/^sha256:[a-f0-9]{64}$/.test(guard.currentHash || '')) return finish(new Error('Codex did not report the Taskboard guard hook hash.'));
+          try { workspaceTrust.trustCodexHook(t, guard.key, guard.currentHash); }
+          catch (error) { return finish(error as Error); }
+          return finish();
+        }
+      }
+    });
+    send({ id: 1, method: 'initialize', params: { clientInfo: { name: 'taskboard', version: '0.1' } } });
+  });
+}
+
 function codexFlags(): string[] {
   return [
     '-c', `notify=${JSON.stringify(['node', CODEX_NOTIFY_SCRIPT])}`,
     // ask Codex's terminal UI to ring the bell when it waits for approval; tmux turns the bell into an event
     '-c', 'tui.notifications=["approval-requested"]',
     '-c', 'tui.notification_method="bel"',
+    '-c', codexHookSetting(),
     // inline mode: output stays in the terminal's history, so it can be scrolled (the full-screen mode has none)
     '--no-alt-screen',
   ];
 }
 
-function command(t: Task, prompt: string | null, resume: boolean): string[] {
+function command(t: Task, prompt: string | null, resume: boolean, codexTrust: string[] = []): string[] {
   if (t.agent === 'claude') {
     const c = ['claude', '--settings', CLAUDE_SETTINGS_FILE, '--add-dir', VAULT, '--append-system-prompt', taskInstructions(t)];
+    c.push('--permission-mode', machine.get().permissions.autoReview ? 'auto' : 'default');
     if (resume && t.sessionId) c.push('--resume', t.sessionId);
     else if (t.sessionId) c.push('--session-id', t.sessionId);
     if (prompt) c.push(prompt);
@@ -259,7 +298,7 @@ function command(t: Task, prompt: string | null, resume: boolean): string[] {
     // agy has no flag for a system prompt: the instructions go before the first prompt, and a resumed conversation
     // already has them. The controller reads AGENTS.md in its folder instead. --add-dir lets it write the task's log.
     // the real path: agy compares real paths, and a vault behind a symbolic link (/var → /private/var) is "outside workspace"
-    const c = [agyBin(), '--add-dir', realpathSync(VAULT)];
+    const c = [agyBin(), '--add-dir', realpathSync(VAULT), ...(machine.get().permissions.autoReview ? ['--sandbox'] : [])];
     if (resume && t.sessionId) return [...c, '--conversation', t.sessionId];
     if (prompt) {
       const text = t.role === 'controller' ? prompt : `${taskInstructions(t)}\n\n---\n\n${prompt}`;
@@ -267,7 +306,8 @@ function command(t: Task, prompt: string | null, resume: boolean): string[] {
     }
     return c;
   }
-  const c = ['codex', ...codexFlags()];
+  const c = ['codex', ...codexFlags(), ...codexTrust];
+  c.push('-a', 'on-request', '-s', 'workspace-write', '--add-dir', VAULT, '-c', 'sandbox_workspace_write.network_access=true', '-c', `approvals_reviewer="${machine.get().permissions.autoReview ? 'auto_review' : 'user'}"`);
   // Codex has no flag that appends to its system prompt. developer_instructions is a config value, so it is written as a
   // TOML string (a JSON string is also a valid TOML basic string). The controller reads AGENTS.md in its folder instead.
   if (t.role !== 'controller') c.push('-c', `developer_instructions=${JSON.stringify(taskInstructions(t))}`);
@@ -354,7 +394,9 @@ async function launch(t: Task, prompt: string | null, resume: boolean) {
   try { await launchInner(t, prompt, resume); } finally { launching.delete(t.id); }
 }
 async function launchInner(t: Task, prompt: string | null, resume: boolean) {
-  await tmux.newSession(t.session, t.cwd, baseEnv(t), command(t, prompt, resume), async () => { await ensureTmuxConfigured(); });
+  if (machine.get().permissions.trustWorkspaces) workspaceTrust.trust(t);
+  const codexTrust = await codexHookTrust(t);
+  await tmux.newSession(t.session, t.cwd, baseEnv(t), command(t, prompt, resume, codexTrust), async () => { await ensureTmuxConfigured(); });
   await ensureTmuxConfigured();
   await tmux.pipeToFile(t.session, store.terminalLog(t.id));
 }
