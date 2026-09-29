@@ -91,6 +91,7 @@ export function App() {
     if (u.href !== location.href) history.replaceState(null, '', u);
   }, [openId, openTab]);
   const [newOpen, setNewOpen] = useState(false);
+  const [newTaskToFocus, setNewTaskToFocus] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(() => location.hash === '#import');
   const [triage, setTriage] = useState(false);
   const [railHidden, setRailHidden] = useState(() => SOLO || localStorage.getItem('tb-rail') === 'hidden');
@@ -229,12 +230,16 @@ export function App() {
           {page === 'settings' && <SettingsPage tasks={allTasks} />}
           {page === 'inbox' && <InboxPage tasks={tasks} open={(id, tab) => setOpenId(id, tab)} documentLink={documentLink?.reviewId ? documentLink : null} />}
           {page === 'graph' && <GraphView tasks={tasks} groups={groups} open={(id, tab) => setOpenId(id, tab)} />}
-          {page === 'canvas' && <Canvas tasks={tasks} groups={groups} view={view} setView={setView} openPanel={id => setOpenId(id)} panelTaskId={openId} selected={selected} toggleSel={toggleSel} clearSel={() => setSelected(new Set())} solo={SOLO} focusMode={focusMode} setFocusMode={setFocusMode} toast={toast} />}
+          {page === 'canvas' && <Canvas tasks={tasks} groups={groups} view={view} setView={setView} openPanel={id => setOpenId(id)} panelTaskId={openId} selected={selected} toggleSel={toggleSel} clearSel={() => setSelected(new Set())} solo={SOLO} focusMode={focusMode} setFocusMode={setFocusMode} toast={toast} newTask={() => setNewOpen(true)} newTaskToFocus={newTaskToFocus} onNewTaskFocused={() => setNewTaskToFocus(null)} />}
         </div>
       </div>
       {selected.size > 0 && <SelectionBar ids={[...selected]} tasks={tasks} groups={groups} clear={() => setSelected(new Set())} newGroup={ids => setGroupPrompt(ids)} toast={toast} />}
       {open && <TaskPanel key={open.id + (openTab || '')} t={open} tasks={tasks} initialTab={openTab} documentLink={documentLink?.task === open.id && !documentLink.reviewId ? documentLink : null} groups={groups} onClose={() => setOpenId(null)} onCanvas={showOnCanvas} />}
-      {newOpen && <NewTask onClose={() => setNewOpen(false)} onStarted={id => { setNewOpen(false); setOpenId(id); }} />}
+      {newOpen && <NewTask groups={groups} initialGroup={page === 'canvas' && view.startsWith('g:') && groups.some(g => g.id === view.slice(2)) ? view.slice(2) : undefined} onClose={() => setNewOpen(false)} onStarted={(id, group) => {
+        setNewOpen(false);
+        if (page === 'canvas') { setView(group ? `g:${group}` : 'ungrouped'); setNewTaskToFocus(id); }
+        else setOpenId(id);
+      }} />}
       {importOpen && <Import onClose={() => setImportOpen(false)} onDone={() => { setImportOpen(false); go('list'); }} />}
       {groupPrompt && <GroupPrompt ids={groupPrompt} close={() => setGroupPrompt(null)} done={(g, openWin) => { setGroupPrompt(null); setSelected(new Set()); toast(`Group “${g.name}” created`); if (openWin) openInWindow('g:' + g.id); else { setView('g:' + g.id); go('canvas'); } }} />}
       {role === 'sandbox' && <div className="sandbox-bar" title={`This is a sandbox: a separate test copy of Taskboard (${machineName}). Its agents and tasks are not your real ones.`}>Sandbox · {machineName} · not your real Taskboard</div>}

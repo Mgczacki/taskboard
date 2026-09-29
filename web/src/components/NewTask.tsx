@@ -1,14 +1,15 @@
 // New task: title, first prompt, folder (used before or found), agent, optional worktree.
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AGENTS, AGENT_NAME, api } from '../api';
-import type { Agent } from '../api';
+import type { Agent, Group } from '../api';
 import { loadAccounts, usageText, type Account } from './Accounts';
 
-export function NewTask({ onClose, onStarted, initialFolder }: { onClose: () => void; onStarted: (id: string) => void; initialFolder?: string }) {
+export function NewTask({ onClose, onStarted, initialFolder, groups = [], initialGroup }: { onClose: () => void; onStarted: (id: string, group: string) => void; initialFolder?: string; groups?: Group[]; initialGroup?: string }) {
   const [title, setTitle] = useState('');
   const [desc, setDesc] = useState('');
   const [agent, setAgent] = useState<Agent>(() => (localStorage.getItem('tb-agent') as Agent) || 'claude');
   const [folder, setFolder] = useState(initialFolder || '');
+  const [group, setGroup] = useState(initialGroup || '');
   const [q, setQ] = useState('');
   const [worktree, setWorktree] = useState(false);
   const [branch, setBranch] = useState('');
@@ -61,8 +62,8 @@ export function NewTask({ onClose, onStarted, initialFolder }: { onClose: () => 
     setBusy(true); setErr('');
     try {
       localStorage.setItem('tb-agent', agent);
-      const t = await api.create({ title: title.trim(), desc: desc.trim() || title.trim(), agent, folder, worktree, branch: worktree ? (branch || `task/${slug}`) : undefined, account: machine === 'local' ? account : 'auto', machine });
-      onStarted(t.id);
+      const t = await api.create({ title: title.trim(), desc: desc.trim() || title.trim(), agent, folder, worktree, branch: worktree ? (branch || `task/${slug}`) : undefined, account: machine === 'local' ? account : 'auto', machine, group: group || undefined });
+      onStarted(t.id, group);
     } catch (e) { setErr(String((e as Error).message || e)); setBusy(false); }
   };
   const row = (path: string, meta: string, pin?: boolean) => (
@@ -81,6 +82,9 @@ export function NewTask({ onClose, onStarted, initialFolder }: { onClose: () => 
           <div className="field"><label>Task description · sent to the agent as its first prompt</label><textarea value={desc} onChange={e => setDesc(e.target.value)} placeholder="What should the agent do?" /></div>
           <div className="field"><label>Machine</label><div className="seg mseg">{machineList.map(m => <button key={m.id} disabled={!m.online} className={machine === m.id ? 'on' : ''} onClick={() => setMachine(m.id)}><span className={`mdot ${m.online ? '' : 'off'}`} />{m.name}{m.local ? ' (this Mac)' : m.online ? ` · ${m.latency ?? '?'} ms` : ' · offline'}</button>)}</div>
             {machineList.length <= 1 && <div className="help">Only this Mac is connected. Add another machine with ＋ next to “Machines” in the sidebar.</div>}</div>
+          <div className="field"><label htmlFor="new-task-group">Group</label><select id="new-task-group" className="acct-sel" value={group} onChange={e => setGroup(e.target.value)}>
+            <option value="">No group</option>{groups.map(g => <option key={g.id} value={g.id}>{g.name}</option>)}
+          </select></div>
           <div className="field"><label>Start in folder{machine !== 'local' ? ` on ${machineList.find(m => m.id === machine)?.name}` : ''}</label>
             <div className="fp-chosen">{folder ? <><span className="sub">Selected</span> <code>{folder}</code></> : <span className="sub">No folder selected yet</span>}
               <div className="seg" style={{ marginLeft: 'auto' }}><button className={mode === 'recent' ? 'on' : ''} onClick={() => setMode('recent')}>Recent &amp; pinned</button><button className={mode === 'browse' ? 'on' : ''} onClick={() => { setMode('browse'); if (!br) browse(folder || '~'); }}>Browse…</button></div></div>

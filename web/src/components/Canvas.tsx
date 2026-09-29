@@ -36,9 +36,10 @@ interface Props {
   panelTaskId?: string | null; // the task whose panel is open (its tile then does not attach a second terminal)
   selected: Set<string>; toggleSel: (id: string) => void; clearSel: () => void; solo: boolean;
   focusMode: boolean; setFocusMode: (f: boolean) => void; toast: (s: string, action?: { label: string; fn: () => void }) => void;
+  newTask: () => void; newTaskToFocus: string | null; onNewTaskFocused: () => void;
 }
 
-export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, selected, toggleSel, clearSel, solo, focusMode, setFocusMode, toast }: Props) {
+export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, selected, toggleSel, clearSel, solo, focusMode, setFocusMode, toast, newTask, newTaskToFocus, onNewTaskFocused }: Props) {
   const lk = (k: string) => `tb-cv-${view}-${k}`;
   const [layout, setLayout] = useState<Layout>(() => (localStorage.getItem(lk('layout')) as Layout) || 'columns');
   const [visible, setVisible] = useState<number | 'auto'>(() => { const v = localStorage.getItem(lk('visible')); return v && v !== 'auto' ? Number(v) : 'auto'; });
@@ -128,6 +129,7 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
       setTimeout(() => (el?.querySelector('.xterm-helper-textarea') as HTMLTextAreaElement | null)?.focus(), 30);
     }, 0);
   };
+  useEffect(() => { if (newTaskToFocus && wins.some(t => t.id === newTaskToFocus)) { focus(newTaskToFocus); onNewTaskFocused(); } }, [newTaskToFocus, wins]);
   const turnPage = (d: number) => setPage(p => Math.max(0, Math.min(pageCount - 1, p + d)));
   const nextNeedy = () => { const l = wins.filter((t, i) => needsYou(t) && Math.floor(i / per) !== pg); return l.find(t => pageOf(t.id) > pg) || l[0]; };
 
@@ -167,6 +169,7 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
   const tabs = [...groups.map(g => 'g:' + g.id), 'ungrouped', 'needs', 'live'];
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
+      if (document.querySelector('.scrim.open')) return;
       if (e.key === 'Escape' && focusMode && !(e.target as HTMLElement)?.closest?.('.xterm')) { setFocusMode(false); return; }
       if (document.querySelector('.triage.open') && hitIn(e, 'triage')) return; // triage is on top and uses these keys
       const i = wins.findIndex(t => t.id === focused);
@@ -180,6 +183,7 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
       else if (key(e, 'layout')) setLayout(l => l === 'columns' ? 'grid' : l === 'grid' ? 'rows' : 'columns');
       else if (key(e, 'focusMode')) setFocusMode(!focusMode);
       else if (key(e, 'newGroup')) setMenu('new');
+      else if (key(e, 'canvasNewTask')) newTask();
       else if (key(e, 'nextView')) { if (!solo) turnView(1); }
       else if (key(e, 'prevView')) { if (!solo) turnView(-1); }
       else if (key(e, 'nextPage')) { if (per) turnPage(1); else hit = false; }
@@ -249,6 +253,7 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
       </div>}
       <div className="ctool">
         {solo && <span className="solo-name">{viewName(view, groups, tasks)}</span>}
+        <button className="btn primary" onClick={newTask} title={`New task (${keysText('canvasNewTask')})`}>＋ New task {keyLabel('canvasNewTask') && <kbd>{keyLabel('canvasNewTask')}</kbd>}</button>
         {!solo && <button className="btn" onClick={() => openInWindow(view)} title="Open this view in its own browser window">↗ New window</button>}
         <div style={{ position: 'relative' }}>
           <button className="btn" onClick={() => setMenu(m => m === 'add' ? null : 'add')}>＋ Add window</button>
@@ -272,7 +277,7 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
       {menu === 'new' && <NewGroupMenu tasks={tasks} onScreen={ids} selected={[...selected].filter(id => tasks.some(t => t.id === id))} close={() => setMenu(null)} done={g => { clearSel(); setMenu(null); setView('g:' + g.id); toast(`Group “${g.name}” created`); }} />}
       {menu && typeof menu === 'object' && <GroupMenu g={groups.find(x => x.id === menu.group)!} close={() => setMenu(null)} onDeleted={g => { if (view === 'g:' + g.id) setView('live'); toast(`Deleted “${g.name}”. Its tasks keep running.`, { label: 'Undo', fn: () => { api.restoreGroup(g); setView('g:' + g.id); } }); }} />}
       <div className="stage-grid" ref={stage} style={style}>
-        {!wins.length && <div className="emptyview"><h2>{group ? `“${group.name}” is empty` : view === 'ungrouped' && !hidden.length ? 'Every live task is in a group' : 'No windows'}</h2><p>Use <b>＋ Add window</b>, drag a window's header onto a tab, or <b>Show on canvas</b> in a task's panel.</p></div>}
+        {!wins.length && <div className="emptyview"><h2>{group ? `“${group.name}” is empty` : view === 'ungrouped' && !hidden.length ? 'Every live task is in a group' : 'No windows'}</h2><p>Use <b>＋ New task</b> to start an agent here. Use <b>＋ Add window</b> to show a task that already exists.</p></div>}
         {shown.map((t, i) => (
           <div key={t.id} data-win={t.id} className={`win ${t.status} ${focused === t.id ? 'focus' : ''} ${selected.has(t.id) ? 'selected' : ''}`} style={layout === 'grid' && !maxId ? { gridColumn: `span ${i < tileCount - lastRow ? lastRow : gridCols}` } : undefined} onMouseDown={() => { setFocused(t.id); if (t.status === 'unread') api.seen(t.id); }}>
             <div className="wh" onPointerDown={e => startDrag(e, t.id)} onDoubleClick={() => setMaxId(m => m ? null : t.id)}>
