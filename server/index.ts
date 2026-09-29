@@ -17,6 +17,7 @@ import * as events from './events.ts';
 import * as groups from './groups.ts';
 import * as importer from './importer.ts';
 import * as approvals from './approvals.ts';
+import * as ask from './ask.ts';
 import * as accounts from './accounts.ts';
 import * as external from './external.ts';
 import * as machines from './machines.ts';
@@ -159,8 +160,9 @@ app.get('/api/info', (_req, res) => res.json(info()));
 app.patch('/api/info', async (req, res) => {
   if (!req.get('origin')) return res.status(403).json({ error: 'Machine settings are changed on the dashboard.' });
   const before = JSON.stringify(machine.get());
-  const { name, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval } = req.body;
-  machine.update({ name, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval });
+  const { name, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval, askAccount, askModel } = req.body;
+  if (askAccount && accounts.get(askAccount)?.agent !== 'claude') return res.status(400).json({ error: 'Pick a Claude Code account for questions.' });
+  machine.update({ name, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval, askAccount, askModel });
   // the running controller picks up a new name or Remote Control setting at its next restart, which keepController()
   // does as soon as it is between turns
   void before;
@@ -357,6 +359,18 @@ app.get('/api/tasks/:id/since', async (req, res) => {
 });
 
 app.get('/api/tasks/:id/log', (req, res) => res.type('text/markdown').send(store.readLog(req.params.id)));
+// Questions about a task, answered by a separate read-only agent (server/ask.ts). The dashboard asks, directly or through
+// another machine's Taskboard server (which sends no origin and no x-tb-actor); agents do not, because each question
+// uses the account's usage.
+app.get('/api/tasks/:id/ask', (req, res) => { if (!store.get(req.params.id)) return res.status(404).end(); res.json(ask.get(req.params.id)); });
+app.post('/api/tasks/:id/ask', async (req, res) => {
+  if (!req.get('origin') && req.get('x-tb-actor')) return res.status(403).json({ error: 'Questions are asked on the dashboard.' });
+  const t = store.get(req.params.id); if (!t) return res.status(404).end();
+  const q = String(req.body?.question || '').trim(); if (!q) return fail(res, 'Type a question.');
+  try { res.json(await ask.ask(t, q)); } catch (e) { fail(res, e); }
+});
+app.post('/api/tasks/:id/ask/stop', (req, res) => { ask.stop(req.params.id); res.json({ ok: true }); });
+app.delete('/api/tasks/:id/ask', (req, res) => { if (!store.get(req.params.id)) return res.status(404).end(); res.json(ask.clear(req.params.id)); });
 app.get('/api/tasks/:id/peek', async (req, res) => {
   const t = store.get(req.params.id); if (!t) return res.status(404).end();
   res.type('text/plain').send(await tmux.capture(t.session, Math.min(500, Number(req.query.lines) || 30)));
@@ -615,7 +629,7 @@ async function reconcile() {
       events.screenCheck(t, (await tmux.capture(t.session, 0)).split('\n').filter(l => l.trim()).slice(-15).join('\n'));
     if (t.agent === 'codex' && t.sessionId) {
       let tr = t.transcript;
-      if (!tr) { tr = importer.transcriptFor('codex', t.sessionId); if (tr) store.update(t.id, { transcript: tr }); }
+      if (!tr) { tr = importer.transcriptFor('codex', t.sessionId, (accounts.get(t.account) || accounts.defaultFor('codex')).dir); if (tr) store.update(t.id, { transcript: tr }); }
       try { if (tr) events.codexActivity(t, statSync(tr).mtimeMs); } catch { /* moved */ }
     }
     // after the activity checks above, so a new Codex turn is seen first

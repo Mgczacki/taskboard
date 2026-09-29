@@ -15,9 +15,12 @@ export interface ImportCandidate {
   updated: string; source?: string; running?: { pid: number; tty: string; exact: boolean };
 }
 
-export interface MachineInfo { role?: 'production' | 'sandbox'; root?: string; machine: string; host: string; url: string; settings: { name: string; controller: { autostart: boolean; remoteControl: boolean }; permissions: { controllerNeedsApproval: boolean; agentsNeedApproval: boolean } }; controller: null | { agent: string; account?: string; status: string; remoteUrl?: string; label: string } }
+export interface MachineInfo { role?: 'production' | 'sandbox'; root?: string; machine: string; host: string; url: string; settings: { name: string; controller: { autostart: boolean; remoteControl: boolean }; permissions: { controllerNeedsApproval: boolean; agentsNeedApproval: boolean }; ask: { account: string; model: string } }; controller: null | { agent: string; account?: string; status: string; remoteUrl?: string; label: string } }
 export interface Machine { id: string; name: string; url: string; local?: boolean; online: boolean; latency?: number; lastSeen?: string; error?: string; tasks?: number }
 export interface Approval { id: string; actor: string; action: string; summary: string; detail: string; created: string; state: 'pending' | 'approved' | 'denied' | 'failed'; result?: string }
+// questions about a task, answered by a separate read-only agent (server/ask.ts)
+export interface AskItem { q: string; a?: string; state: 'running' | 'done' | 'failed' | 'stopped'; steps: string[]; costUsd?: number; ms?: number; model: string; account: string; at: string }
+export interface AskThread { sessionId?: string; items: AskItem[] }
 export interface Group { id: string; name: string; color: string; tasks: string[]; created: string }
 
 export const STATUS_LABEL: Record<Status, string> = {
@@ -98,7 +101,7 @@ export const api = {
   restart: (id: string, when: 'now' | 'after-turn' | 'cancel') => call<Task>('POST', `/api/tasks/${encodeURIComponent(id)}/restart`, { when }),
   remove: (id: string) => call('DELETE', `/api/tasks/${encodeURIComponent(id)}`),
   info: () => call<MachineInfo>('GET', '/api/info'),
-  updateInfo: (patch: { name?: string; autostart?: boolean; remoteControl?: boolean; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean }) => call<MachineInfo>('PATCH', '/api/info', patch),
+  updateInfo: (patch: { name?: string; autostart?: boolean; remoteControl?: boolean; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; askAccount?: string; askModel?: string }) => call<MachineInfo>('PATCH', '/api/info', patch),
   setControllerAccount: (account: string) => call<Task>('POST', '/api/controller/account', { account }),
   // sent as raw bytes; octet-stream so the server's JSON parser leaves .json files alone
   upload: async (id: string, file: File) => {
@@ -124,6 +127,10 @@ export const api = {
   updateGroup: (id: string, patch: { name?: string; color?: string; tasks?: string[]; add?: string | string[]; remove?: string | string[] }) => call<Group>('PATCH', `/api/groups/${id}`, patch),
   deleteGroup: (id: string) => call<Group>('DELETE', `/api/groups/${id}`),
   restoreGroup: (g: Group) => call('POST', '/api/groups/restore', g),
+  askThread: (id: string) => call<AskThread>('GET', `/api/tasks/${encodeURIComponent(id)}/ask`),
+  ask: (id: string, question: string) => call<AskThread>('POST', `/api/tasks/${encodeURIComponent(id)}/ask`, { question }),
+  askStop: (id: string) => call('POST', `/api/tasks/${encodeURIComponent(id)}/ask/stop`, {}),
+  askClear: (id: string) => call<AskThread>('DELETE', `/api/tasks/${encodeURIComponent(id)}/ask`),
   getUi: () => call<Record<string, unknown>>('GET', '/api/ui'),
   putUi: (x: Record<string, unknown>) => call('PUT', '/api/ui', x),
 };
