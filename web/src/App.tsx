@@ -14,13 +14,14 @@ import { GraphView } from './components/Graph';
 import { ReviewPage } from './components/Review';
 import { AccountsPage } from './components/Accounts';
 import { SettingsPage } from './components/Settings';
+import { StatsPage } from './components/Stats';
 
-type Page = 'list' | 'board' | 'canvas' | 'graph' | 'review' | 'accounts' | 'settings';
+type Page = 'list' | 'board' | 'canvas' | 'graph' | 'review' | 'accounts' | 'stats' | 'settings';
 // #list · #board · #canvas · #canvas:<view>  (view = g:<group> | needs | live | t:<id,id>)
 function parseHash(): { page: Page; view?: string } {
   const h = decodeURIComponent(location.hash.slice(1));
   if (h.startsWith('canvas:')) return { page: 'canvas', view: h.slice(7) };
-  return { page: (['list', 'board', 'canvas', 'graph', 'review', 'accounts', 'settings'].includes(h) ? h : 'list') as Page };
+  return { page: (['list', 'board', 'canvas', 'graph', 'review', 'accounts', 'stats', 'settings'].includes(h) ? h : 'list') as Page };
 }
 export const SOLO = new URLSearchParams(location.search).get('solo') === '1';
 export interface Toast { id: number; text: string; expiresAt: number; action?: { label: string; fn: () => void } }
@@ -166,7 +167,7 @@ export function App() {
         <div className="rail-item ctl-item" onClick={openController} title={`The controller agent manages the other agents. Shortcut: ${keysText('controller')}`}>{controller ? <Dot s={controller.status} /> : <span className="dot idle" />}<span className="t"><b>Controller</b>{controller ? '' : ' · start'}</span>{controller?.remoteUrl && <a className="rc-link" href={controller.remoteUrl} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} title="Remote Control is on: open the controller on claude.ai or the Claude mobile app">📱</a>}{keyLabel('controller') && <kbd>{keyLabel('controller')}</kbd>}</div>
         <button className="importbtn" onClick={() => setImportOpen(true)} title="Bring in Claude Code, Codex and Antigravity sessions you started outside Taskboard">⇪ Import sessions</button>
         <nav className="nav">
-          {(['list', 'board', 'graph', 'canvas', 'review', 'accounts', 'settings'] as Page[]).map(p => <a key={p} className={page === p ? 'on' : ''} onClick={() => go(p)}>{p[0].toUpperCase() + p.slice(1)}{p === 'list' && <span className="n">{tasks.filter(t => t.status !== 'archived').length}</span>}{p === 'review' && reviewCount > 0 && <span className="n" style={{ color: 'var(--st-review)' }}>{reviewCount}</span>}</a>)}
+          {(['list', 'board', 'graph', 'canvas', 'review', 'accounts', 'stats', 'settings'] as Page[]).map(p => <a key={p} className={page === p ? 'on' : ''} onClick={() => go(p)}>{p[0].toUpperCase() + p.slice(1)}{p === 'list' && <span className="n">{tasks.filter(t => t.status !== 'archived').length}</span>}{p === 'review' && reviewCount > 0 && <span className="n" style={{ color: 'var(--st-review)' }}>{reviewCount}</span>}</a>)}
         </nav>
         <div className="rail-scroll">
           <div className="rail-sec"><h6>Needs you<span>{needs.length}</span></h6>{needs.map(item)}{!needs.length && <div className="rail-empty">Nothing waiting</div>}</div>
@@ -205,6 +206,7 @@ export function App() {
           {page === 'list' && <ListView tasks={tasks} groups={groups} open={setOpenId} showArchived={showArchived} selected={selected} toggleSel={toggleSel} />}
           {page === 'board' && <BoardView tasks={tasks} groups={groups} open={setOpenId} openDocs={id => setOpenId(id, 'docs')} selected={selected} toggleSel={toggleSel} newGroup={() => setGroupPrompt([])} toast={toast} />}
           {page === 'accounts' && <AccountsPage tasks={allTasks} />}
+          {page === 'stats' && <StatsPage />}
           {page === 'settings' && <SettingsPage tasks={allTasks} />}
           {page === 'review' && <ReviewPage tasks={tasks} open={(id, tab) => setOpenId(id, tab)} />}
           {page === 'graph' && <GraphView tasks={tasks} groups={groups} open={(id, tab) => setOpenId(id, tab)} />}
