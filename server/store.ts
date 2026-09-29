@@ -20,6 +20,7 @@ export interface Task {
   worktree?: boolean;
   session: string;         // tmux session name
   sessionId?: string;      // Claude session id / Codex thread id, used to resume
+  pastSessions?: string[]; // session ids from before a /clear (Claude Code) or /new (Codex); kept out of the Import list
   transcript?: string;
   created: string;
   updated: string;

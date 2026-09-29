@@ -268,7 +268,7 @@ app.delete('/api/groups/:id', (req, res) => { const g = groups.remove(req.params
 app.post('/api/groups/restore', (req, res) => { groups.restore(req.body); res.json({}); });
 
 app.get('/api/import', async (_req, res) => {
-  try { res.json(await importer.candidates(new Set(store.all().map(t => t.sessionId).filter(Boolean) as string[]))); } catch (e) { fail(res, e); }
+  try { res.json(await importer.candidates(new Set(store.all().flatMap(t => [t.sessionId, ...(t.pastSessions || [])]).filter(Boolean) as string[]))); } catch (e) { fail(res, e); }
 });
 app.post('/api/import', (req, res) => {
   const made: unknown[] = [], errors: string[] = [];
