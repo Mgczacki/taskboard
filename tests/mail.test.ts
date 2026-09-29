@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MailStore, type Message } from '../server/mail/store.ts';
-import { MailService, PREFIX } from '../server/mail/service.ts';
+import { MailService, PREFIX, encodeMessage, decodeMessage } from '../server/mail/service.ts';
 import { SlackClient, SLACK_APP_ID } from '../server/mail/slack.ts';
 
 const root = mkdtempSync(join(tmpdir(), 'tb-mail-tests-'));
@@ -15,6 +15,16 @@ test('outbox keeps the recorded proposer after a store reload', () => {
   const s = new MailStore(join(root, 'proposer.json'));
   const m = s.add({ direction: 'outbox', source: 'user', from: 'U1', to: 'U2', subject: 'Status', body: 'Ready.', proposedBy: { actor: 'controller' } });
   assert.deepEqual(new MailStore(s.file).get(m.id).proposedBy, { actor: 'controller' });
+});
+
+test('the fallback names Taskboard and the sender while old and new text still decode', () => {
+  const s = new MailStore(join(root, 'fallback.json'));
+  const m = s.add({ direction: 'outbox', source: 'user', from: 'U1', to: 'U2', subject: 'Check <@U3>', body: 'Read <#C1>.' });
+  const text = encodeMessage(m, 'Alex <@U4>');
+  assert.match(text.split('\n')[0], /Sent automatically by Taskboard from Alex &lt;@U4&gt;/);
+  assert.deepEqual(decodeMessage(text), { id: m.id, subject: m.subject, body: m.body });
+  assert.deepEqual(decodeMessage(text.replace(/\n/g, ' ')), { id: m.id, subject: m.subject, body: m.body });
+  assert.deepEqual(decodeMessage(PREFIX + JSON.stringify({ id: m.id, subject: m.subject, body: m.body })), { id: m.id, subject: m.subject, body: m.body });
 });
 
 test('approval requires exact content and review, and controller delegation is explicit', () => {
