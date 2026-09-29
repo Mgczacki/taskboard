@@ -31,6 +31,9 @@ export const ATTN: Status[] = ['needs-you', 'stopped', 'review'];
 let loadedBuild = '';
 export const autoReload = () => { try { return localStorage.getItem('tb-autoreload') !== 'off'; } catch { return true; } };
 export const setAutoReload = (on: boolean) => { try { localStorage.setItem('tb-autoreload', on ? 'on' : 'off'); } catch { /* storage off */ } };
+// Ask before a canvas window's End & archive button acts (Settings; saved per browser or app, default off).
+export const confirmEnd = () => { try { return localStorage.getItem('tb-confirm-end') === 'on'; } catch { return false; } };
+export const setConfirmEnd = (on: boolean) => { try { localStorage.setItem('tb-confirm-end', on ? 'on' : 'off'); } catch { /* storage off */ } };
 let tasks: Task[] = [];
 let groups: Group[] = [];
 let approvals: Approval[] = [];
