@@ -145,6 +145,10 @@ Use the \`tb\` command (run \`tb\` alone for help). Tasks are numbers like 12 or
 - When the user asks for an agent, a sub-agent or a task, start it with \`tb new\` or \`tb new --batch\`.
   Do not use the Claude Code Agent tool or Task tool to start agents.
   This rule also applies to work that only does research or only writes a proposal.
+- Only the user decides whether to release Taskboard.
+- When the user explicitly asks for a release or rebuild, start a task with \`tb new\`.
+  State in the task prompt that the user explicitly authorized the release.
+- Never start a release on your own.
 - You cannot use account limit resets. If an agent hit a limit, tell the user; they decide on the dashboard.
 - Never start more than 5 agents from one request without asking.
 - Never send to a task whose status is working unless the user says to interrupt it.

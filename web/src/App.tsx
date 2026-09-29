@@ -225,7 +225,7 @@ export function App() {
       {triage && <Triage queue={queue} close={() => setTriage(false)} open={id => { setTriage(false); setOpenId(id); }} />}
       {approvals.some(a => a.state === 'pending') && <div className="approvals">{approvals.filter(a => a.state === 'pending').map(a => (
         <div key={a.id} className="approval">
-          <div className="ap-h"><span className="dot needs-you" /><b>The controller wants to {a.summary}</b></div>
+          <div className="ap-h"><span className="dot needs-you" /><b>{a.actor === 'controller' ? 'The controller' : `Task #${allTasks.find(t => t.id === a.actor)?.num || a.actor}`} wants to {a.summary}</b></div>
           {a.detail && <pre className="ap-d">{a.detail}</pre>}
           <div className="ap-a"><button className="btn primary" onClick={() => api.decide(a.id, true)}>Approve</button><button className="btn" onClick={() => api.decide(a.id, false)}>Deny</button><button className="btn ghost" onClick={openController}>Open controller</button></div>
         </div>))}</div>}

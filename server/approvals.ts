@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { TB_DIR } from './config.ts';
 
 export interface Approval {
-  id: string; actor: string; action: 'new' | 'send' | 'status' | 'kill' | 'move'; summary: string; detail: string;
+  id: string; actor: string; action: 'new' | 'send' | 'status' | 'kill' | 'move' | 'release'; summary: string; detail: string;
   created: string; state: 'pending' | 'running' | 'approved' | 'denied' | 'failed' | 'expired' | 'unknown'; result?: string; payload: unknown;
 }
 const FILE = join(TB_DIR, 'approvals.json');

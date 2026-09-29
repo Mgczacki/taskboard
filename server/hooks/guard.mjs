@@ -4,7 +4,7 @@
 // the running Taskboard server or its agents from inside a Taskboard task: an agent working on Taskboard itself once
 // stopped the real server with `pkill -f "tsx server/index.ts"` while meaning to stop its own test server.
 // Runs without the server, so it also protects while the server is being restarted. Never fails the tool call.
-import { readFileSync } from 'node:fs';
+import { readFileSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
@@ -36,8 +36,25 @@ for (const p of parts) {
   if (/launchctl\b.*\b(bootout|unload|remove|kill)\b.*taskboard/i.test(p))
     reasons.push('this stops the Taskboard login service');
 }
-// releases and rollbacks switch the real Taskboard; only the user does that
-if (/\bpnpm\s+(run\s+)?(release|rollback)\b|scripts\/(release|rollback)\.mjs/.test(cmd)) reasons.push('releasing or rolling back switches the real Taskboard, which only the user does');
+// The user approves one release for one task on the dashboard. The guard consumes that permit before the command runs.
+const release = /\bpnpm\s+(run\s+)?release\b|scripts\/release\.mjs/.test(cmd);
+const rollback = /\bpnpm\s+(run\s+)?rollback\b|scripts\/rollback\.mjs/.test(cmd);
+if (release) {
+  let allowed = false;
+  const taskId = process.env.TASK_ID || '';
+  if (/^[a-zA-Z0-9_-]+$/.test(taskId) && /^pnpm\s+(run\s+)?release$/.test(cmd.trim())) {
+    const permit = join(tbDir, 'release-permits', taskId + '.json');
+    try {
+      const data = JSON.parse(readFileSync(permit, 'utf8'));
+      if (data.taskId === taskId && Number(data.expiresAt) > Date.now()) {
+        unlinkSync(permit);
+        allowed = true;
+      }
+    } catch { /* no valid permit */ }
+  }
+  if (!allowed) reasons.push('a Taskboard release needs a dashboard approval for this task; run `tb release-request` first');
+}
+if (rollback) reasons.push('a Taskboard rollback needs the user to run it');
 // deleting or moving the real Taskboard's own folder (sandboxes live in the system temp folder instead)
 if (/\b(rm|mv|rsync\s+--delete)\b[^\n]*(~|\$HOME|\/Users\/[^/\s]+)\/\.taskboard(\/(app|releases|server\.pid|token|hooks|bin))?(\/?\s|\/?$)/.test(cmd)) reasons.push('this deletes or moves the real Taskboard\'s folder ~/.taskboard');
 // whole command: any stop command that names the server's pid file, entry point, port or tmux socket, also through

@@ -4,14 +4,14 @@ import { execFileSync } from 'node:child_process';
 // Listens on 127.0.0.1 only. Browser requests must come from the Taskboard UI's own origin;
 // hook scripts authenticate with the token in ~/.taskboard/token.
 import express from 'express';
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { execFile } from 'node:child_process';
 import { createServer } from 'node:http';
 import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { WebSocketServer } from 'ws';
 import * as agents from './agents.ts';
-import { HOME, HOST, PORT, ROOT, TOKEN, URL_BASE } from './config.ts';
+import { HOME, HOST, PORT, ROOT, TB_DIR, TOKEN, URL_BASE } from './config.ts';
 import * as docs from './docs.ts';
 import * as events from './events.ts';
 import * as groups from './groups.ts';
@@ -147,6 +147,22 @@ app.post('/api/approvals/:id/:decision', async (req, res) => {
   // only you, from the dashboard, can decide
   if (!req.get('origin')) return res.status(403).json({ error: 'approvals are decided on the dashboard' });
   const a = await approvals.decide(req.params.id, req.params.decision === 'approve'); a ? res.json(a) : res.status(404).end();
+});
+// A release always needs a dashboard decision, even when other task actions run without approval.
+app.post('/api/release/request', (req, res) => {
+  const actor = req.get('x-tb-actor') || '';
+  const task = store.get(actor);
+  if (!/^[a-zA-Z0-9_-]+$/.test(actor) || !task || task.role === 'controller')
+    return res.status(403).json({ error: 'A Taskboard task must request the release.' });
+  const approval = approvals.request({ actor, action: 'release', summary: 'release Taskboard',
+    detail: `Task: #${task.num} ${task.title}\nCommand: pnpm release`, payload: {} }, async () => {
+    const dir = join(TB_DIR, 'release-permits');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, actor + '.json'), JSON.stringify({ taskId: actor, expiresAt: Date.now() + 120_000 }), { mode: 0o600 });
+    return `Task #${task.num} may run pnpm release once within two minutes.`;
+  });
+  store.update(actor, { status: 'needs-you', ask: 'Approve: release Taskboard', statusSource: 'Waiting for your approval on the dashboard.' });
+  res.status(202).json({ approval });
 });
 
 // ---------- other machines ----------
@@ -521,8 +537,10 @@ try {
   });
 } catch (e) { console.error('watch', e); }
 approvals.onApprovalsChange(() => {
-  if (store.get('controller') && !approvals.pendingFor('controller').length && store.get('controller')!.status === 'needs-you' && store.get('controller')!.ask?.startsWith('Approve:'))
-    store.update('controller', { status: 'working', ask: '', statusSource: 'Your decision was sent back to the controller.' });
+  for (const t of store.all()) {
+    if (!approvals.pendingFor(t.id).length && t.status === 'needs-you' && t.ask?.startsWith('Approve:'))
+      store.update(t.id, { status: 'working', ask: '', statusSource: 'Your decision was sent back to the task.' });
+  }
   const msg = JSON.stringify({ type: 'approvals', approvals: approvals.all() });
   for (const c of eventClients) if (c.readyState === c.OPEN) c.send(msg);
 });
