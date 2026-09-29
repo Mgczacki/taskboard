@@ -108,7 +108,7 @@ export function InboxPage(props: { tasks: Task[]; open: (id: string, tab?: 'term
     {(error || loadError) && <p role="alert">{error || loadError}</p>}
     {tab === 'documents' ? <Documents {...props} /> : <>
       <details className="mail-settings"><summary>Slack connection and approval settings</summary>
-        <p>{data?.identity ? `Connected as ${data.identity.name || data.identity.user} (${data.identity.user})` : 'Connect your Slack account to exchange private messages.'}</p>
+        <p>{data?.identity ? `Connected as ${data.identity.name || data.identity.user}` : 'Connect your Slack account to exchange private messages.'}</p>
         {data?.identity?.needsReconnect && <p role="alert">Reconnect Slack to grant file access. Disconnect Slack, then connect it again.</p>}
         <button className="btn" disabled={busy} onClick={() => act(async () => { if (data?.identity) await request('/slack/disconnect', {}); else { const r = await request('/slack/connect', {}); location.assign(r.url); } })}>{data?.identity ? 'Disconnect Slack' : 'Connect Slack'}</button>
         <p>Slack grants access to your direct messages. Taskboard reads only contacts you add here.</p>

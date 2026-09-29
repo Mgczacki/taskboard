@@ -62,8 +62,9 @@ test('rate limits stop requests until Retry-After expires', async () => {
 
 test('new sign-in recovers from an invalid refresh token without an app secret', async () => {
  const file=join(root,'reauth.json'); savePrivate(file,credentials);
- const client=new SlackClient(file,async (_url,init)=> {
+ const client=new SlackClient(file,async (url,init)=> {
   const params=new URLSearchParams(String(init?.body)); assert.equal(params.has('client_secret'),false);
+  if(String(url).endsWith('/users.info')) return ok({user:{profile:{real_name:'Test Person'}}});
   if(params.get('grant_type')==='refresh_token') return new Response(JSON.stringify({ok:false,error:'invalid_refresh_token'}));
   assert.ok(params.get('code_verifier'));
   return ok({team:{id:SLACK_TEAM_ID},authed_user:{id:'U1',access_token:'new',refresh_token:'refresh',expires_in:43200,scope:SLACK_SCOPES.join(',')}});
@@ -71,5 +72,6 @@ test('new sign-in recovers from an invalid refresh token without an app secret',
  await assert.rejects(client.call('auth.test'),/invalid_refresh_token/);
  const url=new URL(client.begin(4409)); await client.finish(url.searchParams.get('state')!,'new-code');
  assert.equal(JSON.parse(readFileSync(file,'utf8')).access,'new');
+ assert.equal(client.identity()?.name,'Test Person');
 });
 test.after(()=>rmSync(root,{recursive:true,force:true}));

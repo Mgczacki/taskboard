@@ -46,10 +46,15 @@ export class SlackClient {
     if (result.team?.id !== SLACK_TEAM_ID || !c?.id || !c.access_token || !c.refresh_token) throw new Error('Slack did not return the expected user authorization');
     const scopes = new Set(String(c.scope || '').split(','));
     if (SLACK_SCOPES.some(s => !scopes.has(s))) throw new Error('Slack did not grant all required permissions');
+    let name = c.real_name || c.name || c.id;
+    try {
+      const info = await this.request('users.info', { user: c.id }, c.access_token);
+      name = info.user?.profile?.real_name || info.user?.real_name || info.user?.profile?.display_name || info.user?.name || name;
+    } catch { /* Slack sign-in still provides the member ID when profile lookup fails. */ }
     const previous = this.identity();
     if (previous && previous.user !== c.id) throw new Error('Disconnect the current user before connecting a different user');
     if (generation !== this.generation) throw new Error('Sign-in was cancelled');
-    savePrivate(this.file, { user: c.id, team: result.team.id, name: c.real_name || c.name || c.id, scopes: [...scopes], access: c.access_token, refresh: c.refresh_token, expires: Date.now() + Number(c.expires_in || 43200) * 1000 });
+    savePrivate(this.file, { user: c.id, team: result.team.id, name, scopes: [...scopes], access: c.access_token, refresh: c.refresh_token, expires: Date.now() + Number(c.expires_in || 43200) * 1000 });
   }
   async call(method: string, params: Record<string, string> = {}) {
     const generation = this.generation;
