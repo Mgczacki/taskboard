@@ -113,3 +113,29 @@ test('contact requests need the other member to accept before messages flow', as
  assert.equal(s.read().contacts[0].status,'active');
  assert.ok(Number(s.read().contacts[0].oldest)>=2);
 });
+
+test('contact scan limits Slack history calls and skips an unreadable conversation', async () => {
+ const s = new MailStore(join(root, 'contact-scan.json'));
+ const channels = Array.from({ length: 30 }, (_, i) => ({ id: `D${i}`, user: `U${i + 2}` }));
+ let histories = 0;
+ const slack = { identity: () => ({ user: 'U1', team: 'T1' }), call: async (method: string, args?: Record<string, string>) => {
+  if (method === 'conversations.list') return { channels };
+  if (method === 'conversations.history') {
+   histories++;
+   if (args?.channel === 'D0') throw new Error('Slack: channel_not_found');
+   return { messages: args?.channel === 'D1' ? [{ user: 'U3', ts: '2', text: CONTACT_PREFIX + JSON.stringify({ type: 'request', id: '00000000-0000-0000-0000-000000000001' }) }] : [] };
+  }
+  if (method === 'users.info') return { user: { id: 'U3', team_id: 'T1', real_name: 'Requester' } };
+  return {};
+ } } as unknown as SlackClient;
+ const service = new MailService(s, slack);
+ await service.sync();
+ assert.equal(histories, 25);
+ assert.equal(Object.keys(s.read().requestCursors || {}).length, 25);
+ assert.equal(s.read().requests?.[0].name, 'Requester');
+ await service.sync();
+ assert.equal(histories, 25);
+ (service as any).lastRequestScanAt = 0;
+ await service.sync();
+ assert.equal(Object.keys(s.read().requestCursors || {}).length, 30);
+});

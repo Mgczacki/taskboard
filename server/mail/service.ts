@@ -7,6 +7,7 @@ import { MAX_FILE, receiveBytes, verifyFile } from './files.ts';
 export const PREFIX = '[Taskboard message v1]\n';
 export const FILE_PREFIX = '[Taskboard message v2]\n';
 export const CONTACT_PREFIX = '[Taskboard contact v1]\n';
+const CONTACT_SCAN_LIMIT = 25;
 const CONTACT_REQUEST_SUMMARY = 'Taskboard contact request. Open Taskboard Inbox to respond.';
 const CONTACT_UPDATE_SUMMARY = 'Taskboard contact update. Open Taskboard Inbox.';
 const compactBlocks = (summary: string) => JSON.stringify([{ type: 'section', text: { type: 'plain_text', text: summary } }]);
@@ -54,6 +55,7 @@ export function decodeMessage(text: unknown): { id: string; subject: string; bod
 }
 export class MailService {
   private syncing = false;
+  private lastRequestScanAt = 0;
   error = '';
   constructor(readonly store: MailStore, readonly slack: SlackClient) {}
   async searchPeople(query: string) {
@@ -108,40 +110,61 @@ export class MailService {
     try { await this.slack.call('chat.postMessage', { channel: contact.channel, text: encodeContact({ type: 'remove', id: contact.requestId || randomUUID() }), blocks: compactBlocks(CONTACT_UPDATE_SUMMARY), mrkdwn: 'false' }); } catch { /* Local removal takes effect even when Slack is unavailable. */ }
   }
   private async scanRequests(identity: { user: string; team: string }) {
+    if (Date.now() - this.lastRequestScanAt < 60_000) return;
+    this.lastRequestScanAt = Date.now();
+    const conversations: any[] = [];
     let listCursor = '';
     do {
       const list = await this.slack.call('conversations.list', { types: 'im', limit: '200', ...(listCursor ? { cursor: listCursor } : {}) });
-      for (const conversation of list.channels || []) {
-        if (!conversation.id || !conversation.user || conversation.user === identity.user) continue;
-        const oldest = this.store.read().requestCursors?.[conversation.id] || '0';
-        const latest = (Date.now() / 1000).toFixed(6);
-        let cursor = '';
-        do {
-          const page = await this.slack.call('conversations.history', { channel: conversation.id, oldest, latest, inclusive: 'true', limit: '100', ...(cursor ? { cursor } : {}) });
-          if (this.slack.identity()?.user !== identity.user) throw new Error('Connection changed during synchronization');
-          for (const event of page.messages || []) {
-            if (event.user !== conversation.user || event.subtype || (event.bot_id && event.app_id !== SLACK_APP_ID)) continue;
-            const marker = decodeContact(event.text); if (!marker) continue;
-            this.store.change(data => {
-              data.requests ||= [];
-              const contact = data.contacts.find(c => c.user === event.user);
-              if (marker.type === 'request') {
-                if (contact?.status === 'active' || data.requests.some(r => r.user === event.user && r.requestId === marker.id)) return;
-                data.requests = data.requests.filter(r => r.user !== event.user);
-                data.requests.push({ user: event.user, name: event.user, channel: conversation.id, requestId: marker.id, at: new Date(Number(event.ts) * 1000).toISOString() });
-              } else if (contact?.requestId === marker.id && contact.channel === conversation.id) {
-                if (marker.type === 'accept' && contact.status === 'requested') { contact.status = 'active'; contact.oldest = event.ts; }
-                if (marker.type === 'decline' || marker.type === 'remove') data.contacts = data.contacts.filter(c => c.user !== event.user);
-              }
-            });
-          }
-          cursor = page.response_metadata?.next_cursor || '';
-          if (page.has_more && !cursor) throw new Error('Slack returned incomplete history. Retry synchronization.');
-        } while (cursor);
-        this.store.change(data => { data.requestCursors ||= {}; data.requestCursors[conversation.id] = latest; });
-      }
+      conversations.push(...(list.channels || []));
       listCursor = list.response_metadata?.next_cursor || '';
     } while (listCursor);
+    const cursors = this.store.read().requestCursors || {};
+    const candidates = conversations.filter(conversation => {
+      if (!conversation.id || !conversation.user || conversation.user === identity.user || conversation.is_user_deleted) return false;
+      const oldest = Number(cursors[conversation.id] || 0), updated = Number(conversation.updated || 0);
+      return !oldest || !updated || updated + 5 >= oldest;
+    }).sort((a, b) => {
+      const priority = (c: any) => {
+        const oldest = Number(cursors[c.id] || 0), updated = Number(c.updated || 0);
+        return oldest && updated > oldest ? 2 : oldest ? 0 : 1;
+      };
+      return priority(b) - priority(a) || Number(b.updated || 0) - Number(a.updated || 0)
+        || Number(cursors[a.id] || 0) - Number(cursors[b.id] || 0);
+    });
+    for (const conversation of candidates.slice(0, CONTACT_SCAN_LIMIT)) {
+      const oldest = this.store.read().requestCursors?.[conversation.id] || '0';
+      const latest = (Date.now() / 1000).toFixed(6);
+      let cursor = '';
+      do {
+        let page: any;
+        try { page = await this.slack.call('conversations.history', { channel: conversation.id, oldest, latest, inclusive: 'true', limit: '100', ...(cursor ? { cursor } : {}) }); }
+        catch (e) {
+          if (!cursor && /^Slack: (channel_not_found|not_in_channel|access_denied)$/.test((e as Error).message)) break;
+          throw e;
+        }
+        if (this.slack.identity()?.user !== identity.user) throw new Error('Connection changed during synchronization');
+        for (const event of page.messages || []) {
+          if (event.user !== conversation.user || event.subtype || (event.bot_id && event.app_id !== SLACK_APP_ID)) continue;
+          const marker = decodeContact(event.text); if (!marker) continue;
+          this.store.change(data => {
+            data.requests ||= [];
+            const contact = data.contacts.find(c => c.user === event.user);
+            if (marker.type === 'request') {
+              if (contact?.status === 'active' || data.requests.some(r => r.user === event.user && r.requestId === marker.id)) return;
+              data.requests = data.requests.filter(r => r.user !== event.user);
+              data.requests.push({ user: event.user, name: event.user, channel: conversation.id, requestId: marker.id, at: new Date(Number(event.ts) * 1000).toISOString() });
+            } else if (contact?.requestId === marker.id && contact.channel === conversation.id) {
+              if (marker.type === 'accept' && contact.status === 'requested') { contact.status = 'active'; contact.oldest = event.ts; }
+              if (marker.type === 'decline' || marker.type === 'remove') data.contacts = data.contacts.filter(c => c.user !== event.user);
+            }
+          });
+        }
+        cursor = page.response_metadata?.next_cursor || '';
+        if (page.has_more && !cursor) throw new Error('Slack returned incomplete history. Retry synchronization.');
+      } while (cursor);
+      this.store.change(data => { data.requestCursors ||= {}; data.requestCursors[conversation.id] = latest; });
+    }
     const unknown = (this.store.read().requests || []).filter(r => r.name === r.user);
     for (const request of unknown) {
       const info = await this.slack.call('users.info', { user: request.user });
