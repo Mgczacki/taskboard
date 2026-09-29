@@ -8,7 +8,8 @@ import { MailStore, savePrivate, validText, type Message, type Verdict } from '.
 import { SlackClient, SlackError } from './slack.ts';
 import { MailService, RecipientMatchError } from './service.ts';
 import * as machine from '../machine.ts';
-import { needsBodyFile } from './presentation.ts';
+import { BODY_SECTION_LIMIT, needsBodyFile, renderSlackMarkdown } from './presentation.ts';
+import { editBlocked, editDraft, userEdited } from './edit.ts';
 import { isControllerToken } from './auth.ts';
 import { reviewMessage } from './review.ts';
 import { extractText, publicFile, routeFile, stageBytes, stagePath, verifyFile } from './files.ts';
@@ -70,11 +71,12 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
   };
   const reviewing = new Set<string>();
   let signInError = '';
-  const review = async (id: string) => {
+  const review = async (id: string): Promise<void> => {
     if (reviewing.has(id)) return;
     reviewing.add(id);
+    let start = '', changed = false;
     try {
-      const m = store.get(id);
+      const m = store.get(id); start = m.hash;
       if (m.review) return;
       const account = accounts.get(tasks.get('controller')?.account);
       for (const file of m.files || []) {
@@ -97,7 +99,7 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
       }
       const held = store.get(id).files?.find(f => f.review?.verdict === 'quarantine');
       if (held) {
-        store.update(id, x => { x.review = { verdict: 'quarantine', reason: `File ${held.name} stayed in quarantine`, at: new Date().toISOString() }; });
+        store.update(id, x => { if (x.hash !== m.hash) throw new Error('Message changed during review'); x.review = { verdict: 'quarantine', reason: `File ${held.name} stayed in quarantine`, at: new Date().toISOString() }; });
         return;
       }
       let decision: { verdict: Verdict; reason: string; at: string } = { verdict: 'communication', reason: 'Message text reviewed', at: new Date().toISOString() };
@@ -108,8 +110,12 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
       for (const f of store.get(id).files || []) if (f.review) decision.verdict = worse(decision.verdict, f.review.verdict);
       const reviewed = store.update(id, x => { if (x.hash !== m.hash) throw new Error('Message changed during review'); x.review = decision; delete x.error; });
       try { cards.sync(); tellController(reviewed); } catch { /* the review is saved; the next sync makes the card */ }
-    } catch { store.update(id, x => { x.error = 'Controller review failed. Retry after checking the Claude account.'; }); }
-    finally { reviewing.delete(id); }
+    } catch {
+      // the user edited the draft during this review: the result belongs to the old text, so check the new text
+      try { changed = !!start && store.get(id).hash !== start; } catch { /* removed */ }
+      if (!changed) store.update(id, x => { x.error = 'Controller review failed. Retry after checking the Claude account.'; });
+    }
+    finally { reviewing.delete(id); if (changed) void review(id); }
   };
   let checking = false;
   const checkNext = async () => {
@@ -128,8 +134,12 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
   // the controller or the user approve it (the controller proposes the task for the user's card). A message that no
   // one may approve (quarantine, failed check at level 3, no check yet) stays hidden from it.
   const present = (m: Message, req: Request) => {
-    const shown = { ...m, files: m.files?.map(publicFile), approver: approver(m), trusted: isTrusted(m, store.read()) };
+    const shown = { ...m, files: m.files?.map(publicFile), approver: approver(m), trusted: isTrusted(m, store.read()),
+      editBlocked: m.direction === 'outbox' ? editBlocked(m) : undefined,
+      versions: m.versions?.map(v => ({ ...v, files: v.files.map(publicFile) })) };
     if (human(req)) return shown;
+    // the earlier text of an edited draft stays on the dashboard
+    delete shown.versions;
     if (valid(m) || shown.approver !== 'nobody') return shown;
     return { ...shown, subject: '(held for review)', body: '', files: [], review: m.review ? { ...m.review, reason: '(visible to user only)' } : undefined };
   };
@@ -337,6 +347,33 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
     store.update(m.id, x => { const f = x.files?.find(f => f.id === file.id); if (f) f.routed = routed; });
     return routed;
   }));
+  // The user changes a draft that is not sent yet (server/mail/edit.ts). The old approval and its card end, and the
+  // review runs again on the new text.
+  app.post('/api/mail/:id/edit', endpoint(req => {
+    user(req);
+    const { message, changed } = editDraft(store, String(req.params.id), req.body || {});
+    if (changed) { cards.sync(); void review(message.id); }
+    return present(store.get(message.id), req);
+  }));
+  // Approve and send in one step from Inbox, for a draft that the user just read or wrote.
+  app.post('/api/mail/:id/approve-send', endpoint(async req => {
+    user(req);
+    let m = store.get(String(req.params.id));
+    if (m.direction !== 'outbox') throw new Error('Choose an outgoing draft');
+    if (req.body.hash !== m.hash) throw new Error('The message changed. Read it again before approving.');
+    for (const file of m.files || []) verifyFile(file);
+    if (!valid(m)) m = store.approve(m.id, 'user', m.hash, approver(m));
+    cards.sync();
+    return present(await service.send(m.id), req);
+  }));
+  // The sizes that decide how Slack shows a draft (server/mail/presentation.ts), for the counters in the editor.
+  app.post('/api/mail/measure', endpoint(req => {
+    user(req);
+    const subject = String(req.body.subject ?? ''), body = String(req.body.body ?? '');
+    if (Buffer.byteLength(body) > 262144 * 2) throw new Error('The message is too long to measure');
+    return { subjectBytes: Buffer.byteLength(subject), bodyBytes: Buffer.byteLength(body), rendered: renderSlackMarkdown(body).length,
+      limits: { subjectBytes: 200, header: 145, section: BODY_SECTION_LIMIT, bodyBytes: 262144 } };
+  }));
   app.post('/api/mail/:id/review', endpoint(async req => { owner(req); await review(String(req.params.id)); return {}; }));
   app.post('/api/mail/:id/approve', endpoint(req => {
     owner(req);
@@ -374,11 +411,13 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
     return route;
   }));
   app.post('/api/mail/:id/seen', endpoint(req => { user(req); store.update(String(req.params.id), m => { delete m.unseen; }); return {}; }));
+  // after the user edits a draft, only the user changes it
+  const ownerOrEditor = (req: Request) => { owner(req); if (!human(req) && userEdited(store.get(String(req.params.id)))) throw new Error('The user edited this draft. Only the user can change it.'); };
   app.post('/api/mail/:id/dismiss', endpoint(req => {
-    owner(req); store.update(String(req.params.id), m => { m.dismissedAt ||= new Date().toISOString(); }); cards.sync(); return {};
+    ownerOrEditor(req); store.update(String(req.params.id), m => { m.dismissedAt ||= new Date().toISOString(); }); cards.sync(); return {};
   }));
   app.post('/api/mail/:id/restore', endpoint(req => {
-    owner(req); store.update(String(req.params.id), m => { delete m.dismissedAt; }); cards.sync(); return {};
+    ownerOrEditor(req); store.update(String(req.params.id), m => { delete m.dismissedAt; }); cards.sync(); return {};
   }));
   app.post('/api/mail/:id/route', endpoint(req => {
     if (!controller(req)) throw new Error('Ask your controller to route this message');
