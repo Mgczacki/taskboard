@@ -34,6 +34,7 @@ export interface Task {
   interrupted?: string;
   groups?: string[];
   account?: string;        // account id (settings folder) the agent runs with
+  model?: string;          // model selected for this task
   role?: 'controller';     // the controller agent is a task with this role; it is kept out of the task lists
   parent?: string;         // task id that started this one (the controller)
   imported?: string;       // where the session came from, when it was imported

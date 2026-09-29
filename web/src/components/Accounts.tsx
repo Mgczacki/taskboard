@@ -8,6 +8,7 @@ import { Terminal } from './Terminal';
 
 export interface Account {
   id: string; agent: Agent; name: string; dir: string; isDefault?: boolean; maxParallel: number;
+  routingRules?: string;
   limited?: { at: string; note: string }; status: { signedIn: boolean; who?: string }; running: number;
   usage?: { windows: { label: string; usedPct: number; resetsAt?: number }[]; at: string; source: string; plan?: string };
 }
@@ -81,6 +82,13 @@ export function AccountsPage({ tasks }: { tasks: Task[] }) {
     } catch (e) { setErr(String((e as Error).message)); }
   };
   const tasksOn = (a: Account) => tasks.filter(t => (t.account || `${t.agent}-default`) === a.id && t.status !== 'archived');
+  const saveRule = async (a: Account, value: string) => {
+    try {
+      const r = await fetch(`/api/accounts/${a.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ routingRules: value }) });
+      const data = await r.json(); if (!r.ok) throw new Error(data.error || r.statusText);
+      setList(current => current.map(x => x.id === a.id ? { ...x, routingRules: data.routingRules } : x));
+    } catch (e) { setErr(String((e as Error).message || e)); }
+  };
 
   return (
     <div className="acc-page">
@@ -102,7 +110,7 @@ export function AccountsPage({ tasks }: { tasks: Task[] }) {
       <div className="tb"><table><colgroup><col style={{ width: '20%' }} /><col style={{ width: '16%' }} /><col style={{ width: '30%' }} /><col style={{ width: 90 }} /><col /></colgroup><tbody>
         {list.map(a => (
           <tr key={a.id} className="r">
-            <td><span className={`chip agent-${a.agent}`}>{AGENT_NAME[a.agent]}</span> <b>{a.name}</b><div className="mono" style={{ marginTop: 4 }}>{short(a.dir)}</div></td>
+            <td><span className={`chip agent-${a.agent}`}>{AGENT_NAME[a.agent]}</span> <b>{a.name}</b><div className="mono" style={{ marginTop: 4 }}>{short(a.dir)}</div><label className="sub">Routing rule<input className="routing-rule" type="text" maxLength={500} defaultValue={a.routingRules || ''} key={`${a.id}:${a.routingRules || ''}`} placeholder="When should the controller use this account?" onBlur={e => { if (e.target.value !== (a.routingRules || '')) void saveRule(a, e.target.value); }} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} /></label></td>
             <td>{a.status.signedIn ? <span className="st-label unread">✓ signed in</span> : <span className="st-label needs-you">not signed in</span>}<div className="sub">{a.status.who || ''}</div></td>
             <td>{a.limited && <><span className="st-label stopped">stopped by a limit</span><div className="sub">since {fmtWait(Math.round((Date.now() - Date.parse(a.limited.at)) / 60000))} ago · {a.limited.note}</div></>}<UsageBars a={a} /></td>
             <td className="mono">{a.running} / {a.maxParallel}<div className="sub">{tasksOn(a).map(t => '#' + t.num).slice(0, 6).join(' ')}</div></td>

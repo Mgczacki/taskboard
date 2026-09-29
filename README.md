@@ -177,12 +177,15 @@ A sideways swipe (or Shift + wheel) over a terminal scrolls the canvas, or turns
   tasks through `tb` without an approval card (defaults: controller yes, other agents no). The controller's Claude Code
   settings allow every `tb` command and a Codex controller runs with `-a never`, so this page is the only place that
   decides. Releasing, rolling back and stopping the server stay blocked for every agent.
-- **Controller (⌘K):** an agent session in `~/AgentVault/controller` (Claude Code or Codex: choose its account on the
-  Accounts page; the account decides the agent) that manages agents with the `tb` command.
-  Starting agents, typing into them, parking and archiving wait for your **Approve / Deny** card on the dashboard,
-  whatever Claude Code's permission mode is.
+- **Controller (⌘K):** an agent session in `~/AgentVault/controller` that manages agents with the `tb` command.
+  Choose its account on the Accounts page. The account sets the controller's agent.
+  The Settings page controls whether its actions need an approval card.
+- **Task routing:** the Settings page stores machine rules in `~/.taskboard/machine.json`.
+  The Accounts page stores each account's rules in `~/.taskboard/accounts.json`.
+  The controller reads `tb accounts` before it starts work. A Claude Code controller also gets current usage in its prompt hook.
+  The user can choose an agent, account, or model in a request. `tb new` accepts `--account` and `--model`.
 - **`tb`** (linked into `~/.local/bin/tb`): `tb list`, `tb show`, `tb log`, `tb tail`, `tb result`, `tb wait`, `tb send`,
-  `tb new` (also `--batch plan.json`), `tb group`, `tb doc send`, `tb review`, `tb park|archive`. Run `tb` for help.
+  `tb accounts`, `tb new` (also `--batch plan.json`), `tb group`, `tb doc send`, `tb review`, `tb park|archive`. Run `tb` for help.
 - **Usage limits:** the Accounts page shows each account's windows (5-hour, weekly) with % used and reset time.
   Claude Code: reported by the status line Taskboard gives its sessions (sessions started before this was added show it
   after they are resumed). Codex: read from the newest session file of that account every minute. Automatic account

@@ -10,7 +10,7 @@ export interface Task {
   cwd: string; folder: string; branch?: string; worktree?: boolean; session: string; sessionId?: string;
   created: string; updated: string; statusAt: string; statusSource?: string;
   goal?: string; now?: string; ask?: string; stopReason?: string; interrupted?: string; desc: string;
-  waitMin: number; attach: string; docs?: { inbox: number; outbox: number }; role?: 'controller'; parent?: string; account?: string; machine?: { id: string; name: string }; imported?: string; openElsewhere?: { pid: number; tty: string }; moveWhenDone?: boolean; remoteUrl?: string; restartWhenDone?: boolean; unscrollable?: boolean;
+  waitMin: number; attach: string; docs?: { inbox: number; outbox: number }; role?: 'controller'; parent?: string; account?: string; model?: string; machine?: { id: string; name: string }; imported?: string; openElsewhere?: { pid: number; tty: string }; moveWhenDone?: boolean; remoteUrl?: string; restartWhenDone?: boolean; unscrollable?: boolean;
 }
 
 export interface ImportCandidate {
@@ -18,7 +18,7 @@ export interface ImportCandidate {
   updated: string; source?: string; running?: { pid: number; tty: string; exact: boolean };
 }
 
-export interface MachineInfo { role?: 'production' | 'sandbox'; root?: string; machine: string; host: string; url: string; settings: { name: string; controller: { autostart: boolean; remoteControl: boolean }; permissions: { controllerNeedsApproval: boolean; agentsNeedApproval: boolean }; ask: { account: string; model: string } }; controller: null | { agent: string; account?: string; status: string; remoteUrl?: string; label: string } }
+export interface MachineInfo { role?: 'production' | 'sandbox'; root?: string; machine: string; host: string; url: string; settings: { name: string; routingRules: string; controller: { autostart: boolean; remoteControl: boolean }; permissions: { controllerNeedsApproval: boolean; agentsNeedApproval: boolean }; ask: { account: string; model: string } }; controller: null | { agent: string; account?: string; status: string; remoteUrl?: string; label: string } }
 export interface Machine { id: string; name: string; url: string; local?: boolean; online: boolean; latency?: number; lastSeen?: string; error?: string; tasks?: number }
 export interface Approval { id: string; actor: string; action: string; summary: string; detail: string; created: string; state: 'pending' | 'approved' | 'denied' | 'failed'; result?: string }
 // questions about a task, answered by a separate read-only agent (server/ask.ts)
@@ -96,7 +96,7 @@ async function call<T = unknown>(method: string, path: string, body?: unknown): 
   return data as T;
 }
 export const api = {
-  create: (b: { title: string; desc: string; agent: string; folder: string; worktree?: boolean; branch?: string; account?: string; machine?: string }) => call<Task>('POST', '/api/tasks', b),
+  create: (b: { title: string; desc: string; agent: string; folder: string; worktree?: boolean; branch?: string; account?: string; model?: string; machine?: string }) => call<Task>('POST', '/api/tasks', b),
   setStatus: (id: string, status: string) => call('POST', `/api/tasks/${id}/status`, { status }),
   seen: (id: string) => call('POST', `/api/tasks/${id}/seen`, {}),
   resume: (id: string, force = false) => call<Task>('POST', `/api/tasks/${id}/resume`, { force }),
@@ -107,7 +107,7 @@ export const api = {
   restart: (id: string, when: 'now' | 'after-turn' | 'cancel') => call<Task>('POST', `/api/tasks/${encodeURIComponent(id)}/restart`, { when }),
   remove: (id: string) => call('DELETE', `/api/tasks/${encodeURIComponent(id)}`),
   info: () => call<MachineInfo>('GET', '/api/info'),
-  updateInfo: (patch: { name?: string; autostart?: boolean; remoteControl?: boolean; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; askAccount?: string; askModel?: string }) => call<MachineInfo>('PATCH', '/api/info', patch),
+  updateInfo: (patch: { name?: string; routingRules?: string; autostart?: boolean; remoteControl?: boolean; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; askAccount?: string; askModel?: string }) => call<MachineInfo>('PATCH', '/api/info', patch),
   setControllerAccount: (account: string) => call<Task>('POST', '/api/controller/account', { account }),
   // sent as raw bytes; octet-stream so the server's JSON parser leaves .json files alone
   upload: async (id: string, file: File) => {

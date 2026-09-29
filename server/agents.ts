@@ -131,13 +131,19 @@ Use the \`tb\` command (run \`tb\` alone for help). Tasks are numbers like 12 or
 ## What you do
 - Answer questions about what each task is doing. Read \`tb list\` and \`tb log <task>\` first; use \`tb tail <task>\` if the log is not enough.
 - Pass the user's instructions to a task with \`tb send <task> "<text>"\`. Quote the user's intent; do not add work they did not ask for.
-- Start agents with \`tb new --agent claude|codex|antigravity --folder <path> --title <title> "<prompt>"\`. For several pieces of work, write a plan to plans/<name>.json
-  ([{"agent","folder","title","prompt","worktree"?,"group"?}]) and start them with one \`tb new --batch plans/<name>.json\`, each in its own worktree and one group.
+- Before starting tasks, run \`tb accounts\` to read current usage and routing rules.
+- Follow the user's explicit agent, account, or model choice. Otherwise use the routing rules and current usage.
+- Avoid accounts that are limited, not signed in, or already running their maximum number of tasks.
+- Start agents with \`tb new --agent claude|codex|antigravity --account <id> --folder <path> --title <title> "<prompt>"\`. Add \`--model <name>\` only when needed.
+  For several pieces of work, write a plan to plans/<name>.json
+  ([{"agent","folder","title","prompt","account"?,"model"?,"worktree"?,"group"?}]) and start them with one \`tb new --batch plans/<name>.json\`, each in its own worktree and one group.
 - Follow agents you started with \`tb wait <task…> --until any\`. When one finishes, read it with \`tb result <task>\` and tell the user in two or three lines.
   When one needs input, say what it asks; answer it only if the user already told you the answer.
 - Organise tasks into groups with \`tb group add|rm <group> <task…>\`; move documents with \`tb doc send <task>:<file> <task>\`.
 
 ## Rules
+Machine routing rules: ${machine.get().routingRules || '(none)'}
+Account rules appear in \`tb accounts\`. Apply them when you choose an account.
 - When the user asks for an agent, a sub-agent or a task, start it with \`tb new\` or \`tb new --batch\`.
   Do not use the Claude Code Agent tool or Task tool to start agents.
   This rule also applies to work that only does research or only writes a proposal.
@@ -246,6 +252,7 @@ function codexFlags(): string[] {
 function command(t: Task, prompt: string | null, resume: boolean): string[] {
   if (t.agent === 'claude') {
     const c = ['claude', '--settings', CLAUDE_SETTINGS_FILE, '--add-dir', VAULT, '--append-system-prompt', taskInstructions(t)];
+    if (t.model) c.push('--model', t.model);
     if (resume && t.sessionId) c.push('--resume', t.sessionId);
     else if (t.sessionId) c.push('--session-id', t.sessionId);
     if (prompt) c.push(prompt);
@@ -256,6 +263,7 @@ function command(t: Task, prompt: string | null, resume: boolean): string[] {
     // already has them. The controller reads AGENTS.md in its folder instead. --add-dir lets it write the task's log.
     // the real path: agy compares real paths, and a vault behind a symbolic link (/var → /private/var) is "outside workspace"
     const c = [agyBin(), '--add-dir', realpathSync(VAULT)];
+    if (t.model) c.push('--model', t.model);
     if (resume && t.sessionId) return [...c, '--conversation', t.sessionId];
     if (prompt) {
       const text = t.role === 'controller' ? prompt : `${taskInstructions(t)}\n\n---\n\n${prompt}`;
@@ -264,6 +272,7 @@ function command(t: Task, prompt: string | null, resume: boolean): string[] {
     return c;
   }
   const c = ['codex', ...codexFlags()];
+  if (t.model) c.push('-m', t.model);
   // Codex has no flag that appends to its system prompt. developer_instructions is a config value, so it is written as a
   // TOML string (a JSON string is also a valid TOML basic string). The controller reads AGENTS.md in its folder instead.
   if (t.role !== 'controller') c.push('-c', `developer_instructions=${JSON.stringify(taskInstructions(t))}`);
@@ -283,14 +292,17 @@ export async function configureIfRunning() { if ((await tmux.listSessions())?.le
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'task';
 
-export interface NewTask { title: string; desc: string; agent: Agent; folder: string; worktree?: boolean; branch?: string; parent?: string; account?: string }
-const runningOn = (accountId: string) => store.all().filter(t => (t.account || accounts.defaultFor(t.agent).id) === accountId && ['working', 'needs-you', 'unread', 'idle', 'review', 'stopped'].includes(t.status)).length;
+export interface NewTask { title: string; desc: string; agent: Agent; folder: string; worktree?: boolean; branch?: string; parent?: string; account?: string; model?: string }
+export const runningOn = (accountId: string) => store.all().filter(t => (t.account || accounts.defaultFor(t.agent).id) === accountId && ['working', 'needs-you', 'unread', 'idle', 'review', 'stopped'].includes(t.status)).length;
 
 export async function startTask(n: NewTask): Promise<Task> {
   const folder = n.folder.replace(/^~(?=\/|$)/, HOME);
   if (!existsSync(folder)) throw new Error(`Folder does not exist: ${folder}`);
+  if (n.model !== undefined && (typeof n.model !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(n.model))) throw new Error('Invalid model name.');
   const acct = n.account && n.account !== 'auto' ? accounts.get(n.account) : (await accounts.pick(n.agent, runningOn)).account;
   if (!acct || acct.agent !== n.agent) throw new Error('That account is for the other agent.');
+  if (acct.limited || accounts.fullUntil(acct) || runningOn(acct.id) >= acct.maxParallel) throw new Error(`Account ${acct.id} is at its usage or parallel task limit.`);
+  if (!(await accounts.status(acct)).signedIn) throw new Error(`Account ${acct.id} is not signed in.`);
   const num = store.nextNum();
   const id = `${slug(n.title)}-${num}`;
   let cwd = folder, branch: string | undefined;
@@ -304,7 +316,7 @@ export async function startTask(n: NewTask): Promise<Task> {
   const t = store.create({
     id, num, title: n.title, agent: n.agent, status: 'working', cwd, folder, branch, worktree: !!n.worktree,
     session: `task-${num}`, sessionId: n.agent === 'claude' ? randomUUID() : undefined,
-    statusSource: n.parent === 'controller' ? 'Started by the controller (tb new) just now.' : 'Started just now.', goal: n.title, desc: n.desc, parent: n.parent, account: acct.id,
+    statusSource: n.parent === 'controller' ? 'Started by the controller (tb new) just now.' : 'Started just now.', goal: n.title, desc: n.desc, parent: n.parent, account: acct.id, model: n.model,
   });
   await launch(t, n.desc, false);
   const f = store.state.folders[n.folder] || { uses: 0, last: '' };

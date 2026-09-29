@@ -12,6 +12,7 @@ const exec = promisify(execFile);
 export type AgentKind = 'claude' | 'codex' | 'antigravity';
 export interface Account {
   id: string; agent: AgentKind; name: string; dir: string; isDefault?: boolean; maxParallel: number;
+  routingRules?: string;
   limited?: { at: string; note: string };   // hit a usage limit; cleared when a turn on it succeeds
   usage?: Usage;                              // latest usage windows reported for this account
   created: string;
@@ -51,7 +52,17 @@ export function create(agent: AgentKind, name: string): Account {
   accounts.push(a); save(); return a;
 }
 export function remove(id: string) { const a = get(id); if (!a || a.isDefault) throw new Error('The default accounts cannot be removed.'); accounts = accounts.filter(x => x.id !== id); save(); }
-export function update(id: string, patch: Partial<Pick<Account, 'name' | 'maxParallel'>>) { const a = get(id); if (a) { Object.assign(a, patch); save(); } return a; }
+export function update(id: string, patch: Partial<Pick<Account, 'name' | 'maxParallel' | 'routingRules'>>) {
+  const a = get(id); if (!a) return;
+  if (patch.name !== undefined) a.name = String(patch.name).trim().slice(0, 80);
+  if (patch.maxParallel !== undefined) {
+    const n = Number(patch.maxParallel);
+    if (!Number.isInteger(n) || n < 1 || n > 100) throw new Error('maxParallel must be an integer from 1 to 100.');
+    a.maxParallel = n;
+  }
+  if (patch.routingRules !== undefined) a.routingRules = String(patch.routingRules).trim().slice(0, 500);
+  save(); return a;
+}
 
 // Environment that points a CLI at an account's folder (nothing for the default folders).
 export function envFor(a?: Account): Record<string, string> {
@@ -140,10 +151,22 @@ export async function pick(agent: AgentKind, running: (id: string) => number): P
     if (!(await status(a)).signedIn) { skipped.push(`${a.name} is not signed in`); continue; }
     ok.push(a);
   }
-  if (!ok.length) return { account: defaultFor(agent), why: `No account available (${skipped.join('; ')}); using the default.` };
+  if (!ok.length) throw new Error(`No ${agent} account is available (${skipped.join('; ')}).`);
   // fewest running first; then the lowest usage; then the default account
   const best = ok.sort((x, y) => running(x.id) - running(y.id) || peak(x) - peak(y) || Number(!!y.isDefault) - Number(!!x.isDefault))[0];
   return { account: best, why: `${best.name} (${running(best.id)} running${best.usage ? `, ${peak(best)}% used` : ''})${skipped.length ? ` — skipped: ${skipped.join('; ')}` : ''}` };
+}
+
+export function usageSummary(running: (id: string) => number): string {
+  refreshCodexUsage();
+  const lines = accounts.map(a => {
+    const windows = a.usage?.windows.map(w => {
+      const reset = w.resetsAt ? `@${new Date(w.resetsAt).toISOString().slice(5, 16)}Z` : '';
+      return `${w.label}=${w.resetsAt && w.resetsAt <= Date.now() ? 'reset' : `${w.usedPct}%`}${reset}`;
+    }).join(', ') || 'usage unknown';
+    return `${a.id} (${a.name}; ${a.agent}) ${running(a.id)}/${a.maxParallel} ${a.limited ? 'limited ' : ''}${windows} data=${a.usage?.at.slice(5, 16) || 'unknown'}`;
+  });
+  return `[Account usage]\n${lines.join('\n')}`;
 }
 
 // Copy a Claude Code session transcript into another account's folder so `claude --resume` finds it there.

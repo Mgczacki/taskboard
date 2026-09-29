@@ -3,6 +3,7 @@ import { statSync } from 'node:fs';
 import * as docs from './docs.ts';
 import * as review from './review.ts';
 import * as accounts from './accounts.ts';
+import * as machine from './machine.ts';
 import * as external from './external.ts';
 import * as store from './store.ts';
 import type { Task } from './store.ts';
@@ -64,7 +65,14 @@ export function claudeEvent(taskId: string, input: any): { output?: unknown } {
       answerBeforeLog.delete(t.id); // a saved answer belongs to the previous turn only
       turnStart.set(t.id, Date.now()); blockedOnce.delete(t.id);
       store.update(t.id, { status: 'working', ask: '', stopReason: undefined, interrupted: undefined, statusSource: `Claude Code UserPromptSubmit hook at ${clock()}.` });
-      { const notice = docs.takeInboxNotice(t.id); if (notice) return { output: { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: notice } } }; }
+      {
+        const notice = docs.takeInboxNotice(t.id);
+        const usage = t.role === 'controller'
+          ? `${accounts.usageSummary(id => store.all().filter(x => (x.account || accounts.defaultFor(x.agent).id) === id && ['working', 'needs-you', 'unread', 'idle', 'review', 'stopped'].includes(x.status)).length)}\nMachine routing rules: ${machine.get().routingRules || '(none)'}\n${accounts.all().filter(a => a.routingRules).map(a => `${a.id} rule: ${a.routingRules}`).join('\n')}`
+          : '';
+        const context = [notice, usage].filter(Boolean).join('\n\n');
+        if (context) return { output: { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: context } } };
+      }
       break;
     case 'PermissionRequest':
       store.update(t.id, { status: 'needs-you', ask: describeTool(input.tool_name, input.tool_input), statusSource: `Claude Code PermissionRequest hook at ${clock()}: ${input.tool_name}.` });

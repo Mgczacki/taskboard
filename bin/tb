@@ -53,8 +53,9 @@ const HELP = `tb — Taskboard command line
   tb result <task>                   the agent's last message and its outbox documents
   tb wait <task…> [--until done|needs-you|any] [--timeout seconds]
   tb send <task> "<text>"            type text into the agent's terminal and press Enter
-  tb new --agent claude|codex|antigravity --folder <path> [--title <t>] [--worktree <branch>] [--group <name>] "<prompt>"
-  tb new --batch <plan.json>         [{ agent, folder, title, prompt, worktree?, group? }, …]
+  tb accounts [--json]               account usage and routing rules
+  tb new --agent claude|codex|antigravity --folder <path> [--account <id>] [--model <name>] [--title <t>] [--worktree <branch>] [--group <name>] "<prompt>"
+  tb new --batch <plan.json>         [{ agent, folder, title, prompt, account?, model?, worktree?, group? }, …]
   tb group list | tb group add <group> <task…> | tb group rm <group> <task…>
   tb doc send <task>:<file> <task>   send a document from one task's outbox to another task's inbox
   tb review <file>                   ask the user to review a document from your outbox
@@ -79,6 +80,13 @@ switch (cmd) {
     if (status) list = list.filter(t => status.split(',').includes(t.status));
     if (group) { const g = (await call('GET', '/api/groups')).find(x => x.name === group || x.id === group); list = list.filter(t => g && g.tasks.includes(t.id)); }
     console.log(json ? JSON.stringify(list, null, 2) : list.map(line).join('\n') || 'No tasks.');
+    break;
+  }
+  case 'accounts': {
+    const list = await call('GET', '/api/accounts');
+    const info = await call('GET', '/api/info');
+    if (has('--json')) console.log(JSON.stringify({ routingRules: info.settings.routingRules, accounts: list }, null, 2));
+    else console.log(`Machine rules: ${info.settings.routingRules || '(none)'}\n` + list.map(a => `${a.id} (${a.agent}): ${a.status.signedIn ? 'signed in' : 'not signed in'}; ${a.running}/${a.maxParallel} tasks; ${a.limited ? 'limited; ' : ''}${(a.usage?.windows || []).map(w => `${w.label} ${w.resetsAt && w.resetsAt < Date.now() ? 'reset' : w.usedPct + '%'}`).join(', ') || 'usage unknown'}; as of ${a.usage?.at || 'unknown'}${a.routingRules ? `; rule: ${a.routingRules}` : ''}`).join('\n'));
     break;
   }
   case 'show': {
@@ -119,10 +127,10 @@ switch (cmd) {
   case 'send': { const t = await task(rest[0]); await call('POST', `/api/tasks/${t.id}/send`, { text: rest.slice(1).join(' ') }); console.log(`Sent to #${t.num}.`); break; }
   case 'new': {
     const batch = flag('--batch');
-    const specs = batch ? JSON.parse(readFileSync(batch, 'utf8')) : [{ agent: flag('--agent', 'claude'), folder: flag('--folder'), title: flag('--title'), worktree: flag('--worktree'), group: flag('--group'), prompt: args.slice(1).join(' ') }];
+    const specs = batch ? JSON.parse(readFileSync(batch, 'utf8')) : [{ agent: flag('--agent', 'claude'), account: flag('--account'), model: flag('--model'), folder: flag('--folder'), title: flag('--title'), worktree: flag('--worktree'), group: flag('--group'), prompt: args.slice(1).join(' ') }];
     for (const s of specs) {
       if (!s.folder || !s.prompt) { console.error('tb new: --folder and a prompt are required'); process.exit(1); }
-      const t = await call('POST', '/api/tasks', { title: s.title || s.prompt.slice(0, 60), desc: s.prompt, agent: s.agent || 'claude', folder: resolve(s.folder.replace(/^~/, homedir())), worktree: !!s.worktree, branch: s.worktree || undefined, parent: process.env.TASK_ID || undefined, group: s.group || undefined, account: s.account || undefined });
+      const t = await call('POST', '/api/tasks', { title: s.title || s.prompt.slice(0, 60), desc: s.prompt, agent: s.agent || 'claude', folder: resolve(s.folder.replace(/^~/, homedir())), worktree: !!s.worktree, branch: s.worktree || undefined, parent: process.env.TASK_ID || undefined, group: s.group || undefined, account: s.account || undefined, model: s.model || undefined });
       if (t.approved) continue;
       console.log(`Started #${t.num} ${t.title} (${t.agent}) in ${t.cwd}`);
     }
