@@ -15,15 +15,16 @@ type SlackClient = import('../server/mail/slack.ts').SlackClient;
 test('a long message crosses Slack as a file and returns as exact text', async () => {
   const sender = new MailStore(join(root, 'sender.json'));
   const body = 'A long message. '.repeat(3000);
-  const file = { ...stageBytes(Buffer.from(body), 'message.txt'), longBody: true, review: { verdict: 'communication' as const, reason: 'Reviewed', at: new Date().toISOString() } };
+  const file = { ...stageBytes(Buffer.from(body), 'message.md'), longBody: true, review: { verdict: 'communication' as const, reason: 'Reviewed', at: new Date().toISOString() } };
   const draft = sender.add({ direction: 'outbox', source: 'user', from: 'U1', to: 'U2', subject: 'Long text', body, files: [file] });
   sender.update(draft.id, m => { m.review = { verdict: 'communication', reason: 'Reviewed', at: new Date().toISOString() }; });
   sender.approve(draft.id, 'user', draft.hash, 'user');
   let text = '', blocks = '';
+  let posted: Record<string, string> = {};
   const sendSlack = { identity: () => ({ user: 'U1', team: 'T1' }), upload: async () => 'F123', call: async (method: string, args: Record<string, string>) => {
     if (method === 'users.info') return { user: { id: 'U2', team_id: 'T1' } };
     if (method === 'conversations.open') return { channel: { id: 'D1' } };
-    if (method === 'chat.postMessage') { text = args.text; blocks = args.blocks; return { ts: '1' }; }
+    if (method === 'chat.postMessage') { posted = args; text = args.text; blocks = args.blocks; return { ts: '1' }; }
     return {};
   } } as unknown as SlackClient;
   await new MailService(sender, sendSlack).send(draft.id);
@@ -31,8 +32,10 @@ test('a long message crosses Slack as a file and returns as exact text', async (
   assert.ok(text.length < 40000);
   assert.equal(JSON.parse(blocks)[0].text.text, 'Long text');
   assert.match(JSON.parse(blocks)[1].elements[0].text, /Sent automatically by Taskboard/);
-  assert.match(JSON.parse(blocks)[4].text.text, /Read the full text in message.txt sent above/);
-  assert.equal(JSON.parse(blocks)[4].expand, false);
+  assert.equal(JSON.parse(blocks)[4].type, 'markdown');
+  assert.match(JSON.parse(blocks)[4].text, /Read the full text in message.md sent above/);
+  assert.equal(posted.unfurl_links, 'false');
+  assert.equal(posted.unfurl_media, 'false');
   assert.ok(!blocks.includes(body));
   assert.match(JSON.parse(blocks)[6].elements[1].text, /Get Taskboard/);
   assert.match(JSON.parse(blocks)[6].elements[1].text, /github.com\/Mgczacki\/taskboard\/blob\/master\/SETUP.md/);
@@ -41,6 +44,7 @@ test('a long message crosses Slack as a file and returns as exact text', async (
   const receiveSlack = { identity: () => ({ user: 'U2', team: 'T1' }), call: async (method: string) => method === 'conversations.list' ? { channels: [{ id: 'D1', user: 'U1' }] } : { messages: [{ ts: '1', user: 'U1', text: text.replace(/\n/g, ' ') }] }, download: async () => verifyFile(file) } as unknown as SlackClient;
   await new MailService(recipient, receiveSlack).sync();
   assert.equal(recipient.read().messages[0].body, body);
+  assert.equal(recipient.read().messages[0].files?.[0].name, 'message.md');
   assert.equal(recipient.read().messages[0].files?.[0].hash, file.hash);
   assert.equal(recipient.read().messages[0].files?.[0].review, undefined);
 });

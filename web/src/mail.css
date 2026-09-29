@@ -14,6 +14,11 @@
 .mail-settings .opt { margin:12px 0; }
 .mail-item h2,.mail-compose h2 { font-size:17px; margin:0 0 12px; }
 .mail-item pre { white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; }
+.mail-body { overflow-wrap:anywhere; }
+.mail-body pre { overflow:auto; white-space:pre; font-family:var(--mono); }
+.mail-body table { border-collapse:collapse; display:block; max-width:100%; overflow:auto; }
+.mail-body th,.mail-body td { border:1px solid var(--line); padding:4px 8px; }
+.mail-body ul,.mail-body ol { padding-left:22px; }
 .mail-compose .field { margin:12px 0; }
 .mail-compose .mail-input,.mail-settings .mail-input { display:block; margin-top:6px; }
 .mail-compose .field label { margin-bottom:0; }

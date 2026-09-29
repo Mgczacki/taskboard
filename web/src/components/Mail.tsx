@@ -2,7 +2,12 @@ import { useEffect, useRef, useState } from 'react';
 import type { Task } from '../api';
 import { InboxPage as Documents } from './Review';
 import type { DocumentLink } from '../documentLinks';
+import DOMPurify from 'dompurify';
+import { marked } from 'marked';
 import '../mail.css';
+function MailBody({ body }: { body: string }) {
+  return <div className="md mail-body" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(marked.parse(body, { async: false }) as string) }} />;
+}
 export interface Message {
   id: string; direction: 'inbox' | 'outbox'; from: string; to: string; subject: string; body: string; hash: string;
   created: string; dismissedAt?: string; sendStartedAt?: string; sentAt?: string; sending?: boolean; error?: string;
@@ -80,7 +85,7 @@ function SentHistory({ messages, contacts, tasks, busy, act }: {
         <p>Sender: {selected.from}</p><p>Recipient: {contactName(selected.to)} ({selected.to})</p>
         <p>Proposed by: {proposer(selected, tasks)}</p><p>Approved by: {selected.approval?.by || 'No approval recorded'}</p>
         <p>State: {sentState(selected)}{selected.dismissedAt ? ' · Dismissed' : ''}</p><p>Sent: {date(selected.sentAt)}</p>
-        <h3>Full message</h3><pre>{selected.body}</pre>
+        <h3>Full message</h3><MailBody body={selected.body} />
         {!!selected.files?.length && <><h3>Files</h3><ul>{selected.files.map(f => <li key={f.id}>{f.name} ({Math.ceil(f.size / 1024)} KiB). {f.review?.verdict || 'Waiting for controller review'}.</li>)}</ul></>}
         <h3>Recorded steps</h3><ol>{steps.map((step, i) => <li key={i}>{step.label}: {date(step.at)}</li>)}</ol>
         {selected.error && <p role="alert">{selected.error}</p>}
@@ -225,7 +230,7 @@ export function InboxPage(props: { tasks: Task[]; open: (id: string, tab?: 'term
         {m.review && <p>Check: {m.review.verdict}. {m.review.reason}</p>}
         {m.source === 'slack' && !m.trusted && <p>{m.from} is not a trusted sender. <button className="btn ghost" disabled={busy} onClick={() => act(() => request('/trusted', { user: m.from, name: m.from, trusted: true }))}>Trust this sender</button></p>}
         {m.unseen && <p role="alert">The controller routed this message to {m.routes.map(r => taskLabel(r.task, props.tasks)).join(', ')} without your approval. <button className="btn" disabled={busy} onClick={() => act(() => request(`/${m.id}/seen`, {}))}>Mark as seen</button></p>}
-        <details><summary>Read message</summary><pre>{m.body}</pre></details>
+        <details><summary>Read message</summary><MailBody body={m.body} /></details>
         {!!m.files?.length && <div><h3>Files</h3><ul>{m.files.map(f => <li key={f.id}>{f.name} ({Math.ceil(f.size / 1024)} KiB). {f.review?.verdict || 'Waiting for controller review'}.
           {m.direction === 'inbox' && f.review && f.review.verdict !== 'quarantine' && <a href={`/api/mail/${m.id}/files/${f.id}/download`}>Download</a>}
           {m.direction === 'inbox' && m.approval && f.review && f.review.verdict !== 'quarantine' && !f.routed && <><select className="mail-input" aria-label={`Task for ${f.name}`} value={destinations[f.id] || ''} onChange={e => setDestinations(current => ({ ...current, [f.id]: e.target.value }))}><option value="">Choose a task</option>{props.tasks.filter(t => t.id !== 'controller').map(t => <option key={t.id} value={t.id}>{t.title}</option>)}</select><button className="btn" disabled={busy || !destinations[f.id]} onClick={() => act(() => request(`/${m.id}/files/${f.id}/route`, { task: destinations[f.id], hash: f.hash }))}>Approve file for task</button></>}
