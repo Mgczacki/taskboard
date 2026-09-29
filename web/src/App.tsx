@@ -153,7 +153,7 @@ export function App() {
   const showOnCanvas = (id: string) => {
     if (view.startsWith('g:')) { const g = groups.find(x => x.id === view.slice(2)); if (g && !g.tasks.includes(id)) api.updateGroup(g.id, { add: id }); }
     else if (view.startsWith('t:') && !view.slice(2).split(',').includes(id)) setView(view + ',' + id);
-    else if (view === 'needs') setView('live');
+    else if (view === 'needs' || (view === 'ungrouped' && groups.some(g => g.tasks.includes(id)))) setView('live');
     setOpenId(null); go('canvas');
   };
   const item = (t: Task) => <div key={t.id} className="rail-item" onClick={() => setOpenId(t.id)}><Dot s={t.status} /><span className="t">{t.title}</span><span className="m">{t.agent === 'claude' ? 'CC' : t.agent === 'codex' ? 'CX' : 'AG'}</span></div>;
