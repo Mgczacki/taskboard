@@ -48,8 +48,12 @@ export async function hasSession(name: string): Promise<boolean | null> {
 // window-size latest lets the most recently active client decide the size when several windows attach.
 // Mouse selection for programs that do not read the mouse themselves (Codex; Claude Code handles its own):
 // tmux's defaults copy into its own buffer and drop the highlight the moment the mouse is released. These bindings
-// keep the selection highlighted and copy it to the macOS clipboard (pbcopy); a click, Esc or q leaves the selection.
+// keep the selection highlighted and copy it to the macOS clipboard (pbcopy); a click or Esc leaves the selection.
+// A click that moves a few pixels is a drag and puts the pane in copy mode, where typed keys are copy-mode commands.
+// So typing leaves copy mode: each printable key (and Space, Enter, BSpace, Tab) cancels it and goes on to the program.
 // Written to a file and loaded with source-file because the nested commands do not pass well as arguments.
+const keyArg = (k: string) => k === "'" ? `"'"` : `'${k}'`;
+const TYPED = Array.from({ length: 94 }, (_, i) => String.fromCharCode(33 + i)); // ! through ~
 export const COPY_BINDINGS = `
 set -g mouse on
 set -g set-clipboard on
@@ -61,7 +65,9 @@ bind -T ${t} MouseDragEnd1Pane send -X copy-pipe-no-clear "pbcopy"
 bind -T ${t} DoubleClick1Pane select-pane \\; send -X select-word \\; send -X copy-pipe-no-clear "pbcopy"
 bind -T ${t} TripleClick1Pane select-pane \\; send -X select-line \\; send -X copy-pipe-no-clear "pbcopy"
 bind -T ${t} MouseDown1Pane select-pane \\; send -X cancel
-bind -T ${t} Escape send -X cancel`).join('')}
+bind -T ${t} Escape send -X cancel
+${TYPED.map(k => `bind -T ${t} ${keyArg(k)} { send -X cancel ; send -l ${keyArg(k)} }`).join('\n')}
+${['Space', 'Enter', 'BSpace', 'Tab'].map(k => `bind -T ${t} ${k} { send -X cancel ; send ${k} }`).join('\n')}`).join('')}
 `;
 
 export async function loadCopyBindings() {
