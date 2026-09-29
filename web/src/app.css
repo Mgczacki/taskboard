@@ -145,8 +145,9 @@
 /* groups */
 .gdots { display: inline-flex; gap: 3px; vertical-align: middle; margin-left: 4px; }
 .gdots i { width: 8px; height: 8px; border-radius: 2px; display: inline-block; }
-.gchip .gx { margin-left: 4px; cursor: pointer; opacity: .6; }
-.gchip .gx:hover { opacity: 1; }
+/* the × on a group chip in the task panel: a button that takes the task out of that group */
+.gchip .gx { margin: 0 -3px 0 3px; padding: 0 4px; border: 0; border-radius: 8px; background: none; color: inherit; font: inherit; font-size: 12px; line-height: 1.2; opacity: .75; }
+.gchip .gx:hover, .gchip .gx:focus-visible { opacity: 1; color: var(--st-stopped); background: color-mix(in srgb, var(--st-stopped) 15%, transparent); }
 .gsel { background: none; border: 1px dashed var(--line2); color: var(--dim); border-radius: 10px; font: inherit; font-size: 11px; padding: 1px 6px; cursor: pointer; }
 .addg { margin-left: auto; cursor: pointer; font-size: 13px; color: var(--muted); letter-spacing: 0; }
 .addg:hover { color: var(--text); }
@@ -168,6 +169,8 @@
 .gtab .gact button { all: unset; cursor: pointer; padding: 1px 4px; border-radius: 4px; color: var(--dim); font-size: 12px; }
 .gtab .gact button:hover { color: var(--text); background: var(--panel2); }
 .gtab.drop { background: color-mix(in srgb, var(--gc, var(--accent)) 22%, var(--panel)); color: var(--text); outline: 2px dashed var(--gc, var(--accent)); outline-offset: -2px; }
+/* a tab or Board column that refuses the dragged task; the reason is in the drag label and the title */
+.gtab.nodrop, .col.nodrop { cursor: not-allowed; color: var(--dim); background: color-mix(in srgb, var(--st-stopped) 10%, var(--panel)); outline: 2px dashed var(--st-stopped); outline-offset: -2px; }
 .gtab.newg { color: var(--accent); }
 .gtabs .gsep { width: 1px; height: 18px; background: var(--line2); margin: 0 6px 7px; flex: none; }
 .gmenu { position: absolute; z-index: 60; background: var(--panel); border: 1px solid var(--line2); border-radius: 10px; box-shadow: 0 18px 44px rgba(0,0,0,.5); padding: 12px; width: 340px; font-size: 12.5px; }
@@ -185,6 +188,7 @@
 .solo-name { font-weight: 650; font-size: 13.5px; }
 .win.selected { outline: 2px solid var(--accent); outline-offset: -2px; }
 .drag-ghost { position: fixed; z-index: 999; pointer-events: none; background: var(--panel2); border: 1px solid var(--accent); border-radius: 6px; padding: 4px 8px; font-size: 12px; color: var(--text); }
+.drag-ghost.refused { border-color: var(--st-stopped); color: var(--st-stopped); }
 /* focus mode */
 .canvas.focus-mode .gtabs, .canvas.focus-mode .ctool { display: none; }
 .canvas.focus-mode.reveal .gtabs, .canvas.focus-mode.reveal .ctool { display: flex; position: relative; z-index: 5; box-shadow: 0 10px 30px rgba(0,0,0,.5); }

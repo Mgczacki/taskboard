@@ -81,6 +81,8 @@ function connect() {
 function publish() { snapshot = { tasks, groups, approvals, machines, connected }; emit(); }
 connect();
 
+// the groups as they are now, for an Undo that runs after the page has re-rendered
+export const currentGroups = () => groups;
 export function useStore() {
   return useSyncExternalStore(cb => { subs.add(cb); return () => subs.delete(cb); }, () => snapshot);
 }
