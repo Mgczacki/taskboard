@@ -14,6 +14,9 @@ import type { Agent, Task } from './store.ts';
 import * as tmux from './tmux.ts';
 import * as accounts from './accounts.ts';
 import * as machine from './machine.ts';
+import { buildHandoff } from './handoff.ts';
+import { transcriptFor } from './importer.ts';
+import { movingTasks, resetSessionEvents } from './events.ts';
 
 const exec = promisify(execFile);
 
@@ -135,6 +138,7 @@ Use the \`tb\` command (run \`tb\` alone for help). Tasks are numbers like 12 or
   ([{"agent","folder","title","prompt","worktree"?,"group"?}]) and start them with one \`tb new --batch plans/<name>.json\`, each in its own worktree and one group.
 - Follow agents you started with \`tb wait <task…> --until any\`. When one finishes, read it with \`tb result <task>\` and tell the user in two or three lines.
   When one needs input, say what it asks; answer it only if the user already told you the answer.
+- List accounts and usage with \`tb accounts\`. When the user asks, move a task with \`tb move <task> --account <id>\`.\n  The task keeps its files. A different agent receives a handoff and continues the existing work.
 - Organise tasks into groups with \`tb group add|rm <group> <task…>\`; move documents with \`tb doc send <task>:<file> <task>\`.
 
 ## Rules
@@ -314,6 +318,7 @@ export async function startTask(n: NewTask): Promise<Task> {
 }
 
 export async function resumeTask(t: Task, force = false): Promise<Task> {
+  if (launching.has(t.id)) throw new Error('This task is already starting or moving.');
   // An imported session that is still open in another terminal must be exited there first,
   // otherwise two processes would write to the same conversation.
   if (t.openElsewhere && !force) {
@@ -328,6 +333,10 @@ export async function resumeTask(t: Task, force = false): Promise<Task> {
     if (!s) throw new Error('Could not check the task\'s tmux session (tmux did not answer). Try again in a moment.');
     if (!s.dead) { launching.delete(t.id); return store.update(t.id, { status: 'idle', statusSource: 'Its session was still running.' })!; }
     await tmux.killSession(t.session);
+  }
+  if (t.handoff && (!t.sessionId || (t.agent === 'claude' && !t.transcript))) {
+    await launch(t, readFileSync(t.handoff, 'utf8'), false);
+    return store.update(t.id, { status: 'working', statusSource: 'Started again with the saved handoff.' })!;
   }
   if (!t.sessionId) throw new Error('No session id recorded for this task, so it cannot be resumed.');
   await launch(t, null, true);
@@ -352,7 +361,7 @@ async function launchInner(t: Task, prompt: string | null, resume: boolean) {
 
 // Turn a session started outside Taskboard into a task. It starts Suspended; opening it resumes the conversation here.
 export function importSession(c: { agent: Agent; sessionId: string; title: string; cwd: string; branch?: string; firstPrompt?: string; lastMessage?: string; updated: string; transcript?: string; running?: { pid: number; tty: string } }): Task {
-  if (store.all().some(t => t.sessionId === c.sessionId)) throw new Error(`Session ${c.sessionId} is already a task.`);
+  if (store.all().some(t => t.sessionId === c.sessionId || t.pastSessions?.includes(c.sessionId))) throw new Error(`Session ${c.sessionId} is already a task.`);
   const num = store.nextNum();
   const when = new Date(c.updated).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
   return store.create({
@@ -406,17 +415,76 @@ export async function setControllerAccount(toId: string): Promise<Task> {
   return startController();
 }
 
-// Move a Claude Code task to another account: copy its transcript into that account's folder and resume there.
-// Codex and Antigravity conversations cannot move (Antigravity has only one account: it signs in through the keychain).
-export async function moveAccount(t: Task, toId: string): Promise<Task> {
+// Claude Code can resume a copied conversation. Other transfers start with the saved task context.
+export async function moveAccount(task: Task, toId: string, instruction = ''): Promise<Task> {
+  const t = store.get(task.id);
+  if (!t) throw new Error('Task no longer exists.');
+  if (t.role === 'controller') throw new Error('Change the controller account on the Accounts page.');
   const to = accounts.get(toId), from = accounts.get(t.account) || accounts.defaultFor(t.agent);
-  if (!to || to.agent !== t.agent) throw new Error('Pick an account for the same agent.');
-  if (t.agent !== 'claude') throw new Error('Moving a session between accounts is only supported for Claude Code.');
-  if (!t.transcript) throw new Error('No transcript recorded for this task yet.');
-  accounts.copyClaudeSession(t.transcript, from, to);
-  await tmux.killSession(t.session);
-  store.update(t.id, { account: to.id, transcript: undefined, status: 'suspended', statusSource: `Moved from ${from.name} to ${to.name}.` });
-  return resumeTask(store.get(t.id)!, true);
+  if (!to) throw new Error('Unknown account.');
+  if (from.id === to.id) throw new Error('This task already uses that account.');
+  if (Buffer.byteLength(instruction) > 4000) throw new Error('The move instruction must be 4000 bytes or fewer.');
+  if (launching.has(t.id)) throw new Error('This task is already starting or moving.');
+  if (t.openElsewhere) throw new Error('Move this session here from its other terminal before changing accounts.');
+  if (!existsSync(t.cwd)) throw new Error('The task folder no longer exists.');
+  launching.add(t.id);
+  let stopped = false;
+  let old = { ...t };
+  try {
+    if (!(await accounts.status(to)).signedIn) throw new Error('Sign in to the target account first.');
+    old = { ...t }; // status checks may have waited while the old agent reported its session id
+    // Mark before stopping so late hooks from the old process cannot change the task.
+    movingTasks.add(t.id);
+    const present = await tmux.hasSession(t.session);
+    if (present === null) throw new Error('Could not check the old session. Try again.');
+    if (present) await tmux.tmux('kill-session', '-t', '=' + t.session);
+    stopped = true;
+    pendingPrompt.delete(t.id);
+    const transcript = t.transcript || (t.sessionId ? transcriptFor(t.agent, t.sessionId, from.dir) : undefined);
+    const resume = t.agent === 'claude' && to.agent === 'claude' && !!t.sessionId && !!transcript && existsSync(transcript);
+    let copied: string | undefined, handoff: string | undefined, prompt: string | null = null;
+    if (resume) {
+      copied = accounts.copyClaudeSession(transcript!, from, to);
+      prompt = instruction || 'Continue the existing task from the last unfinished step. Do not start again.';
+    } else {
+      prompt = await buildHandoff({ ...t, transcript }, agentName(to.agent), instruction);
+      const dir = join(store.taskDir(t.id), 'handoffs'); mkdirSync(dir, { recursive: true });
+      handoff = join(dir, `${Date.now()}-${randomUUID()}.md`);
+      writeFileSync(handoff, prompt, { mode: 0o600 });
+    }
+    const source = `Moved from ${from.name} (${old.agent}) to ${to.name} (${to.agent}). ${resume ? 'Resumed the conversation.' : 'Started a new conversation with a handoff.'}`;
+    store.update(t.id, {
+      agent: to.agent, account: to.id, transcript: copied, handoff,
+      sessionId: resume ? old.sessionId : to.agent === 'claude' ? randomUUID() : undefined,
+      pastSessions: !resume && old.sessionId ? [...new Set([...(old.pastSessions || []), old.sessionId])] : old.pastSessions,
+      status: 'working', statusSource: source, stopReason: undefined, ask: undefined, now: undefined,
+      interrupted: undefined, restartWhenDone: undefined, moveWhenDone: undefined, unscrollable: undefined,
+    });
+    resetSessionEvents(t.id);
+    store.launchedAt.set(t.id, Date.now());
+    movingTasks.delete(t.id);
+    await launchInner(store.get(t.id)!, prompt, resume);
+    store.appendLog(t.id, { did: source, next: 'Continue the existing work on the target account.' });
+    // A startup hook may already have reported progress. Keep that status and record the move in its source.
+    const current = store.get(t.id)!;
+    return store.update(t.id, { statusSource: current.statusSource === source ? source : `${source} ${current.statusSource || ''}` })!;
+  } catch (e) {
+    if (stopped) {
+      movingTasks.add(t.id);
+      // A partial launch must end before the old fields are restored.
+      await tmux.killSession(t.session);
+      pendingPrompt.delete(t.id);
+      resetSessionEvents(t.id);
+      const error = e instanceof Error ? e.message : String(e);
+      store.update(t.id, {
+        ...old, handoff: old.handoff, transcript: old.transcript, sessionId: old.sessionId,
+        pastSessions: old.pastSessions, account: old.account,
+        status: 'suspended', statusSource: `Move failed: ${error}. The old account and conversation are kept. Resume to continue.`,
+      });
+      store.appendLog(t.id, { did: `Move to ${to.name} failed: ${error}.`, next: 'Resume the old conversation or retry the move.' });
+    }
+    throw e;
+  } finally { launching.delete(t.id); movingTasks.delete(t.id); }
 }
 
 // Short-lived terminals for signing in and limit resets. Their tmux names start with util- so the UI can attach.

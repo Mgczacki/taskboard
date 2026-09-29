@@ -52,6 +52,9 @@ const HELP = `tb — Taskboard command line
   tb tail <task> [-n lines]          last lines of the agent's terminal
   tb result <task>                   the agent's last message and its outbox documents
   tb wait <task…> [--until done|needs-you|any] [--timeout seconds]
+  tb accounts [--json]              accounts with sign-in state and reported usage
+  tb move <task> --account <id> [--instruction "<text>"]
+                                     continue the task on that account, with a handoff when needed
   tb send <task> "<text>"            type text into the agent's terminal and press Enter
   tb new --agent claude|codex|antigravity --folder <path> [--title <t>] [--worktree <branch>] [--group <name>] "<prompt>"
   tb new --batch <plan.json>         [{ agent, folder, title, prompt, worktree?, group? }, …]
@@ -114,6 +117,23 @@ switch (cmd) {
       if (Date.now() - start > timeout) { console.log('tb wait: timed out\n' + ts.map(line).join('\n')); process.exit(2); }
       await sleep(3000);
     }
+    break;
+  }
+  case 'accounts': {
+    const json = has('--json');
+    const accounts = await call('GET', '/api/accounts');
+    console.log(json ? JSON.stringify(accounts, null, 2) : accounts.map(a => {
+      const windows = (a.usage?.windows || []).map(w => `${w.label} ${w.usedPct}%${w.resetsAt ? ` (resets ${new Date(w.resetsAt).toISOString()})` : ''}`).join(' · ');
+      return `${a.id}  ${a.agent}  ${a.name}  ${a.status.signedIn ? 'signed in' : 'not signed in'}${a.limited ? ' · usage limit reached' : ''}\n  ${windows || 'usage unknown'}${a.usage?.at ? ` · reported ${a.usage.at}` : ''}`;
+    }).join('\n'));
+    break;
+  }
+  case 'move': {
+    const account = flag('--account'), instruction = flag('--instruction', '');
+    if (!account || args.length !== 2 || args[1].startsWith('--')) { console.error('Usage: tb move <task> --account <id> [--instruction "<text>"]'); process.exit(1); }
+    const t = await task(args[1]);
+    const moved = await call('POST', `/api/tasks/${t.id}/move-account`, { account, instruction });
+    if (!moved.approved) console.log(`Moved #${moved.num} to ${moved.account} (${moved.agent}). ${moved.statusSource}`);
     break;
   }
   case 'send': { const t = await task(rest[0]); await call('POST', `/api/tasks/${t.id}/send`, { text: rest.slice(1).join(' ') }); console.log(`Sent to #${t.num}.`); break; }

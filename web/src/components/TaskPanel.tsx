@@ -6,7 +6,7 @@ import { AgentChip, ByController, Dot, MachineChip, ThreeLines, WhereChip } from
 import { Terminal } from './Terminal';
 import { DocsTab } from './Docs';
 import { hasFiles, uploadAll } from '../drop';
-import { loadAccounts, type Account } from './Accounts';
+import { loadAccounts, usageText, type Account } from './Accounts';
 
 // The drawer's width, set by dragging its left edge and kept across reloads. null means the default width.
 const WIDTH_KEY = 'tb-drawer-width', MIN_W = 420, EDGE = 120;
@@ -20,7 +20,15 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, initialTab }: {
   const [copied, setCopied] = useState(false);
   const [confirmTake, setConfirmTake] = useState(false);
   const [accts, setAccts] = useState<Account[]>([]);
-  useEffect(() => { loadAccounts().then(setAccts).catch(() => {}); }, [t.status]);
+  const [moveOpen, setMoveOpen] = useState(false);
+  const [targetAccount, setTargetAccount] = useState('');
+  const [moving, setMoving] = useState(false);
+  useEffect(() => {
+    const load = () => loadAccounts().then(setAccts).catch(() => {});
+    load(); const timer = setInterval(load, 15000);
+    return () => clearInterval(timer);
+  }, [t.id, t.status, t.account]);
+  useEffect(() => { setMoveOpen(false); setTargetAccount(''); }, [t.id]);
   const acct = accts.find(a => a.id === (t.account || `${t.agent}-default`));
 
   // read what changed since your last visit first, then mark the task as seen
@@ -90,7 +98,25 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, initialTab }: {
           </div>}
         </div>
         {t.interrupted && t.status !== 'suspended' && <div className="banner"><b>Resumed.</b> {t.interrupted} <button className="btn" onClick={() => act(api.send(t.id, 'continue where you left off'))}>Continue</button></div>}
-        {t.status === 'stopped' && <div className="banner stopped"><b>{t.stopReason || 'Stopped'}.</b> The agent is not working. <button className="btn" onClick={() => act(api.send(t.id, 'continue'))}>Retry now</button>{t.agent === 'claude' && accts.filter(a => a.agent === 'claude' && a.id !== acct?.id && a.status.signedIn && !a.limited).map(a => <button key={a.id} className="btn" onClick={() => act(api.moveAccount(t.id, a.id))} title="Copies the session to that account and resumes it there">Move to {a.name}</button>)}<a className="btn ghost" href="#accounts">Accounts…</a></div>}
+        {t.status === 'stopped' && <div className="banner stopped"><b>{t.stopReason || 'Stopped'}.</b> {acct?.limited ? `${acct.name} reached a usage limit. ` : ''}The agent is not working. <button className="btn" onClick={() => act(api.send(t.id, 'continue'))}>Retry now</button>{t.role !== 'controller' && <button className="btn" onClick={() => setMoveOpen(true)}>Move account…</button>}<a className="btn ghost" href="#accounts">Accounts…</a></div>}
+        {moveOpen && t.role !== 'controller' && <div className="banner">
+          <label htmlFor="move-account">Move to account</label>
+          <select id="move-account" className="acct-sel" value={targetAccount} disabled={moving} onChange={e => setTargetAccount(e.target.value)}>
+            <option value="">Choose an account</option>
+            {accts.filter(a => a.id !== (t.account || `${t.agent}-default`)).map(a => <option key={a.id} value={a.id} disabled={!a.status.signedIn}>
+              {a.name} · {AGENT_NAME[a.agent]} · {usageText(a) || 'usage unknown'}{a.limited ? ' · usage limit reached' : ''}{!a.status.signedIn ? ' · not signed in' : ''}
+            </option>)}
+          </select>
+          <span className="sub">The task keeps its files and worktree. A different agent continues with a handoff. Moving stops the current session.</span>
+          <button className="btn primary" disabled={!targetAccount || moving || !!t.openElsewhere} onClick={async () => {
+            setMoving(true); setErr('');
+            try { await api.moveAccount(t.id, targetAccount); setMoveOpen(false); setTargetAccount(''); }
+            catch (e) { setErr(String((e as Error).message || e)); }
+            finally { setMoving(false); }
+          }}>{moving ? 'Moving…' : t.status === 'working' ? 'Stop and move' : 'Move and continue'}</button>
+          {t.openElsewhere && <span>Move the session here from its other terminal first.</span>}
+          <button className="btn ghost" disabled={moving} onClick={() => setMoveOpen(false)}>Cancel</button>
+        </div>}
         {dropMsg && <div className="banner">{dropMsg} <button className="btn ghost" onClick={() => setDropMsg('')}>OK</button></div>}
         {err && <div className="banner stopped">{err}{err.startsWith('Still open') && <button className="btn" onClick={() => { setErr(''); act(api.resume(t.id, true)); }} title="Only if you are sure the other terminal is not using this conversation">Resume here anyway</button>}<button className="btn ghost" onClick={() => setErr('')}>Dismiss</button></div>}
         {t.imported && t.status === 'suspended' && !err && <div className="banner">Imported: {t.imported}.</div>}
@@ -109,6 +135,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, initialTab }: {
               : <><span>The agent is in the middle of a turn. Stopping it now cuts that turn off, including any command it is running; the saved conversation is kept.</span><button className="btn primary" onClick={() => { setConfirmTake(false); act(api.takeover(t.id, 'after-turn')); }}>Move it when this turn ends</button><button className="btn danger" onClick={() => { setConfirmTake(false); act(api.takeover(t.id)); }}>Stop it now and move it</button><button className="btn ghost" onClick={() => setConfirmTake(false)}>Cancel</button></>}
         </div>}
         <div className="dr-actions">
+          {t.role !== 'controller' && <button className="btn" disabled={moving} onClick={() => setMoveOpen(o => !o)}>Move account…</button>}
           <button className="btn" onClick={() => { navigator.clipboard.writeText(t.attach); setCopied(true); setTimeout(() => setCopied(false), 1500); }} title="Open this agent in iTerm or Terminal">⧉ {copied ? 'Copied' : <>Copy <code>{t.attach}</code></>}</button>
           <button className="btn" onClick={() => onCanvas(t.id)} title="Open this agent's live terminal as a window on the canvas">⊞ Show on canvas</button>
           {t.status === 'suspended' && <button className="btn primary" onClick={() => act(api.resume(t.id))} title="Start the agent again in tmux and continue its saved conversation">Resume</button>}

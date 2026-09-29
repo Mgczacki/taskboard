@@ -12,6 +12,16 @@ const blockedOnce = new Set<string>();          // Stop hook already asked for a
 const answerBeforeLog = new Map<string, string>(); // the agent's real answer, saved when we asked it for a log entry
 export const viewing = new Set<string>();       // task ids open in some UI window right now
 
+// Ignore the old process while an account move stops it.
+export const movingTasks = new Set<string>();
+export function resetSessionEvents(id: string) {
+  turnStart.delete(id); blockedOnce.delete(id); answerBeforeLog.delete(id);
+  lastCodexEvent.delete(id); agyPendingTool.delete(id); sessionStarted.delete(id);
+}
+function acceptsEvent(t: Task, agent: store.Agent, session?: string) {
+  return t.agent === agent && !movingTasks.has(t.id) && !(session && session !== t.sessionId && t.pastSessions?.includes(session));
+}
+
 const firstPara = (s = '') => s.trim().split(/\n\s*\n/)[0].replace(/\s+/g, ' ').slice(0, 280);
 const lastSentence = (s = '') => { const x = s.trim().replace(/\s+/g, ' '); const m = x.match(/[^.!?]*\?\s*$/); return (m ? m[0] : x.slice(-200)).trim(); };
 const endsWithQuestion = (s = '') => /\?\s*$/.test(s.trim());
@@ -51,7 +61,7 @@ function clearedPatch(t: Task, newId: string | undefined, how: string): Partial<
 export function claudeEvent(taskId: string, input: any): { output?: unknown } {
   const t = store.get(taskId); if (!t) return {};
   // an archived task stays archived whatever its agent still reports
-  if (t.status === 'archived') return {};
+  if (t.status === 'archived' || !acceptsEvent(t, 'claude', input.session_id)) return {};
   const ev = input.hook_event_name;
   switch (ev) {
     case 'SessionStart':
@@ -105,7 +115,7 @@ export function claudeEvent(taskId: string, input: any): { output?: unknown } {
 }
 
 export function codexEvent(taskId: string, p: any) {
-  const t = store.get(taskId); if (!t || t.status === 'archived') return;
+  const t = store.get(taskId); if (!t || t.status === 'archived' || !acceptsEvent(t, 'codex', p['thread-id'])) return;
   if (p.type !== 'agent-turn-complete') return;
   accounts.clearLimited(t.account);
   const msg: string = p['last-assistant-message'] || '';
@@ -140,7 +150,7 @@ function describeAgyTool(tc: any): string {
   return file ? `${tc?.name} ${file}` : String(tc?.name || 'a tool');
 }
 export function antigravityEvent(taskId: string, ev: string, input: any): { output?: unknown } {
-  const t = store.get(taskId); if (!t || t.status === 'archived') return {};
+  const t = store.get(taskId); if (!t || t.status === 'archived' || !acceptsEvent(t, 'antigravity', input.conversationId)) return {};
   sessionStarted.add(t.id);
   // every event carries the conversation id and transcript path; the first one is how Taskboard learns the id
   const ids: Partial<Task> = {};
