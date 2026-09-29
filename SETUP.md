@@ -144,7 +144,7 @@ The sender must connect Slack. The recipient can install Taskboard after the mes
 - Enter a subject and a harmless test message.
 - Select **Save draft for approval**.
 - Wait for the controller's content check.
-- Select **Approve**.
+- Select **Approve**. Your own drafts wait for your approval in **Sent**.
 - Select **Send approved message**.
 - Ask the other member to read the Slack preview. The message footer links to this setup guide.
 - If they use Taskboard, ask them to open **Messages** and select **Sync Slack and check messages**.
@@ -152,7 +152,7 @@ The sender must connect Slack. The recipient can install Taskboard after the mes
 
 To send a document, choose a TXT, MD, PDF, or DOCX file in Outbox. Taskboard limits each file to 10 MiB.
 
-The recipient's controller reads each incoming file as data. The user must approve a reviewed file and choose a task before that task receives it.
+The recipient's controller reads each incoming file as data. The user approves a reviewed file and chooses a task in Inbox before that task receives it. This applies at every level.
 
 Suspicious files stay in quarantine. Taskboard does not run incoming files.
 
@@ -166,11 +166,19 @@ Taskboard also polls Slack every 60 seconds while the server runs. Each scan rea
 
 ## Use approval and dismissal
 
-Controller approval starts disabled. You can allow it for ordinary communication in Inbox settings.
+Open **Settings** and find **Messages from other people**. Choose one level for incoming messages and one level for outgoing messages. Level 2 is the default for both.
 
-Requests for actions require your approval. Suspicious messages stay blocked.
+- Level 1: you approve every message. For an incoming message, the controller proposes a task. You approve the message and the task on the dashboard card.
+- Level 2: the controller approves messages that pass the content check. You approve a message when the check finds a problem or is not sure.
+- Level 3: the controller approves messages on its own. Incoming messages that it routes show as unseen in Inbox until you open them.
 
-Approval does not route a message to an agent. Give your controller a separate command naming the message and destination task.
+The Taskboard server enforces these levels. Agents and the controller cannot change them. A change to a higher level asks you to confirm first.
+
+Add the people that you trust under **Trusted people** on the same page. A message from or to a person who is not on this list always needs your approval.
+
+A message where the check finds prompt injection or malicious content stays in quarantine at every level. No agent receives it. At level 3, an incoming message that asks for permissions or production changes is also held.
+
+The approval cards appear at the top right of the dashboard. **Approve** routes an incoming message to the task on the card, or sends an outgoing draft. **Send back** returns the card with your comment. The controller receives comments about incoming messages. The agent that wrote a draft receives comments about that draft.
 
 **Dismiss** hides an item without accepting it or sending feedback. **Show dismissed** lets you find messages and restore them.
 

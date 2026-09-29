@@ -100,6 +100,7 @@ export function App() {
   const [newTaskToFocus, setNewTaskToFocus] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(() => location.hash === '#import');
   const [triage, setTriage] = useState(false);
+  const [cardComments, setCardComments] = useState<Record<string, string>>({}); // comments for Send back on message cards
   const [railHidden, setRailHidden] = useState(() => SOLO || localStorage.getItem('tb-rail') === 'hidden');
   const [focusMode, setFocusMode] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
@@ -181,7 +182,7 @@ export function App() {
   const [reviewCount, setReviewCount] = useState(0);
   useEffect(() => {
     const load = () => Promise.all([fetch('/api/review').then(r => r.json()), fetch('/api/mail').then(r => r.json())])
-      .then(([docs, mail]) => setReviewCount(docs.filter((x: { state: string }) => x.state === 'pending').length + (mail.messages || []).filter((m: { direction: string; approval?: unknown }) => m.direction === 'inbox' && !m.approval).length)).catch(() => {});
+      .then(([docs, mail]) => setReviewCount(docs.filter((x: { state: string }) => x.state === 'pending').length + (mail.messages || []).filter((m: { direction: string; approval?: unknown; unseen?: boolean }) => m.direction === 'inbox' && (!m.approval || m.unseen)).length)).catch(() => {});
     void load(); const timer = setInterval(load, 5000); return () => clearInterval(timer);
   }, []);
 
@@ -257,7 +258,10 @@ export function App() {
         <div key={a.id} className="approval">
           <div className="ap-h"><span className="dot needs-you" /><b>{a.actor === 'controller' ? 'The controller' : `Task #${allTasks.find(t => t.id === a.actor)?.num || a.actor}`} wants to {a.summary}</b></div>
           {a.detail && <pre className="ap-d">{a.detail}</pre>}
-          <div className="ap-a"><button className="btn primary" onClick={() => api.decide(a.id, true)}>Approve</button><button className="btn" onClick={() => api.decide(a.id, false)}>Deny</button><button className="btn ghost" onClick={openController}>Open controller</button></div>
+          {a.returnable && <textarea className="routing-rule" rows={2} aria-label="Comment for Send back" placeholder={a.action === 'mail-in' ? 'What is wrong with the message or the task? The controller receives this comment.' : 'What should change in the draft? The agent that wrote it receives this comment.'} value={cardComments[a.id] || ''} onChange={e => setCardComments(c => ({ ...c, [a.id]: e.target.value }))} />}
+          <div className="ap-a"><button className="btn primary" onClick={() => api.decide(a.id, true)}>Approve</button>
+            {a.returnable && <button className="btn" disabled={!cardComments[a.id]?.trim()} onClick={() => api.giveBack(a.id, cardComments[a.id])}>Send back</button>}
+            <button className="btn" onClick={() => api.decide(a.id, false)}>Deny</button><button className="btn ghost" onClick={openController}>Open controller</button></div>
         </div>))}</div>}
       <div className="toasts">{toasts.map(t => <ToastNotice key={t.id} toast={t} dismiss={() => setToasts(x => x.filter(y => y.id !== t.id))} />)}</div>
     </div>

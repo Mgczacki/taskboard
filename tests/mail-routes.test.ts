@@ -46,7 +46,9 @@ test('mail routes restrict readers and require separate approval and routing', a
     assert.equal((await call('', 'controller')).data.messages[0].body, '');
     assert.equal((await call(`/${m.id}/approve`, 'user', {hash:m.hash})).status, 400);
     assert.equal((await call(`/${m.id}/review`, 'user', {})).status, 200);
-    assert.equal((await call('', 'controller')).data.messages[0].body, '');
+    // the user approves this message; the controller reads it only to propose the task
+    assert.equal((await call('', 'controller')).data.messages[0].body, 'Please change an AWS permission.');
+    assert.equal((await call('', 'controller')).data.messages[0].approver, 'user');
     assert.equal((await call(`/${m.id}/approve`, 'controller', {hash:m.hash})).status, 400);
     assert.equal((await call(`/${m.id}/route`, 'controller', {task:'recipient'})).status, 400);
     assert.equal((await call(`/${m.id}/approve`, 'user', {hash:m.hash})).status, 200);

@@ -9,16 +9,34 @@ interface Message {
   proposedBy?: { actor: 'user' | 'controller' | 'task'; task?: string; agent?: string };
   review?: { verdict: string; reason: string; at: string }; approval?: { by: string; at: string }; routes: { task: string }[];
   files?: { id: string; name: string; size: number; hash: string; review?: { verdict: string; reason: string }; routed?: { task: string } }[];
+  source?: string; rejectedAt?: string; unseen?: boolean; proposedRoute?: { task: string | null }; returns?: { comment: string }[];
+  // from the server's permission levels (server/mail/policy.ts): who may approve this message now
+  approver?: 'user' | 'controller' | 'nobody'; trusted?: boolean;
 }
-interface Mailbox { messages: Message[]; contacts: { user: string; name: string; status?: string }[]; requests: { user: string; name: string }[]; staged: { id: string; name: string; size: number; hash: string }[]; identity: { user: string; name?: string; needsReconnect?: boolean } | null; controllerApproval: boolean; error?: string }
+interface Mailbox { messages: Message[]; contacts: { user: string; name: string; status?: string }[]; requests: { user: string; name: string }[]; staged: { id: string; name: string; size: number; hash: string }[]; identity: { user: string; name?: string; needsReconnect?: boolean } | null; trustedSenders: { user: string; name: string }[]; levels: { incoming: number; outgoing: number }; error?: string }
 function sentState(m: Message) {
   if (m.sentAt) return 'Sent';
   if (m.sending && m.error) return 'Delivery uncertain';
   if (m.sending) return 'Sending';
-  if (m.review?.verdict === 'quarantine') return 'Blocked';
+  if (m.rejectedAt) return 'Rejected';
+  if (m.review?.verdict === 'quarantine' || (m.review && m.approver === 'nobody')) return 'Blocked';
   if (m.approval) return 'Approved';
-  if (m.review) return 'Awaiting approval';
+  if (m.review) return m.approver === 'controller' ? 'Awaiting the controller' : 'Awaiting your approval';
   return m.error ? 'Review failed' : 'Awaiting review';
+}
+function taskLabel(id: string, tasks: Task[]) { const t = tasks.find(x => x.id === id); return t ? `#${t.num} ${t.title}` : id; }
+// What happens next to an incoming message, from the server's permission levels
+function inboxState(m: Message, tasks: Task[]) {
+  if (m.rejectedAt) return 'Rejected. No agent receives it.';
+  if (m.approval) return `Approved by ${m.approval.by === 'user' ? 'you' : 'the controller'}.`;
+  if (!m.review) return m.error ? 'The check failed. No agent receives it.' : 'Waiting for the controller check.';
+  if (m.review.verdict === 'quarantine') return 'Quarantine: the check found a problem. No agent receives it.';
+  if (m.approver === 'nobody') return 'Held: the message failed the safety check. No agent receives it at this level.';
+  if (m.approver === 'controller') return 'The controller may approve it and route it.';
+  if (m.source !== 'slack') return 'From one of your tasks.';
+  if (m.proposedRoute?.task) return `Waiting for your approval. The controller proposes ${taskLabel(m.proposedRoute.task, tasks)}.`;
+  if (m.proposedRoute) return 'The controller says that no task needs this message.';
+  return 'Waiting for your approval. The controller has not proposed a task yet.';
 }
 function date(at?: string) { return at ? new Date(at).toLocaleString() : 'Unknown'; }
 function proposer(m: Message, tasks: Task[]) {
@@ -70,19 +88,20 @@ function SentHistory({ messages, contacts, tasks, busy, act }: {
         <div className="mail-tabs">
           <button className="btn ghost" disabled={busy} onClick={() => void act(() => request(`/${selected.id}/${selected.dismissedAt ? 'restore' : 'dismiss'}`, {}))}>{selected.dismissedAt ? 'Restore' : 'Dismiss'}</button>
           {!selected.dismissedAt && !selected.review && <button className="btn" disabled={busy} onClick={() => void act(() => request(`/${selected.id}/review`, {}))}>Retry controller review</button>}
-          {!selected.dismissedAt && selected.review && selected.review.verdict !== 'quarantine' && !selected.approval && <button className="btn" disabled={busy} onClick={() => void act(() => request(`/${selected.id}/approve`, { hash: selected.hash }))}>Approve</button>}
+          {!selected.dismissedAt && selected.review && selected.approver !== 'nobody' && !selected.approval && <button className="btn" disabled={busy} onClick={() => void act(() => request(`/${selected.id}/approve`, { hash: selected.hash }))}>Approve</button>}
+          {!selected.trusted && <button className="btn ghost" disabled={busy} onClick={() => void act(() => request('/trusted', { user: selected.to, name: contactName(selected.to), trusted: true }))}>Trust this person</button>}
           {!selected.dismissedAt && selected.approval && !selected.sentAt && <button className="btn" disabled={busy || selected.sending} onClick={() => void act(() => request(`/${selected.id}/send`, {}))}>Send approved message</button>}
         </div>
       </article>}
     </div>}
   </section>;
 }
-async function request(path: string, body?: unknown) {
+export async function request(path: string, body?: unknown) {
   const response = await fetch('/api/mail' + path, { method: body === undefined ? 'GET' : 'POST', headers: { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
   const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Request failed'); return data;
 }
-interface Person { user: string; name: string; realName?: string; image?: string }
-function MemberPicker({ people, value, onChange, disabled }: { people: Person[]; value: string; onChange: (user: string) => void; disabled: boolean }) {
+export interface Person { user: string; name: string; realName?: string; image?: string }
+export function MemberPicker({ people, value, onChange, disabled }: { people: Person[]; value: string; onChange: (user: string) => void; disabled: boolean }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [highlight, setHighlight] = useState(0);
@@ -165,8 +184,7 @@ export function InboxPage(props: { tasks: Task[]; open: (id: string, tab?: 'term
 
         <button className="btn" disabled={busy} onClick={() => act(async () => { if (data?.identity) await request('/slack/disconnect', {}); else { const r = await request('/slack/connect', {}); location.assign(r.url); } })}>{data?.identity ? 'Disconnect Slack' : 'Connect Slack'}</button>
         <p>Taskboard reads Taskboard messages in your Slack direct conversations.</p>
-        <label className="opt"><input className="mail-checkbox" type="checkbox" checked={!!data?.controllerApproval} disabled={busy} onChange={e => act(() => request('/policy', { enabled: e.target.checked }))} />Allow my controller to approve ordinary communication</label>
-        <p>Requests to act need your approval. Suspicious messages stay blocked. Approval never routes a message.</p>
+        <p>Incoming level {data?.levels.incoming ?? '…'}, outgoing level {data?.levels.outgoing ?? '…'}. Approval levels and trusted people are on the <a href="#settings">Settings page</a>.</p>
       </details>
       <div className="mail-tabs">
         {tab === 'inbox' && <label className="opt"><input className="mail-checkbox" type="checkbox" checked={dismissed} onChange={e => setDismissed(e.target.checked)} />Show dismissed</label>}
@@ -195,8 +213,10 @@ export function InboxPage(props: { tasks: Task[]; open: (id: string, tab?: 'term
       {tab === 'inbox' && data && !data.messages.some(m => m.direction === 'inbox') && <p>{dismissed ? 'No dismissed messages.' : 'Your message inbox is empty.'}</p>}
       {tab === 'inbox' && data?.messages.filter(m => m.direction === 'inbox').map(m => <article key={m.id} className="mail-item">
         <h2>{m.subject}</h2><p>From {m.from} · To {m.to}</p>
-        <p>{m.sentAt ? 'Sent' : m.approval ? `Approved by ${m.approval.by}` : m.review ? m.review.verdict : 'Waiting for controller review'}</p>
-        {m.review && <p>{m.review.reason}</p>}
+        <p>{inboxState(m, props.tasks)}</p>
+        {m.review && <p>Check: {m.review.verdict}. {m.review.reason}</p>}
+        {m.source === 'slack' && !m.trusted && <p>{m.from} is not a trusted sender. <button className="btn ghost" disabled={busy} onClick={() => act(() => request('/trusted', { user: m.from, name: m.from, trusted: true }))}>Trust this sender</button></p>}
+        {m.unseen && <p role="alert">The controller routed this message to {m.routes.map(r => taskLabel(r.task, props.tasks)).join(', ')} without your approval. <button className="btn" disabled={busy} onClick={() => act(() => request(`/${m.id}/seen`, {}))}>Mark as seen</button></p>}
         <details><summary>Read message</summary><pre>{m.body}</pre></details>
         {!!m.files?.length && <div><h3>Files</h3><ul>{m.files.map(f => <li key={f.id}>{f.name} ({Math.ceil(f.size / 1024)} KiB). {f.review?.verdict || 'Waiting for controller review'}.
           {m.direction === 'inbox' && f.review && f.review.verdict !== 'quarantine' && <a href={`/api/mail/${m.id}/files/${f.id}/download`}>Download</a>}
@@ -206,11 +226,11 @@ export function InboxPage(props: { tasks: Task[]; open: (id: string, tab?: 'term
         <div className="mail-tabs">
           <button className="btn ghost" disabled={busy} onClick={() => act(() => request(`/${m.id}/${dismissed ? 'restore' : 'dismiss'}`, {}))}>{dismissed ? 'Restore' : 'Dismiss'}</button>
           {!dismissed && !m.review && <button className="btn" disabled={busy} onClick={() => act(() => request(`/${m.id}/review`, {}))}>Retry controller review</button>}
-          {!dismissed && m.review && m.review.verdict !== 'quarantine' && !m.approval && <button className="btn" disabled={busy} onClick={() => act(() => request(`/${m.id}/approve`, { hash: m.hash }))}>Approve</button>}
+          {!dismissed && m.review && m.approver !== 'nobody' && !m.approval && !m.rejectedAt && <button className="btn" disabled={busy} onClick={() => act(() => request(`/${m.id}/approve`, { hash: m.hash }))}>Approve</button>}
+          {!dismissed && m.direction === 'inbox' && m.review && m.approver !== 'nobody' && !m.rejectedAt && <><select className="mail-input" aria-label={`Task for message ${m.subject}`} value={destinations[m.id] || m.proposedRoute?.task || ''} onChange={e => setDestinations(current => ({ ...current, [m.id]: e.target.value }))}><option value="">Choose a task</option>{props.tasks.filter(t => t.id !== 'controller').map(t => <option key={t.id} value={t.id}>{t.title}</option>)}</select><button className="btn" disabled={busy || !(destinations[m.id] || m.proposedRoute?.task)} onClick={() => act(() => request(`/${m.id}/route-to`, { task: destinations[m.id] || m.proposedRoute?.task, hash: m.hash }))}>Approve and send to task</button></>}
           {!dismissed && m.direction === 'outbox' && m.approval && !m.sentAt && <button className="btn" disabled={busy || m.sending} onClick={() => act(() => request(`/${m.id}/send`, {}))}>Send approved message</button>}
         </div>
-        {m.direction === 'inbox' && m.approval && <p>Ask your controller to route message {m.id} to a local task.</p>}
-        {!!m.routes.length && <p>Routed to {m.routes.map(r => r.task).join(', ')}</p>}
+        {!!m.routes.length && <p>Routed to {m.routes.map(r => taskLabel(r.task, props.tasks)).join(', ')}</p>}
         {dismissed && <p>Dismissed items keep their content and approval state. Dismiss sends no feedback.</p>}
       </article>)}
     </>}

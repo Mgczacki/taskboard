@@ -16,6 +16,9 @@ export interface MachineSettings {
   // questions about a task (server/ask.ts): the separate agent, account, and model
   ask: { agent: 'claude' | 'codex'; account: string; model: string };
   review: { account: string; model: string };
+  // messages between Taskboard users (server/mail/policy.ts): 1 the user approves every message, 2 the controller approves
+  // messages that pass the check, 3 the controller also approves messages the check is unsure about
+  messages: { incoming: 1 | 2 | 3; outgoing: 1 | 2 | 3 };
 }
 
 const FILE = join(TB_DIR, 'machine.json');
@@ -30,15 +33,22 @@ export const DEFAULT_ROUTING_RULES = `Use Claude Code or Codex for deep planning
 Use Antigravity for routine work. Do not use it for deep planning.
 When Claude's usage is high, use Codex for deep planning.
 Avoid accounts at their limit or running their maximum number of tasks.`;
-let settings: MachineSettings = { name: process.env.TASKBOARD_MACHINE_NAME || defaultName(), routingRules: DEFAULT_ROUTING_RULES, controller: { autostart: true, remoteControl: true, models: { claude: 'claude-sonnet-5-5', codex: '', antigravity: '' } }, permissions: { controllerNeedsApproval: false, agentsNeedApproval: true, trustWorkspaces: true, autoReview: true }, ask: { agent: 'claude', account: 'claude-default', model: 'sonnet' }, review: { account: 'claude-default', model: 'sonnet' } };
+let settings: MachineSettings = { name: process.env.TASKBOARD_MACHINE_NAME || defaultName(), routingRules: DEFAULT_ROUTING_RULES, controller: { autostart: true, remoteControl: true, models: { claude: 'claude-sonnet-5-5', codex: '', antigravity: '' } }, permissions: { controllerNeedsApproval: false, agentsNeedApproval: true, trustWorkspaces: true, autoReview: true }, ask: { agent: 'claude', account: 'claude-default', model: 'sonnet' }, review: { account: 'claude-default', model: 'sonnet' }, messages: { incoming: 2, outgoing: 2 } };
 if (existsSync(FILE)) {
   const saved = JSON.parse(readFileSync(FILE, 'utf8'));
-  settings = { ...settings, ...saved, controller: { ...settings.controller, ...saved.controller, models: { ...settings.controller.models, ...saved.controller?.models } }, permissions: { ...settings.permissions, ...saved.permissions }, ask: { ...settings.ask, ...saved.ask }, review: { ...settings.review, ...saved.review } };
+  // Before the levels, the Inbox checkbox "Allow my controller to approve ordinary communication" (mail.json
+  // controllerApproval) decided outgoing approval. When it was off, keep the user in charge of every send.
+  let messages = saved.messages;
+  if (!messages) {
+    try { messages = { incoming: 2, outgoing: JSON.parse(readFileSync(join(TB_DIR, 'mail.json'), 'utf8')).controllerApproval === false ? 1 : 2 }; } catch { /* no mailbox yet */ }
+  }
+  settings = { ...settings, ...saved, messages: { ...settings.messages, ...messages }, controller: { ...settings.controller, ...saved.controller, models: { ...settings.controller.models, ...saved.controller?.models } }, permissions: { ...settings.permissions, ...saved.permissions }, ask: { ...settings.ask, ...saved.ask }, review: { ...settings.review, ...saved.review } };
+  if (!saved.messages) writeFileSync(FILE, JSON.stringify(settings, null, 2)); // keep the migrated levels
 } else writeFileSync(FILE, JSON.stringify(settings, null, 2));
 
 export const get = () => settings;
 export const controllerLabel = () => `Taskboard controller · ${settings.name}`;
-export function update(patch: { name?: string; routingRules?: string; autostart?: boolean; remoteControl?: boolean; controllerModels?: Partial<Record<'claude' | 'codex' | 'antigravity', string>>; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string }) {
+export function update(patch: { name?: string; routingRules?: string; autostart?: boolean; remoteControl?: boolean; controllerModels?: Partial<Record<'claude' | 'codex' | 'antigravity', string>>; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: number; messageOutgoing?: number }) {
   if (patch.routingRules !== undefined) {
     if (typeof patch.routingRules !== 'string') throw new Error('routingRules must be text.');
     settings.routingRules = patch.routingRules.trim().slice(0, 1000);
@@ -47,6 +57,11 @@ export function update(patch: { name?: string; routingRules?: string; autostart?
   if (patch.agentsNeedApproval !== undefined) settings.permissions.agentsNeedApproval = !!patch.agentsNeedApproval;
   if (patch.trustWorkspaces !== undefined) settings.permissions.trustWorkspaces = !!patch.trustWorkspaces;
   if (patch.autoReview !== undefined) settings.permissions.autoReview = !!patch.autoReview;
+  for (const [key, value] of [['incoming', patch.messageIncoming], ['outgoing', patch.messageOutgoing]] as const) {
+    if (value === undefined) continue;
+    if (value !== 1 && value !== 2 && value !== 3) throw new Error('A message level must be 1, 2 or 3.');
+    settings.messages[key] = value;
+  }
   if (patch.name !== undefined && patch.name.trim()) settings.name = patch.name.trim().slice(0, 40);
   if (patch.autostart !== undefined) settings.controller.autostart = !!patch.autostart;
   if (patch.remoteControl !== undefined) settings.controller.remoteControl = !!patch.remoteControl;

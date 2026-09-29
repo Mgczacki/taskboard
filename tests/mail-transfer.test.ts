@@ -18,7 +18,7 @@ test('a long message crosses Slack as a file and returns as exact text', async (
   const file = { ...stageBytes(Buffer.from(body), 'message.txt'), longBody: true, review: { verdict: 'communication' as const, reason: 'Reviewed', at: new Date().toISOString() } };
   const draft = sender.add({ direction: 'outbox', source: 'user', from: 'U1', to: 'U2', subject: 'Long text', body, files: [file] });
   sender.update(draft.id, m => { m.review = { verdict: 'communication', reason: 'Reviewed', at: new Date().toISOString() }; });
-  sender.approve(draft.id, 'user', draft.hash);
+  sender.approve(draft.id, 'user', draft.hash, 'user');
   let text = '', blocks = '';
   const sendSlack = { identity: () => ({ user: 'U1', team: 'T1' }), upload: async () => 'F123', call: async (method: string, args: Record<string, string>) => {
     if (method === 'users.info') return { user: { id: 'U2', team_id: 'T1' } };
