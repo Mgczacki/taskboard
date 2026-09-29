@@ -30,6 +30,20 @@ function describeTool(name: string, input: any): string {
   return name;
 }
 
+// The user cleared the conversation (/clear in Claude Code, /new in Codex). The agent now waits for a prompt in a new
+// session, so the status, question and last message of the old conversation no longer apply. Goal and description stay.
+function clearedPatch(t: Task, newId: string | undefined, how: string): Partial<Task> {
+  turnStart.delete(t.id); blockedOnce.delete(t.id); answerBeforeLog.delete(t.id);
+  store.appendLog(t.id, { did: `The user cleared the conversation (${how}). New session ${newId || 'unknown'}.`, next: 'Wait for the next prompt.' });
+  return {
+    pastSessions: t.sessionId && t.sessionId !== newId ? [...(t.pastSessions || []), t.sessionId] : t.pastSessions,
+    // a document waiting for review, or a parked task, keeps its status
+    ...(['review', 'parked'].includes(t.status) ? {} : { status: 'idle' as const, ask: '' }),
+    now: undefined, stopReason: undefined, interrupted: undefined,
+    statusSource: `Conversation cleared (${how}) at ${clock()}.`,
+  };
+}
+
 export function claudeEvent(taskId: string, input: any): { output?: unknown } {
   const t = store.get(taskId); if (!t) return {};
   // an archived task stays archived whatever its agent still reports
@@ -38,7 +52,9 @@ export function claudeEvent(taskId: string, input: any): { output?: unknown } {
   switch (ev) {
     case 'SessionStart':
       sessionStarted.add(t.id);
-      store.update(t.id, { sessionId: input.session_id || t.sessionId, transcript: input.transcript_path, ...(t.status === 'suspended' ? { status: 'idle' as const } : {}) });
+      // source is startup, resume, clear or compact; only clear starts a new conversation in the same process
+      store.update(t.id, { sessionId: input.session_id || t.sessionId, transcript: input.transcript_path, ...(t.status === 'suspended' ? { status: 'idle' as const } : {}),
+        ...(input.source === 'clear' ? clearedPatch(t, input.session_id, '/clear') : {}) });
       break;
     case 'UserPromptSubmit':
       answerBeforeLog.delete(t.id); // a saved answer belongs to the previous turn only
@@ -91,6 +107,10 @@ export function codexEvent(taskId: string, p: any) {
   const msg: string = p['last-assistant-message'] || '';
   // Codex also runs a short internal turn to name the conversation; its reply is JSON like {"title": "..."}.
   if (/^\s*\{\s*"title"\s*:/.test(msg)) return;
+  // Codex sends no event for /new. A turn that ends in another thread shows it, one turn late. The transcript is the old
+  // thread's rollout file, so it is cleared and the watcher (index.ts reconcile) looks up the new thread's file.
+  const thread: string | undefined = p['thread-id'];
+  if (t.sessionId && thread && thread !== t.sessionId) store.update(t.id, { ...clearedPatch(t, thread, '/new'), transcript: undefined });
   store.update(t.id, { sessionId: p['thread-id'] || t.sessionId, ...finishedStatus(t, msg), now: firstPara(msg) || t.now, statusSource: `Codex notify (agent-turn-complete) at ${clock()}.` });
   if (msg) store.appendLog(t.id, { did: firstPara(msg).slice(0, 200), wait: endsWithQuestion(msg) ? lastSentence(msg) : 'Nothing.' });
   lastCodexEvent.set(t.id, Date.now());
