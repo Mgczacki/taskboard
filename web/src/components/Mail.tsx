@@ -104,18 +104,20 @@ export function InboxPage(props: { tasks: Task[]; open: (id: string, tab?: 'term
       <button className="btn" onClick={() => setTab('inbox')} aria-pressed={tab === 'inbox'}>Messages</button>
       <button className="btn" onClick={() => setTab('documents')} aria-pressed={tab === 'documents'}>Documents to review</button>
       <button className="btn" onClick={() => setTab('sent')} aria-pressed={tab === 'sent'}>Sent</button>
+
     </nav>
     {(error || loadError) && <p role="alert">{error || loadError}</p>}
     {tab === 'documents' ? <Documents {...props} /> : <>
       <details className="mail-settings"><summary>Slack connection and approval settings</summary>
         <p>{data?.identity ? `Connected as ${data.identity.name || data.identity.user}` : 'Connect your Slack account to exchange private messages.'}</p>
         {data?.identity?.needsReconnect && <p role="alert">Reconnect Slack to grant file access. Disconnect Slack, then connect it again.</p>}
+
         <button className="btn" disabled={busy} onClick={() => act(async () => { if (data?.identity) await request('/slack/disconnect', {}); else { const r = await request('/slack/connect', {}); location.assign(r.url); } })}>{data?.identity ? 'Disconnect Slack' : 'Connect Slack'}</button>
         <p>Slack grants access to your direct messages. Taskboard reads only contacts you add here.</p>
         <label className="opt"><input className="mail-checkbox" type="checkbox" checked={!!data?.controllerApproval} disabled={busy} onChange={e => act(() => request('/policy', { enabled: e.target.checked }))} />Allow my controller to approve ordinary communication</label>
         <p>Requests to act need your approval. Suspicious messages stay blocked. Approval never routes a message.</p>
         <form onSubmit={e => { e.preventDefault(); void act(async () => { const results = await request('/people?q=' + encodeURIComponent(contact)); setPeople(results); }); }}>
-          <label>Find a person by name <input className="mail-input" value={contact} onChange={e => setContact(e.target.value)} minLength={2} required /></label>
+          <div className="field"><label>Find a person by name <input className="mail-input" value={contact} onChange={e => setContact(e.target.value)} minLength={2} required /></label></div>
           <button className="btn" disabled={busy || !data?.identity}>Search people</button>
         </form>
         <ul>{people.map(p => <li key={p.user}>{p.image && <img src={p.image} alt="" width={24} height={24} />} {p.name} <button className="btn" disabled={busy} onClick={() => act(async () => { await request('/contacts', { user: p.user }); setPeople([]); setContact(''); })}>Send contact request</button></li>)}</ul>
@@ -125,18 +127,20 @@ export function InboxPage(props: { tasks: Task[]; open: (id: string, tab?: 'term
       </details>
       <div className="mail-tabs">
         {tab === 'inbox' && <label className="opt"><input className="mail-checkbox" type="checkbox" checked={dismissed} onChange={e => setDismissed(e.target.checked)} />Show dismissed</label>}
+
         <button className="btn" disabled={busy || !data?.identity} onClick={() => act(() => request('/sync', {}))}>{busy ? 'Working…' : 'Sync Slack and check messages'}</button>
       </div>
       {data?.error && <p role="alert">{data.error}</p>}
       {tab === 'sent' && <form className="mail-compose" onSubmit={e => { e.preventDefault(); void act(async () => { await request('/draft', { to: recipient, subject, body, files: selectedFiles }); setSubject(''); setBody(''); setSelectedFiles([]); }); }}>
         <h2>New message</h2>
-        <label>To <select className="mail-input" value={recipient} onChange={e => setRecipient(e.target.value)} required><option value="">Choose a contact</option>{data?.contacts.filter(c => c.status === 'active').map(c => <option key={c.user} value={c.user}>{c.name}</option>)}</select></label>
-        <label>Subject <input className="mail-input" value={subject} onChange={e => setSubject(e.target.value)} maxLength={200} required /></label>
-        <label>Message <textarea className="mail-input" value={body} onChange={e => setBody(e.target.value)} rows={5} required /></label>
-        <label>Attach files <input className="mail-input" type="file" multiple accept=".txt,.md,.pdf,.docx" onChange={e => { const files = Array.from(e.target.files || []); void act(async () => { for (const file of files) { const response = await fetch('/api/mail/files/upload', { method: 'POST', headers: { 'content-type': 'application/octet-stream', 'x-mail-filename': encodeURIComponent(file.name) }, body: file }); const result = await response.json(); if (!response.ok) throw new Error(result.error || 'File upload failed'); setSelectedFiles(current => [...current, result.id]); } }); e.target.value = ''; }} /></label>
+        <div className="field"><label>To <select className="mail-input" value={recipient} onChange={e => setRecipient(e.target.value)} required><option value="">Choose a contact</option>{data?.contacts.filter(c => c.status === 'active').map(c => <option key={c.user} value={c.user}>{c.name}</option>)}</select></label></div>
+        <div className="field"><label>Subject <input className="mail-input" value={subject} onChange={e => setSubject(e.target.value)} maxLength={200} required /></label></div>
+        <div className="field"><label>Message <textarea className="mail-input" value={body} onChange={e => setBody(e.target.value)} rows={5} required /></label></div>
+        <div className="field"><label>Attach files <input className="mail-input" type="file" multiple accept=".txt,.md,.pdf,.docx" onChange={e => { const files = Array.from(e.target.files || []); void act(async () => { for (const file of files) { const response = await fetch('/api/mail/files/upload', { method: 'POST', headers: { 'content-type': 'application/octet-stream', 'x-mail-filename': encodeURIComponent(file.name) }, body: file }); const result = await response.json(); if (!response.ok) throw new Error(result.error || 'File upload failed'); setSelectedFiles(current => [...current, result.id]); } }); e.target.value = ''; }} /></label></div>
         <button className="btn" type="button" disabled={busy} onClick={() => act(async () => { const response = await fetch('/api/docs/all'); if (!response.ok) throw new Error('Could not read task outboxes'); const all = await response.json() as Record<string, { name: string }[]>; setOutboxFiles(Object.entries(all).flatMap(([task, files]) => files.filter(f => /\.(txt|md|pdf|docx)$/i.test(f.name)).map(f => ({ task, name: f.name, taskName: props.tasks.find(t => t.id === task)?.title || task })))); })}>List task outbox files</button>
         {!!outboxFiles.length && <div><select className="mail-input" aria-label="Task outbox file" value={outboxChoice} onChange={e => setOutboxChoice(e.target.value)}><option value="">Choose a task outbox file</option>{outboxFiles.map((f, index) => <option key={`${f.task}/${f.name}`} value={String(index)}>{f.taskName}: {f.name}</option>)}</select><button className="btn" type="button" disabled={busy || !outboxChoice} onClick={() => act(async () => { const f = outboxFiles[Number(outboxChoice)]; const result = await request('/files/stage', { task: f.task, name: f.name }); setSelectedFiles(current => [...current, result.id]); setOutboxChoice(''); })}>Attach selected file</button></div>}
         {!!data?.staged?.length && <fieldset><legend>Files for this draft</legend>{data.staged.map(f => <label key={f.id}><input className="mail-checkbox" type="checkbox" checked={selectedFiles.includes(f.id)} onChange={e => setSelectedFiles(current => e.target.checked ? [...current, f.id] : current.filter(id => id !== f.id))} />{f.name} ({Math.ceil(f.size / 1024)} KiB) <small>SHA-256: {f.hash}</small> <button className="btn" type="button" disabled={busy} onClick={() => act(async () => { await request('/files/staged/remove', { id: f.id }); setSelectedFiles(current => current.filter(id => id !== f.id)); })}>Remove</button></label>)}</fieldset>}
+
         <button className="btn" disabled={busy || !data?.identity}>Save draft for approval</button>
       </form>}
       {tab === 'sent' && data && <SentHistory messages={data.messages} contacts={data.contacts} tasks={props.tasks} busy={busy} act={act} />}
