@@ -63,6 +63,9 @@ const HELP = `tb — Taskboard command line
   tb mail                            account messages: run for command help
   tb review <file>                   ask the user to review a document from your outbox
   tb release-request                 ask the user to allow one Taskboard release on the dashboard
+  tb git merge-request               ask the user to merge your worktree branch into local master
+  tb git commit "<message>"           commit changes in your own worktree
+  tb git rebase                       rebase your own branch onto local master
   tb inbox wait [--timeout seconds]  wait until a file arrives in your inbox (uses TASK_ID; default 3600 s);
                                      prints each file's path and sender; exit 0 = files, 2 = timed out
   tb park|archive <task>      park = set aside: off Needs you / Unread until the agent works or finishes again; archive = done
@@ -209,6 +212,14 @@ switch (cmd) {
   case 'release-request': {
     if (!process.env.TASK_ID) { console.error('tb release-request: run this inside a Taskboard task'); process.exit(1); }
     await call('POST', '/api/release/request', {});
+    break;
+  }
+  case 'git': {
+    if (!process.env.TASK_ID) { console.error('tb git: run this inside a Taskboard task'); process.exit(1); }
+    if (rest[0] === 'merge-request') await call('POST', '/api/git/merge-request', {});
+    else if (rest[0] === 'commit') console.log((await call('POST', '/api/git/commit', { message: rest.slice(1).join(' ') })).result);
+    else if (rest[0] === 'rebase') console.log((await call('POST', '/api/git/rebase', {})).result);
+    else { console.error('tb git commit "<message>" | tb git rebase | tb git merge-request'); process.exit(1); }
     break;
   }
   case 'park': { const t = await task(rest[0]); await call('POST', `/api/tasks/${t.id}/status`, { status: 'parked' }); console.log(`#${t.num} set aside.`); break; }

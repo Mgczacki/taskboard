@@ -33,6 +33,7 @@ import { mountReview, pendingFor, pendingForPath } from './review.ts';
 import { attach } from './pty.ts';
 import * as store from './store.ts';
 import * as stats from './stats.ts';
+import * as taskGit from './task-git.ts';
 import * as tmux from './tmux.ts';
 
 const execFileP = promisify(execFile);
@@ -171,6 +172,29 @@ app.post('/api/release/request', (req, res) => {
   });
   store.update(actor, { status: 'needs-you', ask: 'Approve: release Taskboard', statusSource: 'Waiting for your approval on the dashboard.' });
   res.status(202).json({ approval });
+});
+app.post('/api/git/merge-request', async (req, res) => {
+  const actor = req.get('x-tb-actor') || '';
+  const task = store.get(actor);
+  if (!task || task.role === 'controller') return res.status(403).json({ error: 'A Taskboard task must request its own merge.' });
+  try {
+    const expected = await taskGit.mergeState(task);
+    const approval = approvals.request({ actor, action: 'git-merge', summary: `merge ${expected.branch} into local master`,
+      detail: `Task: #${task.num} ${task.title}\nBranch head: ${expected.source}\nMaster head: ${expected.target}\nRepository: ${task.folder}`, payload: expected },
+      () => taskGit.mergeTask(task, expected));
+    store.update(actor, { status: 'needs-you', ask: `Approve: merge ${expected.branch} into local master`, statusSource: 'Waiting for your approval on the dashboard.' });
+    res.status(202).json({ approval });
+  } catch (e) { fail(res, e); }
+});
+app.post('/api/git/commit', async (req, res) => {
+  const task = store.get(req.get('x-tb-actor') || '');
+  if (!task || task.role === 'controller') return res.status(403).json({ error: 'A Taskboard task must commit its own branch.' });
+  try { res.json({ result: await taskGit.commitTask(task, String(req.body.message || '')) }); } catch (e) { fail(res, e); }
+});
+app.post('/api/git/rebase', async (req, res) => {
+  const task = store.get(req.get('x-tb-actor') || '');
+  if (!task || task.role === 'controller') return res.status(403).json({ error: 'A Taskboard task must rebase its own branch.' });
+  try { res.json({ result: await taskGit.rebaseTask(task) }); } catch (e) { fail(res, e); }
 });
 
 // ---------- other machines ----------
@@ -612,6 +636,9 @@ approvals.onApprovalsChange(() => {
   for (const t of store.all()) {
     if (!approvals.pendingFor(t.id).length && t.status === 'needs-you' && t.ask?.startsWith('Approve:'))
       store.update(t.id, { status: 'working', ask: '', statusSource: 'Your decision was sent back to the task.' });
+    if (!approvals.pendingFor(t.id).length && t.status === 'needs-you' && t.statusSource?.includes('auto mode refused') &&
+      approvals.all().some(a => a.actor === t.id && a.action === 'tool-refusal' && a.state === 'denied'))
+      store.update(t.id, { status: 'unread', ask: '', statusSource: 'The user denied the refused command.' });
   }
   const msg = JSON.stringify({ type: 'approvals', approvals: approvals.all() });
   for (const c of eventClients) if (c.readyState === c.OPEN) c.send(msg);
