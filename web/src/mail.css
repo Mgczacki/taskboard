@@ -1,0 +1,10 @@
+.account-mail { height:100%; overflow:auto; padding:20px; }
+.mail-tabs { display:flex; align-items:center; gap:12px; margin-bottom:16px; flex-wrap:wrap; }
+.mail-tabs button[aria-pressed="true"] { border-color:var(--accent); color:var(--accent); }
+.mail-item,.mail-settings,.mail-compose { border:1px solid var(--line); border-radius:8px; padding:18px; margin-bottom:16px; max-width:900px; }
+.mail-item h2,.mail-compose h2 { font-size:17px; margin:0 0 12px; }
+.mail-item pre { white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; }
+.mail-compose label { display:block; margin:12px 0; }
+.mail-compose input,.mail-compose textarea,.mail-compose select { display:block; width:100%; margin-top:6px; }
+.mail-item p,.mail-settings p { margin:12px 0; }
+.account-mail > .rv-page { min-height:70vh; }

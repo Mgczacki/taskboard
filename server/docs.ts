@@ -25,7 +25,7 @@ export function docsFor(id: string) {
   const sent = readJson<Record<string, { task: string; at: string }>>(sentFile(id), {});
   const inbox: DocInfo[] = list(inboxDir(id)).map(f => {
     const s = sent[f.name]; const src = s && store.get(s.task);
-    return { ...f, kind: kindOf(f.name), from: s ? { task: s.task, num: src?.num ?? 0, title: s.task === '__review' ? 'Review page (your comments)' : src?.title ?? s.task, at: s.at } : undefined };
+    return { ...f, kind: kindOf(f.name), from: s ? { task: s.task, num: src?.num ?? 0, title: s.task === '__review' ? 'User Inbox (your comments)' : src?.title ?? s.task, at: s.at } : undefined };
   });
   // who received each outbox file: scan other tasks' inbox records
   const receivers: Record<string, { task: string; num: number; at: string }[]> = {};

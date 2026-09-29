@@ -11,17 +11,18 @@ import { Terminal } from './components/Terminal';
 import { AgentChip, Dot, StatusLabel, ThreeLines } from './components/ui';
 import { BoardView, ListView } from './components/Views';
 import { GraphView } from './components/Graph';
-import { ReviewPage } from './components/Review';
+import { InboxPage } from './components/Mail';
 import { AccountsPage } from './components/Accounts';
 import { SettingsPage } from './components/Settings';
 import { StatsPage } from './components/Stats';
 
-type Page = 'list' | 'board' | 'canvas' | 'graph' | 'review' | 'accounts' | 'stats' | 'settings';
+type Page = 'list' | 'board' | 'canvas' | 'graph' | 'inbox' | 'accounts' | 'stats' | 'settings';
 // #list · #board · #canvas · #canvas:<view>  (view = g:<group> | needs | live | t:<id,id>)
 function parseHash(): { page: Page; view?: string } {
   const h = decodeURIComponent(location.hash.slice(1));
+  if (h === 'review') return { page: 'inbox' };
   if (h.startsWith('canvas:')) return { page: 'canvas', view: h.slice(7) };
-  return { page: (['list', 'board', 'canvas', 'graph', 'review', 'accounts', 'stats', 'settings'].includes(h) ? h : 'list') as Page };
+  return { page: (['list', 'board', 'canvas', 'graph', 'inbox', 'accounts', 'stats', 'settings'].includes(h) ? h : 'list') as Page };
 }
 export const SOLO = new URLSearchParams(location.search).get('solo') === '1';
 export interface Toast { id: number; text: string; expiresAt: number; action?: { label: string; fn: () => void } }
@@ -132,7 +133,7 @@ export function App() {
   // keys (keys.ts): a key of the Canvas, Review or Graph page or of triage wins over the same key here (C comments on the Review page)
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
-      if ((triage && hitIn(e, 'triage')) || (page === 'canvas' && hitIn(e, 'canvas')) || (page === 'review' && hitIn(e, 'review')) || (page === 'graph' && hitIn(e, 'graph'))) return;
+      if ((triage && hitIn(e, 'triage')) || (page === 'canvas' && hitIn(e, 'canvas')) || (page === 'inbox' && hitIn(e, 'review')) || (page === 'graph' && hitIn(e, 'graph'))) return;
       const act = (f: () => void) => { e.preventDefault(); e.stopPropagation(); f(); };
       if (hit(e, 'newTask')) return act(() => setNewOpen(true));
       if (hit(e, 'controller')) return act(openController);
@@ -157,7 +158,11 @@ export function App() {
   const hideChrome = focusMode && page === 'canvas';
   // pending reviews for the sidebar count
   const [reviewCount, setReviewCount] = useState(0);
-  useEffect(() => { fetch('/api/review').then(r => r.json()).then((l: { state: string }[]) => setReviewCount(l.filter(x => x.state === 'pending').length)).catch(() => {}); }, [tasks]);
+  useEffect(() => {
+    const load = () => Promise.all([fetch('/api/review').then(r => r.json()), fetch('/api/mail').then(r => r.json())])
+      .then(([docs, mail]) => setReviewCount(docs.filter((x: { state: string }) => x.state === 'pending').length + (mail.messages || []).filter((m: { direction: string; approval?: unknown }) => m.direction === 'inbox' && !m.approval).length)).catch(() => {});
+    void load(); const timer = setInterval(load, 5000); return () => clearInterval(timer);
+  }, []);
 
   return (
     <div className={`app ${railHidden || hideChrome ? 'rail-off' : ''}`}>
@@ -167,7 +172,7 @@ export function App() {
         <div className="rail-item ctl-item" onClick={openController} title={`The controller agent manages the other agents. Shortcut: ${keysText('controller')}`}>{controller ? <Dot s={controller.status} /> : <span className="dot idle" />}<span className="t"><b>Controller</b>{controller ? '' : ' · start'}</span>{controller?.remoteUrl && <a className="rc-link" href={controller.remoteUrl} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} title="Remote Control is on: open the controller on claude.ai or the Claude mobile app">📱</a>}{keyLabel('controller') && <kbd>{keyLabel('controller')}</kbd>}</div>
         <button className="importbtn" onClick={() => setImportOpen(true)} title="Bring in Claude Code, Codex and Antigravity sessions you started outside Taskboard">⇪ Import sessions</button>
         <nav className="nav">
-          {(['list', 'board', 'graph', 'canvas', 'review', 'accounts', 'stats', 'settings'] as Page[]).map(p => <a key={p} className={page === p ? 'on' : ''} onClick={() => go(p)}>{p[0].toUpperCase() + p.slice(1)}{p === 'list' && <span className="n">{tasks.filter(t => t.status !== 'archived').length}</span>}{p === 'review' && reviewCount > 0 && <span className="n" style={{ color: 'var(--st-review)' }}>{reviewCount}</span>}</a>)}
+          {(['list', 'board', 'graph', 'canvas', 'inbox', 'accounts', 'stats', 'settings'] as Page[]).map(p => <a key={p} className={page === p ? 'on' : ''} onClick={() => go(p)}>{p[0].toUpperCase() + p.slice(1)}{p === 'list' && <span className="n">{tasks.filter(t => t.status !== 'archived').length}</span>}{p === 'inbox' && reviewCount > 0 && <span className="n" style={{ color: 'var(--st-review)' }}>{reviewCount}</span>}</a>)}
         </nav>
         <div className="rail-scroll">
           <div className="rail-sec"><h6>Needs you<span>{needs.length}</span></h6>{needs.map(item)}{!needs.length && <div className="rail-empty">Nothing waiting</div>}</div>
@@ -208,7 +213,7 @@ export function App() {
           {page === 'accounts' && <AccountsPage tasks={allTasks} />}
           {page === 'stats' && <StatsPage />}
           {page === 'settings' && <SettingsPage tasks={allTasks} />}
-          {page === 'review' && <ReviewPage tasks={tasks} open={(id, tab) => setOpenId(id, tab)} />}
+          {page === 'inbox' && <InboxPage tasks={tasks} open={(id, tab) => setOpenId(id, tab)} />}
           {page === 'graph' && <GraphView tasks={tasks} groups={groups} open={(id, tab) => setOpenId(id, tab)} />}
           {page === 'canvas' && <Canvas tasks={tasks} groups={groups} view={view} setView={setView} openPanel={id => setOpenId(id)} panelTaskId={openId} selected={selected} toggleSel={toggleSel} clearSel={() => setSelected(new Set())} solo={SOLO} focusMode={focusMode} setFocusMode={setFocusMode} toast={toast} />}
         </div>

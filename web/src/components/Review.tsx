@@ -1,4 +1,4 @@
-// Review page: documents and diagrams agents asked you to review (with `tb review <file>`).
+// User inbox: documents and diagrams agents asked you to review (with `tb review <file>`).
 // Comment on paragraphs or diagrams, send the comments back to the agent, compare versions, accept.
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
@@ -13,7 +13,7 @@ import '../review.css';
 interface Comment { id: string; v: number; block: number; quote: string; text: string; at: string; sent?: boolean }
 interface Item {
   id: string; path: string; name: string; task: string; state: 'pending' | 'changes' | 'accepted'; version: number;
-  versions: { v: number; at: string }[]; comments: Comment[]; requestedAt: string; updated: string;
+  versions: { v: number; at: string }[]; comments: Comment[]; requestedAt: string; updated: string; dismissedAt?: string;
   taskNum?: number; taskTitle?: string; agent?: Task['agent']; taskStatus?: string;
 }
 interface Block { raw: string; html: string; mermaid?: string }
@@ -73,7 +73,8 @@ function Mermaid({ code, onClick, hasComments }: { code: string; onClick: () => 
   return <div className={`rv-diagram ${hasComments ? 'has' : ''}`} ref={ref} onClick={onClick} title="Click to comment on this diagram" />;
 }
 
-export function ReviewPage({ tasks, open }: { tasks: Task[]; open: (id: string, tab?: 'terminal' | 'log' | 'docs') => void }) {
+export function InboxPage({ tasks, open }: { tasks: Task[]; open: (id: string, tab?: 'terminal' | 'log' | 'docs') => void }) {
+  const [dismissed, setDismissed] = useState(false);
   const [items, setItems] = useState<Item[] | null>(null);
   useKeymap();
   const [sel, setSel] = useState<string | null>(null);
@@ -87,7 +88,7 @@ export function ReviewPage({ tasks, open }: { tasks: Task[]; open: (id: string, 
   const [msg, setMsg] = useState('');
   const docRef = useRef<HTMLDivElement>(null);
 
-  const load = useCallback(() => fetch('/api/review').then(r => r.json()).then((x: Item[]) => { setItems(x); setSel(s => s && x.some(i => i.id === s) ? s : x[0]?.id || null); }).catch(() => setItems([])), []);
+  const load = useCallback(() => fetch(`/api/review${dismissed ? '?dismissed=1' : ''}`).then(r => r.json()).then((x: Item[]) => { setItems(x); setSel(s => s && x.some(i => i.id === s) ? s : x[0]?.id || null); }).catch(() => setItems([])), [dismissed]);
   useEffect(() => { load(); const iv = setInterval(load, 5000); return () => clearInterval(iv); }, [load]);
   useEffect(() => { load(); }, [tasks, load]);
 
@@ -107,8 +108,8 @@ export function ReviewPage({ tasks, open }: { tasks: Task[]; open: (id: string, 
 
   const act = async (p: Promise<unknown>, ok?: string) => { try { await p; if (ok) setMsg(ok); load(); } catch (e) { setMsg((e as Error).message); } };
   const addComment = async (block: number, quote: string, t: string) => { if (!item || !t.trim()) return; await act(send('POST', `/api/review/${item.id}/comment`, { block, quote, text: t.trim() })); };
-  const sendFeedback = () => item && act(send('POST', `/api/review/${item.id}/feedback`), `Comments sent to #${item.taskNum}. The agent was told where to find them.`);
-  const accept = () => item && act(send('POST', `/api/review/${item.id}/accept`), 'Accepted.');
+  const sendFeedback = () => item && !item.dismissedAt && act(send('POST', `/api/review/${item.id}/feedback`), `Comments sent to #${item.taskNum}. The agent was told where to find them.`);
+  const accept = () => item && !item.dismissedAt && act(send('POST', `/api/review/${item.id}/accept`), 'Accepted.');
 
   // select text in a block → "Comment" button next to it
   const onMouseUp = () => {
@@ -129,18 +130,21 @@ export function ReviewPage({ tasks, open }: { tasks: Task[]; open: (id: string, 
       if (hit(e, 'reviewNext')) setSel(items[Math.min(items.length - 1, i + 1)].id);
       else if (hit(e, 'reviewPrev')) setSel(items[Math.max(0, i - 1)].id);
       else if (hit(e, 'reviewComment') && selBtn) { e.preventDefault(); startDraft(selBtn.block, selBtn.quote); }
-      else if (hit(e, 'reviewAccept') && item && item.state !== 'accepted') accept();
+      else if (hit(e, 'reviewAccept') && item && !item.dismissedAt && item.state !== 'accepted') accept();
     };
     addEventListener('keydown', on); return () => removeEventListener('keydown', on);
   });
 
+  const switchView = () => { setItems(null); setSel(null); setDismissed(x => !x); };
+  const viewButton = <button className="btn" onClick={switchView}>{dismissed ? 'Back to inbox' : 'Dismissed'}</button>;
+
   if (!items) return <div className="emptyview">Loading…</div>;
   if (!items.length) return (
-    <div className="emptyview"><h2>Nothing to review</h2>
-      <p>When an agent writes a document it wants your opinion on, it runs <code>tb review &lt;file&gt;</code> (usually a file in its outbox). The document appears here. You comment on paragraphs or diagrams and send the comments back; the agent revises and asks again, and you can compare versions.</p></div>
+    <div className="emptyview"><h2>{dismissed ? 'No dismissed items' : 'Your inbox is empty'}</h2>{viewButton}
+      <p>Your agents send documents here for review with <code>tb review &lt;file&gt;</code>. You can comment on a document and send feedback to its agent. New versions appear in the same inbox item.</p></div>
   );
 
-  const groups: [string, Item[]][] = [
+  const groups: [string, Item[]][] = dismissed ? [['Dismissed', items]] : [
     ['Needs your review', items.filter(i => i.state === 'pending')],
     ['Agent revising', items.filter(i => i.state === 'changes')],
     ['Accepted', items.filter(i => i.state === 'accepted')],
@@ -150,11 +154,13 @@ export function ReviewPage({ tasks, open }: { tasks: Task[]; open: (id: string, 
   return (
     <div className="rv">
       <aside className="rv-queue">
+        {viewButton}
         {groups.map(([label, list]) => list.length > 0 && <div key={label}>
           <div className="rv-qh">{label} · {list.length}</div>
           {list.map(i => (
             <div key={i.id} className={`rv-qi ${i.id === sel ? 'on' : ''}`} onClick={() => setSel(i.id)}>
               <div className="rv-qt">{i.name}</div>
+              <button className="btn ghost" onClick={e => { e.stopPropagation(); act(send('POST', `/api/review/${i.id}/${dismissed ? 'restore' : 'dismiss'}`)); }}>{dismissed ? 'Restore' : 'Dismiss'}</button>
               <div className="rv-qs"><span>#{i.taskNum ?? '?'}</span><span className="chip">v{i.version}</span>{i.state === 'pending' && <span className="rv-wait">waiting {ago(i.requestedAt)}</span>}{i.state !== 'pending' && <span>{ago(i.updated)} ago</span>}</div>
             </div>
           ))}
@@ -171,7 +177,7 @@ export function ReviewPage({ tasks, open }: { tasks: Task[]; open: (id: string, 
             <a className="btn" href={fileUrl(item.path)} target="_blank" rel="noreferrer">Open file ↗</a>
             {item.version > 1 && !isHtml(item.name) && <button className={`btn ${compare ? 'on' : ''}`} onClick={() => setCompare(c => !c)}>{compare ? `Show v${item.version} only` : `Compare v${item.version - 1} → v${item.version}`}</button>}
             <span style={{ flex: 1 }} />
-            {item.state === 'accepted'
+            {item.dismissedAt ? <button className="btn" onClick={() => act(send('POST', `/api/review/${item.id}/restore`))}>Restore to inbox</button> : item.state === 'accepted'
               ? <button className="btn" onClick={() => act(send('POST', `/api/review/${item.id}/reopen`))}>Reopen</button>
               : <><button className="btn" onClick={accept}>Accept <Kbd id="reviewAccept" /></button>
                 <button className="btn primary" disabled={!unsent.length} onClick={sendFeedback}>Send feedback to #{item.taskNum} {unsent.length > 0 && `(${unsent.length})`} <Kbd id="reviewSend" /></button></>}
@@ -200,6 +206,8 @@ export function ReviewPage({ tasks, open }: { tasks: Task[]; open: (id: string, 
           </div>
 
           <aside className="rv-comments">
+            {item.dismissedAt && <div className="banner">Dismissed without acceptance or feedback. Restore this item to continue its review.</div>}
+            <fieldset disabled={!!item.dismissedAt} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
             {draft && <div className="rv-c draft">
               <div className="rv-q">“{draft.quote.slice(0, 160)}”</div>
               <textarea autoFocus value={draftText} onChange={e => setDraftText(e.target.value)} placeholder="Your comment" onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.stopPropagation(); addComment(draft.block, draft.quote, draftText).then(() => setDraft(null)); } if (e.key === 'Escape') setDraft(null); }} />
@@ -213,6 +221,7 @@ export function ReviewPage({ tasks, open }: { tasks: Task[]; open: (id: string, 
               <div className="rv-row"><button className="btn" disabled={!general.trim()} onClick={() => addComment(-1, '', general).then(() => setGeneral(''))}>Add</button></div>
             </div>
             {!current.length && !draft && <div className="rv-hint">Select text and press <Kbd id="reviewComment" />, hover a paragraph and click ＋, or click a diagram to comment on it. Comments stay here until you press <b>Send feedback</b>.</div>}
+            </fieldset>
           </aside>
         </div>
       </section>}

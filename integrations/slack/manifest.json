@@ -1,0 +1,30 @@
+{
+  "display_information": {
+    "name": "Taskboard",
+    "description": "Private messages between Taskboard users",
+    "background_color": "#243447"
+  },
+  "oauth_config": {
+    "redirect_urls": [
+      "http://localhost:4317/api/mail/slack/callback",
+      "http://localhost:4399/api/mail/slack/callback",
+      "http://localhost:4409/api/mail/slack/callback"
+    ],
+    "scopes": {
+      "user": [
+        "chat:write",
+        "im:write",
+        "im:read",
+        "im:history",
+        "users:read"
+      ]
+    },
+    "pkce_enabled": true
+  },
+  "settings": {
+    "org_deploy_enabled": false,
+    "socket_mode_enabled": false,
+    "is_hosted": false,
+    "token_rotation_enabled": true
+  }
+}
