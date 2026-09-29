@@ -11,7 +11,7 @@ import { join } from 'node:path';
 import { TB_DIR } from './config.ts';
 
 export interface Approval {
-  id: string; actor: string; action: 'new' | 'send' | 'status' | 'kill' | 'move' | 'release' | 'mail-in' | 'mail-out'; summary: string; detail: string;
+  id: string; actor: string; action: 'new' | 'send' | 'status' | 'kill' | 'move' | 'release' | 'git-merge' | 'tool-refusal' | 'mail-in' | 'mail-out'; summary: string; detail: string;
   created: string; state: 'pending' | 'running' | 'approved' | 'denied' | 'failed' | 'expired' | 'unknown' | 'returned'; result?: string; payload: unknown;
   // the card has a comment box and Send back
   returnable?: boolean;

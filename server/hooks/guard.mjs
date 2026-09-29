@@ -27,6 +27,8 @@ const socket = process.env.TASKBOARD_TMUX_SOCKET || 'taskboard';
 const parts = cmd.split(/;|&&|\|\||\||\n/);
 const reasons = [];
 for (const p of parts) {
+  if (process.env.TASK_WORKTREE && /^\s*git\s+(?:(?:-C|--git-dir|--work-tree)\s+\S+\s+)*(?:add|commit|rebase|merge|reset|checkout|switch|push|pull|cherry-pick|revert|worktree|update-ref|stash|branch|tag)\b/.test(p))
+    reasons.push('use `tb git commit`, `tb git rebase`, or `tb git merge-request` for changes to Git refs in a Taskboard worktree');
   if (/\b(pkill|killall)\b/.test(p) && /server\/index|taskboard|\btsx\b|\bnode\b|\bnpx\b/i.test(p))
     reasons.push('pkill/killall by name can match the real Taskboard server, not only a test server');
   if (serverPid && /\bkill\b/.test(p) && new RegExp(`(^|[^0-9])${serverPid}([^0-9]|$)`).test(p))
