@@ -130,7 +130,9 @@ async function antigravityCandidates(): Promise<Candidate[]> {
 // ---------- which sessions are open in a terminal right now ----------
 interface Proc { pid: number; tty: string; agent: Agent; args: string[]; cwd?: string }
 async function runningAgents(): Promise<Proc[]> {
-  const { stdout } = await exec('ps', ['-Ao', 'pid=,tty=,args=']);
+  let stdout = '';
+  try { ({ stdout } = await exec('ps', ['-Ao', 'pid=,tty=,args='])); }
+  catch { return []; }
   const procs: Proc[] = [];
   for (const line of stdout.split('\n')) {
     const m = line.trim().match(/^(\d+)\s+(\S+)\s+(.*)$/); if (!m) continue;

@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MailStore, type Message } from '../server/mail/store.ts';
-import { MailService, PREFIX, CONTACT_PREFIX } from '../server/mail/service.ts';
+import { MailService, PREFIX, CONTACT_PREFIX, decodeContact } from '../server/mail/service.ts';
 import { SlackClient, SLACK_APP_ID } from '../server/mail/slack.ts';
 
 const root = mkdtempSync(join(tmpdir(), 'tb-mail-tests-'));
@@ -86,16 +86,19 @@ test('an interrupted history read resumes without losing or duplicating messages
 test('contact requests need the other member to accept before messages flow', async () => {
  const s = new MailStore(join(root, 'contacts.json'));
  let acceptance = false;
- const slack = {identity:()=>({user:'U1',team:'T1'}),call:async (method:string)=>{
+ let requestText = '', requestBlocks = '';
+ const slack = {identity:()=>({user:'U1',team:'T1'}),call:async (method:string, args?:Record<string,string>)=>{
   if(method==='users.info')return {user:{id:'U2',team_id:'T1',real_name:'Other'}};
   if(method==='conversations.open')return {channel:{id:'D1'}};
-  if(method==='chat.postMessage')return {ts:'1'};
+  if(method==='chat.postMessage'){requestText=args?.text||'';requestBlocks=args?.blocks||'';return {ts:'1'};}
   if(method==='conversations.list')return {channels:[{id:'D1',user:'U2'}]};
   if(method==='conversations.history')return {messages:acceptance?[{user:'U2',ts:'2',text:CONTACT_PREFIX+JSON.stringify({type:'accept',id:s.read().contacts[0].requestId})}]:[]};
   return {};
  }} as unknown as SlackClient;
  const service = new MailService(s,slack);
  await service.requestContact('U2');
+ assert.equal(decodeContact(requestText)?.type,'request');
+ assert.equal(JSON.parse(requestBlocks)[0].text.text,'Taskboard contact request. Open Taskboard Inbox to respond.');
  assert.equal(s.read().contacts[0].status,'requested');
  const m=draft(s);s.update(m.id,x=>{x.review=review;});s.approve(m.id,'user',m.hash);
  await assert.rejects(service.send(m.id),/accept/);

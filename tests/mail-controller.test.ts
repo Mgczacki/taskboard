@@ -12,6 +12,7 @@ test('controller launches and restarts with mailbox access, ordinary task does n
  const server=app.listen(0,'127.0.0.1'); await new Promise<void>(r=>server.once('listening',r));
  process.env.TASKBOARD_PORT=String((server.address() as {port:number}).port);
  process.env.TASKBOARD_DIR=join(root,'server'); process.env.TASKBOARD_VAULT=join(root,'vault');
+ process.env.CLAUDE_CONFIG_DIR=join(root,'claude'); mkdirSync(process.env.CLAUDE_CONFIG_DIR,{recursive:true});
  process.env.TASKBOARD_TMUX_SOCKET='tbmail-fixture-'+process.pid;
  const bin=join(root,'bin');mkdirSync(bin,{recursive:true});
  const cli=resolve('bin/tb');

@@ -20,11 +20,14 @@ test('a long message crosses Slack as a file and returns as exact text', async (
   const draft = sender.add({ direction: 'outbox', source: 'user', from: 'U1', to: 'U2', subject: 'Long text', body, files: [file] });
   sender.update(draft.id, m => { m.review = { verdict: 'communication', reason: 'Reviewed', at: new Date().toISOString() }; });
   sender.approve(draft.id, 'user', draft.hash);
-  let text = '';
-  const sendSlack = { identity: () => ({ user: 'U1', team: 'T1' }), upload: async () => 'F123', call: async (method: string, args: Record<string, string>) => { if (method === 'chat.postMessage') { text = args.text; return { ts: '1' }; } return {}; } } as unknown as SlackClient;
+  let text = '', blocks = '';
+  const sendSlack = { identity: () => ({ user: 'U1', team: 'T1' }), upload: async () => 'F123', call: async (method: string, args: Record<string, string>) => { if (method === 'chat.postMessage') { text = args.text; blocks = args.blocks; return { ts: '1' }; } return {}; } } as unknown as SlackClient;
   await new MailService(sender, sendSlack).send(draft.id);
-  assert.ok(text.startsWith(FILE_PREFIX));
+  assert.ok(text.includes(FILE_PREFIX));
   assert.ok(text.length < 40000);
+  assert.equal(JSON.parse(blocks)[0].text.text, 'Taskboard message: Long text. Open Taskboard Inbox to read.\nFull text is in the attached file.');
+  assert.equal(JSON.parse(blocks)[0].expand, false);
+  assert.ok(!blocks.includes(body));
 
   const recipient = new MailStore(join(root, 'recipient.json'));
   recipient.change(d => { d.contacts.push({ user: 'U1', name: 'Sender', channel: 'D1', oldest: '0', status: 'active' }); });

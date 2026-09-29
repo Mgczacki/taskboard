@@ -8,7 +8,8 @@
     "redirect_urls": [
       "http://localhost:4317/api/mail/slack/callback",
       "http://localhost:4399/api/mail/slack/callback",
-      "http://localhost:4409/api/mail/slack/callback"
+      "http://localhost:4409/api/mail/slack/callback",
+      "http://localhost:4410/api/mail/slack/callback"
     ],
     "scopes": {
       "user": [

@@ -7,24 +7,46 @@ import { MAX_FILE, receiveBytes, verifyFile } from './files.ts';
 export const PREFIX = '[Taskboard message v1]\n';
 export const FILE_PREFIX = '[Taskboard message v2]\n';
 export const CONTACT_PREFIX = '[Taskboard contact v1]\n';
+const CONTACT_REQUEST_SUMMARY = 'Taskboard contact request. Open Taskboard Inbox to respond.';
+const CONTACT_UPDATE_SUMMARY = 'Taskboard contact update. Open Taskboard Inbox.';
+const compactBlocks = (summary: string) => JSON.stringify([{ type: 'section', text: { type: 'plain_text', text: summary } }]);
 type ContactEvent = { type: 'request' | 'accept' | 'decline' | 'remove'; id: string };
+function encodeContact(event: ContactEvent) {
+  const summary = event.type === 'request' ? CONTACT_REQUEST_SUMMARY : CONTACT_UPDATE_SUMMARY;
+  return `${summary}\n${CONTACT_PREFIX}${JSON.stringify(event)}`;
+}
 export function decodeContact(text: unknown): ContactEvent | null {
-  if (typeof text !== 'string' || !text.startsWith(CONTACT_PREFIX) || text.length > 200) return null;
+  if (typeof text !== 'string' || text.length > 200) return null;
+  const wire = text.startsWith(`${CONTACT_REQUEST_SUMMARY}\n`) ? text.slice(CONTACT_REQUEST_SUMMARY.length + 1)
+    : text.startsWith(`${CONTACT_UPDATE_SUMMARY}\n`) ? text.slice(CONTACT_UPDATE_SUMMARY.length + 1) : text;
+  if (!wire.startsWith(CONTACT_PREFIX)) return null;
   try {
-    const value = JSON.parse(text.slice(CONTACT_PREFIX.length));
+    const value = JSON.parse(wire.slice(CONTACT_PREFIX.length));
     return ['request', 'accept', 'decline', 'remove'].includes(value.type) && /^[a-f0-9-]{36}$/.test(value.id) ? value : null;
   } catch { return null; }
 }
 export function encodeMessage(m: Message) {
-  if (!m.files?.length) return PREFIX + JSON.stringify({ id: m.id, subject: m.subject, body: m.body });
-  return FILE_PREFIX + JSON.stringify({ id: m.id, subject: m.subject, body: m.files.some(f => f.longBody) ? 'Full text is in the attached file.' : m.body,
+  const summary = messageSummary(m);
+  if (!m.files?.length) return `${summary}\n${PREFIX}` + JSON.stringify({ id: m.id, subject: m.subject, body: m.body });
+  return `${summary}\n${FILE_PREFIX}` + JSON.stringify({ id: m.id, subject: m.subject, body: m.files.some(f => f.longBody) ? 'Full text is in the attached file.' : m.body,
     files: m.files.map(f => ({ id: f.slackId, name: f.name, size: f.size, hash: f.hash, longBody: !!f.longBody })) });
 }
+function messageSummary(m: Message) {
+  const subject = m.subject.replace(/\s+/g, ' ').trim().slice(0, 100);
+  return `Taskboard message: ${subject}. Open Taskboard Inbox to read.`;
+}
+function messageBlocks(m: Message) {
+  const body = m.files?.some(f => f.longBody) ? 'Full text is in the attached file.' : m.body;
+  const preview = body.length > 2500 ? `${body.slice(0, 2500)}\nOpen Taskboard Inbox for the full message.` : body;
+  return JSON.stringify([{ type: 'section', text: { type: 'plain_text', text: `${messageSummary(m)}\n${preview}` }, expand: false }]);
+}
 export function decodeMessage(text: unknown): { id: string; subject: string; body: string; files?: { id: string; name: string; size: number; hash: string; longBody?: boolean }[] } | null {
-  if (typeof text !== 'string' || (!text.startsWith(PREFIX) && !text.startsWith(FILE_PREFIX)) || Buffer.byteLength(text) > 40000) return null;
+  if (typeof text !== 'string' || Buffer.byteLength(text) > 40000) return null;
+  const wire = text.startsWith('Taskboard message: ') ? text.slice(text.indexOf('\n') + 1) : text;
+  if (!wire.startsWith(PREFIX) && !wire.startsWith(FILE_PREFIX)) return null;
   try {
-    const hasFiles = text.startsWith(FILE_PREFIX);
-    const m = JSON.parse(text.slice(hasFiles ? FILE_PREFIX.length : PREFIX.length));
+    const hasFiles = wire.startsWith(FILE_PREFIX);
+    const m = JSON.parse(wire.slice(hasFiles ? FILE_PREFIX.length : PREFIX.length));
     if (typeof m.id !== 'string' || !/^[a-zA-Z0-9-]{1,80}$/.test(m.id) || typeof m.subject !== 'string' || typeof m.body !== 'string') return null;
     if (hasFiles && (!Array.isArray(m.files) || m.files.length < 1 || m.files.length > 5 || m.files.some((f: any) => !/^F[A-Z0-9]+$/.test(f.id) || typeof f.name !== 'string' || !Number.isInteger(f.size) || f.size < 1 || f.size > MAX_FILE || !/^[a-f0-9]{64}$/.test(f.hash)))) return null;
     return m;
@@ -60,7 +82,7 @@ export class MailService {
     const conversation = await this.slack.call('conversations.open', { users: id });
     const channel = conversation.channel?.id; if (!channel) throw new Error('Slack did not return a direct conversation');
     const requestId = randomUUID();
-    await this.slack.call('chat.postMessage', { channel, text: CONTACT_PREFIX + JSON.stringify({ type: 'request', id: requestId }), mrkdwn: 'false', unfurl_links: 'false' });
+    await this.slack.call('chat.postMessage', { channel, text: encodeContact({ type: 'request', id: requestId }), blocks: compactBlocks(CONTACT_REQUEST_SUMMARY), mrkdwn: 'false', unfurl_links: 'false' });
     this.store.change(data => {
       data.contacts = data.contacts.filter(c => c.user !== id);
       data.contacts.push({ user: id, name: info.user.real_name || info.user.name || id, channel, oldest: String(Date.now() / 1000), status: 'requested', requestId });
@@ -69,7 +91,7 @@ export class MailService {
   async answerContact(id: string, accept: boolean) {
     const pending = (this.store.read().requests || []).find(r => r.user === id);
     if (!pending) throw new Error('No pending contact request');
-    const result = await this.slack.call('chat.postMessage', { channel: pending.channel, text: CONTACT_PREFIX + JSON.stringify({ type: accept ? 'accept' : 'decline', id: pending.requestId }), mrkdwn: 'false', unfurl_links: 'false' });
+    const result = await this.slack.call('chat.postMessage', { channel: pending.channel, text: encodeContact({ type: accept ? 'accept' : 'decline', id: pending.requestId }), blocks: compactBlocks(CONTACT_UPDATE_SUMMARY), mrkdwn: 'false', unfurl_links: 'false' });
     if (!result.ts) throw new Error('Slack did not confirm the contact response');
     this.store.change(data => {
       data.requests = (data.requests || []).filter(r => r.user !== id);
@@ -83,7 +105,7 @@ export class MailService {
     const contact = this.store.read().contacts.find(c => c.user === id);
     if (!contact) return;
     this.store.change(data => { data.contacts = data.contacts.filter(c => c.user !== id); });
-    try { await this.slack.call('chat.postMessage', { channel: contact.channel, text: CONTACT_PREFIX + JSON.stringify({ type: 'remove', id: contact.requestId || randomUUID() }), mrkdwn: 'false' }); } catch { /* Local removal takes effect even when Slack is unavailable. */ }
+    try { await this.slack.call('chat.postMessage', { channel: contact.channel, text: encodeContact({ type: 'remove', id: contact.requestId || randomUUID() }), blocks: compactBlocks(CONTACT_UPDATE_SUMMARY), mrkdwn: 'false' }); } catch { /* Local removal takes effect even when Slack is unavailable. */ }
   }
   private async scanRequests(identity: { user: string; team: string }) {
     let listCursor = '';
@@ -193,7 +215,7 @@ export class MailService {
         this.store.update(id, x => { const file = x.files?.find(x => x.id === f.id); if (file) file.slackId = slackId; });
       }
       const sent = this.store.get(id);
-      const result = await this.slack.call('chat.postMessage', { channel: contact.channel, text: encodeMessage(sent), mrkdwn: 'false', unfurl_links: 'false', unfurl_media: 'false', parse: 'none', client_msg_id: m.id });
+      const result = await this.slack.call('chat.postMessage', { channel: contact.channel, text: encodeMessage(sent), blocks: messageBlocks(sent), mrkdwn: 'false', unfurl_links: 'false', unfurl_media: 'false', parse: 'none', client_msg_id: m.id });
       if (!result.ts) throw new Error('Slack did not confirm delivery');
       return this.store.update(id, x => { x.sentAt = new Date().toISOString(); x.slackTs = result.ts; x.slackChannel = contact.channel; x.sending = false; });
     } catch {

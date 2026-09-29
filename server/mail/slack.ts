@@ -20,7 +20,7 @@ export class SlackClient {
   identity() { const c = this.credentials(); return c ? { user: c.user, team: c.team, name: c.name, needsReconnect: !c.scopes || SLACK_SCOPES.some(s => !c.scopes?.includes(s)) } : null; }
   disconnect() { this.generation++; this.pending = undefined; if (existsSync(this.file)) unlinkSync(this.file); }
   begin(port: number) {
-    if (![4317, 4399, 4409].includes(port)) throw new Error('Slack sign-in requires port 4317 or a registered test port');
+    if (![4317, 4399, 4409, 4410].includes(port)) throw new Error('Slack sign-in requires port 4317 or a registered test port');
     const verifier = randomBytes(32).toString('base64url'), state = randomBytes(32).toString('base64url');
     const redirect = `http://localhost:${port}/api/mail/slack/callback`;
     this.pending = { verifier, state, redirect, expires: Date.now() + 10 * 60_000 };
