@@ -11,6 +11,12 @@ const root = mkdtempSync(join(tmpdir(), 'tb-mail-tests-'));
 const review = { verdict: 'communication' as const, reason: 'Ordinary information', at: new Date().toISOString() };
 const draft = (store: MailStore) => store.add({ direction: 'outbox', source: 'user', from: 'U1', to: 'U2', subject: 'Status', body: 'The document is ready.' });
 
+test('outbox keeps the recorded proposer after a store reload', () => {
+  const s = new MailStore(join(root, 'proposer.json'));
+  const m = s.add({ direction: 'outbox', source: 'user', from: 'U1', to: 'U2', subject: 'Status', body: 'Ready.', proposedBy: { actor: 'controller' } });
+  assert.deepEqual(new MailStore(s.file).get(m.id).proposedBy, { actor: 'controller' });
+});
+
 test('approval requires exact content and review, and controller delegation is explicit', () => {
   const s = new MailStore(join(root, 'approval.json')); const m = draft(s);
   assert.throws(() => s.approve(m.id, 'user', m.hash), /review/);
@@ -51,6 +57,7 @@ test('outbox never sends before approval and holds uncertain delivery without re
   await assert.rejects(service.send(m.id), /uncertain/); assert.equal(sends, 1);
   await assert.rejects(service.send(m.id), /uncertain/); assert.equal(sends, 1);
   assert.equal(s.get(m.id).sentAt, undefined);
+  assert.ok(s.get(m.id).sendStartedAt);
 });
 
 test('OAuth rejects a mismatched state before exchanging a code', async () => {

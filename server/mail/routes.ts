@@ -93,7 +93,7 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
     owner(req);
     const d = store.read();
     return { identity: slack.identity(), contacts: d.contacts, controllerApproval: !!d.controllerApproval, error: signInError || service.error,
-      messages: d.messages.filter(m => Boolean(m.dismissedAt) === (req.query.dismissed === '1')).map(m => present(m, req)) };
+      messages: d.messages.filter(m => m.direction === 'outbox' || Boolean(m.dismissedAt) === (req.query.dismissed === '1')).map(m => present(m, req)) };
   }));
   app.post('/api/mail/policy', endpoint(req => { user(req); store.change(d => { d.controllerApproval = req.body.enabled === true; }); return {}; }));
   app.post('/api/mail/slack/connect', endpoint(req => { user(req); signInError = ''; return { url: slack.begin(PORT) }; }));
@@ -124,7 +124,18 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
   app.post('/api/mail/draft', endpoint(req => {
     owner(req); const identity = slack.identity(); if (!identity) throw new Error('Connect Slack first');
     if (!store.read().contacts.some(c => c.user === req.body.to)) throw new Error('Add the recipient as a contact first');
-    const m = store.add({ direction: 'outbox', source: 'user', from: identity.user, to: req.body.to, subject: req.body.subject, body: req.body.body });
+    const m = store.add({ direction: 'outbox', source: 'user', from: identity.user, to: req.body.to, subject: req.body.subject, body: req.body.body,
+      proposedBy: { actor: human(req) ? 'user' : 'controller' } });
+    void checkNext(); return { id: m.id };
+  }));
+  app.post('/api/mail/propose', endpoint(req => {
+    if (human(req) || controller(req)) throw new Error('Submit this draft from a local task');
+    const task = tasks.get(req.get('x-tb-actor') || '');
+    if (!task || task.id === 'controller') throw new Error('Submit this draft from a local task');
+    const identity = slack.identity(); if (!identity) throw new Error('Connect Slack first');
+    if (!store.read().contacts.some(c => c.user === req.body.to)) throw new Error('Add the recipient as a contact first');
+    const m = store.add({ direction: 'outbox', source: 'agent', from: identity.user, to: req.body.to, subject: req.body.subject, body: req.body.body,
+      proposedBy: { actor: 'task', task: task.id, agent: task.agent } });
     void checkNext(); return { id: m.id };
   }));
   app.post('/api/mail/:id/review', endpoint(async req => { owner(req); await review(String(req.params.id)); return {}; }));

@@ -53,7 +53,7 @@ export class MailService {
     const contact = this.store.read().contacts.find(c => c.user === m.to);
     if (!contact) throw new Error('Add the recipient as a contact first');
     if (Buffer.byteLength(encodeMessage(m)) > 39000) throw new Error('The encoded message is too large for Slack');
-    this.store.update(id, x => { x.sending = true; delete x.error; });
+    this.store.update(id, x => { x.sending = true; x.sendStartedAt = new Date().toISOString(); delete x.error; });
     try {
       const result = await this.slack.call('chat.postMessage', { channel: contact.channel, text: encodeMessage(m), mrkdwn: 'false', unfurl_links: 'false', unfurl_media: 'false', parse: 'none', client_msg_id: m.id });
       if (!result.ts) throw new Error('Slack did not confirm delivery');

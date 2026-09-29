@@ -75,7 +75,7 @@ switch (cmd) {
     let result;
     if (action === 'list') result = await call('GET', '/api/mail' + (rest.includes('--dismissed') ? '?dismissed=1' : ''));
     else if (action === 'submit') result = await call('POST', '/api/mail/submit', { subject: id, body: value });
-    else if (action === 'draft') result = await call('POST', '/api/mail/draft', { to: id, subject: value, body: rest[3] });
+    else if (action === 'draft') result = await call('POST', process.env.TASK_ID && process.env.TASK_ID !== 'controller' ? '/api/mail/propose' : '/api/mail/draft', { to: id, subject: value, body: rest[3] });
     else if (action === 'sync') result = await call('POST', '/api/mail/sync', {});
     else if (['review', 'approve', 'send', 'dismiss', 'restore', 'route'].includes(action)) result = await call('POST', `/api/mail/${encodeURIComponent(id)}/${action}`, action === 'route' ? { task: (await task(value)).id } : action === 'approve' ? { hash: value } : {});
     else { console.error('tb mail list [--dismissed] | submit <subject> <body> | draft <Slack ID> <subject> <body> | sync | review <id> | approve <id> <hash> | send <id> | dismiss <id> | restore <id> | route <id> <task>'); process.exit(1); }
