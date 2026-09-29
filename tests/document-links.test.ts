@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 const root = mkdtempSync(join(tmpdir(), 'taskboard-document-links-'));
 process.env.TASKBOARD_VAULT = join(root, 'vault');
@@ -72,4 +73,27 @@ test('serves only images in the vault with fixed image types', () => {
   assert.equal(docs.resolveDocumentImage(file, '/etc/hosts'), null);
   assert.equal(docs.resolveDocumentImage(file, 'layout-b.json'), null);
   assert.equal(docs.resolveDocumentImage(file, 'outside.md'), null);
+});
+
+test('resolves paths that start at the vault or the tasks folder, and file URLs', () => {
+  const html = join(outbox, 'mock up.html');
+  writeFileSync(html, '<!doctype html><title>Mock</title>');
+  assert.equal(docs.resolveDocumentLink('link-test', 'AgentVault/tasks/link-test/outbox/design.md')?.path, file);
+  assert.equal(docs.resolveDocumentLink('link-test', 'tasks/link-test/outbox/design.md.')?.path, file);
+  assert.equal(docs.resolveDocumentLink('link-test', pathToFileURL(html).href)?.path, html);
+  assert.equal(docs.resolveDocumentLink('link-test', 'AgentVault/tasks/link-test/outbox/mock up.html')?.kind, 'html');
+  assert.equal(docs.resolveDocumentLink('link-test', 'tasks/../../outside.md'), null);
+  assert.equal(docs.resolveDocumentLink('link-test', 'file:///etc/hosts'), null);
+});
+
+test('opens HTML links from a Markdown document in Taskboard', () => {
+  const html = join(outbox, 'mockup.html');
+  writeFileSync(html, '<!doctype html><title>Mock</title>');
+  const link = docs.resolveViewerLink(file, 'mockup.html#layout-a');
+  assert.equal(link.kind, 'document');
+  assert.equal(link.kind === 'document' && link.document?.kind, 'html');
+  assert.equal(link.kind === 'document' && link.document?.heading, 'layout-a');
+  const page = join(process.env.TASKBOARD_VAULT!, 'page.html');
+  writeFileSync(page, '<!doctype html><title>Page</title>');
+  assert.deepEqual(docs.resolveViewerLink(file, page), { kind: 'vault-document', path: realpathSync(page) });
 });

@@ -163,9 +163,10 @@ export function resolveViewerLink(source: string, href: string): ViewerLink {
   const rel = relative(realpathSync(TASKS_DIR), safe).split(sep);
   if (rel.length === 3 && ['inbox', 'outbox'].includes(rel[1])) {
     const doc = resolveDocumentLink(rel[0], join(TASKS_DIR, ...rel) + (heading ? '#' + encodeURIComponent(heading) : ''));
-    if (doc && doc.kind === 'md') return { kind: 'document', document: doc };
+    if (doc && doc.kind !== 'other') return { kind: 'document', document: doc };
   }
-  if (/\.(md|markdown)$/i.test(safe) && inside(safe, realpathSync(VAULT))) return { kind: 'vault-document', path: safe, ...(heading ? { heading } : {}) };
+  // Markdown opens in the reader, HTML in the sandboxed preview window
+  if (/\.(md|markdown|html?)$/i.test(safe) && inside(safe, realpathSync(VAULT))) return { kind: 'vault-document', path: safe, ...(heading ? { heading } : {}) };
   return { kind: 'local', path: safe };
 }
 
@@ -195,7 +196,11 @@ export function resolveDocumentLink(sourceTask: string, input: string): (DocInfo
   if (fragment) { try { heading = decodeURIComponent(fragment[1]); } catch { return null; } path = path.slice(0, -fragment[0].length); }
   const number = path.match(/:(\d+)$/);
   if (number) { line = Number(number[1]); path = path.slice(0, -number[0].length); }
+  if (path.startsWith('file://')) { try { path = fileURLToPath(path); } catch { return null; } }
+  // agents also write the vault path without "~/", or start at the tasks folder
   if (path.startsWith('~/AgentVault/')) path = join(VAULT, path.slice('~/AgentVault/'.length));
+  else if (path.startsWith('AgentVault/')) path = join(VAULT, path.slice('AgentVault/'.length));
+  else if (path.startsWith('tasks/')) path = join(VAULT, path);
   else if (path.startsWith('~/')) return null;
   const full = resolve(path.startsWith('/') ? path : join(store.taskDir(sourceTask), path));
   const rel = relative(TASKS_DIR, full).split(sep);

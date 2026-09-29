@@ -16,7 +16,7 @@ import { AccountsPage } from './components/Accounts';
 import { SettingsPage } from './components/Settings';
 import { StatsPage } from './components/Stats';
 import type { DocumentLink } from './documentLinks';
-import { readMarkdown } from './components/Docs';
+import { previewHtml, readMarkdown } from './components/Docs';
 
 type Page = 'list' | 'board' | 'canvas' | 'graph' | 'inbox' | 'accounts' | 'stats' | 'settings';
 // #list · #board · #canvas · #canvas:<view>  (view = g:<group> | needs | live | t:<id,id>)
@@ -83,7 +83,9 @@ export function App() {
     const onTask = (event: Event) => setOpenId((event as CustomEvent<string>).detail);
     const onVaultDocument = (event: Event) => {
       const link = (event as CustomEvent<{ path: string; heading?: string }>).detail;
-      readMarkdown(link.path, link.path.split('/').pop() || link.path, { heading: link.heading });
+      const name = link.path.split('/').pop() || link.path;
+      if (/\.html?$/i.test(link.path)) previewHtml(link.path, name, link.heading);
+      else readMarkdown(link.path, name, { heading: link.heading });
     };
     addEventListener('taskboard:document-link', onDocument);
     addEventListener('taskboard:task-link', onTask);

@@ -14,7 +14,10 @@ import { decorateDocument } from '../documentContent';
 export interface DocInfo { name: string; path: string; kind: 'md' | 'html' | 'other'; size: number; mtime: string; from?: { task: string; num: number; title: string; at: string }; sentTo?: { task: string; num: number; at: string }[] }
 // files of tasks on another machine are fetched through this server (?machine=)
 let currentMachine = '';
-export const fileUrl = (path: string, machine = currentMachine) => `/api/file?path=${encodeURIComponent(path)}${machine ? '&machine=' + encodeURIComponent(machine) : ''}`;
+// A local file's path goes in the URL path (/api/files/…), so relative links in an HTML page find the files next to it.
+export const fileUrl = (path: string, machine = currentMachine) => machine || !path.startsWith('/')
+  ? `/api/file?path=${encodeURIComponent(path)}${machine ? '&machine=' + encodeURIComponent(machine) : ''}`
+  : '/api/files' + path.split('/').map(encodeURIComponent).join('/');
 const ago = (iso: string) => fmtWait(Math.round((Date.now() - Date.parse(iso)) / 60000)) + ' ago';
 const kb = (n: number) => n < 1024 ? `${n} B` : `${Math.round(n / 1024)} KB`;
 
@@ -49,7 +52,7 @@ export function DocsTab({ t, tasks, documentLink }: { t: Task; tasks: Task[]; do
         {box === 'outbox' && x.sentTo && x.sentTo.length > 0 && <div className="s">sent to {x.sentTo.map(s => '#' + s.num).join(', ')}</div>}
       </div>
       <button className="btn" onClick={() => openDoc(x)} title={x.kind === 'html' ? 'Preview in a floating window (Space)' : 'Read (Space)'}>{x.kind === 'html' ? 'Preview' : 'Read'}</button>
-      <button className="btn" onClick={() => openInBrowser(x.path)} title="Open in a browser tab (Enter)">Open ↗</button>
+      <button className="btn" onClick={() => openInBrowser(x.path)} title="Open at full size in its own browser tab (Enter)">Open in new tab ↗</button>
       {box === 'outbox' && <select value="" onChange={async e => { const to = e.target.value; if (!to) return; try { const result = await api.sendDoc(t.id, x.name, to); const tt = tasks.find(y => y.id === to)!; setMsg(`Sent to #${tt.num}.${result.resumed ? ' The task resumed.' : ' The agent received the notice.'}`); load(); } catch (error) { setMsg((error as Error).message); load(); } }}>
         <option value="">Send to task…</option>{others.map(o => <option key={o.id} value={o.id}>#{o.num} {o.title}</option>)}
       </select>}
@@ -97,7 +100,7 @@ function FloatWin({ title, sub, path, close, host, body }: { title: string; sub:
     <>
       <div className="fw-h" onPointerDown={drag} onDoubleClick={() => host.classList.toggle('big')} onMouseDown={() => { host.style.zIndex = String(++z); }}>
         <div className="fw-t"><b>{title}</b><span>{sub}</span></div>
-        <button className="btn" onClick={() => openInBrowser(path)}>Open in browser ↗</button>
+        <button className="btn" onClick={() => openInBrowser(path)} title="Open at full size in its own browser tab">Open in new tab ↗</button>
         <button className="btn icon" onClick={close} title="Close (Esc)">✕</button>
       </div>
       <div className="fw-b" ref={inner} />

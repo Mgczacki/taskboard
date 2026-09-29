@@ -210,7 +210,7 @@ export function InboxPage({ tasks, open, documentLink }: { tasks: Task[]; open: 
           <div className="rv-sub">From #{item.taskNum} {item.taskTitle} · <code>{item.path.replace(/^\/Users\/[^/]+/, '~')}</code></div>
           <div className="rv-actions">
             <button className="btn" onClick={() => open(item.task, 'terminal')} disabled={!task}>Open agent terminal</button>
-            <a className="btn" href={fileUrl(item.path)} target="_blank" rel="noreferrer">Open file ↗</a>
+            <a className="btn" href={fileUrl(item.path)} target="_blank" rel="noreferrer" title="Open the file at full size in its own browser tab. It runs in a sandbox without access to Taskboard.">Open in new tab ↗</a>
             {item.version > 1 && !isHtml(item.name) && <button className={`btn ${compare ? 'on' : ''}`} onClick={() => setCompare(c => !c)}>{compare ? `Show v${item.version} only` : `Compare v${item.version - 1} → v${item.version}`}</button>}
             <span style={{ flex: 1 }} />
             {item.dismissedAt ? <button className="btn" onClick={() => act(send('POST', `/api/review/${item.id}/restore`))}>Restore to inbox</button> : item.state === 'accepted'
@@ -236,7 +236,7 @@ export function InboxPage({ tasks, open, documentLink }: { tasks: Task[]; open: 
           </div>}
         </header>
 
-        <div className="rv-body">
+        <div className={`rv-body ${isHtml(item.name) ? 'html' : ''}`}>
           <div className="rv-doc" ref={docRef} onMouseUp={onMouseUp}>
             {text === null && <div className="empty">Loading the document…</div>}
             {text !== null && isHtml(item.name) && <iframe className="rv-frame" sandbox="allow-scripts allow-popups" src={fileUrl(item.path)} title={item.name} />}

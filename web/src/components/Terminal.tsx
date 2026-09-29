@@ -10,6 +10,7 @@ import { useEffect, useRef } from 'react';
 import { taskboardKey } from '../keys';
 import { useStore } from '../api';
 import { openDocumentLink, type DocumentLink } from '../documentLinks';
+import { continues, findPaths, joinRows, type Row } from '../terminalPaths';
 
 const cssVar = (n: string, fallback: string) => getComputedStyle(document.documentElement).getPropertyValue(n).trim() || fallback;
 
@@ -60,8 +61,6 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
       if (event.type === 'click') activeLink();
     };
     for (const type of ['mousedown', 'mouseup', 'click'] as const) el.addEventListener(type, onModifiedMouse, true);
-    const pathPattern = /(?:~\/AgentVault\/tasks\/|\/(?:[^\s"'<>]+\/)*tasks\/|(?:\.\/)?(?:inbox|outbox)\/)[^\s"'<>`]+/g;
-    const quotedPathPattern = /(["'`])((?:~\/AgentVault\/tasks\/|\/[^\r\n"'`]*?\/tasks\/|(?:\.\/)?(?:inbox|outbox)\/)[^\r\n"'`]+)\1/g;
     const taskPattern = /(?:^|[\s(])(#\d+|task-\d+)(?=$|[\s),.;])/g;
     const linkCache = new Map<string, Promise<DocumentLink | null>>();
     const lookup = (path: string, fresh = false) => {
@@ -76,16 +75,16 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
     };
     const provider = taskId && !session ? term.registerLinkProvider({ provideLinks(y, callback) {
       const buffer = term.buffer.active;
+      // the rows around y that one path can run over: soft wraps, and rows that Claude Code or tmux broke (terminalPaths.ts)
+      const row = (i: number): Row | null => { const line = buffer.getLine(i); return line ? { text: line.translateToString(false), wrapped: line.isWrapped } : null; };
       let first = y - 1, last = y - 1;
-      while (first > 0 && buffer.getLine(first)?.isWrapped) first--;
-      while (buffer.getLine(last + 1)?.isWrapped && last - first < 30) last++;
-      const lines = Array.from({ length: last - first + 1 }, (_, i) => buffer.getLine(first + i)?.translateToString(i < last - first ? false : true) || '');
-      const content = lines.join('');
-      const range = (start: number, end: number) => ({ start: { x: start % term.cols + 1, y: first + Math.floor(start / term.cols) + 1 }, end: { x: (end - 1) % term.cols + 1, y: first + Math.floor((end - 1) / term.cols) + 1 } });
-      const found = [
-        ...[...content.matchAll(pathPattern)].map(m => ({ text: m[0].replace(/[),.;]+$/, ''), start: m.index! })),
-        ...[...content.matchAll(quotedPathPattern)].map(m => ({ text: m[2], start: m.index! + 1 })),
-      ];
+      for (let above = row(first - 1), here = row(first); above && here && continues(above.text, here) && last - first < 30; here = above, above = row(--first - 1));
+      for (let here = row(last), below = row(last + 1); here && below && continues(here.text, below) && last - first < 30; here = below, below = row(++last + 1));
+      const joined = joinRows(Array.from({ length: last - first + 1 }, (_, i) => row(first + i)!));
+      const content = joined.text;
+      const cell = (offset: number) => ({ x: joined.cells[offset].col + 1, y: first + joined.cells[offset].row + 1 });
+      const range = (start: number, end: number) => ({ start: cell(start), end: cell(end - 1) });
+      const found = findPaths(joined);
       const refs = [...content.matchAll(taskPattern)].map(m => ({ text: m[1], start: m.index! + m[0].indexOf(m[1]) }));
       const refLinks: ILink[] = [];
       for (const ref of refs) {
@@ -100,11 +99,13 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
       }
       if (!found.length) { callback(refLinks); return; }
       Promise.all(found.map(async match => {
-        const doc = await lookup(match.text);
-        if (!doc) return null;
-        return { range: range(match.start, match.start + match.text.length), text: match.text,
-          activate: (event: MouseEvent) => { if (modified(event)) void lookup(match.text, true).then(now => now && openDocumentLink(now)); },
-          hover: () => { activeLink = () => { void lookup(match.text, true).then(now => now && openDocumentLink(now)); }; drawUnderline(range(match.start, match.start + match.text.length)); el.title = `${mac ? 'Command' : 'Control'}-click to open in Taskboard`; },
+        let path: { text: string; end: number } | null = null;
+        for (const candidate of match.candidates) if (await lookup(candidate.text)) { path = candidate; break; }
+        if (!path) return null;
+        const text = path.text, where = range(match.start, path.end);
+        return { range: where, text,
+          activate: (event: MouseEvent) => { if (modified(event)) void lookup(text, true).then(now => now && openDocumentLink(now)); },
+          hover: () => { activeLink = () => { void lookup(text, true).then(now => now && openDocumentLink(now)); }; drawUnderline(where); el.title = `${mac ? 'Command' : 'Control'}-click to open in Taskboard`; },
           leave: () => { activeLink = null; underline.replaceChildren(); el.title = ''; },
         } satisfies ILink;
       })).then(paths => {
