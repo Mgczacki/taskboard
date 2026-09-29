@@ -22,6 +22,8 @@ import * as accounts from './accounts.ts';
 import * as external from './external.ts';
 import * as machines from './machines.ts';
 import * as machine from './machine.ts';
+import * as trust from './trust.ts';
+import * as agyReview from './agy-review.ts';
 import { acquire } from './lock.ts';
 import { ROLE, installRuntimeFiles, refuseReason } from './instance.ts';
 import { hostname } from 'node:os';
@@ -78,9 +80,17 @@ app.post('/api/hooks/usage', (req, res) => {
   }
   res.json({});
 });
-app.post('/api/hooks/antigravity', (req, res) => {
+app.post('/api/hooks/antigravity', async (req, res) => {
   if (!tokenOk(req)) return res.status(401).end();
-  res.json(events.antigravityEvent(req.body.taskId, String(req.body.event || ''), req.body.input || {}));
+  const taskId = String(req.body.taskId || '');
+  const event = String(req.body.event || '');
+  const input = req.body.input || {};
+  const result = events.antigravityEvent(taskId, event, input);
+  if (event === 'PreToolUse' && machine.get().permissions.autoReview) {
+    const t = store.get(taskId);
+    if (t?.agent === 'antigravity') return res.json({ output: await agyReview.review(t, input) });
+  }
+  res.json(result);
 });
 // Quota from the Antigravity status line of a Taskboard session: one bucket per model family ("gemini-weekly",
 // "3p-weekly"), each with remaining_fraction (1 = unused) and reset_time. Stored on that task's account.
@@ -177,9 +187,11 @@ app.get('/api/info', (_req, res) => res.json(info()));
 app.patch('/api/info', async (req, res) => {
   if (!req.get('origin')) return res.status(403).json({ error: 'Machine settings are changed on the dashboard.' });
   const before = JSON.stringify(machine.get());
-  const { name, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval, askAccount, askModel } = req.body;
+  const { name, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, askAccount, askModel, reviewAccount, reviewModel } = req.body;
   if (askAccount && accounts.get(askAccount)?.agent !== 'claude') return res.status(400).json({ error: 'Pick a Claude Code account for questions.' });
-  machine.update({ name, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval, askAccount, askModel });
+  if (reviewAccount && accounts.get(reviewAccount)?.agent !== 'claude') return res.status(400).json({ error: 'Pick a Claude Code account for auto review.' });
+  machine.update({ name, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, askAccount, askModel, reviewAccount, reviewModel });
+  if (trustWorkspaces === false) trust.restore();
   // the running controller picks up a new name or Remote Control setting at its next restart, which keepController()
   // does as soon as it is between turns
   void before;
