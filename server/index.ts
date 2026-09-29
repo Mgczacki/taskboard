@@ -22,6 +22,8 @@ import * as accounts from './accounts.ts';
 import * as external from './external.ts';
 import * as machines from './machines.ts';
 import * as machine from './machine.ts';
+import * as trust from './trust.ts';
+import * as agyReview from './agy-review.ts';
 import { acquire } from './lock.ts';
 import { ROLE, installRuntimeFiles, refuseReason } from './instance.ts';
 import { hostname } from 'node:os';
@@ -29,6 +31,7 @@ import WebSocket from 'ws';
 import { mountReview, pendingFor } from './review.ts';
 import { attach } from './pty.ts';
 import * as store from './store.ts';
+import * as stats from './stats.ts';
 import * as tmux from './tmux.ts';
 
 const execFileP = promisify(execFile);
@@ -71,23 +74,31 @@ app.post('/api/hooks/claude', (req, res) => {
 app.post('/api/hooks/usage', (req, res) => {
   if (!tokenOk(req)) return res.status(401).end();
   const t = store.get(String(req.body.taskId || '')); const rl = req.body.rate_limits || {};
-  if (t) {
+  if (t && t.agent === 'claude' && !events.movingTasks.has(t.id)) {
     const w = (label: string, x: any) => x && typeof x.used_percentage === 'number' ? [{ label, usedPct: Math.round(x.used_percentage), resetsAt: x.resets_at ? x.resets_at * 1000 : undefined }] : [];
     const windows = [...w('5-hour', rl.five_hour), ...w('weekly', rl.seven_day)];
     if (windows.length) accounts.setUsage(t.account || accounts.defaultFor(t.agent).id, { windows, at: new Date().toISOString(), source: 'Claude Code status line' });
   }
   res.json({});
 });
-app.post('/api/hooks/antigravity', (req, res) => {
+app.post('/api/hooks/antigravity', async (req, res) => {
   if (!tokenOk(req)) return res.status(401).end();
-  res.json(events.antigravityEvent(req.body.taskId, String(req.body.event || ''), req.body.input || {}));
+  const taskId = String(req.body.taskId || '');
+  const event = String(req.body.event || '');
+  const input = req.body.input || {};
+  const result = events.antigravityEvent(taskId, event, input);
+  if (event === 'PreToolUse' && machine.get().permissions.autoReview) {
+    const t = store.get(taskId);
+    if (t?.agent === 'antigravity') return res.json({ output: await agyReview.review(t, input) });
+  }
+  res.json(result);
 });
 // Quota from the Antigravity status line of a Taskboard session: one bucket per model family ("gemini-weekly",
 // "3p-weekly"), each with remaining_fraction (1 = unused) and reset_time. Stored on that task's account.
 app.post('/api/hooks/agy-usage', (req, res) => {
   if (!tokenOk(req)) return res.status(401).end();
   const t = store.get(String(req.body.taskId || '')); const q = req.body.quota || {};
-  if (t) {
+  if (t && t.agent === 'antigravity' && !events.movingTasks.has(t.id)) {
     const windows = Object.entries(q).filter(([, w]: [string, any]) => typeof w?.remaining_fraction === 'number')
       .map(([k, w]: [string, any]) => ({ label: k.replace(/-/g, ' '), usedPct: Math.round((1 - w.remaining_fraction) * 100), resetsAt: Date.parse(w.reset_time) || undefined }));
     if (windows.length) accounts.setUsage(t.account || accounts.defaultFor(t.agent).id, { windows, at: new Date().toISOString(), source: 'Antigravity status line', plan: req.body.plan || undefined });
@@ -128,6 +139,9 @@ async function guarded(req: express.Request, res: express.Response, summary: str
   res.status(202).json({ approval: a });
 }
 app.get('/api/approvals', (_req, res) => res.json(approvals.all()));
+app.get('/api/stats', (req, res) => {
+  try { res.json(stats.get(String(req.query.timeZone || 'UTC'))); } catch { res.status(400).json({ error: 'Invalid time zone.' }); }
+});
 app.get('/api/approvals/:id', (req, res) => { const a = approvals.get(req.params.id); a ? res.json(a) : res.status(404).end(); });
 app.post('/api/approvals/:id/:decision', async (req, res) => {
   // only you, from the dashboard, can decide
@@ -177,9 +191,15 @@ app.get('/api/info', (_req, res) => res.json(info()));
 app.patch('/api/info', async (req, res) => {
   if (!req.get('origin')) return res.status(403).json({ error: 'Machine settings are changed on the dashboard.' });
   try {
-    const { name, routingRules, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval, askAccount, askModel } = req.body;
-    if (askAccount && accounts.get(askAccount)?.agent !== 'claude') return res.status(400).json({ error: 'Pick a Claude Code account for questions.' });
-    machine.update({ name, routingRules, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval, askAccount, askModel });
+    const { name, routingRules, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, askAgent, askAccount, askModel, reviewAccount, reviewModel } = req.body;
+    if (askAgent && !['claude', 'codex'].includes(askAgent)) return res.status(400).json({ error: 'Antigravity does not have verified read-only Ask controls.' });
+    const agent = askAgent || machine.get().ask.agent;
+    if (askAccount && accounts.get(askAccount)?.agent !== agent) return res.status(400).json({ error: `Pick a ${agent} account for questions.` });
+    if (askModel && (typeof askModel !== 'string' || !(agent === 'claude' ? ['sonnet', 'haiku', 'opus'].includes(askModel) : /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(askModel))))
+      return res.status(400).json({ error: 'Pick a valid model for questions.' });
+    if (reviewAccount && accounts.get(reviewAccount)?.agent !== 'claude') return res.status(400).json({ error: 'Pick a Claude Code account for auto review.' });
+    machine.update({ name, routingRules, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, askAgent, askAccount, askModel, reviewAccount, reviewModel });
+    if (trustWorkspaces === false) trust.restore();
     res.json(info());
   } catch (e) { fail(res, e); }
 });
@@ -267,7 +287,15 @@ app.post('/api/accounts/:id/reset', async (req, res) => {
   if (a.agent === 'antigravity') return res.json({ open: 'https://antigravity.google/docs/cli/credits/', note: 'Antigravity has no limit reset. Its quota resets on its own; run /credits in agy to see or buy AI credits.' });
   try { res.json({ session: await agents.utilSession('reset', a) }); } catch (e) { fail(res, e); }
 });
-app.post('/api/tasks/:id/move-account', async (req, res) => { const t = store.get(req.params.id); if (!t) return res.status(404).end(); try { res.json(view(await agents.moveAccount(t, req.body.account))); } catch (e) { fail(res, e); } });
+app.post('/api/tasks/:id/move-account', async (req, res) => {
+  const t = store.get(req.params.id); if (!t) return res.status(404).end();
+  const account = accounts.get(req.body.account);
+  if (!account) return fail(res, new Error('Unknown account.'));
+  if (req.body.instruction !== undefined && typeof req.body.instruction !== 'string') return fail(res, new Error('The move instruction must be text.'));
+  const instruction = req.body.instruction || '';
+  await guarded(req, res, `move #${t.num} to ${account.name}`, `Continue with ${agents.agentName(account.agent)} in ${t.cwd}.\n${instruction}`, 'move',
+    async () => view(await agents.moveAccount(t, account.id, instruction)), r => `Moved #${r.num} to ${account.name} (${r.agent}).`);
+});
 
 // ---------- groups ----------
 app.get('/api/groups', (_req, res) => res.json(groups.all()));

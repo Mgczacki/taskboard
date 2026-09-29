@@ -1,8 +1,7 @@
-// Starting and resuming agents. Taskboard never changes your global Claude Code or Codex settings:
-// hooks are passed per session with `claude --settings <file>` and `codex -c notify=[...]`. Antigravity (agy) has no
-// such flag, so Taskboard installs the agy plugin "taskboard" and a status line command once (see installAgyPlugin);
-// both do nothing in agy sessions that Taskboard did not start.
-import { execFile, execFileSync } from 'node:child_process';
+// Starting and resuming agents. Claude Code hooks use --settings, and Codex hooks use -c.
+// Taskboard records folder trust in each CLI's account settings. Codex also needs the exact guard hook hash in its
+// account config, because its hook trust check does not read -c overrides. Antigravity (agy) uses a Taskboard plugin.
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
@@ -14,6 +13,10 @@ import type { Agent, Task } from './store.ts';
 import * as tmux from './tmux.ts';
 import * as accounts from './accounts.ts';
 import * as machine from './machine.ts';
+import { buildHandoff } from './handoff.ts';
+import { transcriptFor } from './importer.ts';
+import { movingTasks, resetSessionEvents } from './events.ts';
+import * as workspaceTrust from './trust.ts';
 
 const exec = promisify(execFile);
 
@@ -71,7 +74,7 @@ export function installAgyPlugin() {
   const h = (e: string) => ({ type: 'command', command: agyCmd('agy-hook.mjs', e), timeout: 10 });
   const hooks = { taskboard: {
     PreInvocation: [h('PreInvocation')], Stop: [h('Stop')],
-    PreToolUse: [{ matcher: '*', hooks: [h('PreToolUse')] }, { matcher: 'run_command', hooks: [{ type: 'command', command: agyCmd('guard.mjs', '--agy'), timeout: 5 }] }],
+    PreToolUse: [{ matcher: '*', hooks: [{ type: 'command', command: agyCmd('agy-hook.mjs', 'PreToolUse'), timeout: 50 }] }, { matcher: 'run_command', hooks: [{ type: 'command', command: agyCmd('guard.mjs', '--agy'), timeout: 5 }] }],
     PostToolUse: [{ matcher: '*', hooks: [h('PostToolUse')] }],
   } };
   const plugin = { name: 'taskboard', description: 'Reports the state of agy sessions that Taskboard started to the Taskboard server. It does nothing in other agy sessions.' };
@@ -139,6 +142,7 @@ Use the \`tb\` command (run \`tb\` alone for help). Tasks are numbers like 12 or
   ([{"agent","folder","title","prompt","account"?,"model"?,"worktree"?,"group"?}]) and start them with one \`tb new --batch plans/<name>.json\`, each in its own worktree and one group.
 - Follow agents you started with \`tb wait <task…> --until any\`. When one finishes, read it with \`tb result <task>\` and tell the user in two or three lines.
   When one needs input, say what it asks; answer it only if the user already told you the answer.
+- List accounts and usage with \`tb accounts\`. When the user asks, move a task with \`tb move <task> --account <id>\`.\n  The task keeps its files. A different agent receives a handoff and continues the existing work.
 - Organise tasks into groups with \`tb group add|rm <group> <task…>\`; move documents with \`tb doc send <task>:<file> <task>\`.
 
 ## Rules
@@ -171,17 +175,14 @@ export async function startController(): Promise<Task> {
   // never closed on that basis (a listing problem once closed a running controller)
   if ((await tmux.hasSession(t.session)) !== false) { const s = (await tmux.listSessions())?.find(x => x.name === t!.session); if (!s || !s.dead) return t; await tmux.killSession(t.session); }
   const resume = t.agent === 'claude' ? !!t.transcript : !!t.sessionId;
+  if (machine.get().permissions.trustWorkspaces) workspaceTrust.trust(t);
   launching.add(t.id); store.launchedAt.set(t.id, Date.now());
   try {
     const c = t.agent === 'claude'
       // named after this machine; with Remote Control on it can be reached from claude.ai/code and the Claude mobile app
-      ? ['claude', '--settings', CONTROLLER_SETTINGS_FILE, ...(resume && t.sessionId ? ['--resume', t.sessionId] : t.sessionId ? ['--session-id', t.sessionId] : []),
+      ? ['claude', '--settings', CONTROLLER_SETTINGS_FILE, '--permission-mode', machine.get().permissions.autoReview ? 'auto' : 'default', ...(resume && t.sessionId ? ['--resume', t.sessionId] : t.sessionId ? ['--session-id', t.sessionId] : []),
         '--name', machine.controllerLabel(), ...(machine.get().controller.remoteControl ? ['--remote-control', machine.controllerLabel()] : [])]
-      // Antigravity: no approval prompts for the controller either
-      : t.agent === 'antigravity' ? [...command(t, null, !!t.sessionId), '--dangerously-skip-permissions']
-      // Codex: tb talks to the Taskboard server on 127.0.0.1, which its sandbox blocks unless network access is on
-      // no Codex approval prompts for the controller: Taskboard's Settings page decides what it may do
-      : [...command(t, null, !!t.sessionId), '-c', 'sandbox_workspace_write.network_access=true', '-a', 'never'];
+      : command(t, null, !!t.sessionId, await codexHookTrust(t));
     await tmux.newSession(t.session, CONTROLLER_DIR, baseEnv(t), c, async () => { await ensureTmuxConfigured(); });
     await ensureTmuxConfigured();
   } finally { launching.delete(t.id); }
@@ -238,21 +239,63 @@ function baseEnv(t: Task): Record<string, string> {
   return env;
 }
 
+// Keep this command identical across Taskboard servers. Codex identifies a hook from its command and settings.
+const codexHookCommand = () => 'node "$TB_HOOKS_DIR/guard.mjs"';
+const codexHookSetting = () => `hooks.PreToolUse=[{matcher="^Bash$",hooks=[{type="command",command=${JSON.stringify(codexHookCommand())},timeout=5}]}]`;
+async function codexHookTrust(t: Task): Promise<string[]> {
+  if (t.agent !== 'codex') return [];
+  return new Promise((resolve, reject) => {
+    const child = spawn('codex', ['app-server', '-c', codexHookSetting()], { cwd: t.cwd, env: { ...process.env, ...accounts.envFor(accounts.get(t.account)) }, stdio: ['pipe', 'pipe', 'ignore'] });
+    let buffer = '', done = false;
+    const finish = (error?: Error, flags?: string[]) => {
+      if (done) return;
+      done = true; clearTimeout(timer); child.kill('SIGTERM');
+      if (error) reject(error); else resolve(flags || []);
+    };
+    const send = (value: unknown) => child.stdin.write(JSON.stringify(value) + '\n');
+    const timer = setTimeout(() => finish(new Error('Codex did not list the Taskboard guard hook.')), 12000);
+    child.on('error', error => finish(error));
+    child.on('close', () => { if (!done) finish(new Error('Codex stopped before listing the Taskboard guard hook.')); });
+    child.stdout.on('data', chunk => {
+      buffer += chunk;
+      const lines = buffer.split('\n'); buffer = lines.pop() || '';
+      for (const line of lines) {
+        let msg: any; try { msg = JSON.parse(line); } catch { continue; }
+        if (msg.id === 1) {
+          send({ method: 'initialized' });
+          send({ id: 2, method: 'hooks/list', params: { cwds: [t.cwd] } });
+        }
+        if (msg.id === 2) {
+          const hooks = (msg.result?.data || []).flatMap((row: any) => row.hooks || []);
+          const guard = hooks.find((hook: any) => hook.source === 'sessionFlags' && hook.eventName === 'preToolUse' && hook.command === codexHookCommand());
+          if (!guard?.key || !/^sha256:[a-f0-9]{64}$/.test(guard.currentHash || '')) return finish(new Error('Codex did not report the Taskboard guard hook hash.'));
+          try { workspaceTrust.trustCodexHook(t, guard.key, guard.currentHash); }
+          catch (error) { return finish(error as Error); }
+          return finish();
+        }
+      }
+    });
+    send({ id: 1, method: 'initialize', params: { clientInfo: { name: 'taskboard', version: '0.1' } } });
+  });
+}
+
 function codexFlags(): string[] {
   return [
     '-c', `notify=${JSON.stringify(['node', CODEX_NOTIFY_SCRIPT])}`,
     // ask Codex's terminal UI to ring the bell when it waits for approval; tmux turns the bell into an event
     '-c', 'tui.notifications=["approval-requested"]',
     '-c', 'tui.notification_method="bel"',
+    '-c', codexHookSetting(),
     // inline mode: output stays in the terminal's history, so it can be scrolled (the full-screen mode has none)
     '--no-alt-screen',
   ];
 }
 
-function command(t: Task, prompt: string | null, resume: boolean): string[] {
+function command(t: Task, prompt: string | null, resume: boolean, codexTrust: string[] = []): string[] {
   if (t.agent === 'claude') {
     const c = ['claude', '--settings', CLAUDE_SETTINGS_FILE, '--add-dir', VAULT, '--append-system-prompt', taskInstructions(t)];
     if (t.model) c.push('--model', t.model);
+    c.push('--permission-mode', machine.get().permissions.autoReview ? 'auto' : 'default');
     if (resume && t.sessionId) c.push('--resume', t.sessionId);
     else if (t.sessionId) c.push('--session-id', t.sessionId);
     if (prompt) c.push(prompt);
@@ -262,7 +305,7 @@ function command(t: Task, prompt: string | null, resume: boolean): string[] {
     // agy has no flag for a system prompt: the instructions go before the first prompt, and a resumed conversation
     // already has them. The controller reads AGENTS.md in its folder instead. --add-dir lets it write the task's log.
     // the real path: agy compares real paths, and a vault behind a symbolic link (/var → /private/var) is "outside workspace"
-    const c = [agyBin(), '--add-dir', realpathSync(VAULT)];
+    const c = [agyBin(), '--add-dir', realpathSync(VAULT), ...(machine.get().permissions.autoReview ? ['--sandbox'] : [])];
     if (t.model) c.push('--model', t.model);
     if (resume && t.sessionId) return [...c, '--conversation', t.sessionId];
     if (prompt) {
@@ -271,7 +314,8 @@ function command(t: Task, prompt: string | null, resume: boolean): string[] {
     }
     return c;
   }
-  const c = ['codex', ...codexFlags()];
+  const c = ['codex', ...codexFlags(), ...codexTrust];
+  c.push('-a', 'on-request', '-s', 'workspace-write', '--add-dir', VAULT, '-c', 'sandbox_workspace_write.network_access=true', '-c', `approvals_reviewer="${machine.get().permissions.autoReview ? 'auto_review' : 'user'}"`);
   if (t.model) c.push('-m', t.model);
   // Codex has no flag that appends to its system prompt. developer_instructions is a config value, so it is written as a
   // TOML string (a JSON string is also a valid TOML basic string). The controller reads AGENTS.md in its folder instead.
@@ -326,6 +370,7 @@ export async function startTask(n: NewTask): Promise<Task> {
 }
 
 export async function resumeTask(t: Task, force = false): Promise<Task> {
+  if (launching.has(t.id)) throw new Error('This task is already starting or moving.');
   // An imported session that is still open in another terminal must be exited there first,
   // otherwise two processes would write to the same conversation.
   if (t.openElsewhere && !force) {
@@ -340,6 +385,10 @@ export async function resumeTask(t: Task, force = false): Promise<Task> {
     if (!s) throw new Error('Could not check the task\'s tmux session (tmux did not answer). Try again in a moment.');
     if (!s.dead) { launching.delete(t.id); return store.update(t.id, { status: 'idle', statusSource: 'Its session was still running.' })!; }
     await tmux.killSession(t.session);
+  }
+  if (t.handoff && (!t.sessionId || (t.agent === 'claude' && !t.transcript))) {
+    await launch(t, handoffPrompt(t.handoff), false);
+    return store.update(t.id, { status: 'working', statusSource: 'Started again with the saved handoff.' })!;
   }
   if (!t.sessionId) throw new Error('No session id recorded for this task, so it cannot be resumed.');
   await launch(t, null, true);
@@ -357,14 +406,16 @@ async function launch(t: Task, prompt: string | null, resume: boolean) {
   try { await launchInner(t, prompt, resume); } finally { launching.delete(t.id); }
 }
 async function launchInner(t: Task, prompt: string | null, resume: boolean) {
-  await tmux.newSession(t.session, t.cwd, baseEnv(t), command(t, prompt, resume), async () => { await ensureTmuxConfigured(); });
+  if (machine.get().permissions.trustWorkspaces) workspaceTrust.trust(t);
+  const codexTrust = await codexHookTrust(t);
+  await tmux.newSession(t.session, t.cwd, baseEnv(t), command(t, prompt, resume, codexTrust), async () => { await ensureTmuxConfigured(); });
   await ensureTmuxConfigured();
   await tmux.pipeToFile(t.session, store.terminalLog(t.id));
 }
 
 // Turn a session started outside Taskboard into a task. It starts Suspended; opening it resumes the conversation here.
 export function importSession(c: { agent: Agent; sessionId: string; title: string; cwd: string; branch?: string; firstPrompt?: string; lastMessage?: string; updated: string; transcript?: string; running?: { pid: number; tty: string } }): Task {
-  if (store.all().some(t => t.sessionId === c.sessionId)) throw new Error(`Session ${c.sessionId} is already a task.`);
+  if (store.all().some(t => t.sessionId === c.sessionId || t.pastSessions?.includes(c.sessionId))) throw new Error(`Session ${c.sessionId} is already a task.`);
   const num = store.nextNum();
   const when = new Date(c.updated).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
   return store.create({
@@ -418,17 +469,85 @@ export async function setControllerAccount(toId: string): Promise<Task> {
   return startController();
 }
 
-// Move a Claude Code task to another account: copy its transcript into that account's folder and resume there.
-// Codex and Antigravity conversations cannot move (Antigravity has only one account: it signs in through the keychain).
-export async function moveAccount(t: Task, toId: string): Promise<Task> {
+// tmux limits command messages. Keep the full context in the saved file and pass a short reading instruction.
+function handoffPrompt(path: string): string {
+  if (!existsSync(path)) throw new Error('The saved handoff file is missing.');
+  return `Read the complete handoff file at ${JSON.stringify(path)} before doing any work. ` +
+    'It contains the original task and the latest user decisions. Continue the existing task from its last unfinished step. ' +
+    'Do not start again. Keep the existing files and worktree.';
+}
+
+// Claude Code can resume a copied conversation. Other transfers start with the saved task context.
+export async function moveAccount(task: Task, toId: string, instruction = ''): Promise<Task> {
+  const t = store.get(task.id);
+  if (!t) throw new Error('Task no longer exists.');
+  if (t.role === 'controller') throw new Error('Change the controller account on the Accounts page.');
   const to = accounts.get(toId), from = accounts.get(t.account) || accounts.defaultFor(t.agent);
-  if (!to || to.agent !== t.agent) throw new Error('Pick an account for the same agent.');
-  if (t.agent !== 'claude') throw new Error('Moving a session between accounts is only supported for Claude Code.');
-  if (!t.transcript) throw new Error('No transcript recorded for this task yet.');
-  accounts.copyClaudeSession(t.transcript, from, to);
-  await tmux.killSession(t.session);
-  store.update(t.id, { account: to.id, transcript: undefined, status: 'suspended', statusSource: `Moved from ${from.name} to ${to.name}.` });
-  return resumeTask(store.get(t.id)!, true);
+  if (!to) throw new Error('Unknown account.');
+  if (from.id === to.id) throw new Error('This task already uses that account.');
+  if (Buffer.byteLength(instruction) > 4000) throw new Error('The move instruction must be 4000 bytes or fewer.');
+  if (launching.has(t.id)) throw new Error('This task is already starting or moving.');
+  if (t.openElsewhere) throw new Error('Move this session here from its other terminal before changing accounts.');
+  if (!existsSync(t.cwd)) throw new Error('The task folder no longer exists.');
+  launching.add(t.id);
+  let stopped = false;
+  let old = { ...t };
+  try {
+    if (!(await accounts.status(to)).signedIn) throw new Error('Sign in to the target account first.');
+    old = { ...t }; // status checks may have waited while the old agent reported its session id
+    // Mark before stopping so late hooks from the old process cannot change the task.
+    movingTasks.add(t.id);
+    const present = await tmux.hasSession(t.session);
+    if (present === null) throw new Error('Could not check the old session. Try again.');
+    if (present) await tmux.tmux('kill-session', '-t', '=' + t.session);
+    stopped = true;
+    pendingPrompt.delete(t.id);
+    const transcript = t.transcript || (t.sessionId ? transcriptFor(t.agent, t.sessionId, from.dir) : undefined);
+    const resume = t.agent === 'claude' && to.agent === 'claude' && !!t.sessionId && !!transcript && existsSync(transcript);
+    let copied: string | undefined, handoff: string | undefined, prompt: string | null = null;
+    if (resume) {
+      copied = accounts.copyClaudeSession(transcript!, from, to);
+      prompt = instruction || 'Continue the existing task from the last unfinished step. Do not start again.';
+    } else {
+      prompt = await buildHandoff({ ...t, transcript }, agentName(to.agent), instruction);
+      const dir = join(store.taskDir(t.id), 'handoffs'); mkdirSync(dir, { recursive: true });
+      handoff = join(dir, `${Date.now()}-${randomUUID()}.md`);
+      writeFileSync(handoff, prompt, { mode: 0o600 });
+      prompt = handoffPrompt(handoff);
+    }
+    const source = `Moved from ${from.name} (${old.agent}) to ${to.name} (${to.agent}). ${resume ? 'Resumed the conversation.' : 'Started a new conversation with a handoff.'}`;
+    store.update(t.id, {
+      agent: to.agent, account: to.id, transcript: copied, handoff,
+      sessionId: resume ? old.sessionId : to.agent === 'claude' ? randomUUID() : undefined,
+      pastSessions: !resume && old.sessionId ? [...new Set([...(old.pastSessions || []), old.sessionId])] : old.pastSessions,
+      status: 'working', statusSource: source, stopReason: undefined, ask: undefined, now: undefined,
+      interrupted: undefined, restartWhenDone: undefined, moveWhenDone: undefined, unscrollable: undefined,
+    });
+    resetSessionEvents(t.id);
+    store.launchedAt.set(t.id, Date.now());
+    movingTasks.delete(t.id);
+    await launchInner(store.get(t.id)!, prompt, resume);
+    store.appendLog(t.id, { did: source, next: 'Continue the existing work on the target account.' });
+    // A startup hook may already have reported progress. Keep that status and record the move in its source.
+    const current = store.get(t.id)!;
+    return store.update(t.id, { statusSource: current.statusSource === source ? source : `${source} ${current.statusSource || ''}` })!;
+  } catch (e) {
+    if (stopped) {
+      movingTasks.add(t.id);
+      // A partial launch must end before the old fields are restored.
+      await tmux.killSession(t.session);
+      pendingPrompt.delete(t.id);
+      resetSessionEvents(t.id);
+      const error = e instanceof Error ? e.message : String(e);
+      store.update(t.id, {
+        ...old, handoff: old.handoff, transcript: old.transcript, sessionId: old.sessionId,
+        pastSessions: old.pastSessions, account: old.account,
+        status: 'suspended', statusSource: `Move failed: ${error}. The old account and conversation are kept. Resume to continue.`,
+      });
+      store.appendLog(t.id, { did: `Move to ${to.name} failed: ${error}.`, next: 'Resume the old conversation or retry the move.' });
+    }
+    throw e;
+  } finally { launching.delete(t.id); movingTasks.delete(t.id); }
 }
 
 // Short-lived terminals for signing in and limit resets. Their tmux names start with util- so the UI can attach.

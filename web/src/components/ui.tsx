@@ -1,6 +1,9 @@
 import type { Status, Task } from '../api';
 import { AGENT_NAME, ATTN, STATUS_LABEL, fmtWait } from '../api';
+import { keyLabel } from '../keys';
 
+// the first key of an action in keys.ts (nothing when the user removed its keys); the caller calls useKeymap()
+export const Kbd = ({ id }: { id: string }) => keyLabel(id) ? <kbd>{keyLabel(id)}</kbd> : null;
 export const Dot = ({ s }: { s: Status }) => <span className={`dot ${s}`} title={STATUS_LABEL[s]} />;
 export const AgentChip = ({ a }: { a: Task['agent'] }) => <span className={`chip agent-${a}`}>{AGENT_NAME[a]}</span>;
 export const ByController = ({ t }: { t: Task }) => t.parent === 'controller' ? <span className="chip byctl" title="Started by the controller with tb new">↳ Controller</span> : null;

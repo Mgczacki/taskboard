@@ -20,7 +20,7 @@ try {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'x-taskboard-token': token },
     body: JSON.stringify({ taskId, event, input: JSON.parse(input || '{}') }),
-    signal: AbortSignal.timeout(4000),
+    signal: AbortSignal.timeout(event === 'PreToolUse' ? 48000 : 4000),
   });
   const out = await res.json();
   if (out && out.output) process.stdout.write(JSON.stringify(out.output));

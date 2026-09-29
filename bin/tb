@@ -52,8 +52,10 @@ const HELP = `tb — Taskboard command line
   tb tail <task> [-n lines]          last lines of the agent's terminal
   tb result <task>                   the agent's last message and its outbox documents
   tb wait <task…> [--until done|needs-you|any] [--timeout seconds]
+  tb accounts [--json]              accounts with sign-in state, usage, and routing rules
+  tb move <task> --account <id> [--instruction "<text>"]
+                                     continue the task on that account, with a handoff when needed
   tb send <task> "<text>"            type text into the agent's terminal and press Enter
-  tb accounts [--json]               account usage and routing rules
   tb new --agent claude|codex|antigravity --folder <path> [--account <id>] [--model <name>] [--title <t>] [--worktree <branch>] [--group <name>] "<prompt>"
   tb new --batch <plan.json>         [{ agent, folder, title, prompt, account?, model?, worktree?, group? }, …]
   tb group list | tb group add <group> <task…> | tb group rm <group> <task…>
@@ -84,9 +86,16 @@ switch (cmd) {
   }
   case 'accounts': {
     const list = await call('GET', '/api/accounts');
-    const info = await call('GET', '/api/info');
-    if (has('--json')) console.log(JSON.stringify({ routingRules: info.settings.routingRules, accounts: list }, null, 2));
-    else console.log(`Machine rules: ${info.settings.routingRules || '(none)'}\n` + list.map(a => `${a.id} (${a.agent}): ${a.status.signedIn ? 'signed in' : 'not signed in'}; ${a.running}/${a.maxParallel} tasks; ${a.limited ? 'limited; ' : ''}${(a.usage?.windows || []).map(w => `${w.label} ${w.resetsAt && w.resetsAt < Date.now() ? 'reset' : w.usedPct + '%'}`).join(', ') || 'usage unknown'}; as of ${a.usage?.at || 'unknown'}${a.routingRules ? `; rule: ${a.routingRules}` : ''}`).join('\n'));
+    const json = has('--json');
+    if (json) console.log(JSON.stringify(list, null, 2));
+    else {
+      const info = await call('GET', '/api/info');
+      const lines = list.map(a => {
+        const windows = (a.usage?.windows || []).map(w => `${w.label} ${w.resetsAt && w.resetsAt < Date.now() ? 'reset' : w.usedPct + '%'}${w.resetsAt ? ` (resets ${new Date(w.resetsAt).toISOString()})` : ''}`).join(', ');
+        return `${a.id} (${a.name}; ${a.agent}): ${a.status.signedIn ? 'signed in' : 'not signed in'}; ${a.running}/${a.maxParallel} tasks; ${a.limited ? 'limited; ' : ''}${windows || 'usage unknown'}; as of ${a.usage?.at || 'unknown'}${a.routingRules ? `; rule: ${a.routingRules}` : ''}`;
+      });
+      console.log(`Machine rules: ${info.settings.routingRules || '(none)'}\n${lines.join('\n')}`);
+    }
     break;
   }
   case 'show': {
@@ -122,6 +131,14 @@ switch (cmd) {
       if (Date.now() - start > timeout) { console.log('tb wait: timed out\n' + ts.map(line).join('\n')); process.exit(2); }
       await sleep(3000);
     }
+    break;
+  }
+  case 'move': {
+    const account = flag('--account'), instruction = flag('--instruction', '');
+    if (!account || args.length !== 2 || args[1].startsWith('--')) { console.error('Usage: tb move <task> --account <id> [--instruction "<text>"]'); process.exit(1); }
+    const t = await task(args[1]);
+    const moved = await call('POST', `/api/tasks/${t.id}/move-account`, { account, instruction });
+    if (!moved.approved) console.log(`Moved #${moved.num} to ${moved.account} (${moved.agent}). ${moved.statusSource}`);
     break;
   }
   case 'send': { const t = await task(rest[0]); await call('POST', `/api/tasks/${t.id}/send`, { text: rest.slice(1).join(' ') }); console.log(`Sent to #${t.num}.`); break; }

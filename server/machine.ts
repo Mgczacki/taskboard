@@ -12,9 +12,10 @@ export interface MachineSettings {
   routingRules: string;
   controller: { autostart: boolean; remoteControl: boolean };
   // actions through `tb` that act on other tasks (new, send, set aside, archive): run at once, or wait for Approve
-  permissions: { controllerNeedsApproval: boolean; agentsNeedApproval: boolean };
-  // questions about a task (server/ask.ts): the Claude Code account and model of the separate agent
-  ask: { account: string; model: string };
+  permissions: { controllerNeedsApproval: boolean; agentsNeedApproval: boolean; trustWorkspaces: boolean; autoReview: boolean };
+  // questions about a task (server/ask.ts): the separate agent, account, and model
+  ask: { agent: 'claude' | 'codex'; account: string; model: string };
+  review: { account: string; model: string };
 }
 
 const FILE = join(TB_DIR, 'machine.json');
@@ -29,26 +30,35 @@ export const DEFAULT_ROUTING_RULES = `Use Claude Code or Codex for deep planning
 Use Antigravity for routine work. Do not use it for deep planning.
 When Claude's 5-hour or weekly usage exceeds 70%, use Codex for deep planning.
 Avoid accounts at their limit or running their maximum number of tasks.`;
-let settings: MachineSettings = { name: process.env.TASKBOARD_MACHINE_NAME || defaultName(), routingRules: DEFAULT_ROUTING_RULES, controller: { autostart: true, remoteControl: true }, permissions: { controllerNeedsApproval: false, agentsNeedApproval: true }, ask: { account: 'claude-default', model: 'sonnet' } };
+let settings: MachineSettings = { name: process.env.TASKBOARD_MACHINE_NAME || defaultName(), routingRules: DEFAULT_ROUTING_RULES, controller: { autostart: true, remoteControl: true }, permissions: { controllerNeedsApproval: false, agentsNeedApproval: true, trustWorkspaces: true, autoReview: true }, ask: { agent: 'claude', account: 'claude-default', model: 'sonnet' }, review: { account: 'claude-default', model: 'sonnet' } };
 if (existsSync(FILE)) {
   const saved = JSON.parse(readFileSync(FILE, 'utf8'));
-  settings = { ...settings, ...saved, controller: { ...settings.controller, ...saved.controller }, permissions: { ...settings.permissions, ...saved.permissions }, ask: { ...settings.ask, ...saved.ask } };
+  settings = { ...settings, ...saved, controller: { ...settings.controller, ...saved.controller }, permissions: { ...settings.permissions, ...saved.permissions }, ask: { ...settings.ask, ...saved.ask }, review: { ...settings.review, ...saved.review } };
 } else writeFileSync(FILE, JSON.stringify(settings, null, 2));
 
 export const get = () => settings;
 export const controllerLabel = () => `Taskboard controller · ${settings.name}`;
-export function update(patch: { name?: string; routingRules?: string; autostart?: boolean; remoteControl?: boolean; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; askAccount?: string; askModel?: string }) {
+export function update(patch: { name?: string; routingRules?: string; autostart?: boolean; remoteControl?: boolean; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string }) {
   if (patch.routingRules !== undefined) {
     if (typeof patch.routingRules !== 'string') throw new Error('routingRules must be text.');
     settings.routingRules = patch.routingRules.trim().slice(0, 1000);
   }
   if (patch.controllerNeedsApproval !== undefined) settings.permissions.controllerNeedsApproval = !!patch.controllerNeedsApproval;
   if (patch.agentsNeedApproval !== undefined) settings.permissions.agentsNeedApproval = !!patch.agentsNeedApproval;
+  if (patch.trustWorkspaces !== undefined) settings.permissions.trustWorkspaces = !!patch.trustWorkspaces;
+  if (patch.autoReview !== undefined) settings.permissions.autoReview = !!patch.autoReview;
   if (patch.name !== undefined && patch.name.trim()) settings.name = patch.name.trim().slice(0, 40);
   if (patch.autostart !== undefined) settings.controller.autostart = !!patch.autostart;
   if (patch.remoteControl !== undefined) settings.controller.remoteControl = !!patch.remoteControl;
+  if (patch.askAgent && patch.askAgent !== settings.ask.agent) {
+    settings.ask = patch.askAgent === 'claude'
+      ? { agent: 'claude', account: 'claude-default', model: 'sonnet' }
+      : { agent: 'codex', account: 'codex-default', model: 'gpt-5.6-sol' };
+  }
   if (patch.askAccount) settings.ask.account = patch.askAccount;
-  if (patch.askModel && ['sonnet', 'haiku', 'opus'].includes(patch.askModel)) settings.ask.model = patch.askModel;
+  if (patch.askModel) settings.ask.model = patch.askModel;
+  if (patch.reviewAccount) settings.review.account = patch.reviewAccount;
+  if (patch.reviewModel && ['sonnet', 'opus'].includes(patch.reviewModel)) settings.review.model = patch.reviewModel;
   writeFileSync(FILE, JSON.stringify(settings, null, 2));
   return settings;
 }

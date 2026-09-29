@@ -61,6 +61,8 @@ export function attach(ws: WebSocket, session: string, cols: number, rows: numbe
         const m = JSON.parse(s.slice(1));
         if (m.t === 'resize') { quiet(session); me.cols = m.cols; me.rows = m.rows; p.resize(Math.max(20, me.cols), Math.max(5, me.rows)); sizeWindow(session); }
         if (m.t === 'focus') use(session, me);
+        if (m.t === 'paste' && tmuxSync('display-message', '-p', '-t', '=' + session + ':', '#{pane_mode}').trim() === 'copy-mode')
+          tmuxSync('send-keys', '-X', '-t', '=' + session + ':', 'cancel');
       } catch { /* ignore malformed control message */ }
       return;
     }

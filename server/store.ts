@@ -20,8 +20,9 @@ export interface Task {
   worktree?: boolean;
   session: string;         // tmux session name
   sessionId?: string;      // Claude session id / Codex thread id / Antigravity conversation id, used to resume
-  pastSessions?: string[]; // session ids from before a /clear (Claude Code) or /new (Codex); kept out of the Import list
+  pastSessions?: string[]; // replaced session ids, including account moves; kept out of the Import list
   transcript?: string;
+  handoff?: string; // saved prompt for a replacement conversation, also used if startup needs a retry
   created: string;
   updated: string;
   statusAt: string;        // when the status last changed (drives "waiting 14 min")
@@ -95,7 +96,11 @@ export function update(id: string, patch: Partial<Task>): Task | undefined {
   const t = tasks.get(id); if (!t) return;
   const statusChanged = patch.status && patch.status !== t.status;
   Object.assign(t, patch, { updated: now() }, statusChanged ? { statusAt: now() } : {});
-  write(t); emit(t);
+  write(t);
+  if (statusChanged && t.status === 'archived' && t.role !== 'controller')
+    try { appendFileSync(join(TB_DIR, 'daily-archive-events.jsonl'), JSON.stringify({ id: t.id, at: t.statusAt }) + '\n'); }
+    catch (e) { console.error('could not record archive date', e); }
+  emit(t);
   return t;
 }
 
