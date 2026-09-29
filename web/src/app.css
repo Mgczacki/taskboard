@@ -314,9 +314,14 @@ table.keys td:nth-child(2) { white-space: nowrap; }
 .up { font: 12px var(--mono); text-align: right; }
 
 .ctl-box { display: grid; gap: 8px; margin: 4px 0 10px; padding: 12px; border: 1px solid var(--line); border-radius: 8px; }
-.ctl-box textarea, .routing-rule { width: 100%; box-sizing: border-box; background: var(--bg2); color: var(--text); border: 1px solid var(--line2); border-radius: 6px; padding: 7px 9px; font: inherit; }
+.ctl-box textarea, .routing-rule, .max-tasks { width: 100%; box-sizing: border-box; background: var(--bg2); color: var(--text); border: 1px solid var(--line2); border-radius: 6px; padding: 7px 9px; font: inherit; }
 .ctl-box textarea { resize: vertical; }
 .routing-rule { display: block; margin-top: 5px; font-size: 12px; }
+.max-tasks { width: 64px; display: inline-block; font-size: 12px; padding: 4px 6px; }
+.max-tasks.bad { border-color: var(--st-needs); }
+.max-cell .mono { font: 11.5px var(--mono); color: var(--dim); }
+.max-cell .sub { font-size: 11.5px; }
+.field-err { color: var(--st-needs); font-size: 11.5px; }
 .ctl-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .ctl-row input { width: 240px; padding: 4px 8px; }
 .rc-link { margin-left: auto; margin-right: 6px; text-decoration: none; font-size: 12px; }

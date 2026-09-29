@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import type { MachineInfo, MessageLevel, Task } from '../api';
 import { api, autoReload, confirmEnd, setAutoReload, setConfirmEnd } from '../api';
-import { ControllerBox, loadAccounts } from './Accounts';
+import { ControllerBox, MaxTasksInput, loadAccounts } from './Accounts';
 import { MessageLevels } from './MessageLevels';
 import type { Account } from './Accounts';
 import type { KeyAction } from '../keys';
@@ -16,8 +16,9 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
   const [askEnd, setAskEnd] = useState(confirmEnd());
   const [accts, setAccts] = useState<Account[]>([]);
   const [routingRules, setRoutingRules] = useState('');
+  const [applyAll, setApplyAll] = useState(false); // the confirmation for "Apply to all accounts" is open
   useEffect(() => { api.info().then(i => { setInfo(i); setRoutingRules(i.settings.routingRules || ''); }).catch(e => setErr(String(e.message || e))); loadAccounts().then(setAccts).catch(() => {}); }, []);
-  const save = async (p: { routingRules?: string; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; confirmLowerControl?: boolean }) => {
+  const save = async (p: { routingRules?: string; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; confirmLowerControl?: boolean; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean }) => {
     setBusy(true); try { setInfo(await api.updateInfo(p)); } catch (e) { setErr(String((e as Error).message || e)); } setBusy(false);
   };
   const ctl = tasks.find(t => t.role === 'controller');
@@ -34,6 +35,20 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
         <div className="sub">A change reaches the controller when it next restarts, which Taskboard does by itself as soon as the controller is between turns (its conversation continues). Releasing or rolling back Taskboard and stopping its server stay blocked for every agent.</div>
       </div>}
       {info && <MessageLevels info={info} busy={busy} save={save} />}
+      <h3 className="set-h">Agents and accounts</h3>
+      {info && <div className="ctl-box">
+        <label className="opt">Default maximum tasks per account <MaxTasksInput value={info.settings.accounts.defaultMaxParallel} disabled={busy} label="Default maximum number of tasks for an account you add" onSave={async n => { setInfo(await api.updateInfo({ defaultMaxParallel: n })); }} /></label>
+        <div className="sub">An account that you add on the Accounts page starts with this maximum number of running tasks. The accounts that exist now keep their own maximum. Change one account on the Accounts page, or apply this value to all of them.</div>
+        {!applyAll
+          ? <div><button className="btn" disabled={busy} onClick={() => setApplyAll(true)}>Apply to all accounts…</button></div>
+          : <div className="banner">
+            <b>Set the maximum of all {accts.length} accounts to {info.settings.accounts.defaultMaxParallel} tasks?</b>
+            <span className="sub">Now: {accts.map(a => `${a.name} ${a.maxParallel}`).join(', ')}. Running tasks keep running. When more tasks run on an account than its new maximum, Taskboard refuses new tasks on it until fewer run.</span>
+            <button className="btn primary" disabled={busy} onClick={async () => { await save({ applyMaxParallelToAll: true }); setApplyAll(false); loadAccounts().then(setAccts).catch(() => {}); }}>Apply to all accounts</button>
+            <button className="btn" onClick={() => setApplyAll(false)}>Cancel</button>
+          </div>}
+        <div className="sub">Only you can change these maximums, on this page and the Accounts page. <code>tb</code>, agents and the controller cannot.</div>
+      </div>}
       <h3 className="set-h">Task routing</h3>
       <div className="ctl-box">
         <label className="opt" htmlFor="routing-rules">Rules for choosing an agent and account</label>

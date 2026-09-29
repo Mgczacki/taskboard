@@ -19,6 +19,7 @@ import * as importer from './importer.ts';
 import * as approvals from './approvals.ts';
 import * as ask from './ask.ts';
 import * as accounts from './accounts.ts';
+import * as load from './load.ts';
 import * as external from './external.ts';
 import * as machines from './machines.ts';
 import * as machine from './machine.ts';
@@ -239,7 +240,7 @@ app.get('/api/info', (_req, res) => res.json(info()));
 app.patch('/api/info', async (req, res) => {
   if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Machine settings are changed on the dashboard.' });
   try {
-    const { name, routingRules, autostart, remoteControl, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, askAgent, askAccount, askModel, reviewAccount, reviewModel, messageIncoming, messageOutgoing, confirmLowerControl } = req.body;
+    const { name, routingRules, autostart, remoteControl, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, askAgent, askAccount, askModel, reviewAccount, reviewModel, messageIncoming, messageOutgoing, confirmLowerControl, defaultMaxParallel, applyMaxParallelToAll } = req.body;
     // A higher message level gives the user less control. The page asks first and then sends confirmLowerControl.
     const current = machine.get().messages;
     if (confirmLowerControl !== true && ((messageIncoming ?? 0) > current.incoming || (messageOutgoing ?? 0) > current.outgoing))
@@ -250,7 +251,10 @@ app.patch('/api/info', async (req, res) => {
     if (askModel && (typeof askModel !== 'string' || !(agent === 'claude' ? ['sonnet', 'haiku', 'opus'].includes(askModel) : /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(askModel))))
       return res.status(400).json({ error: 'Pick a valid model for questions.' });
     if (reviewAccount && accounts.get(reviewAccount)?.agent !== 'claude') return res.status(400).json({ error: 'Pick a Claude Code account for auto review.' });
-    machine.update({ name, routingRules, autostart, remoteControl, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, askAgent, askAccount, askModel, reviewAccount, reviewModel, messageIncoming, messageOutgoing });
+    if (defaultMaxParallel !== undefined) machine.checkMaxParallel(defaultMaxParallel); // refuse before anything is saved
+    machine.update({ name, routingRules, autostart, remoteControl, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, askAgent, askAccount, askModel, reviewAccount, reviewModel, messageIncoming, messageOutgoing, defaultMaxParallel });
+    // the Settings page confirms first; running tasks keep running, only new starts check the new maximum
+    if (applyMaxParallelToAll === true) accounts.setAllMaxParallel(machine.get().accounts.defaultMaxParallel);
     if (messageIncoming !== undefined || messageOutgoing !== undefined) messageLevelsChanged();
     if (trustWorkspaces === false) trust.restore();
     res.json(info());
@@ -342,7 +346,12 @@ mountMail(app, { notify: async (taskId, name, text) => {
 const acctView = async (a: accounts.Account, fresh = false) => ({ ...a, status: await accounts.status(a, fresh), running: store.all().filter(t => (t.account || accounts.defaultFor(t.agent).id) === a.id && !['archived', 'parked', 'suspended'].includes(t.status)).length });
 app.get('/api/accounts', async (req, res) => res.json(await Promise.all(accounts.all().map(a => acctView(a, req.query.fresh === '1')))));
 app.post('/api/accounts', async (req, res) => { try { const { agent, name } = req.body; if (!['claude', 'codex'].includes(agent) || !name) throw new Error('agent and name are required'); res.json(await acctView(accounts.create(agent, String(name)))); } catch (e) { fail(res, e); } });
-app.patch('/api/accounts/:id', (req, res) => { try { const a = accounts.update(req.params.id, req.body); a ? res.json(a) : res.status(404).end(); } catch (e) { fail(res, e); } });
+// The maximum number of tasks protects an account's usage, so only the dashboard changes it (not tb, agents or the controller).
+app.patch('/api/accounts/:id', (req, res) => {
+  if (req.body?.maxParallel !== undefined && (!req.get('origin') || req.get('x-tb-actor'))) return res.status(403).json({ error: 'The maximum number of tasks is changed on the Accounts page of the dashboard.' });
+  try { const a = accounts.update(req.params.id, req.body); a ? res.json(a) : res.status(404).end(); } catch (e) { fail(res, e); } });
+// Running agents and their memory, for the note on the Accounts page. It never blocks a start.
+app.get('/api/agent-load', async (_req, res) => res.json(await load.agentLoad(store.all().filter(t => !['archived', 'parked', 'suspended'].includes(t.status)).map(t => t.session))));
 app.delete('/api/accounts/:id', (req, res) => { try { accounts.remove(req.params.id); res.json({}); } catch (e) { fail(res, e); } });
 app.post('/api/accounts/:id/login', async (req, res) => { const a = accounts.get(req.params.id); if (!a) return res.status(404).end(); try { res.json({ session: await agents.utilSession('login', a) }); } catch (e) { fail(res, e); } });
 app.post('/api/accounts/:id/clear-limit', (req, res) => { accounts.clearLimited(req.params.id); res.json({}); });

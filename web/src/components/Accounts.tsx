@@ -34,6 +34,26 @@ function UsageBars({ a }: { a: Account }) {
 }
 const post = (path: string, body: unknown = {}) => fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then(async r => { const j = await r.json(); if (!r.ok) throw new Error(j.error || r.statusText); return j; });
 export const loadAccounts = (fresh = false) => fetch('/api/accounts' + (fresh ? '?fresh=1' : '')).then(r => r.json()) as Promise<Account[]>;
+// A maximum number of tasks (1 to 100). Saves when the field loses focus or on Enter; shows the error under it.
+export function MaxTasksInput({ value, onSave, disabled, label }: { value: number; onSave: (n: number) => Promise<void>; disabled?: boolean; label: string }) {
+  const [text, setText] = useState(String(value));
+  const [err, setErr] = useState('');
+  useEffect(() => { setText(String(value)); setErr(''); }, [value]);
+  const commit = async () => {
+    if (text.trim() === String(value)) { setErr(''); return; }
+    const n = Number(text);
+    if (!/^\d+$/.test(text.trim()) || n < 1 || n > 100) { setErr('Enter a whole number from 1 to 100.'); return; }
+    try { await onSave(n); setErr(''); } catch (e) { setErr(String((e as Error).message || e)); }
+  };
+  return <>
+    <input className={`max-tasks${err ? ' bad' : ''}`} type="number" min={1} max={100} step={1} aria-label={label} title={label} value={text} disabled={disabled}
+      onChange={e => setText(e.target.value)} onBlur={() => void commit()} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { setText(String(value)); setErr(''); } }} />
+    {err && <div className="field-err" role="alert">{err}</div>}
+  </>;
+}
+type Load = { agents: number; medianMb: number; totalMb: number; memMb: number; noteAbove: number };
+const gb = (mb: number) => mb >= 1024 ? `${(mb / 1024).toFixed(1)} GB` : `${mb} MB`;
+
 const short = (p: string) => p.replace(/^\/Users\/[^/]+/, '~');
 
 // This machine's controller: its name (shown in the Claude app as "Taskboard controller · <name>"), whether it starts
@@ -70,8 +90,9 @@ export function AccountsPage({ tasks }: { tasks: Task[] }) {
   const [adding, setAdding] = useState<{ agent: 'claude' | 'codex'; name: string } | null>(null); // Antigravity has one account only
   const [err, setErr] = useState('');
   const [movingCtl, setMovingCtl] = useState(false);
+  const [agentLoad, setAgentLoad] = useState<Load | null>(null);
   const ctl = tasks.find(t => t.role === 'controller');
-  const load = (fresh = false) => loadAccounts(fresh).then(setList).catch(e => setErr(String(e.message || e)));
+  const load = (fresh = false) => { api.agentLoad().then(setAgentLoad).catch(() => setAgentLoad(null)); return loadAccounts(fresh).then(setList).catch(e => setErr(String(e.message || e))); };
   useEffect(() => { load(); const i = setInterval(() => load(), 15000); return () => clearInterval(i); }, []);
   useEffect(() => { load(); }, [tasks.length]);
 
@@ -85,6 +106,11 @@ export function AccountsPage({ tasks }: { tasks: Task[] }) {
     } catch (e) { setErr(String((e as Error).message)); }
   };
   const tasksOn = (a: Account) => tasks.filter(t => (t.account || `${t.agent}-default`) === a.id && t.status !== 'archived');
+  const saveMax = async (a: Account, maxParallel: number) => {
+    const r = await fetch(`/api/accounts/${a.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ maxParallel }) });
+    const data = await r.json(); if (!r.ok) throw new Error(data.error || r.statusText);
+    setList(current => current.map(x => x.id === a.id ? { ...x, maxParallel: data.maxParallel } : x));
+  };
   const saveRule = async (a: Account, value: string) => {
     try {
       const r = await fetch(`/api/accounts/${a.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ routingRules: value }) });
@@ -100,6 +126,10 @@ export function AccountsPage({ tasks }: { tasks: Task[] }) {
         <div style={{ display: 'flex', gap: 8 }}><button className="btn" onClick={() => load(true)}>Check sign-ins</button><button className="btn primary" onClick={() => setAdding({ agent: 'claude', name: '' })}>＋ Add account</button></div>
       </div>
       {err && <div className="banner">{err} <button className="btn ghost" onClick={() => setErr('')}>OK</button></div>}
+      {agentLoad && agentLoad.agents > agentLoad.noteAbove && <div className="banner">
+        <b>{agentLoad.agents} agents run on this machine{agentLoad.medianMb > 0 ? `; each uses about ${agentLoad.medianMb} MB` : ''}.</b>
+        <span className="sub">Together they use {gb(agentLoad.totalMb)} of {gb(agentLoad.memMb)} memory. This note shows above {agentLoad.noteAbove} agents: at about 500 MB each, that is a quarter of the memory. The rest is for the builds and tests that agents start. Nothing is blocked.</span>
+      </div>}
       <ControllerBox ctl={ctl} setErr={setErr} />
       <div className="ctl-acct">
         <b>Controller runs on</b>
@@ -110,13 +140,15 @@ export function AccountsPage({ tasks }: { tasks: Task[] }) {
         </select>
         <span className="sub">{movingCtl ? 'Restarting the controller on that account…' : 'Changing it restarts the controller on that account. Between two Claude Code accounts the conversation continues; switching to another agent or between Codex accounts starts a new conversation with the same instructions. Tasks the controller starts pick their own account.'}</span>
       </div>
-      <div className="tb"><table><colgroup><col style={{ width: '20%' }} /><col style={{ width: '16%' }} /><col style={{ width: '30%' }} /><col style={{ width: 90 }} /><col /></colgroup><tbody>
+      <div className="tb"><table><colgroup><col style={{ width: '20%' }} /><col style={{ width: '16%' }} /><col style={{ width: '30%' }} /><col style={{ width: 190 }} /><col /></colgroup><tbody>
         {list.map(a => (
           <tr key={a.id} className="r">
             <td><span className={`chip agent-${a.agent}`}>{AGENT_NAME[a.agent]}</span> <b>{a.name}</b><div className="mono" style={{ marginTop: 4 }}>{short(a.dir)}</div><label className="sub">Routing rule<input className="routing-rule" type="text" maxLength={500} defaultValue={a.routingRules || ''} key={`${a.id}:${a.routingRules || ''}`} placeholder="When should the controller use this account?" onBlur={e => { if (e.target.value !== (a.routingRules || '')) void saveRule(a, e.target.value); }} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} /></label></td>
             <td>{a.status.signedIn ? <span className="st-label unread">✓ signed in</span> : <span className="st-label needs-you">not signed in</span>}<div className="sub">{a.status.who || ''}</div></td>
             <td>{a.limited && <><span className="st-label stopped">stopped by a limit</span><div className="sub">since {fmtWait(Math.round((Date.now() - Date.parse(a.limited.at)) / 60000))} ago · {a.limited.note}</div></>}<UsageBars a={a} /></td>
-            <td className="mono">{a.running} / {a.maxParallel}<div className="sub">{tasksOn(a).map(t => '#' + t.num).slice(0, 6).join(' ')}</div></td>
+            <td className="max-cell"><span className="mono">{a.running} / </span><MaxTasksInput value={a.maxParallel} label={`Maximum number of tasks for ${a.name}`} onSave={n => saveMax(a, n)} /> <span className="sub">tasks</span>
+              <div className="sub mono">{tasksOn(a).map(t => '#' + t.num).slice(0, 6).join(' ')}</div>
+              {a.running >= a.maxParallel && <div className="sub">{a.running > a.maxParallel ? `${a.running} run, which is more than the maximum. They keep running.` : 'At the maximum.'} New tasks on this account are refused until fewer than {a.maxParallel} run.</div>}</td>
             <td className="acts">
               {!a.status.signedIn && <button className="btn primary" onClick={() => signIn(a)}>Sign in</button>}
               {a.status.signedIn && <button className="btn" onClick={() => signIn(a)} title="Sign in again or switch the login in this folder">Sign in again</button>}
@@ -127,7 +159,8 @@ export function AccountsPage({ tasks }: { tasks: Task[] }) {
           </tr>
         ))}
       </tbody></table></div>
-      <p className="sub" style={{ marginTop: 14 }}>Limits are detected when a task stops with a rate-limit error; the mark clears when a turn on that account succeeds. Removing an account only removes it from Taskboard; its folder and login stay on disk.</p>
+      <p className="sub" style={{ marginTop: 14 }}>The number after “/” is the maximum number of running tasks for the account (1 to 100). Taskboard refuses a new task, a resume or a move onto an account at its maximum. When you lower it below the number that runs now, the running tasks keep running. Only new starts are refused. Only you can change it here; <code>tb</code>, agents and the controller cannot. Accounts that you add start with the default maximum on the Settings page.</p>
+      <p className="sub">Limits are detected when a task stops with a rate-limit error; the mark clears when a turn on that account succeeds. Removing an account only removes it from Taskboard; its folder and login stay on disk.</p>
 
       {adding && <div className="scrim open" onMouseDown={e => { if (e.target === e.currentTarget) setAdding(null); }}>
         <div className="modal" style={{ width: 460 }}>

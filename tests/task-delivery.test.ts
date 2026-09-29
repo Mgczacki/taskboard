@@ -150,7 +150,7 @@ test('a limited account keeps the task stopped and its inbox notice pending', as
   writeFileSync(join(docs.outboxDir(source.id), 'file.md'), 'Content');
   docs.send(source.id, 'file.md', t.id);
   try {
-    await assert.rejects(agents.sendTaskText(t, docs.pendingInboxNotice(t.id)!.notice), /usage or parallel task limit/);
+    await assert.rejects(agents.sendTaskText(t, docs.pendingInboxNotice(t.id)!.notice), /stopped at a usage limit at .* \(limit\)\. .*Or move the task to another account\./);
     assert.equal(t.status, 'stopped');
     assert.deepEqual(docs.pendingInboxNotice(t.id)?.names, ['file.md']);
   } finally { delete account.limited; }
