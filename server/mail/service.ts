@@ -208,7 +208,7 @@ export class MailService {
     if (m.files?.some(f => f.review?.verdict === 'action-request' && m.approval?.by !== 'user')) throw new Error('Files with action requests need user approval');
     if (Buffer.byteLength(encodeMessage(m)) > 39000 && !m.files?.some(f => f.longBody)) throw new Error('The encoded message is too large for Slack');
     const bytes = (m.files || []).map(verifyFile);
-    this.store.update(id, x => { x.sending = true; delete x.error; });
+    this.store.update(id, x => { x.sending = true; x.sendStartedAt = new Date().toISOString(); delete x.error; });
     try {
       for (const [index, f] of (m.files || []).entries()) {
         const slackId = await this.slack.upload(f.name, bytes[index], contact.channel);

@@ -108,7 +108,7 @@ Agents that work on Taskboard itself run inside the real one, so the setup keeps
 | Board | Columns by status, or by group (drag a card onto a group to add it. Hold ⌥ to move it). |
 | Graph | Tasks in lanes (group, folder or status). Arrows show documents sent from one task to another. |
 | Canvas | Live terminals. Tabs across the top are your groups. Columns / Grid / Rows. |
-| Inbox | Account messages and documents to review. Approve messages, dismiss items, restore dismissed items, or compose in Outbox. |
+| Inbox | Account messages and documents to review. The Sent tab shows outgoing drafts, send attempts, and sent messages. Filter by recipient, proposer, or state. |
 | Accounts | Settings folders per account, sign-in, limit marks, and limit resets (only you can use them). |
 
 Keys (press `?` in the app for the full list; change them on the Settings page): `⌘K` (Command-K) controller, also from inside

@@ -7,10 +7,11 @@ export interface MailFile { id: string; name: string; size: number; hash: string
 export interface Message {
   id: string; direction: 'inbox' | 'outbox'; source: 'agent' | 'slack' | 'user';
   from: string; to: string; subject: string; body: string; hash: string;
+  proposedBy?: { actor: 'user' | 'controller' | 'task'; task?: string; agent?: string };
   created: string; updated: string; dismissedAt?: string;
   review?: { verdict: Verdict; reason: string; at: string };
   approval?: { by: 'user' | 'controller'; at: string; hash: string };
-  rejectedAt?: string; sentAt?: string; slackTs?: string; slackChannel?: string;
+  rejectedAt?: string; sendStartedAt?: string; sentAt?: string; slackTs?: string; slackChannel?: string;
   sending?: boolean; error?: string;
   routes: { task: string; path: string; at: string }[];
   files?: MailFile[];
@@ -47,7 +48,7 @@ export class MailStore {
   update(id: string, fn: (m: Message) => void) {
     return this.change(data => { const m = data.messages.find(x => x.id === id); if (!m) throw new Error('No such message'); fn(m); m.updated = new Date().toISOString(); return m; });
   }
-  add(input: Pick<Message, 'direction' | 'source' | 'from' | 'to' | 'subject' | 'body'> & Partial<Pick<Message, 'id' | 'slackTs' | 'slackChannel' | 'files'>>) {
+  add(input: Pick<Message, 'direction' | 'source' | 'from' | 'to' | 'subject' | 'body'> & Partial<Pick<Message, 'id' | 'slackTs' | 'slackChannel' | 'files' | 'proposedBy'>>) {
     validText(input.subject, 200, 'subject'); validText(input.body, 262144, 'message body');
     validText(input.from, 200, 'sender'); validText(input.to, 200, 'recipient');
     return this.change(data => {

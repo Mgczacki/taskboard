@@ -19,3 +19,15 @@
 .mail-compose .field label { margin-bottom:0; }
 .mail-item p,.mail-settings p { margin:12px 0; }
 .account-mail > .rv-page { min-height:70vh; }
+.mail-filters { display:flex; gap:12px; flex-wrap:wrap; margin-bottom:16px; }
+.mail-filters .field { min-width:180px; }
+.mail-filters .mail-input { display:block; margin-top:6px; }
+.mail-history-grid { display:grid; grid-template-columns:minmax(230px,320px) minmax(0,1fr); gap:16px; max-width:1100px; }
+.mail-history-list { display:flex; flex-direction:column; gap:8px; }
+.mail-history-row { display:flex; flex-direction:column; align-items:flex-start; gap:4px; width:100%; text-align:left; white-space:normal; }
+.mail-history-row[aria-pressed="true"] { border-color:var(--accent); background:var(--accent-bg); }
+.mail-history-row span { color:var(--muted); font-size:12px; }
+.mail-history-detail { max-width:none; min-width:0; }
+.mail-history-detail h3 { margin:18px 0 8px; font-size:14px; }
+.mail-history-detail ol { padding-left:22px; }
+@media (max-width:700px) { .mail-history-grid { grid-template-columns:1fr; } }

@@ -123,7 +123,7 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
     owner(req);
     const d = store.read();
     return { identity: slack.identity(), contacts: human(req) ? d.contacts : d.contacts.map(c => ({ ...c, name: c.user })), requests: human(req) ? d.requests || [] : [], staged: human(req) ? (d.staged || []).map(publicFile) : [], controllerApproval: !!d.controllerApproval, error: signInError || service.error,
-      messages: d.messages.filter(m => Boolean(m.dismissedAt) === (req.query.dismissed === '1')).map(m => present(m, req)) };
+      messages: d.messages.filter(m => m.direction === 'outbox' || Boolean(m.dismissedAt) === (req.query.dismissed === '1')).map(m => present(m, req)) };
   }));
   app.post('/api/mail/policy', endpoint(req => { user(req); store.change(d => { d.controllerApproval = req.body.enabled === true; }); return {}; }));
   app.post('/api/mail/slack/connect', endpoint(req => { user(req); signInError = ''; return { url: slack.begin(PORT) }; }));
@@ -182,8 +182,21 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
       if (files.length >= 5) throw new Error('A long message needs one free file slot');
       files.push({ ...stageBytes(Buffer.from(body), 'message.txt'), longBody: true });
     }
-    const m = store.add({ direction: 'outbox', source: 'user', from: identity.user, to: req.body.to, subject: req.body.subject, body, files });
+    const m = store.add({ direction: 'outbox', source: 'user', from: identity.user, to: req.body.to, subject: req.body.subject, body, files,
+      proposedBy: { actor: human(req) ? 'user' : 'controller' } });
     store.change(d => { d.staged = (d.staged || []).filter(f => !ids.includes(f.id)); });
+    void checkNext(); return { id: m.id };
+  }));
+  app.post('/api/mail/propose', endpoint(req => {
+    if (human(req) || controller(req)) throw new Error('Submit this draft from a local task');
+    const task = tasks.get(req.get('x-tb-actor') || '');
+    if (!task || task.id === 'controller') throw new Error('Submit this draft from a local task');
+    const identity = slack.identity(); if (!identity) throw new Error('Connect Slack first');
+    if (!store.read().contacts.some(c => c.user === req.body.to && c.status === 'active')) throw new Error('Wait for the recipient to accept your contact request');
+    const body = String(req.body.body || '');
+    if (Buffer.byteLength(body, 'utf8') > 30000) throw new Error('Task drafts must fit in a Slack message');
+    const m = store.add({ direction: 'outbox', source: 'agent', from: identity.user, to: req.body.to, subject: req.body.subject, body,
+      proposedBy: { actor: 'task', task: task.id, agent: task.agent } });
     void checkNext(); return { id: m.id };
   }));
   app.get('/api/mail/:id/files/:file/download', async (req, res) => {

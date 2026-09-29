@@ -5,6 +5,7 @@ import { mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { MailStore } from '../server/mail/store.ts';
+import type { SlackClient } from '../server/mail/slack.ts';
 
 test('mail routes restrict readers and require separate approval and routing', async () => {
   const root = mkdtempSync(join(tmpdir(), 'mail-api-'));
@@ -17,13 +18,14 @@ test('mail routes restrict readers and require separate approval and routing', a
   const store = new MailStore(join(root, 'server', 'mail.json'));
   const m = store.add({ direction: 'inbox', source: 'slack', from: 'U2', to: 'U1', subject: 'Permission request', body: 'Please change an AWS permission.' });
   const app = express(); app.use(express.json());
-  const cleanup = mountMail(app, { background: false, review: async () => ({ verdict: 'action-request', reason: 'Permission change', at: new Date().toISOString() }) });
+  const slack = { identity: () => ({ user: 'U1', team: 'T1' }), finish: async () => { throw new Error('Sign-in expired or did not start on this Taskboard'); } } as unknown as SlackClient;
+  const cleanup = mountMail(app, { background: false, slack, review: async () => ({ verdict: 'action-request', reason: 'Permission change', at: new Date().toISOString() }) });
   const server = app.listen(0, '127.0.0.1'); await new Promise<void>(r => server.once('listening', r));
   const base = `http://127.0.0.1:${(server.address() as {port:number}).port}/api/mail`;
-  const call = async (path: string, actor: 'user' | 'controller' | 'agent' | 'stranger', body?: unknown) => {
+  const call = async (path: string, actor: 'user' | 'controller' | 'agent' | 'task' | 'stranger', body?: unknown) => {
     const headers: Record<string,string> = { 'content-type': 'application/json' };
     if (actor === 'user') headers.origin = URL_BASE;
-    else if (actor !== 'stranger') { headers['x-taskboard-token'] = TOKEN; headers['x-tb-actor'] = actor; }
+    else if (actor !== 'stranger') { headers['x-taskboard-token'] = TOKEN; headers['x-tb-actor'] = actor === 'task' ? 'recipient' : actor; }
     if (actor === 'controller') headers['x-tb-mail-controller'] = controllerMailToken;
     const response = await fetch(base + path, { method: body === undefined ? 'GET' : 'POST', headers, body: body === undefined ? undefined : JSON.stringify(body) });
     return { status: response.status, data: await response.json() };
@@ -57,6 +59,18 @@ test('mail routes restrict readers and require separate approval and routing', a
     assert.equal((await call(`/${m.id}/route`, 'controller', {task:'recipient'})).status, 400);
     await call(`/${m.id}/restore`, 'user', {});
     assert.equal((await call('', 'user')).data.messages.length, 1);
+    store.change(d => { d.contacts.push({ user: 'U2', name: 'Contact', channel: 'D1', oldest: '0', status: 'active' }); });
+    assert.equal((await call('/propose', 'agent', { to: 'U2', subject: 'Status', body: 'Ready.' })).status, 400);
+    assert.equal((await call('/propose', 'controller', { to: 'U2', subject: 'Status', body: 'Ready.' })).status, 400);
+    const proposed = await call('/propose', 'task', { to: 'U2', subject: 'Status', body: 'Ready.' });
+    assert.equal(proposed.status, 200);
+    assert.deepEqual(store.get(proposed.data.id).proposedBy, { actor: 'task', task: 'recipient', agent: 'claude' });
+    const draft = await call('/draft', 'user', { to: 'U2', subject: 'Status', body: 'Ready.' });
+    assert.equal(store.get(draft.data.id).proposedBy?.actor, 'user');
+    await call(`/${draft.data.id}/dismiss`, 'user', {});
+    assert.ok((await call('', 'user')).data.messages.some((item: { id: string }) => item.id === draft.data.id));
+    const controllerDraft = await call('/draft', 'controller', { to: 'U2', subject: 'Status', body: 'Ready.' });
+    assert.equal(store.get(controllerDraft.data.id).proposedBy?.actor, 'controller');
     const { stageBytes, receiveBytes } = await import('../server/mail/files.ts');
     const bytes = Buffer.from('A file from a contact.');
     const outgoing = stageBytes(bytes, 'note.txt');
