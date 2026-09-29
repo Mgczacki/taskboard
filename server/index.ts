@@ -204,18 +204,18 @@ const info = () => {
     tasks: store.all().filter(t => t.role !== 'controller' && t.status !== 'archived').length };
 };
 app.get('/api/info', (_req, res) => res.json(info()));
-// renaming the machine or turning Remote Control on/off: the controller follows at its next restart (between turns)
+// Changes to the controller name, model, or Remote Control setting apply at its next restart between turns.
 app.patch('/api/info', async (req, res) => {
   if (!req.get('origin')) return res.status(403).json({ error: 'Machine settings are changed on the dashboard.' });
   try {
-    const { name, routingRules, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, askAgent, askAccount, askModel, reviewAccount, reviewModel } = req.body;
+    const { name, routingRules, autostart, remoteControl, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, askAgent, askAccount, askModel, reviewAccount, reviewModel } = req.body;
     if (askAgent && !['claude', 'codex'].includes(askAgent)) return res.status(400).json({ error: 'Antigravity does not have verified read-only Ask controls.' });
     const agent = askAgent || machine.get().ask.agent;
     if (askAccount && accounts.get(askAccount)?.agent !== agent) return res.status(400).json({ error: `Pick a ${agent} account for questions.` });
     if (askModel && (typeof askModel !== 'string' || !(agent === 'claude' ? ['sonnet', 'haiku', 'opus'].includes(askModel) : /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(askModel))))
       return res.status(400).json({ error: 'Pick a valid model for questions.' });
     if (reviewAccount && accounts.get(reviewAccount)?.agent !== 'claude') return res.status(400).json({ error: 'Pick a Claude Code account for auto review.' });
-    machine.update({ name, routingRules, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, askAgent, askAccount, askModel, reviewAccount, reviewModel });
+    machine.update({ name, routingRules, autostart, remoteControl, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, askAgent, askAccount, askModel, reviewAccount, reviewModel });
     if (trustWorkspaces === false) trust.restore();
     res.json(info());
   } catch (e) { fail(res, e); }
@@ -536,10 +536,11 @@ server.on('upgrade', (req, socket, head) => {
 // outbox / inbox files changed on disk → refresh that task's counts in every window
 const pendingTouch = new Map<string, NodeJS.Timeout>();
 try {
-  (await import('node:fs')).watch(store.taskDir(''), { recursive: true }, (_ev, file) => {
+  const watcher = (await import('node:fs')).watch(store.taskDir(''), { recursive: true }, (_ev, file) => {
     const m = String(file || '').match(/^([^/]+)\/(inbox|outbox)\//); if (!m) return;
     clearTimeout(pendingTouch.get(m[1])); pendingTouch.set(m[1], setTimeout(() => store.touch(m[1]), 300));
   });
+  watcher.on('error', e => console.error('watch', e));
 } catch (e) { console.error('watch', e); }
 approvals.onApprovalsChange(() => {
   for (const t of store.all()) {
@@ -632,7 +633,7 @@ async function keepController(t: store.Task, s?: { dead: boolean }) {
     try { await agents.startController(); console.log('controller restarted'); } catch (e) { console.error('controller restart failed', e); }
     return;
   }
-  // started with an older name / Remote Control setting: restart it (it resumes the same conversation), but not mid-turn
+  // Restart for a changed name, model, or Remote Control setting between turns.
   if (s && !s.dead && t.launchedAs !== agents.controllerLaunchKey(t.agent) && betweenTurns(t) && Date.now() - controllerStartedAt > 60000) {
     controllerStartedAt = Date.now();
     await tmux.killSession(t.session); store.update(t.id, { remoteUrl: undefined });

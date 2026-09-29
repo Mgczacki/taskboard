@@ -16,7 +16,9 @@
         "im:write",
         "im:read",
         "im:history",
-        "users:read"
+        "users:read",
+        "files:write",
+        "files:read"
       ]
     },
     "pkce_enabled": true

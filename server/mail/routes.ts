@@ -1,14 +1,15 @@
-import type { Express, Request, Response } from 'express';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import express, { type Express, type Request, type Response } from 'express';
+import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { PORT, TB_DIR, TOKEN, URL_BASE } from '../config.ts';
 import * as tasks from '../store.ts';
 import * as accounts from '../accounts.ts';
-import { MailStore, savePrivate, type Message } from './store.ts';
+import { MailStore, savePrivate, type Message, type Verdict } from './store.ts';
 import { SlackClient, SlackError } from './slack.ts';
 import { MailService } from './service.ts';
 import { isControllerToken } from './auth.ts';
 import { reviewMessage } from './review.ts';
+import { extractText, publicFile, routeFile, stageBytes, stagePath, verifyFile } from './files.ts';
 
 const origins = new Set([URL_BASE, `http://localhost:${PORT}`, 'http://localhost:5173', 'http://127.0.0.1:5173']);
 function human(req: Request) {
@@ -30,7 +31,35 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
       const m = store.get(id);
       if (m.review) return;
       const account = accounts.get(tasks.get('controller')?.account);
-      const decision = await (options.review || reviewMessage)(m, account?.agent === 'claude' ? account.dir : undefined);
+      for (const file of m.files || []) {
+        if (file.review) continue;
+        let decision: { verdict: Verdict; reason: string; at: string } | undefined;
+        let content: string;
+        try {
+          content = extractText(file);
+          if (!content.trim() || content.length > 262144) throw new Error('The file has no bounded text to review');
+        } catch (error) { decision = { verdict: 'quarantine', reason: `File review failed: ${(error as Error).message}`.slice(0, 500), at: new Date().toISOString() }; }
+        if (!decision) {
+          decision = { verdict: 'communication', reason: 'File text reviewed', at: new Date().toISOString() };
+          for (let offset = 0; offset < content!.length; offset += 16000) {
+            const part = content!.slice(offset, offset + 16000);
+            const result = await (options.review || reviewMessage)({ ...m, subject: `File: ${file.name}`, body: part }, account?.agent === 'claude' ? account.dir : undefined);
+            if (result.verdict === 'quarantine' || result.verdict === 'action-request' && decision.verdict === 'communication') decision = result;
+          }
+        }
+        store.update(id, x => { const target = x.files?.find(f => f.id === file.id); if (target) target.review = decision; });
+      }
+      const held = store.get(id).files?.find(f => f.review?.verdict === 'quarantine');
+      if (held) {
+        store.update(id, x => { x.review = { verdict: 'quarantine', reason: `File ${held.name} stayed in quarantine`, at: new Date().toISOString() }; });
+        return;
+      }
+      let decision: { verdict: Verdict; reason: string; at: string } = { verdict: 'communication', reason: 'Message text reviewed', at: new Date().toISOString() };
+      for (let offset = 0; offset < m.body.length; offset += 16000) {
+        const result = await (options.review || reviewMessage)({ ...m, body: m.body.slice(offset, offset + 16000) }, account?.agent === 'claude' ? account.dir : undefined);
+        if (result.verdict === 'quarantine' || result.verdict === 'action-request' && decision.verdict === 'communication') decision = result;
+      }
+      if (store.get(id).files?.some(f => f.review?.verdict === 'action-request') && decision.verdict === 'communication') decision.verdict = 'action-request';
       store.update(id, x => { if (x.hash !== m.hash) throw new Error('Message changed during review'); x.review = decision; delete x.error; });
     } catch { store.update(id, x => { x.error = 'Controller review failed. Retry after checking the Claude account.'; }); }
     finally { reviewing.delete(id); }
@@ -49,9 +78,10 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
   }, 60_000);
   timer?.unref();
   const present = (m: Message, req: Request) => {
-    if (human(req)) return m;
-    if (m.review?.verdict === 'communication' || (m.review?.verdict === 'action-request' && m.approval?.by === 'user')) return m;
-    return { ...m, subject: '(held for review)', body: '', review: m.review ? { ...m.review, reason: '(visible to user only)' } : undefined };
+    const shown = { ...m, files: m.files?.map(publicFile) };
+    if (human(req)) return shown;
+    if (m.review?.verdict === 'communication' || (m.review?.verdict === 'action-request' && m.approval?.by === 'user')) return shown;
+    return { ...shown, subject: '(held for review)', body: '', files: [], review: m.review ? { ...m.review, reason: '(visible to user only)' } : undefined };
   };
   const endpoint = (fn: (req: Request) => unknown | Promise<unknown>) => async (req: Request, res: Response) => {
     try { res.json(await fn(req)); } catch (e) { res.status(400).json({ error: (e as Error).message }); }
@@ -92,24 +122,42 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
   app.get('/api/mail', endpoint(req => {
     owner(req);
     const d = store.read();
-    return { identity: slack.identity(), contacts: d.contacts, controllerApproval: !!d.controllerApproval, error: signInError || service.error,
+    return { identity: slack.identity(), contacts: human(req) ? d.contacts : d.contacts.map(c => ({ ...c, name: c.user })), requests: human(req) ? d.requests || [] : [], staged: human(req) ? (d.staged || []).map(publicFile) : [], controllerApproval: !!d.controllerApproval, error: signInError || service.error,
       messages: d.messages.filter(m => m.direction === 'outbox' || Boolean(m.dismissedAt) === (req.query.dismissed === '1')).map(m => present(m, req)) };
   }));
   app.post('/api/mail/policy', endpoint(req => { user(req); store.change(d => { d.controllerApproval = req.body.enabled === true; }); return {}; }));
   app.post('/api/mail/slack/connect', endpoint(req => { user(req); signInError = ''; return { url: slack.begin(PORT) }; }));
   app.post('/api/mail/slack/disconnect', endpoint(req => { user(req); slack.disconnect(); return {}; }));
-  app.post('/api/mail/contacts', endpoint(async req => {
+  app.get('/api/mail/people', endpoint(async req => { user(req); return service.searchPeople(String(req.query.q || '')); }));
+  app.post('/api/mail/contacts', endpoint(async req => { user(req); await service.requestContact(String(req.body.user || '')); return {}; }));
+  app.post('/api/mail/contacts/respond', endpoint(async req => { user(req); await service.answerContact(String(req.body.user || ''), req.body.accept === true); return {}; }));
+  app.post('/api/mail/contacts/remove', endpoint(async req => { user(req); await service.removeContact(String(req.body.user || '')); return {}; }));
+  app.post('/api/mail/files/stage', endpoint(req => {
     user(req);
-    const id = String(req.body.user || '');
-    if (!/^[UW][A-Z0-9]+$/.test(id)) throw new Error('Enter a Slack member ID');
-    const info = await slack.call('users.info', { user: id });
-    if (!info.user || info.user.deleted || info.user.is_bot || info.user.team_id !== slack.identity()?.team) throw new Error('Choose an active person in this workspace');
-    const conversation = await slack.call('conversations.open', { users: id });
-    if (!conversation.channel?.id) throw new Error('Slack did not return a direct conversation');
-    store.change(d => { if (!d.contacts.some(c => c.user === id)) d.contacts.push({ user: id, name: info.user.real_name || info.user.name || id, channel: conversation.channel.id, oldest: String(Date.now() / 1000) }); });
+    if ((store.read().staged || []).length >= 10) throw new Error('Remove a staged file before adding another');
+    const task = tasks.get(String(req.body.task || ''));
+    if (!task || task.id === 'controller') throw new Error('Choose a local task');
+    const name = String(req.body.name || '');
+    const file = stagePath(join(tasks.taskDir(task.id), 'outbox', name), join(tasks.taskDir(task.id), 'outbox'));
+    store.change(d => { d.staged ||= []; d.staged.push(file); });
+    return publicFile(file);
+  }));
+  app.post('/api/mail/files/upload', express.raw({ type: 'application/octet-stream', limit: '10mb' }), endpoint(req => {
+    user(req);
+    if (!Buffer.isBuffer(req.body)) throw new Error('Send a file as bytes');
+    if ((store.read().staged || []).length >= 10) throw new Error('Remove a staged file before adding another');
+    const file = stageBytes(req.body, decodeURIComponent(String(req.get('x-mail-filename') || '')));
+    store.change(d => { d.staged ||= []; d.staged.push(file); });
+    return publicFile(file);
+  }));
+  app.post('/api/mail/files/staged/remove', endpoint(req => {
+    user(req);
+    const file = (store.read().staged || []).find(f => f.id === req.body.id);
+    if (!file) return {};
+    store.change(d => { d.staged = (d.staged || []).filter(f => f.id !== file.id); });
+    try { unlinkSync(file.path); } catch { /* The record was already removed. */ }
     return {};
   }));
-  app.post('/api/mail/contacts/remove', endpoint(req => { user(req); store.change(d => { d.contacts = d.contacts.filter(c => c.user !== req.body.user); }); return {}; }));
   app.post('/api/mail/sync', endpoint(async req => {
     owner(req); await service.sync();
     void checkNext();
@@ -123,9 +171,20 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
   }));
   app.post('/api/mail/draft', endpoint(req => {
     owner(req); const identity = slack.identity(); if (!identity) throw new Error('Connect Slack first');
-    if (!store.read().contacts.some(c => c.user === req.body.to)) throw new Error('Add the recipient as a contact first');
-    const m = store.add({ direction: 'outbox', source: 'user', from: identity.user, to: req.body.to, subject: req.body.subject, body: req.body.body,
+    if (!store.read().contacts.some(c => c.user === req.body.to && c.status === 'active')) throw new Error('Wait for the recipient to accept your contact request');
+    const ids = Array.isArray(req.body.files) ? req.body.files : [];
+    if (ids.length > 5 || ids.some((id: unknown) => typeof id !== 'string')) throw new Error('Choose up to five files');
+    const staged = store.read().staged || [];
+    const files = ids.map((id: string) => { const f = staged.find(f => f.id === id); if (!f) throw new Error('Choose a staged file'); return f; });
+    if (new Set(ids).size !== ids.length) throw new Error('Choose each file once');
+    const body = String(req.body.body || '');
+    if (Buffer.byteLength(body, 'utf8') > 30000) {
+      if (files.length >= 5) throw new Error('A long message needs one free file slot');
+      files.push({ ...stageBytes(Buffer.from(body), 'message.txt'), longBody: true });
+    }
+    const m = store.add({ direction: 'outbox', source: 'user', from: identity.user, to: req.body.to, subject: req.body.subject, body, files,
       proposedBy: { actor: human(req) ? 'user' : 'controller' } });
+    store.change(d => { d.staged = (d.staged || []).filter(f => !ids.includes(f.id)); });
     void checkNext(); return { id: m.id };
   }));
   app.post('/api/mail/propose', endpoint(req => {
@@ -133,14 +192,47 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
     const task = tasks.get(req.get('x-tb-actor') || '');
     if (!task || task.id === 'controller') throw new Error('Submit this draft from a local task');
     const identity = slack.identity(); if (!identity) throw new Error('Connect Slack first');
-    if (!store.read().contacts.some(c => c.user === req.body.to)) throw new Error('Add the recipient as a contact first');
-    const m = store.add({ direction: 'outbox', source: 'agent', from: identity.user, to: req.body.to, subject: req.body.subject, body: req.body.body,
+    if (!store.read().contacts.some(c => c.user === req.body.to && c.status === 'active')) throw new Error('Wait for the recipient to accept your contact request');
+    const body = String(req.body.body || '');
+    if (Buffer.byteLength(body, 'utf8') > 30000) throw new Error('Task drafts must fit in a Slack message');
+    const m = store.add({ direction: 'outbox', source: 'agent', from: identity.user, to: req.body.to, subject: req.body.subject, body,
       proposedBy: { actor: 'task', task: task.id, agent: task.agent } });
     void checkNext(); return { id: m.id };
   }));
+  app.get('/api/mail/:id/files/:file/download', async (req, res) => {
+    try {
+      user(req);
+      const m = store.get(String(req.params.id));
+      const file = m.files?.find(f => f.id === req.params.file);
+      if (!file || m.direction !== 'inbox' || !file.review || file.review.verdict === 'quarantine') throw new Error('The file is held for review');
+      res.set('Content-Type', 'application/octet-stream').set('X-Content-Type-Options', 'nosniff').set('Content-Disposition', `attachment; filename="${file.name.replace(/["\\]/g, '_')}"`);
+      res.send((await import('./files.ts')).verifyFile(file));
+    } catch (error) { res.status(400).json({ error: (error as Error).message }); }
+  });
+  app.post('/api/mail/:id/files/:file/route', endpoint(req => {
+    user(req);
+    const m = store.get(String(req.params.id));
+    const file = m.files?.find(f => f.id === req.params.file);
+    if (m.direction !== 'inbox' || !m.review || m.review.verdict === 'quarantine' || !m.approval || m.approval.hash !== m.hash || !file?.review || file.review.verdict === 'quarantine' || file.hash !== req.body.hash) throw new Error('Review and approve this exact file first');
+    const task = tasks.get(String(req.body.task || ''));
+    if (!task || task.id === 'controller') throw new Error('Choose a local task');
+    if (file.routed) { if (file.routed.task !== task.id) throw new Error('The file was already routed to another task'); return file.routed; }
+    const dir = join(tasks.taskDir(task.id), 'inbox');
+    const path = routeFile(file, dir);
+    const name = path.split('/').pop()!;
+    const read = (name: string, fallback: unknown) => existsSync(join(dir, name)) ? JSON.parse(readFileSync(join(dir, name), 'utf8')) : fallback;
+    const sent = read('.sent.json', {}); sent[name] = { task: '__account_inbox', at: new Date().toISOString() }; savePrivate(join(dir, '.sent.json'), sent);
+    const pending: string[] = read('.pending.json', []); if (!pending.includes(name)) pending.push(name); savePrivate(join(dir, '.pending.json'), pending);
+    const routed = { task: task.id, path, at: new Date().toISOString() };
+    store.update(m.id, x => { const f = x.files?.find(f => f.id === file.id); if (f) f.routed = routed; });
+    return routed;
+  }));
   app.post('/api/mail/:id/review', endpoint(async req => { owner(req); await review(String(req.params.id)); return {}; }));
   app.post('/api/mail/:id/approve', endpoint(req => {
-    owner(req); return present(store.approve(String(req.params.id), human(req) ? 'user' : 'controller', String(req.body.hash || '')), req);
+    owner(req);
+    const message = store.get(String(req.params.id));
+    for (const file of message.files || []) verifyFile(file);
+    return present(store.approve(message.id, human(req) ? 'user' : 'controller', String(req.body.hash || '')), req);
   }));
   app.post('/api/mail/:id/send', endpoint(async req => { owner(req); return present(await service.send(String(req.params.id)), req); }));
   app.post('/api/mail/:id/dismiss', endpoint(req => {

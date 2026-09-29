@@ -5,8 +5,8 @@ import { savePrivate } from './store.ts';
 export const SLACK_APP_ID = 'A0C57MV7K6V';
 export const SLACK_CLIENT_ID = '8696283833057.12177743257233';
 export const SLACK_TEAM_ID = 'T08LG8BQH1P';
-export const SLACK_SCOPES = ['chat:write', 'im:write', 'im:read', 'im:history', 'users:read'];
-interface Credentials { user: string; team: string; access: string; refresh: string; expires: number }
+export const SLACK_SCOPES = ['chat:write', 'im:write', 'im:read', 'im:history', 'users:read', 'files:write', 'files:read'];
+interface Credentials { user: string; team: string; name?: string; scopes?: string[]; access: string; refresh: string; expires: number }
 export class SlackError extends Error {
   constructor(message: string, readonly retryAfter = 0) { super(message); }
 }
@@ -17,7 +17,7 @@ export class SlackClient {
   private pending?: { state: string; verifier: string; redirect: string; expires: number };
   constructor(readonly file: string, private fetcher: typeof fetch = fetch) {}
   private credentials(): Credentials | undefined { return existsSync(this.file) ? JSON.parse(readFileSync(this.file, 'utf8')) : undefined; }
-  identity() { const c = this.credentials(); return c ? { user: c.user, team: c.team } : null; }
+  identity() { const c = this.credentials(); return c ? { user: c.user, team: c.team, name: c.name, needsReconnect: !c.scopes || SLACK_SCOPES.some(s => !c.scopes?.includes(s)) } : null; }
   disconnect() { this.generation++; this.pending = undefined; if (existsSync(this.file)) unlinkSync(this.file); }
   begin(port: number) {
     if (![4317, 4399, 4409].includes(port)) throw new Error('Slack sign-in requires port 4317 or a registered test port');
@@ -49,7 +49,7 @@ export class SlackClient {
     const previous = this.identity();
     if (previous && previous.user !== c.id) throw new Error('Disconnect the current user before connecting a different user');
     if (generation !== this.generation) throw new Error('Sign-in was cancelled');
-    savePrivate(this.file, { user: c.id, team: result.team.id, access: c.access_token, refresh: c.refresh_token, expires: Date.now() + Number(c.expires_in || 43200) * 1000 });
+    savePrivate(this.file, { user: c.id, team: result.team.id, name: c.real_name || c.name || c.id, scopes: [...scopes], access: c.access_token, refresh: c.refresh_token, expires: Date.now() + Number(c.expires_in || 43200) * 1000 });
   }
   async call(method: string, params: Record<string, string> = {}) {
     const generation = this.generation;
@@ -65,5 +65,31 @@ export class SlackClient {
     }
     if (!c || generation !== this.generation) throw new Error('Slack was disconnected');
     return this.request(method, params, c.access);
+  }
+  async upload(name: string, bytes: Buffer, channel: string) {
+    const ticket = await this.call('files.getUploadURLExternal', { filename: name, length: String(bytes.length) });
+    const target = new URL(String(ticket.upload_url || ''));
+    if (target.protocol !== 'https:' || !target.hostname.endsWith('.slack.com')) throw new Error('Slack returned an invalid upload URL');
+    const response = await this.fetcher(target, { method: 'POST', body: new Uint8Array(bytes), signal: AbortSignal.timeout(120_000) });
+    if (!response.ok) throw new Error('Slack did not accept the file bytes');
+    await this.call('files.completeUploadExternal', { files: JSON.stringify([{ id: ticket.file_id, title: name }]), channel_id: channel });
+    return String(ticket.file_id);
+  }
+  async download(id: string, channel: string, sender: string, maxBytes: number) {
+    const info = await this.call('files.info', { file: id });
+    const file = info.file;
+    if (!file || file.user !== sender || file.size > maxBytes || file.size < 1 || file.is_external) throw new Error('Slack file metadata is not allowed');
+    const shares = file.shares?.private?.[channel] || file.shares?.im?.[channel];
+    if (!shares && !(file.ims || []).includes(channel)) throw new Error('The file is not shared in this conversation');
+    const target = new URL(String(file.url_private || ''));
+    if (target.protocol !== 'https:' || !target.hostname.endsWith('.slack.com')) throw new Error('Slack returned an invalid file URL');
+    await this.call('auth.test');
+    const token = this.credentials()?.access; if (!token) throw new Error('Connect Slack first');
+    const response = await this.fetcher(target, { headers: { authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(120_000) });
+    if (!response.ok) throw new Error('Slack file download failed');
+    const chunks: Uint8Array[] = []; let count = 0;
+    if (!response.body) throw new Error('Slack returned an empty file response');
+    for await (const chunk of response.body) { count += chunk.length; if (count > maxBytes) throw new Error('Slack file exceeds the Taskboard limit'); chunks.push(chunk); }
+    return Buffer.concat(chunks);
   }
 }

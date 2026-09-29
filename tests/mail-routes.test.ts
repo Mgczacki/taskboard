@@ -59,7 +59,7 @@ test('mail routes restrict readers and require separate approval and routing', a
     assert.equal((await call(`/${m.id}/route`, 'controller', {task:'recipient'})).status, 400);
     await call(`/${m.id}/restore`, 'user', {});
     assert.equal((await call('', 'user')).data.messages.length, 1);
-    store.change(d => { d.contacts.push({ user: 'U2', name: 'Contact', channel: 'D1', oldest: '0' }); });
+    store.change(d => { d.contacts.push({ user: 'U2', name: 'Contact', channel: 'D1', oldest: '0', status: 'active' }); });
     assert.equal((await call('/propose', 'agent', { to: 'U2', subject: 'Status', body: 'Ready.' })).status, 400);
     assert.equal((await call('/propose', 'controller', { to: 'U2', subject: 'Status', body: 'Ready.' })).status, 400);
     const proposed = await call('/propose', 'task', { to: 'U2', subject: 'Status', body: 'Ready.' });
@@ -71,6 +71,19 @@ test('mail routes restrict readers and require separate approval and routing', a
     assert.ok((await call('', 'user')).data.messages.some((item: { id: string }) => item.id === draft.data.id));
     const controllerDraft = await call('/draft', 'controller', { to: 'U2', subject: 'Status', body: 'Ready.' });
     assert.equal(store.get(controllerDraft.data.id).proposedBy?.actor, 'controller');
+    const { stageBytes, receiveBytes } = await import('../server/mail/files.ts');
+    const bytes = Buffer.from('A file from a contact.');
+    const outgoing = stageBytes(bytes, 'note.txt');
+    const file = receiveBytes(bytes, 'note.txt', outgoing.hash);
+    const withFile = store.add({ direction: 'inbox', source: 'slack', from: 'U2', to: 'U1', subject: 'File', body: 'Read this file.', files: [file] });
+    assert.equal((await call(`/${withFile.id}/files/${file.id}/route`, 'user', {task:'recipient',hash:file.hash})).status, 400);
+    await call(`/${withFile.id}/review`, 'user', {});
+    assert.equal(store.get(withFile.id).files?.[0].review?.verdict, 'action-request');
+    await call(`/${withFile.id}/approve`, 'user', {hash:withFile.hash});
+    assert.equal((await call(`/${withFile.id}/files/${file.id}/route`, 'controller', {task:'recipient',hash:file.hash})).status, 400);
+    const copied = await call(`/${withFile.id}/files/${file.id}/route`, 'user', {task:'recipient',hash:file.hash});
+    assert.equal(copied.status, 200);
+    assert.equal(readFileSync(copied.data.path, 'utf8'), 'A file from a contact.');
   } finally {
     cleanup(); await new Promise<void>(r => server.close(() => r())); rmSync(root, {recursive:true, force:true});
   }
