@@ -24,7 +24,28 @@ function parseHash(): { page: Page; view?: string } {
 export const SOLO = new URLSearchParams(location.search).get('solo') === '1';
 // inside the Mac app (desktop/preload.cjs sets this): ⌘T is New task there; a browser keeps ⌘T for its tabs
 const IN_APP = !!(window as unknown as { taskboardApp?: { isApp: boolean } }).taskboardApp?.isApp;
-export interface Toast { id: number; text: string; action?: { label: string; fn: () => void } }
+export interface Toast { id: number; text: string; expiresAt: number; action?: { label: string; fn: () => void } }
+
+const TOAST_DURATION = 5000;
+
+function ToastNotice({ toast, dismiss }: { toast: Toast; dismiss: () => void }) {
+  const [remaining, setRemaining] = useState(() => Math.max(0, toast.expiresAt - Date.now()));
+  useEffect(() => {
+    const timer = setInterval(() => setRemaining(Math.max(0, toast.expiresAt - Date.now())), 100);
+    return () => clearInterval(timer);
+  }, [toast.expiresAt]);
+  const seconds = Math.ceil(remaining / 1000);
+  const circumference = 2 * Math.PI * 11;
+  return <div className="toast" role="status">
+    <div className="b">{toast.text}<small>Closes automatically</small></div>
+    {toast.action && <button className="btn" onClick={() => { toast.action!.fn(); dismiss(); }}>{toast.action.label}</button>}
+    <span className="toast-timer" aria-label={`Closes in ${seconds} seconds`}>
+      <svg viewBox="0 0 28 28" aria-hidden="true"><circle className="toast-timer-track" cx="14" cy="14" r="11" /><circle className="toast-timer-progress" cx="14" cy="14" r="11" strokeDasharray={circumference} strokeDashoffset={circumference * (1 - remaining / TOAST_DURATION)} /></svg>
+      <span>{seconds}</span>
+    </span>
+    <button className="toast-dismiss" onClick={dismiss}>Dismiss</button>
+  </div>;
+}
 
 export function App() {
   const { tasks: allTasks, groups, approvals, machines, connected } = useStore();
@@ -65,8 +86,8 @@ export function App() {
 
   const toast = useCallback((text: string, action?: Toast['action']) => {
     const id = Date.now() + Math.random();
-    setToasts(t => [...t, { id, text, action }]);
-    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), action ? 9000 : 4500);
+    setToasts(t => [...t, { id, text, action, expiresAt: Date.now() + TOAST_DURATION }]);
+    setTimeout(() => setToasts(t => t.filter(x => x.id !== id)), TOAST_DURATION);
   }, []);
 
   useEffect(() => { const on = () => { const p = parseHash(); setPage(SOLO ? 'canvas' : p.page); if (p.view) setViewState(p.view); }; addEventListener('hashchange', on); return () => removeEventListener('hashchange', on); }, []);
@@ -210,7 +231,7 @@ export function App() {
           {a.detail && <pre className="ap-d">{a.detail}</pre>}
           <div className="ap-a"><button className="btn primary" onClick={() => api.decide(a.id, true)}>Approve</button><button className="btn" onClick={() => api.decide(a.id, false)}>Deny</button><button className="btn ghost" onClick={openController}>Open controller</button></div>
         </div>))}</div>}
-      <div className="toasts">{toasts.map(t => <div key={t.id} className="toast"><div className="b">{t.text}</div>{t.action && <button className="btn" onClick={() => { t.action!.fn(); setToasts(x => x.filter(y => y.id !== t.id)); }}>{t.action.label}</button>}</div>)}</div>
+      <div className="toasts">{toasts.map(t => <ToastNotice key={t.id} toast={t} dismiss={() => setToasts(x => x.filter(y => y.id !== t.id))} />)}</div>
     </div>
   );
 }
