@@ -461,13 +461,17 @@ app.post('/api/tasks/:id/inbox/tell', async (req, res) => {
 });
 // Files from the vault. Served as a sandboxed document (opaque origin), so an agent-written HTML page
 // cannot call Taskboard's API.
-app.get('/api/file', (req, res) => {
-  const p = docs.safePath(String(req.query.path || '')); if (!p) return res.status(404).send('Not found');
+function sendVaultFile(res: express.Response, path: string) {
+  const p = docs.safePath(path); if (!p) return res.status(404).send('Not found');
   res.set('Content-Security-Policy', 'sandbox allow-scripts allow-popups allow-forms');
   res.set('X-Content-Type-Options', 'nosniff');
   if (/\.html?$/i.test(p)) res.type('text/html'); else if (/\.(md|markdown|txt|log|json)$/i.test(p)) res.type('text/plain; charset=utf-8');
   res.sendFile(p);
-});
+}
+app.get('/api/file', (req, res) => sendVaultFile(res, String(req.query.path || '')));
+// The same file with its path in the URL (/api/files/Users/…/outbox/design.html), so an HTML page's relative
+// images, styles and links load the files next to it.
+app.get('/api/files/*path', (req, res) => sendVaultFile(res, '/' + (req.params as { path: string[] }).path.join('/')));
 
 // What changed since you last opened the task: log entries, files changed in its folder, commits.
 app.get('/api/tasks/:id/since', async (req, res) => {
