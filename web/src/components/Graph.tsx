@@ -13,6 +13,7 @@ import type { Group, Status, Task } from '../api';
 import { AGENT_NAME, ATTN, ORDER, STATUS_LABEL, fmtWait } from '../api';
 import '../graph.css';
 import { Dot } from './ui';
+import { hit } from '../keys';
 
 type Tab = 'terminal' | 'log' | 'docs';
 interface Props { tasks: Task[]; groups: Group[]; open: (id: string, tab?: Tab) => void }
@@ -216,14 +217,14 @@ export function GraphView({ tasks, groups, open }: Props) {
 
   const zoomAt = (k: number, mx: number, my: number) => setTf(t => { k = Math.max(0.35, Math.min(2, k)); return { k, x: mx - (mx - t.x) * k / t.k, y: my - (my - t.y) * k / t.k }; });
 
-  // keyboard: F fits, arrows move the selection, Enter opens it
+  // keyboard: F (keys.ts: graphFit) fits, arrows move the selection, Enter opens it
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
       const tgt = e.target as HTMLElement;
       if (tgt?.closest?.('input,textarea,select,[contenteditable=true],.xterm,.modal')) return;
       if (document.querySelector('.drawer.open, .scrim.open, .triage.open')) return;
-      if (e.key === 'f' || e.key === 'F') { e.preventDefault(); fit(); return; }
+      if (hit(e, 'graphFit')) { e.preventDefault(); fit(); return; }
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === 'Enter' && sel) { e.preventDefault(); openNode(sel); return; }
       if (!e.key.startsWith('Arrow')) return;
       e.preventDefault();

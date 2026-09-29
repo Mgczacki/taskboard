@@ -6,7 +6,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Task } from '../api';
 import { fmtWait } from '../api';
 import { fileUrl } from './Docs';
-import { AgentChip } from './ui';
+import { AgentChip, Kbd } from './ui';
+import { hit, useKeymap } from '../keys';
 import '../review.css';
 
 interface Comment { id: string; v: number; block: number; quote: string; text: string; at: string; sent?: boolean }
@@ -74,6 +75,7 @@ function Mermaid({ code, onClick, hasComments }: { code: string; onClick: () => 
 
 export function ReviewPage({ tasks, open }: { tasks: Task[]; open: (id: string, tab?: 'terminal' | 'log' | 'docs') => void }) {
   const [items, setItems] = useState<Item[] | null>(null);
+  useKeymap();
   const [sel, setSel] = useState<string | null>(null);
   const [text, setText] = useState<string | null>(null);
   const [prevText, setPrevText] = useState<string | null>(null);
@@ -120,14 +122,14 @@ export function ReviewPage({ tasks, open }: { tasks: Task[]; open: (id: string, 
 
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
-      const typing = (e.target as HTMLElement)?.closest?.('input,textarea,select,[contenteditable=true],.xterm');
-      if ((e.metaKey || e.ctrlKey) && e.key === 'Enter' && !typing) { e.preventDefault(); sendFeedback(); return; }
-      if (typing || e.metaKey || e.ctrlKey || e.altKey || !items?.length) return;
+      // keys.ts: hit() leaves out keys typed into a text field or a terminal
+      if (hit(e, 'reviewSend')) { e.preventDefault(); sendFeedback(); return; }
+      if (!items?.length) return;
       const i = items.findIndex(x => x.id === sel);
-      if (e.key === 'j') setSel(items[Math.min(items.length - 1, i + 1)].id);
-      else if (e.key === 'k') setSel(items[Math.max(0, i - 1)].id);
-      else if (e.key === 'c' && selBtn) { e.preventDefault(); startDraft(selBtn.block, selBtn.quote); }
-      else if (e.key === 'a' && item && item.state !== 'accepted') accept();
+      if (hit(e, 'reviewNext')) setSel(items[Math.min(items.length - 1, i + 1)].id);
+      else if (hit(e, 'reviewPrev')) setSel(items[Math.max(0, i - 1)].id);
+      else if (hit(e, 'reviewComment') && selBtn) { e.preventDefault(); startDraft(selBtn.block, selBtn.quote); }
+      else if (hit(e, 'reviewAccept') && item && item.state !== 'accepted') accept();
     };
     addEventListener('keydown', on); return () => removeEventListener('keydown', on);
   });
@@ -157,7 +159,7 @@ export function ReviewPage({ tasks, open }: { tasks: Task[]; open: (id: string, 
             </div>
           ))}
         </div>)}
-        <div className="rv-keys"><kbd>J</kbd>/<kbd>K</kbd> next/previous · <kbd>C</kbd> comment on selection · <kbd>A</kbd> accept · <kbd>⌘↩</kbd> send</div>
+        <div className="rv-keys"><Kbd id="reviewNext" />/<Kbd id="reviewPrev" /> next/previous · <Kbd id="reviewComment" /> comment on selection · <Kbd id="reviewAccept" /> accept · <Kbd id="reviewSend" /> send</div>
       </aside>
 
       {item && <section className="rv-main">
@@ -171,8 +173,8 @@ export function ReviewPage({ tasks, open }: { tasks: Task[]; open: (id: string, 
             <span style={{ flex: 1 }} />
             {item.state === 'accepted'
               ? <button className="btn" onClick={() => act(send('POST', `/api/review/${item.id}/reopen`))}>Reopen</button>
-              : <><button className="btn" onClick={accept}>Accept <kbd>A</kbd></button>
-                <button className="btn primary" disabled={!unsent.length} onClick={sendFeedback}>Send feedback to #{item.taskNum} {unsent.length > 0 && `(${unsent.length})`} <kbd>⌘↩</kbd></button></>}
+              : <><button className="btn" onClick={accept}>Accept <Kbd id="reviewAccept" /></button>
+                <button className="btn primary" disabled={!unsent.length} onClick={sendFeedback}>Send feedback to #{item.taskNum} {unsent.length > 0 && `(${unsent.length})`} <Kbd id="reviewSend" /></button></>}
           </div>
           {item.state === 'changes' && <div className="banner">You sent comments on version {item.version}. The agent is revising; the next version appears here when it runs <code>tb review</code> again.</div>}
           {item.state === 'accepted' && <div className="banner">Accepted.</div>}
@@ -194,7 +196,7 @@ export function ReviewPage({ tasks, open }: { tasks: Task[]; open: (id: string, 
                 );
               })}
             </div>}
-            {selBtn && <button className="btn primary rv-selbtn" style={{ left: selBtn.x, top: selBtn.y }} onMouseDown={e => { e.preventDefault(); startDraft(selBtn.block, selBtn.quote); }}>Comment <kbd>C</kbd></button>}
+            {selBtn && <button className="btn primary rv-selbtn" style={{ left: selBtn.x, top: selBtn.y }} onMouseDown={e => { e.preventDefault(); startDraft(selBtn.block, selBtn.quote); }}>Comment <Kbd id="reviewComment" /></button>}
           </div>
 
           <aside className="rv-comments">
@@ -210,7 +212,7 @@ export function ReviewPage({ tasks, open }: { tasks: Task[]; open: (id: string, 
               <textarea value={general} onChange={e => setGeneral(e.target.value)} placeholder={isHtml(item.name) ? 'Comments on this page' : 'A comment about the whole document'} onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.stopPropagation(); addComment(-1, '', general).then(() => setGeneral('')); } }} />
               <div className="rv-row"><button className="btn" disabled={!general.trim()} onClick={() => addComment(-1, '', general).then(() => setGeneral(''))}>Add</button></div>
             </div>
-            {!current.length && !draft && <div className="rv-hint">Select text and press <kbd>C</kbd>, hover a paragraph and click ＋, or click a diagram to comment on it. Comments stay here until you press <b>Send feedback</b>.</div>}
+            {!current.length && !draft && <div className="rv-hint">Select text and press <Kbd id="reviewComment" />, hover a paragraph and click ＋, or click a diagram to comment on it. Comments stay here until you press <b>Send feedback</b>.</div>}
           </aside>
         </div>
       </section>}

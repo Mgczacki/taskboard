@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { hasFiles, uploadAll } from '../drop';
 import type { Group, Task } from '../api';
 import { ATTN, ORDER, STATUS_LABEL, api, fmtWait, shortPath } from '../api';
-import { AgentChip, ByController, Dot, MachineChip, ThreeLines, WhereChip } from './ui';
+import { AgentChip, ByController, Dot, Kbd, MachineChip, ThreeLines, WhereChip } from './ui';
 
 const sortTasks = (s: string) => (a: Task, b: Task) => ATTN.includes(s as Task['status']) ? b.waitMin - a.waitMin : Date.parse(b.updated) - Date.parse(a.updated);
 const GroupDots = ({ t, groups }: { t: Task; groups: Group[] }) => { const gs = groups.filter(g => g.tasks.includes(t.id)); return gs.length ? <span className="gdots" title={gs.map(g => g.name).join(', ')}>{gs.map(g => <i key={g.id} style={{ background: g.color }} />)}</span> : null; };
@@ -99,5 +99,5 @@ export function BoardView({ tasks, groups, open, openDocs, selected, toggleSel, 
 }
 
 export function Empty() {
-  return <div className="emptyview"><h2>No tasks yet</h2><p>Press <kbd>N</kbd> to start an agent in a folder, or use <b>⇪ Import sessions</b> in the sidebar to bring in Claude Code, Codex and Antigravity sessions you already have. Each agent runs in its own tmux session, and its status shows up here from Claude Code's hooks or Codex's notify program.</p></div>;
+  return <div className="emptyview"><h2>No tasks yet</h2><p>Press <Kbd id="newTask" /> to start an agent in a folder, or use <b>⇪ Import sessions</b> in the sidebar to bring in Claude Code, Codex and Antigravity sessions you already have. Each agent runs in its own tmux session, and its status shows up here from Claude Code's hooks or Codex's notify program.</p></div>;
 }

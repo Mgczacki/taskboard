@@ -4,6 +4,8 @@ import type { MachineInfo, Task } from '../api';
 import { api, autoReload, confirmEnd, setAutoReload, setConfirmEnd } from '../api';
 import { ControllerBox, loadAccounts } from './Accounts';
 import type { Account } from './Accounts';
+import type { KeyAction } from '../keys';
+import { ACTIONS, CTX_NAME, comboOf, fmtCombo, isCustom, keysOf, resetKeys, setKeys, setRecording, useKeymap } from '../keys';
 
 export function SettingsPage({ tasks }: { tasks: Task[] }) {
   const [info, setInfo] = useState<MachineInfo | null>(null);
@@ -34,6 +36,7 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
         <label className="opt" title="The ⏻ button in a canvas window's header ends the tmux session and archives the task"><input type="checkbox" checked={askEnd} onChange={e => { setConfirmEnd(e.target.checked); setAskEnd(e.target.checked); }} /> Ask before ⏻ in a window header ends and archives the task</label>
         <div className="sub">Saved for this app or browser. When it is off, ⏻ acts at once and a message offers Restore.</div>
       </div>
+      <KeySettings />
       <h3 className="set-h">Questions about a session</h3>
       <p className="sub">The <b>?</b> button on a canvas window asks a separate Claude Code agent about that session. It reads the terminal and the transcript, and it cannot change anything. The session's own agent does not see the question. A question uses this account's usage: about $0.01 when the terminal answers it, and about $0.05 when the agent reads the transcript (at most $0.50).</p>
       {info && <div className="ctl-box">
@@ -49,4 +52,55 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
       <ControllerBox ctl={ctl} setErr={setErr} />
     </div>
   );
+}
+
+// Keyboard shortcuts: every action in keys.ts with its keys. ＋ waits for the next key and adds it; × removes a key.
+function KeySettings() {
+  useKeymap();
+  const [adding, setAdding] = useState<string | null>(null);
+  useEffect(() => {
+    if (!adding) return;
+    setRecording(true);
+    const on = (e: KeyboardEvent) => {
+      e.preventDefault(); e.stopImmediatePropagation();
+      if (e.code === 'Escape' && !e.ctrlKey && !e.altKey && !e.metaKey && !e.shiftKey) { setAdding(null); return; }
+      const c = comboOf(e); if (!c) return; // a modifier key alone: wait for the rest
+      if (!keysOf(adding).includes(c)) setKeys(adding, [...keysOf(adding), c]);
+      setAdding(null);
+    };
+    addEventListener('keydown', on, true);
+    return () => { removeEventListener('keydown', on, true); setRecording(false); };
+  }, [adding]);
+  // a key set for two actions: in the same place both would run; an Anywhere key gives way to the page's own key
+  const users = new Map<string, KeyAction[]>();
+  ACTIONS.forEach(a => keysOf(a.id).forEach(k => users.set(k, [...(users.get(k) || []), a])));
+  const note = (a: KeyAction, k: string) => {
+    const other = (users.get(k) || []).filter(b => b.id !== a.id && (b.ctx === a.ctx || b.ctx === 'app' || a.ctx === 'app'));
+    const same = other.filter(b => b.ctx === a.ctx);
+    if (same.length) return { warn: true, text: `Also set for “${same[0].label}”. Only one of them runs.` };
+    if (other.length) return { warn: false, text: a.ctx === 'app' ? `On the ${CTX_NAME[other[0].ctx]} it does “${other[0].label}” instead.` : `Takes the place of “${other[0].label}” here.` };
+    if (/^Ctrl\+(Shift\+)?Key/.test(k)) return { warn: true, text: 'Control + letter is also a terminal key. The terminal does not get it.' };
+    return null;
+  };
+  let last = '';
+  return <>
+    <h3 className="set-h">Keyboard shortcuts</h3>
+    <p className="sub">Keys with ⌘ or ⌃ work everywhere, also while you type in a terminal. Every ⌃⌥ key goes to Taskboard and not to the terminal. A key without ⌘ or ⌃ works only when the cursor is not in a terminal or a text field. Saved for this app or browser.</p>
+    <div className="ctl-box">
+      <table className="keys keyset"><tbody>{ACTIONS.map(a => {
+        const head = CTX_NAME[a.ctx] !== last; last = CTX_NAME[a.ctx];
+        const notes = keysOf(a.id).map(k => [k, note(a, k)] as const).filter(([, n]) => n);
+        return <tr key={a.id} className={head ? 'first' : ''}>
+          <td className="sub">{head ? CTX_NAME[a.ctx] : ''}</td>
+          <td>{a.label}{notes.map(([k, n]) => <div key={k} className={`keynote ${n!.warn ? 'warn' : ''}`}>{fmtCombo(k)}: {n!.text}</div>)}</td>
+          <td className="keycell">
+            {keysOf(a.id).map(k => <span key={k} className="keychip"><kbd>{fmtCombo(k)}</kbd><button title="Remove this key" onClick={() => setKeys(a.id, keysOf(a.id).filter(x => x !== k))}>×</button></span>)}
+            {adding === a.id ? <span className="keywait">Press a key… (Esc cancels)</span> : <button className="btn ghost keyadd" title="Add a key: click, then press the key" onClick={() => setAdding(a.id)}>＋</button>}
+            {isCustom(a.id) && <button className="btn ghost keyadd" title={`Back to ${a.keys.map(fmtCombo).join(' / ') || 'no key'}`} onClick={() => resetKeys(a.id)}>Reset</button>}
+          </td>
+        </tr>;
+      })}</tbody></table>
+      <div><button className="btn" disabled={!ACTIONS.some(a => isCustom(a.id))} onClick={() => resetKeys()}>Reset all keys</button></div>
+    </div>
+  </>;
 }
