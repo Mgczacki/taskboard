@@ -23,6 +23,13 @@ function acceptsEvent(t: Task, agent: store.Agent, session?: string) {
 }
 
 const firstPara = (s = '') => s.trim().split(/\n\s*\n/)[0].replace(/\s+/g, ' ').slice(0, 280);
+const logDid = (s: string) => {
+  const line = s.trim().split(/\n\s*\n/)[0].replace(/\s+/g, ' ').replace(/\[([^\]]+)\]\([^)]+\)/g, '$1');
+  if (line.length <= 200) return line;
+  const cut = line.slice(0, 197);
+  const space = cut.lastIndexOf(' ');
+  return (space > 0 ? cut.slice(0, space) : cut).trimEnd() + '…';
+};
 const lastSentence = (s = '') => { const x = s.trim().replace(/\s+/g, ' '); const m = x.match(/[^.!?]*\?\s*$/); return (m ? m[0] : x.slice(-200)).trim(); };
 const endsWithQuestion = (s = '') => /\?\s*$/.test(s.trim());
 const clock = () => new Date().toTimeString().slice(0, 5);
@@ -128,7 +135,7 @@ export function codexEvent(taskId: string, p: any) {
   // questions Codex asked during the turn can still be open on screen; codexQuestionCheck sets the status when they close
   const status = codexQuestionsOpen(store.get(t.id)!) ? {} : { ...finishedStatus(t, msg), statusSource: `Codex notify (agent-turn-complete) at ${clock()}.` };
   store.update(t.id, { sessionId: p['thread-id'] || t.sessionId, ...status, now: firstPara(msg) || t.now });
-  if (msg) store.appendLog(t.id, { did: firstPara(msg).slice(0, 200), wait: endsWithQuestion(msg) ? lastSentence(msg) : 'Nothing.' });
+  if (msg) store.appendLog(t.id, { did: logDid(msg), wait: endsWithQuestion(msg) ? lastSentence(msg) : 'Nothing.' });
   lastCodexEvent.set(t.id, Date.now());
 }
 
@@ -187,7 +194,7 @@ export function antigravityEvent(taskId: string, ev: string, input: any): { outp
       accounts.clearLimited(t.account);
       const msg = (t.transcript ? external.readState('antigravity', t.transcript)?.text : undefined) || '';
       store.update(t.id, { ...finishedStatus(t, msg), now: firstPara(msg) || t.now, statusSource: `Antigravity Stop hook at ${clock()}.` });
-      if (msg) store.appendLog(t.id, { did: firstPara(msg).slice(0, 200), wait: endsWithQuestion(msg) ? lastSentence(msg) : 'Nothing.' });
+      if (msg) store.appendLog(t.id, { did: logDid(msg), wait: endsWithQuestion(msg) ? lastSentence(msg) : 'Nothing.' });
       break;
     }
   }

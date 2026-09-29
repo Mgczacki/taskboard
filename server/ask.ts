@@ -1,7 +1,7 @@
-// Questions about a task, answered by a separate Claude Code process (`claude -p`) that can only read files.
+// Questions about a task, answered by a separate Claude Code or Codex process that can only read files.
 // The task's own agent gets no input, so its context does not change. The separate agent gets the task's log and
 // terminal tail in its prompt and reads the task's transcript only when those do not answer the question.
-// Follow-up questions resume the separate agent's own conversation (`--resume`), never the task's.
+// Follow-up questions resume the separate agent's own conversation, never the task's.
 // The thread is saved in ~/AgentVault/tasks/<id>/ask.json; the dashboard polls GET /api/tasks/:id/ask while it runs.
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -26,11 +26,12 @@ export interface AskItem {
   steps: string[];      // tool calls of the separate agent, for example "Read …/abc.jsonl (from line 4000)"
   costUsd?: number;     // total_cost_usd from claude's result
   ms?: number;
+  agent?: 'claude' | 'codex'; // older saved items have no agent and were answered by Claude Code
   model: string;
   account: string;
   at: string;
 }
-export interface AskThread { sessionId?: string; accountId?: string; items: AskItem[] }
+export interface AskThread { sessionId?: string; accountId?: string; agent?: 'claude' | 'codex'; model?: string; items: AskItem[] }
 
 const file = (id: string) => join(store.taskDir(id), 'ask.json');
 const running = new Map<string, ChildProcess>();
@@ -56,12 +57,11 @@ function transcriptOf(t: Task): string | undefined {
 }
 
 const RULES = `You answer the user's questions about another coding agent's session in Taskboard. You are not that agent.
-You cannot change the session, and you must not try: you only have tools that read files.
+You cannot change the session. Read files only. Do not run commands that write files or change other systems.
 - Answer from the log and the terminal tail in the message first.
 - If they do not answer the question, read the session's transcript. It is a JSONL file, often several MB.
-  Do not read it from the start: use Grep for a word from the question, or Read with an offset near the end, and work backwards.
-  Always give Read a limit of 20 to 40 lines: one line can hold a whole file or tool output, and each line you read costs the user.
-  Grep with output_mode "content" and a short -C context usually finds the answer faster than Read.
+  Do not read it from the start. Search for a word from the question, or read near the end and work backwards.
+  Read 20 to 40 lines at a time. One line can hold a whole file or tool output.
 - Claude Code transcripts have one record per line with "type" user / assistant and message.content (text, tool_use, tool_result).
 - Codex rollout files have one record per line with "type" response_item / event_msg and a "payload".
 - You may also read files in the session's working folder when the question is about the code.
@@ -94,34 +94,61 @@ function step(name: string, input: Record<string, unknown>): string {
 export async function ask(t: Task, question: string): Promise<AskThread> {
   if (running.has(t.id)) throw new Error('A question about this task is still running. Wait for it, or stop it.');
   const settings = machine.get().ask;
-  const acct = accounts.get(settings.account) || accounts.defaultFor('claude');
-  if (acct.agent !== 'claude') throw new Error('The account for questions must be a Claude Code account. Change it in Settings.');
+  const agent = settings.agent;
+  const model = settings.model;
+  const acct = accounts.get(settings.account) || accounts.defaultFor(agent);
+  if (acct.agent !== agent) throw new Error('The Ask account does not match its agent. Change it in Settings.');
   const thread = get(t.id);
-  // a conversation lives in one account's folder: after a change of account in Settings, the next question starts a new one
-  if (thread.accountId !== acct.id) { thread.sessionId = undefined; thread.accountId = acct.id; }
+  // a conversation lives in one account's folder and uses one model
+  if (thread.accountId !== acct.id || thread.agent !== agent || thread.model !== model) {
+    thread.sessionId = undefined; thread.accountId = acct.id; thread.agent = agent; thread.model = model;
+  }
   const tail = await tmux.capture(t.session, TAIL_LINES);
   const tr = transcriptOf(t);
   const cwd = join(ASK_DIR, t.id); mkdirSync(cwd, { recursive: true });
-  const args = ['-p', message(t, tail, question, !thread.sessionId), '--model', settings.model, '--tools', 'Read,Grep,Glob',
+  const prompt = message(t, tail, question, !thread.sessionId);
+  const claudeArgs = ['-p', prompt, '--model', model, '--tools', 'Read,Grep,Glob',
     '--append-system-prompt', RULES, '--strict-mcp-config', '--output-format', 'stream-json', '--verbose', '--max-budget-usd', MAX_BUDGET_USD,
     '--add-dir', t.cwd, ...(tr ? ['--add-dir', dirname(tr)] : []), ...(thread.sessionId ? ['--resume', thread.sessionId] : [])];
+  // Codex loads no user configuration, plugins, or ChatGPT apps. Its read-only sandbox applies to every turn.
+  const codexLimits = ['--ignore-user-config', '--ignore-rules', '--skip-git-repo-check', '--json', '-c', 'mcp_servers={}',
+    '--disable', 'apps', '--disable', 'plugins', '--disable', 'remote_plugin',
+    '--disable', 'skill_mcp_dependency_install', '--disable', 'tool_call_mcp_elicitation',
+    '--disable', 'mcp_2026_07_28', '--disable', 'codex_apps_mcp_2026_07_28', '--disable', 'enable_mcp_apps'];
+  const codexArgs = thread.sessionId
+    ? ['exec', 'resume', ...codexLimits, '-c', 'sandbox_mode="read-only"', '-c', 'approval_policy="never"', '-m', model, thread.sessionId, `${RULES}\n\n${prompt}`]
+    : ['exec', ...codexLimits, '--sandbox', 'read-only', '-c', 'approval_policy="never"', '-m', model, `${RULES}\n\n${prompt}`];
   // the task's own variables are left out, so `tb` or a hook cannot act as the task
   const env: Record<string, string | undefined> = { ...process.env, ...accounts.envFor(acct) };
-  for (const k of ['TASK_ID', 'TASK_DIR', 'TASK_NUM', 'CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT']) delete env[k];
+  for (const k of ['TASK_ID', 'TASK_DIR', 'TASK_NUM', 'TB_URL', 'TB_TOKEN_FILE', 'CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT']) delete env[k];
   if (acct.isDefault) delete env.CLAUDE_CONFIG_DIR;
-  const item: AskItem = { q: question, state: 'running', steps: [], model: settings.model, account: acct.name, at: new Date().toISOString() };
+  if (acct.isDefault) delete env.CODEX_HOME;
+  const item: AskItem = { q: question, state: 'running', steps: [], agent, model, account: acct.name, at: new Date().toISOString() };
   thread.items.push(item); save(t.id, thread);
   const started = Date.now();
-  const p = spawn('claude', args, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const bin = agent === 'claude' ? 'claude' : 'codex';
+  const p = spawn(bin, agent === 'claude' ? claudeArgs : codexArgs, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
   running.set(t.id, p);
   let buf = '', err = '', result: { text?: string; cost?: number; isError?: boolean } = {};
   p.stdout!.on('data', d => {
     buf += d; const lines = buf.split('\n'); buf = lines.pop()!;
     for (const l of lines) {
       let m: any; try { m = JSON.parse(l); } catch { continue; }
-      if (m.session_id && !thread.sessionId) thread.sessionId = m.session_id;
-      if (m.type === 'assistant') for (const c of m.message?.content || []) if (c.type === 'tool_use') { item.steps.push(step(c.name, c.input || {})); save(t.id, thread); }
-      if (m.type === 'result') result = { text: m.result, cost: m.total_cost_usd, isError: m.is_error };
+      if (agent === 'claude') {
+        if (m.session_id && !thread.sessionId) thread.sessionId = m.session_id;
+        if (m.type === 'assistant') {
+          if (m.message?.model) item.model = m.message.model;
+          for (const c of m.message?.content || []) if (c.type === 'tool_use') { item.steps.push(step(c.name, c.input || {})); save(t.id, thread); }
+        }
+        if (m.type === 'result') result = { text: m.result, cost: m.total_cost_usd, isError: m.is_error };
+      } else {
+        if (m.type === 'thread.started' && m.thread_id) thread.sessionId = m.thread_id;
+        if (m.type === 'item.started' && m.item?.type === 'command_execution') {
+          item.steps.push(String(m.item.command || 'Read files').slice(0, 160)); save(t.id, thread);
+        }
+        if (m.type === 'item.completed' && m.item?.type === 'agent_message') result.text = m.item.text;
+        if (m.type === 'turn.failed') { result.isError = true; result.text = m.error?.message; }
+      }
     }
   });
   p.stderr!.on('data', d => { err += d; });
@@ -129,10 +156,10 @@ export async function ask(t: Task, question: string): Promise<AskThread> {
     running.delete(t.id);
     item.ms = Date.now() - started; item.costUsd = result.cost;
     if (signal) { item.state = 'stopped'; item.a = 'Stopped.'; }
-    else if (result.text && !result.isError) { item.state = 'done'; item.a = result.text; }
-    else { item.state = 'failed'; item.a = result.text || err.trim().split('\n').slice(-3).join('\n') || `claude exited with code ${code}.`; }
+    else if (code === 0 && result.text && !result.isError) { item.state = 'done'; item.a = result.text; }
+    else { item.state = 'failed'; item.a = result.text || err.trim().split('\n').slice(-3).join('\n') || `${bin} exited with code ${code}.`; }
     save(t.id, thread);
   });
-  p.on('error', e => { running.delete(t.id); item.state = 'failed'; item.a = `Could not start claude: ${e.message}`; save(t.id, thread); });
+  p.on('error', e => { running.delete(t.id); item.state = 'failed'; item.a = `Could not start ${bin}: ${e.message}`; save(t.id, thread); });
   return thread;
 }
