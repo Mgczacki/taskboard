@@ -18,9 +18,12 @@ test('mail routes restrict readers and require separate approval and routing', a
   const store = new MailStore(join(root, 'server', 'mail.json'));
   const m = store.add({ direction: 'inbox', source: 'slack', from: 'U2', to: 'U1', subject: 'Permission request', body: 'Please change an AWS permission.' });
   const app = express(); app.use(express.json());
-  const slack = { identity: () => ({ user: 'U1', team: 'T1' }), finish: async () => { throw new Error('Sign-in expired or did not start on this Taskboard'); }, call: async (method: string) => {
+  let posted: Record<string, string> | null = null;
+  const slack = { identity: () => ({ user: 'U1', team: 'T1' }), finish: async () => { throw new Error('Sign-in expired or did not start on this Taskboard'); }, call: async (method: string, args: Record<string, string>) => {
     if (method === 'users.info') return { user: { id: 'U2', team_id: 'T1', real_name: 'Recipient' } };
     if (method === 'users.list') return { members: [{ id: 'U1', team_id: 'T1' }, { id: 'U2', team_id: 'T1', real_name: 'Recipient' }] };
+    if (method === 'conversations.open') return { channel: { id: 'D1' } };
+    if (method === 'chat.postMessage') { posted = args; return { ts: '1' }; }
     return {};
   } } as unknown as SlackClient;
   const cleanup = mountMail(app, { background: false, slack, review: async () => ({ verdict: 'action-request', reason: 'Permission change', at: new Date().toISOString() }) });
@@ -76,16 +79,26 @@ test('mail routes restrict readers and require separate approval and routing', a
     const longProposed = await call('/propose', 'task', { to: 'U2', subject: 'Long text', body: longBody });
     assert.equal(longProposed.status, 200);
     assert.equal(store.get(longProposed.data.id).files?.[0].longBody, true);
+    assert.equal(store.get(longProposed.data.id).files?.[0].name, 'message.md');
     assert.equal(readFileSync(store.get(longProposed.data.id).files![0].path, 'utf8'), longBody);
     const longDraft = await call('/draft', 'user', { to: 'U2', subject: 'Long text', body: longBody });
     assert.equal(longDraft.status, 200);
     assert.equal(store.get(longDraft.data.id).files?.[0].longBody, true);
+    assert.equal(store.get(longDraft.data.id).files?.[0].name, 'message.md');
     const draft = await call('/draft', 'user', { to: 'U2', subject: 'Status', body: 'Ready.' });
     assert.equal(store.get(draft.data.id).proposedBy?.actor, 'user');
     await call(`/${draft.data.id}/dismiss`, 'user', {});
     assert.ok((await call('', 'user')).data.messages.some((item: { id: string }) => item.id === draft.data.id));
     const controllerDraft = await call('/draft', 'controller', { to: 'U2', subject: 'Status', body: 'Ready.' });
     assert.equal(store.get(controllerDraft.data.id).proposedBy?.actor, 'controller');
+    const formatted = await call('/draft', 'user', { to: 'U2', subject: 'Markdown', body: '# Title\n\n**bold** and `code`' });
+    assert.equal((await call(`/${formatted.data.id}/review`, 'user', {})).status, 200);
+    assert.equal((await call(`/${formatted.data.id}/approve`, 'user', { hash: store.get(formatted.data.id).hash })).status, 200);
+    assert.equal((await call(`/${formatted.data.id}/send`, 'user', {})).status, 200);
+    assert.equal(store.get(formatted.data.id).sentAt !== undefined, true);
+    assert.equal(JSON.parse(posted!.blocks)[4].type, 'markdown');
+    assert.match(JSON.parse(posted!.blocks)[4].text, /# Title/);
+    assert.match(JSON.parse(posted!.blocks)[4].text, /\*\*bold\*\*/);
     const { stageBytes, receiveBytes } = await import('../server/mail/files.ts');
     const bytes = Buffer.from('A file from a contact.');
     const outgoing = stageBytes(bytes, 'note.txt');

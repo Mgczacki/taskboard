@@ -287,7 +287,7 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
     validText(req.body.subject, 200, 'subject'); validText(body, 262144, 'message body');
     if (needsBodyFile(body)) {
       if (files.length >= 5) throw new Error('A long message needs one free file slot');
-      files.push({ ...stageBytes(Buffer.from(body), 'message.txt'), longBody: true });
+      files.push({ ...stageBytes(Buffer.from(body), 'message.md'), longBody: true });
     }
     const m = store.add({ direction: 'outbox', source: 'user', from: identity.user, to: recipient.user, subject: req.body.subject, body, files,
       proposedBy: { actor: human(req) ? 'user' : 'controller' } });
@@ -304,7 +304,7 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
     const recipient = await service.resolveRecipient(recipientInput);
     const body = String(req.body.body || '');
     validText(req.body.subject, 200, 'subject'); validText(body, 262144, 'message body');
-    const files = needsBodyFile(body) ? [{ ...stageBytes(Buffer.from(body), 'message.txt'), longBody: true }] : [];
+    const files = needsBodyFile(body) ? [{ ...stageBytes(Buffer.from(body), 'message.md'), longBody: true }] : [];
     const m = store.add({ direction: 'outbox', source: 'agent', from: identity.user, to: recipient.user, subject: req.body.subject, body, files,
       proposedBy: { actor: 'task', task: task.id, agent: task.agent } });
     void checkNext(); return { id: m.id, recipient };
