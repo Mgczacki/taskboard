@@ -48,7 +48,7 @@ export function AskPanel({ task, close }: { task: Task; close: () => void }) {
             {i.steps.length > 0 && <div className="ask-steps">{i.steps.map((s, k) => <div key={k}>{s}</div>)}</div>}
             {i.state === 'running' ? <div className="ask-wait">Working… <button className="b" onClick={() => api.askStop(task.id)}>Stop</button></div>
               : <div className={`ask-a md ${i.state}`} dangerouslySetInnerHTML={{ __html: md(i.a || '') }} />}
-            {i.state !== 'running' && <div className="ask-meta">{[i.costUsd !== undefined ? `$${i.costUsd.toFixed(3)}` : '', secs(i.ms), i.model, i.account].filter(Boolean).join(' · ')}</div>}
+            {i.state !== 'running' && <div className="ask-meta">{[i.costUsd !== undefined ? `$${i.costUsd.toFixed(3)}` : '', secs(i.ms), i.agent === 'codex' ? 'Codex' : 'Claude Code', i.model, i.account].filter(Boolean).join(' · ')}</div>}
           </div>
         ))}
       </div>

@@ -177,9 +177,13 @@ app.get('/api/info', (_req, res) => res.json(info()));
 app.patch('/api/info', async (req, res) => {
   if (!req.get('origin')) return res.status(403).json({ error: 'Machine settings are changed on the dashboard.' });
   const before = JSON.stringify(machine.get());
-  const { name, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval, askAccount, askModel } = req.body;
-  if (askAccount && accounts.get(askAccount)?.agent !== 'claude') return res.status(400).json({ error: 'Pick a Claude Code account for questions.' });
-  machine.update({ name, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval, askAccount, askModel });
+  const { name, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval, askAgent, askAccount, askModel } = req.body;
+  if (askAgent && !['claude', 'codex'].includes(askAgent)) return res.status(400).json({ error: 'Antigravity does not have verified read-only Ask controls.' });
+  const agent = askAgent || machine.get().ask.agent;
+  if (askAccount && accounts.get(askAccount)?.agent !== agent) return res.status(400).json({ error: `Pick a ${agent} account for questions.` });
+  if (askModel && (typeof askModel !== 'string' || !(agent === 'claude' ? ['sonnet', 'haiku', 'opus'].includes(askModel) : /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(askModel))))
+    return res.status(400).json({ error: 'Pick a valid model for questions.' });
+  machine.update({ name, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval, askAgent, askAccount, askModel });
   // the running controller picks up a new name or Remote Control setting at its next restart, which keepController()
   // does as soon as it is between turns
   void before;

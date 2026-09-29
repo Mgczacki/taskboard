@@ -7,6 +7,7 @@ import { closeSync, existsSync, openSync, readSync, readdirSync, statSync } from
 import { basename, join } from 'node:path';
 import { promisify } from 'node:util';
 import { AGY_HOME, HOME, TB_DIR } from './config.ts';
+import * as tmux from './tmux.ts';
 
 const exec = promisify(execFile);
 const DAYS = 14;
@@ -154,9 +155,14 @@ async function runningAgents(): Promise<Proc[]> {
 const argAfter = (args: string[], flag: string) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : undefined; };
 
 export async function candidates(knownSessionIds: Set<string>): Promise<Candidate[]> {
-  const [cc, cx, ag, procs] = await Promise.all([Promise.resolve(claudeCandidates()), codexCandidates(), antigravityCandidates(), runningAgents()]);
+  const [cc, cx, ag, procs, panes] = await Promise.all([
+    Promise.resolve(claudeCandidates()), codexCandidates(), antigravityCandidates(), runningAgents(),
+    tmux.tmux('list-panes', '-a', '-F', '#{pane_tty}').catch(() => ''),
+  ]);
+  const ownTtys = new Set(panes.split('\n').filter(Boolean).map(tty => basename(tty.trim())));
   const list = [...cc, ...cx, ...ag].filter(c => !knownSessionIds.has(c.sessionId) && c.cwd && !/^\/(private\/)?(tmp|var\/folders)\//.test(c.cwd) && !c.cwd.startsWith(join(TB_DIR, 'ask')));
   for (const p of procs) {
+    if (ownTtys.has(p.tty)) continue; // a Taskboard agent in this tmux server is not an external session
     // exact: the session id is on the command line (codex resume <id>, claude --resume <id>, agy --conversation <id>)
     const exactId = p.agent === 'codex' ? (p.args[1] === 'resume' ? p.args[2] : undefined) : p.agent === 'antigravity' ? argAfter(p.args, '--conversation')
       : (argAfter(p.args, '--resume') || argAfter(p.args, '-r') || argAfter(p.args, '--session-id'));

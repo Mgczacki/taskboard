@@ -13,7 +13,7 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
   const [askEnd, setAskEnd] = useState(confirmEnd());
   const [accts, setAccts] = useState<Account[]>([]);
   useEffect(() => { api.info().then(setInfo).catch(e => setErr(String(e.message || e))); loadAccounts().then(setAccts).catch(() => {}); }, []);
-  const save = async (p: { controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; askAccount?: string; askModel?: string }) => {
+  const save = async (p: { controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string }) => {
     setBusy(true); try { setInfo(await api.updateInfo(p)); } catch (e) { setErr(String((e as Error).message || e)); } setBusy(false);
   };
   const ctl = tasks.find(t => t.role === 'controller');
@@ -35,10 +35,16 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
         <div className="sub">Saved for this app or browser. When it is off, ⏻ acts at once and a message offers Restore.</div>
       </div>
       <h3 className="set-h">Questions about a session</h3>
-      <p className="sub">The <b>?</b> button on a canvas window asks a separate Claude Code agent about that session. It reads the terminal and the transcript, and it cannot change anything. The session's own agent does not see the question. A question uses this account's usage: about $0.01 when the terminal answers it, and about $0.05 when the agent reads the transcript (at most $0.50).</p>
+      <p className="sub">The <b>?</b> button asks a separate agent about a session. It reads the terminal and transcript. The session's own agent does not see the question. Claude Code questions have a $0.50 limit. Codex questions use the selected account's usage.</p>
       {info && <div className="ctl-box">
-        <label className="opt">Account <select disabled={busy} value={info.settings.ask.account} onChange={e => save({ askAccount: e.target.value })}>{accts.filter(a => a.agent === 'claude').map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
-        <label className="opt">Model <select disabled={busy} value={info.settings.ask.model} onChange={e => save({ askModel: e.target.value })}>{['sonnet', 'haiku', 'opus'].map(m => <option key={m} value={m}>{m[0].toUpperCase() + m.slice(1)}</option>)}</select></label>
+        <label className="opt">Agent <select disabled={busy} value={info.settings.ask.agent} onChange={e => save({ askAgent: e.target.value as 'claude' | 'codex' })}>
+          <option value="claude">Claude Code</option><option value="codex">Codex</option><option value="antigravity" disabled>Antigravity (read-only access not verified)</option>
+        </select></label>
+        <label className="opt">Account <select disabled={busy} value={info.settings.ask.account} onChange={e => save({ askAccount: e.target.value })}>{accts.filter(a => a.agent === info.settings.ask.agent).map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
+        {info.settings.ask.agent === 'claude'
+          ? <label className="opt">Model <select disabled={busy} value={info.settings.ask.model} onChange={e => save({ askModel: e.target.value })}>{['sonnet', 'haiku', 'opus'].map(m => <option key={m} value={m}>{m[0].toUpperCase() + m.slice(1)}</option>)}</select></label>
+          : <label className="opt">Model <input key={info.settings.ask.agent + info.settings.ask.account} disabled={busy} defaultValue={info.settings.ask.model} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} onBlur={e => { const model = e.target.value.trim(); if (model && model !== info.settings.ask.model) save({ askModel: model }); }} /></label>}
+        <div className="sub">Antigravity does not offer a verified read-only Ask process with MCP servers disabled.</div>
       </div>}
       <h3 className="set-h">Updates</h3>
       <div className="ctl-box">
