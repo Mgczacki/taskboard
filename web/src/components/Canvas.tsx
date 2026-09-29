@@ -16,10 +16,13 @@ const GESTURE_GAP = 150;  // ms without a wheel event that ends one trackpad swi
 const AXIS_LOCK = 8;      // px a swipe moves before it is locked to one axis
 const PAGE_SWIPE = 60;    // px a horizontal swipe moves before it changes the page
 const GCOLORS = ['#e3b341', '#58a6ff', '#3fb950', '#db61a2', '#a371f7', '#f78166', '#2dd4bf', '#8b949e'];
+const UNGROUPED_COLOR = '#6e7681'; // a gray that is not in GCOLORS, so no group has the same colour
 
-// view ids: g:<group id> · needs · live · t:<id,id,...>
+// view ids: g:<group id> · ungrouped · needs · live · t:<id,id,...>
+// ungrouped is not a group file: it is every task that no group lists, computed here from the groups
 export function viewName(view: string, groups: Group[], tasks: Task[]) {
   if (view.startsWith('g:')) return groups.find(g => g.id === view.slice(2))?.name || 'Group';
+  if (view === 'ungrouped') return 'Ungrouped';
   if (view === 'needs') return 'Needs you + unread';
   if (view === 'live') return 'All live tasks';
   return view.slice(2).split(',').map(id => '#' + (tasks.find(t => t.id === id)?.num ?? '?')).join(' ');
@@ -47,6 +50,7 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
   const [menu, setMenu] = useState<null | 'add' | 'new' | { group: string }>(null);
   const [frozen, setFrozen] = useState<string[] | null>(null);     // status-based views do not move windows on their own
   const [extra, setExtra] = useState<string[]>([]);
+  const [hidden, setHidden] = useState<string[]>([]);              // ungrouped tasks removed from the Ungrouped view with ✕
   const [dropTab, setDropTab] = useState<string | null>(null);
   const [reveal, setReveal] = useState(false);
   const [ending, setEnding] = useState<string | null>(null); // the window whose header asks "End & archive?"
@@ -56,7 +60,7 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
   const [W, setW] = useState(1200);
   useKeymap();
 
-  useEffect(() => { setLayout((localStorage.getItem(lk('layout')) as Layout) || 'columns'); const v = localStorage.getItem(lk('visible')); setVisible(v && v !== 'auto' ? Number(v) : 'auto'); const pp = localStorage.getItem(lk('perpage')); setPerPage(pp && pp !== 'off' ? Number(pp) : 'off'); setPage(Number(localStorage.getItem(lk('page'))) || 0); setFrozen(null); setExtra([]); setMaxId(null); setFocused(null); }, [view]);
+  useEffect(() => { setLayout((localStorage.getItem(lk('layout')) as Layout) || 'columns'); const v = localStorage.getItem(lk('visible')); setVisible(v && v !== 'auto' ? Number(v) : 'auto'); const pp = localStorage.getItem(lk('perpage')); setPerPage(pp && pp !== 'off' ? Number(pp) : 'off'); setPage(Number(localStorage.getItem(lk('page'))) || 0); setFrozen(null); setExtra([]); setHidden([]); setMaxId(null); setFocused(null); }, [view]);
   useEffect(() => { localStorage.setItem(lk('layout'), layout); localStorage.setItem(lk('visible'), String(visible)); localStorage.setItem(lk('perpage'), String(perPage)); localStorage.setItem(lk('page'), String(page)); }, [layout, visible, perPage, page, view]);
   useEffect(() => { const ro = new ResizeObserver(() => setW(stage.current?.clientWidth || 1200)); if (stage.current) ro.observe(stage.current); return () => ro.disconnect(); }, []);
 
@@ -65,12 +69,13 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
   const liveSet = useCallback(() => view === 'needs' ? tasks.filter(t => ATTN.includes(t.status) || t.status === 'unread').map(t => t.id) : tasks.filter(t => live(t) && t.status !== 'parked').map(t => t.id), [tasks, view]);
   useEffect(() => { if ((view === 'needs' || view === 'live') && !frozen && tasks.length) setFrozen(liveSet()); }, [view, frozen, tasks.length, liveSet]);
   const group = view.startsWith('g:') ? groups.find(g => g.id === view.slice(2)) : undefined;
+  const ungrouped = useMemo(() => { const inGroup = new Set(groups.flatMap(g => g.tasks)); return tasks.filter(t => !inGroup.has(t.id)).map(t => t.id); }, [tasks, groups]);
   const ids = useMemo(() => {
-    let base: string[] = view.startsWith('g:') ? (group?.tasks || []) : view.startsWith('t:') ? view.slice(2).split(',') : (frozen || []);
+    let base: string[] = view.startsWith('g:') ? (group?.tasks || []) : view.startsWith('t:') ? view.slice(2).split(',') : view === 'ungrouped' ? ungrouped.filter(id => !hidden.includes(id)) : (frozen || []);
     base = [...base, ...extra.filter(x => !base.includes(x))];
     return base.filter(id => live(tasks.find(t => t.id === id)));
-  }, [view, group, frozen, extra, tasks]);
-  const suspendedHere = (view.startsWith('g:') ? (group?.tasks || []) : view.startsWith('t:') ? view.slice(2).split(',') : []).map(id => tasks.find(t => t.id === id)).filter((t): t is Task => !!t && t.status === 'suspended');
+  }, [view, group, ungrouped, hidden, frozen, extra, tasks]);
+  const suspendedHere = (view.startsWith('g:') ? (group?.tasks || []) : view.startsWith('t:') ? view.slice(2).split(',') : view === 'ungrouped' ? ungrouped : []).map(id => tasks.find(t => t.id === id)).filter((t): t is Task => !!t && t.status === 'suspended');
   const newInSmart = (view === 'needs' || view === 'live') && frozen ? liveSet().filter(x => !frozen.includes(x)).length : 0;
 
   const wins = ids.map(id => tasks.find(t => t.id === id)!).filter(Boolean);
@@ -85,19 +90,22 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
   const needBefore = per ? wins.slice(0, pg * per).filter(needsYou).length : 0;
   const needAfter = per ? wins.slice((pg + 1) * per).filter(needsYou).length : 0;
   const shown = maxId ? wins.filter(t => t.id === maxId) : pageWins;
-  // with pages every page has the same tile size, so a short last page does not resize the tmux windows
-  const slots = per && !maxId ? per : shown.length;
+  const tileCount = shown.length;
   const fit = Math.max(1, Math.floor((W - 8) / (MINW + 8)));
-  const vis = layout !== 'columns' ? shown.length : per ? slots : visible === 'auto' ? Math.min(shown.length, fit) : Math.min(shown.length, visible);
-  const gridCols = Math.max(1, Math.min(slots || 1, Math.round(Math.sqrt(slots * (W / 900)))));
+  const vis = per || layout !== 'columns' ? tileCount : visible === 'auto' ? Math.min(tileCount, fit) : Math.min(tileCount, visible);
+  const gridCols = Math.max(1, Math.min(tileCount || 1, Math.round(Math.sqrt(tileCount * (W / 900)))));
+  const lastRow = tileCount % gridCols || gridCols;
+  // Give each tile in the last grid row an equal share of the full width.
+  const gridTracks = gridCols * lastRow;
   const style: React.CSSProperties = maxId ? { gridTemplateColumns: '1fr' }
     : layout === 'columns' ? { gridAutoFlow: 'column', gridAutoColumns: `calc((100% - ${(Math.max(1, vis) - 1) * 8}px) / ${Math.max(1, vis)})`, overflowX: 'auto' }
-    : layout === 'grid' ? { gridTemplateColumns: `repeat(${gridCols}, 1fr)` }
-    : { gridTemplateRows: `repeat(${slots || 1}, minmax(160px, 1fr))`, overflowY: 'auto' };
+    : layout === 'grid' ? { gridTemplateColumns: `repeat(${gridTracks}, 1fr)` }
+    : { gridTemplateRows: `repeat(${tileCount || 1}, minmax(160px, 1fr))`, overflowY: 'auto' };
 
-  const addToView = (id: string) => { if (group) api.updateGroup(group.id, { add: id }); else setExtra(e => [...e, id]); };
+  const addToView = (id: string) => { if (group) api.updateGroup(group.id, { add: id }); else { setExtra(e => [...e, id]); setHidden(h => h.filter(x => x !== id)); } };
   const removeFromView = (id: string) => {
     if (group) { api.updateGroup(group.id, { remove: id }); toast(`Removed from ${group.name}. The agent keeps running.`); }
+    else if (view === 'ungrouped') { setHidden(h => [...h, id]); setExtra(e => e.filter(x => x !== id)); }
     else if (view.startsWith('t:')) setView('t:' + view.slice(2).split(',').filter(x => x !== id).join(','));
     else { setFrozen(f => (f || []).filter(x => x !== id)); setExtra(e => e.filter(x => x !== id)); }
   };
@@ -156,7 +164,7 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
     return () => el.removeEventListener('wheel', on, { capture: true });
   }, []);
 
-  const tabs = [...groups.map(g => 'g:' + g.id), 'needs', 'live'];
+  const tabs = [...groups.map(g => 'g:' + g.id), 'ungrouped', 'needs', 'live'];
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
       if (e.key === 'Escape' && focusMode && !(e.target as HTMLElement)?.closest?.('.xterm')) { setFocusMode(false); return; }
@@ -227,6 +235,12 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
             <span className="gdot" /><span className="gname">{g.name}</span><span className="gn">{l.length}</span>{w > 0 && <span className="gw">● {w}</span>}
             <span className="gact"><button title="Open in its own window" onClick={() => openInWindow('g:' + g.id)}>↗</button><button title="Rename, colour, delete" onClick={() => setMenu({ group: g.id })}>⋯</button></span>
           </div>); })}
+        {(() => { const l = ungrouped.filter(id => live(tasks.find(t => t.id === id))); const w = waiting(l); return (
+          <div className={`gtab ${view === 'ungrouped' ? 'on' : ''}`} style={{ '--gc': UNGROUPED_COLOR } as React.CSSProperties}
+            onClick={e => { if (!(e.target as HTMLElement).closest('button')) setView('ungrouped'); }} title="Every task that is not in a group">
+            <span className="gdot" /><span className="gname">Ungrouped</span><span className="gn">{l.length}</span>{w > 0 && <span className="gw">● {w}</span>}
+            <span className="gact"><button title="Open in its own window" onClick={() => openInWindow('ungrouped')}>↗</button></span>
+          </div>); })()}
         <span className="gsep" />
         {(['needs', 'live'] as const).map(v => { const l = v === 'needs' ? tasks.filter(t => ATTN.includes(t.status) || t.status === 'unread') : tasks.filter(t => live(t) && t.status !== 'parked'); return (
           <div key={v} className={`gtab smart ${view === v ? 'on' : ''}`} onClick={() => setView(v)} title={v === 'needs' ? `Shortcut: ${keysText('needsView')}` : undefined}><span className="gdot" /><span className="gname">{viewName(v, groups, tasks)}</span><span className="gn">{l.length}</span></div>); })}
@@ -258,9 +272,9 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
       {menu === 'new' && <NewGroupMenu tasks={tasks} onScreen={ids} selected={[...selected].filter(id => tasks.some(t => t.id === id))} close={() => setMenu(null)} done={g => { clearSel(); setMenu(null); setView('g:' + g.id); toast(`Group “${g.name}” created`); }} />}
       {menu && typeof menu === 'object' && <GroupMenu g={groups.find(x => x.id === menu.group)!} close={() => setMenu(null)} onDeleted={g => { if (view === 'g:' + g.id) setView('live'); toast(`Deleted “${g.name}”. Its tasks keep running.`, { label: 'Undo', fn: () => { api.restoreGroup(g); setView('g:' + g.id); } }); }} />}
       <div className="stage-grid" ref={stage} style={style}>
-        {!wins.length && <div className="emptyview"><h2>{group ? `“${group.name}” is empty` : 'No windows'}</h2><p>Use <b>＋ Add window</b>, drag a window's header onto a tab, or <b>Show on canvas</b> in a task's panel.</p></div>}
+        {!wins.length && <div className="emptyview"><h2>{group ? `“${group.name}” is empty` : view === 'ungrouped' && !hidden.length ? 'Every live task is in a group' : 'No windows'}</h2><p>Use <b>＋ Add window</b>, drag a window's header onto a tab, or <b>Show on canvas</b> in a task's panel.</p></div>}
         {shown.map((t, i) => (
-          <div key={t.id} data-win={t.id} className={`win ${t.status} ${focused === t.id ? 'focus' : ''} ${selected.has(t.id) ? 'selected' : ''}`} onMouseDown={() => { setFocused(t.id); if (t.status === 'unread') api.seen(t.id); }}>
+          <div key={t.id} data-win={t.id} className={`win ${t.status} ${focused === t.id ? 'focus' : ''} ${selected.has(t.id) ? 'selected' : ''}`} style={layout === 'grid' && !maxId ? { gridColumn: `span ${i < tileCount - lastRow ? lastRow : gridCols}` } : undefined} onMouseDown={() => { setFocused(t.id); if (t.status === 'unread') api.seen(t.id); }}>
             <div className="wh" onPointerDown={e => startDrag(e, t.id)} onDoubleClick={() => setMaxId(m => m ? null : t.id)}>
               <span className="ix">{i + 1}</span><Dot s={t.status} /><span className="n">#{t.num}</span><span className="ti">{t.title}</span>
               <span className={`st st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} />
