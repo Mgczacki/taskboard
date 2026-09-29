@@ -129,6 +129,8 @@ export const lastCodexEvent = new Map<string, number>();
 // prompt) and ends with Stop (fullyIdle true). An approval question has no event; the watcher reads it from the screen
 // while the task is working (agyApprovalCheck), and PostToolUse ends it. A Stop hook that answers {decision: "continue", reason}
 // makes agy run again with the reason as input (observed with agy 1.2.12); an empty answer lets it stop.
+// As for Codex, Taskboard writes the log entry from the first paragraph of the last reply: in agy's default mode each
+// shell command and file write needs an approval, and a log entry written by the agent needed about 4 of them a turn.
 export const agyPendingTool = new Map<string, string>(); // task id -> the tool call that has no PostToolUse yet
 function describeAgyTool(tc: any): string {
   const a = tc?.args || {};
@@ -149,7 +151,7 @@ export function antigravityEvent(taskId: string, ev: string, input: any): { outp
     case 'PreInvocation':
       // a new turn (a Stop "continue" keeps the task working, so it is not one)
       if (input.invocationNum === 0 && t.status !== 'working') {
-        answerBeforeLog.delete(t.id); turnStart.set(t.id, Date.now()); blockedOnce.delete(t.id); agyPendingTool.delete(t.id);
+        agyPendingTool.delete(t.id);
         store.update(t.id, { status: 'working', ask: '', stopReason: undefined, interrupted: undefined, statusSource: `Antigravity PreInvocation hook at ${clock()}.` });
       }
       break;
@@ -165,29 +167,17 @@ export function antigravityEvent(taskId: string, ev: string, input: any): { outp
       agyPendingTool.delete(t.id);
       const err = String(input.error || '');
       if (err) {
-        answerBeforeLog.delete(t.id);
         if (/rate|limit|quota|exhaust|billing|credits/i.test(err)) accounts.markLimited(t.account || accounts.defaultFor(t.agent).id, `${err.slice(0, 80)} on #${t.num}`);
         store.update(t.id, { status: 'stopped', stopReason: err.slice(0, 200), statusSource: `Antigravity Stop hook at ${clock()}: ${input.terminationReason || 'error'}.` });
         break;
       }
-      const reply = t.transcript ? external.readState('antigravity', t.transcript)?.text : undefined;
-      // ask for a log entry once per turn if the agent did not write one (as for Claude Code)
-      const started = turnStart.get(t.id) || 0;
-      let logged = true;
-      try { logged = statSync(store.logFile(t.id)).mtimeMs >= started; } catch { logged = false; }
-      if (!logged && started && t.role !== 'controller' && !blockedOnce.has(t.id)) {
-        blockedOnce.add(t.id);
-        answerBeforeLog.set(t.id, reply || '');
-        return { output: { decision: 'continue', reason: `Append your Did / Waiting / Next entry to ${store.logFile(t.id)} as described in your instructions, then stop. Do not mention the log in your reply.` } };
-      }
       // agy has no event that adds context to a prompt: files that arrived in the inbox are passed on here instead
       const notice = t.role === 'controller' ? null : docs.takeInboxNotice(t.id);
-      // the reply after reading the files is the newer answer, so no earlier one is kept for it
-      if (notice) { answerBeforeLog.delete(t.id); return { output: { decision: 'continue', reason: notice } }; }
+      if (notice) return { output: { decision: 'continue', reason: notice } };
       accounts.clearLimited(t.account);
-      const msg = answerBeforeLog.get(t.id) || reply || '';
-      answerBeforeLog.delete(t.id);
+      const msg = (t.transcript ? external.readState('antigravity', t.transcript)?.text : undefined) || '';
       store.update(t.id, { ...finishedStatus(t, msg), now: firstPara(msg) || t.now, statusSource: `Antigravity Stop hook at ${clock()}.` });
+      if (msg) store.appendLog(t.id, { did: firstPara(msg).slice(0, 200), wait: endsWithQuestion(msg) ? lastSentence(msg) : 'Nothing.' });
       break;
     }
   }

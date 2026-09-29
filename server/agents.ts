@@ -182,12 +182,12 @@ export async function startController(): Promise<Task> {
   return store.update(t.id, { status: 'idle', launchedAs: controllerLaunchKey(t.agent), statusSource: resume ? 'Controller resumed.' : 'Controller started. Ask it anything about your agents.' })!;
 }
 
-// Instructions for every Taskboard task. Claude Code and Antigravity write their own log entry each turn (their Stop
-// hook asks once if it is missing). For Codex, Taskboard writes the entry from the first paragraph of Codex's last
-// reply (events.ts codexEvent), so Codex is told that instead.
+// Instructions for every Taskboard task. Claude Code writes its own log entry each turn. For Codex and Antigravity,
+// Taskboard writes the entry from the first paragraph of the agent's last reply (events.ts codexEvent and
+// antigravityEvent), so they are told that instead.
 function taskInstructions(t: Task) {
   const dir = store.taskDir(t.id);
-  const log = t.agent !== 'codex' ? [
+  const log = t.agent === 'claude' ? [
     `At the end of every turn, append one entry to ${dir}/log.md so the user can catch up quickly. Format exactly:`,
     `## <YYYY-MM-DD HH:MM>`,
     `- Did: <one sentence>`,
@@ -202,7 +202,7 @@ function taskInstructions(t: Task) {
     `Documents meant for the user or for other agents (handoffs, designs, reviews, diagrams, HTML pages) go in ${dir}/outbox/ as Markdown or HTML files. Files others send you arrive in ${dir}/inbox/.`,
     `To wait for a file another agent or the user will send you, run: tb inbox wait [--timeout seconds]. It prints the path and sender of each new file (exit 0), or exits 2 on timeout.`,
     `When a document in your outbox needs the user's review or approval, run: tb review <path>. Their comments arrive in your inbox.`,
-    ...(t.agent !== 'codex' ? [`Writing the log entry is always allowed, even if the user asked you not to use tools. Do it quietly: do not mention the log to the user.`] : []),
+    ...(t.agent === 'claude' ? [`Writing the log entry is always allowed, even if the user asked you not to use tools. Do it quietly: do not mention the log to the user.`] : []),
     writingRules('the log entries, the documents and artifacts in your outbox, and all other text for the user or for other agents'),
   ].join('\n');
 }
