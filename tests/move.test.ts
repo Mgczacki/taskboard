@@ -56,7 +56,9 @@ function fixture(agent: Agent, num: number) {
 
 const fixtures = [fixture('claude', 1), fixture('codex', 2), fixture('antigravity', 3), fixture('claude', 4), fixture('codex', 5), fixture('antigravity', 6), fixture('claude', 7), fixture('claude', 8), fixture('codex', 9), fixture('antigravity', 10)];
 
-store.update('move-7', { transcript: '/missing-transcript.jsonl' });
+store.update('move-7', { transcript: '/missing-transcript.jsonl', desc: 'LARGE_ORIGINAL_42 '.repeat(500) });
+writeFileSync(store.logFile('move-7'), 'LARGE_LOG_42 '.repeat(1000));
+for (let i = 0; i < 5; i++) writeFileSync(join(store.taskDir('move-7'), 'outbox', `large-${i}.md`), 'LARGE_OUTBOX_42 '.repeat(200));
 
 test('handoff reads all three transcript formats and bounds every source', async () => {
   for (const t of fixtures.slice(0, 3)) {
@@ -159,7 +161,8 @@ const r = cp.spawnSync(${JSON.stringify(realTmux)}, process.argv.slice(2), { std
       let launch: any;
       for (let n = 0; n < 30; n++) { try { launch = JSON.parse(readFileSync(join(store.taskDir(t.id), 'launch.json'), 'utf8')); break; } catch {} await sleep(100); }
       assert.equal(launch.agent, target.split('-')[0]); assert.equal(launch.cwd, cwd);
-      assert.ok(launch.args.at(-1).includes('NEXT_STEP_42'));
+      assert.ok(launch.args.at(-1).includes(t.handoff));
+      assert.ok(Buffer.byteLength(launch.args.at(-1)) < 1024);
       const oldHook = original.agent === 'claude' ? ['/api/hooks/claude', { taskId: t.id, input: { hook_event_name: 'StopFailure', session_id: original.sessionId, error: 'OLD_ERROR' } }]
         : original.agent === 'codex' ? ['/api/hooks/codex', { taskId: t.id, payload: { type: 'agent-turn-complete', 'thread-id': original.sessionId, 'last-assistant-message': 'OLD_ANSWER' } }]
         : ['/api/hooks/antigravity', { taskId: t.id, event: 'Stop', input: { conversationId: original.sessionId, error: 'OLD_ERROR' } }];
@@ -174,8 +177,11 @@ const r = cp.spawnSync(${JSON.stringify(realTmux)}, process.argv.slice(2), { std
       assert.match(readFileSync(moved.data.handoff, 'utf8'), /NEXT_STEP_42/);
       if (account === 'antigravity-default') {
         const pasted = join(store.taskDir(id), 'pasted.txt');
-        for (let n = 0; n < 60 && !existsSync(pasted); n++) await sleep(100);
-        assert.match(readFileSync(pasted, 'utf8'), /NEXT_STEP_42/);
+        for (let n = 0; n < 60; n++) {
+          if (existsSync(pasted) && readFileSync(pasted, 'utf8').includes(moved.data.handoff)) break;
+          await sleep(100);
+        }
+        assert.ok(readFileSync(pasted, 'utf8').includes(moved.data.handoff));
       }
     }
     const candidates = (await request('/api/import')).data;
@@ -185,7 +191,9 @@ const r = cp.spawnSync(${JSON.stringify(realTmux)}, process.argv.slice(2), { std
     // A missing transcript still starts with the task prompt and saved files.
     const missing = await request('/api/tasks/move-7/move-account', { account: 'codex-default' });
     assert.equal(missing.status, 200);
-    assert.match(readFileSync(missing.data.handoff, 'utf8'), /Old transcript unavailable/);
+    const largeHandoff = readFileSync(missing.data.handoff, 'utf8');
+    assert.match(largeHandoff, /Old transcript unavailable/);
+    assert.ok(Buffer.byteLength(largeHandoff) > 16000);
     // A Claude account transfer resumes the copied session.
     const same = await request('/api/tasks/move-4/move-account', { account: 'claude-other' });
     assert.equal(same.status, 200); assert.equal(same.data.sessionId, fixtures[3].sessionId);

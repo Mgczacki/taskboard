@@ -375,7 +375,7 @@ export async function resumeTask(t: Task, force = false): Promise<Task> {
     await tmux.killSession(t.session);
   }
   if (t.handoff && (!t.sessionId || (t.agent === 'claude' && !t.transcript))) {
-    await launch(t, readFileSync(t.handoff, 'utf8'), false);
+    await launch(t, handoffPrompt(t.handoff), false);
     return store.update(t.id, { status: 'working', statusSource: 'Started again with the saved handoff.' })!;
   }
   if (!t.sessionId) throw new Error('No session id recorded for this task, so it cannot be resumed.');
@@ -457,6 +457,14 @@ export async function setControllerAccount(toId: string): Promise<Task> {
   return startController();
 }
 
+// tmux limits command messages. Keep the full context in the saved file and pass a short reading instruction.
+function handoffPrompt(path: string): string {
+  if (!existsSync(path)) throw new Error('The saved handoff file is missing.');
+  return `Read the complete handoff file at ${JSON.stringify(path)} before doing any work. ` +
+    'It contains the original task and the latest user decisions. Continue the existing task from its last unfinished step. ' +
+    'Do not start again. Keep the existing files and worktree.';
+}
+
 // Claude Code can resume a copied conversation. Other transfers start with the saved task context.
 export async function moveAccount(task: Task, toId: string, instruction = ''): Promise<Task> {
   const t = store.get(task.id);
@@ -493,6 +501,7 @@ export async function moveAccount(task: Task, toId: string, instruction = ''): P
       const dir = join(store.taskDir(t.id), 'handoffs'); mkdirSync(dir, { recursive: true });
       handoff = join(dir, `${Date.now()}-${randomUUID()}.md`);
       writeFileSync(handoff, prompt, { mode: 0o600 });
+      prompt = handoffPrompt(handoff);
     }
     const source = `Moved from ${from.name} (${old.agent}) to ${to.name} (${to.agent}). ${resume ? 'Resumed the conversation.' : 'Started a new conversation with a handoff.'}`;
     store.update(t.id, {
