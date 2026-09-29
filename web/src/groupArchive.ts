@@ -45,6 +45,21 @@ export async function archiveAll(list: Task[], kill: (id: string) => Promise<unk
   return result;
 }
 
+export interface ArchiveAndDeleteResult { archive: ArchiveResult; deleted?: Group; deleteError?: string }
+
+// The server checks all current group members before it deletes the group. This also covers members added during the run.
+export async function archiveAndDelete(g: Group, list: Task[], kill: (id: string) => Promise<unknown>, deleteGroup: (id: string) => Promise<Group>, onProgress?: (finished: number) => void): Promise<ArchiveAndDeleteResult> {
+  const archive = await archiveAll(list, kill, onProgress);
+  if (archive.failed.length) return { archive };
+  try { return { archive, deleted: await deleteGroup(g.id) }; }
+  catch (e) { return { archive, deleteError: e instanceof Error ? e.message : String(e) }; }
+}
+
+export async function restoreGroupAndTasks(g: Group, done: ArchiveResult['done'], restoreGroup: (g: Group) => Promise<unknown>, setStatus: (id: string, status: string) => Promise<unknown>) {
+  await restoreGroup(g);
+  return restoreAll(done, setStatus);
+}
+
 // The single Restore sets the task to idle. A task that was set aside goes back to parked. The server then finds no
 // tmux session and marks the others suspended; they come back on the canvas after Resume.
 export async function restoreAll(done: ArchiveResult['done'], setStatus: (id: string, status: string) => Promise<unknown>) {

@@ -135,7 +135,7 @@ export const api = {
   startController: () => call<Task>('POST', '/api/controller/start', {}),
   createGroup: (name: string, tasks: string[] = []) => call<Group>('POST', '/api/groups', { name, tasks }),
   updateGroup: (id: string, patch: { name?: string; color?: string; tasks?: string[]; add?: string | string[]; remove?: string | string[] }) => call<Group>('PATCH', `/api/groups/${id}`, patch),
-  deleteGroup: (id: string) => call<Group>('DELETE', `/api/groups/${id}`),
+  deleteGroup: (id: string, requireArchived = false) => call<Group>('DELETE', `/api/groups/${id}${requireArchived ? '?requireArchived=1' : ''}`),
   restoreGroup: (g: Group) => call('POST', '/api/groups/restore', g),
   askThread: (id: string) => call<AskThread>('GET', `/api/tasks/${encodeURIComponent(id)}/ask`),
   ask: (id: string, question: string) => call<AskThread>('POST', `/api/tasks/${encodeURIComponent(id)}/ask`, { question }),

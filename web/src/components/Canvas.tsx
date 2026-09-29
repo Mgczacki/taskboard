@@ -8,7 +8,7 @@ import { AgentChip, Dot, MachineChip, WhereChip } from './ui';
 import { Terminal, terminalDebugRecord } from './Terminal';
 import { hit as key, hitIn, keyLabel, keysText, useKeymap } from '../keys';
 import { AskPanel } from './Ask';
-import { archiveAll, archivePlan, restoreAll, type ArchiveResult, type ArchiveTarget } from '../groupArchive';
+import { archiveAll, archiveAndDelete, archivePlan, restoreAll, restoreGroupAndTasks, type ArchiveResult, type ArchiveTarget } from '../groupArchive';
 
 type Layout = 'columns' | 'grid' | 'rows';
 const MINW = 640;
@@ -56,7 +56,7 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
   const [dropTab, setDropTab] = useState<string | null>(null);
   const [reveal, setReveal] = useState(false);
   const [ending, setEnding] = useState<string | null>(null); // the window whose header asks "End & archive?"
-  const [archiving, setArchiving] = useState<string | null>(null); // the group whose "Close and archive all" panel is open
+  const [archiving, setArchiving] = useState<{ group: Group; deleteGroup: boolean } | null>(null);
   const [asking, setAsking] = useState<Set<string>>(new Set()); // tiles with the Ask panel open
   const toggleAsk = (id: string) => setAsking(s => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const stage = useRef<HTMLDivElement>(null);
@@ -283,8 +283,8 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
         <button className="btn" onClick={() => setFocusMode(!focusMode)} title={`Focus mode (${keysText('focusMode')})`}>Focus mode {keyLabel('focusMode') && <kbd>{keyLabel('focusMode')}</kbd>}</button>
       </div>
       {menu === 'new' && <NewGroupMenu tasks={tasks} onScreen={ids} selected={[...selected].filter(id => tasks.some(t => t.id === id))} close={() => setMenu(null)} done={g => { clearSel(); setMenu(null); setView('g:' + g.id); toast(`Group “${g.name}” created`); }} />}
-      {menu && typeof menu === 'object' && <GroupMenu g={groups.find(x => x.id === menu.group)!} archiveCount={(g => g ? archivePlan(g, groups, tasks).targets.length : 0)(groups.find(x => x.id === menu.group))} onArchiveAll={g => { setMenu(null); setArchiving(g.id); }} close={() => setMenu(null)} onDeleted={g => { if (view === 'g:' + g.id) setView('live'); toast(`Deleted “${g.name}”. Its tasks keep running.`, { label: 'Undo', fn: () => { api.restoreGroup(g); setView('g:' + g.id); } }); }} />}
-      {archiving && (g => g && <ArchiveAllPanel g={g} groups={groups} tasks={tasks} close={() => setArchiving(null)} onEnded={ids => { if (panelTaskId && ids.includes(panelTaskId)) openPanel(null); }} toast={toast} />)(groups.find(x => x.id === archiving))}
+      {menu && typeof menu === 'object' && <GroupMenu g={groups.find(x => x.id === menu.group)!} archiveCount={(g => g ? archivePlan(g, groups, tasks).targets.length : 0)(groups.find(x => x.id === menu.group))} onArchiveAll={(g, deleteGroup) => { setMenu(null); setArchiving({ group: { ...g, tasks: [...g.tasks] }, deleteGroup }); }} close={() => setMenu(null)} onDeleted={g => { if (view === 'g:' + g.id) setView('live'); toast(`Deleted “${g.name}”. Its tasks keep running.`, { label: 'Undo', fn: () => { api.restoreGroup(g); setView('g:' + g.id); } }); }} />}
+      {archiving && <ArchiveAllPanel g={archiving.group} deleteGroup={archiving.deleteGroup} groups={groups} tasks={tasks} close={() => setArchiving(null)} onDeleted={() => { if (view === 'g:' + archiving.group.id) setView('live'); }} onRestored={() => setView('g:' + archiving.group.id)} onEnded={ids => { if (panelTaskId && ids.includes(panelTaskId)) openPanel(null); }} toast={toast} />}
       <div className="stage-grid" ref={stage} style={style}>
         {!wins.length && <div className="emptyview"><h2>{group ? `“${group.name}” is empty` : view === 'ungrouped' && !hidden.length ? 'Every live task is in a group' : 'No windows'}</h2><p>Use <b>＋ New task</b> to start an agent here. Use <b>＋ Add window</b> to show a task that already exists.</p></div>}
         {shown.map((t, i) => (
@@ -337,7 +337,7 @@ function NewGroupMenu({ tasks, onScreen, selected, close, done }: { tasks: Task[
   );
 }
 
-function GroupMenu({ g, archiveCount, onArchiveAll, close, onDeleted }: { g: Group; archiveCount: number; onArchiveAll: (g: Group) => void; close: () => void; onDeleted: (g: Group) => void }) {
+function GroupMenu({ g, archiveCount, onArchiveAll, close, onDeleted }: { g: Group; archiveCount: number; onArchiveAll: (g: Group, deleteGroup: boolean) => void; close: () => void; onDeleted: (g: Group) => void }) {
   const [name, setName] = useState(g?.name || '');
   if (!g) return null;
   return (
@@ -347,49 +347,59 @@ function GroupMenu({ g, archiveCount, onArchiveAll, close, onDeleted }: { g: Gro
       <div style={{ color: 'var(--dim)', margin: '8px 0 2px' }}>Colour</div>
       <div className="colors">{GCOLORS.map(c => <i key={c} className={c === g.color ? 'on' : ''} style={{ background: c }} onClick={() => api.updateGroup(g.id, { color: c })} />)}</div>
       <div className="mi" onClick={() => { openInWindow('g:' + g.id); close(); }}>↗ Open in its own window</div>
-      <div className={`mi danger ${archiveCount ? '' : 'off'}`} title={archiveCount ? 'Ends every task in this group and archives it. You confirm first.' : 'No task in this group is left to archive'} onClick={() => { if (archiveCount) onArchiveAll(g); }}>Close and archive all ({archiveCount})</div>
+      <div className={`mi danger ${archiveCount ? '' : 'off'}`} title={archiveCount ? 'Ends every task in this group and archives it. You confirm first.' : 'No task in this group is left to archive'} onClick={() => { if (archiveCount) onArchiveAll(g, false); }}>Close and archive all ({archiveCount})</div>
+      {archiveCount > 0 && <div className="mi danger" onClick={() => onArchiveAll(g, true)}>Close, archive all and delete group</div>}
       <div className="mi danger" onClick={async () => { const d = await api.deleteGroup(g.id); close(); onDeleted(d); }}>Delete group <span style={{ color: 'var(--dim)' }}>(tasks are not affected)</span></div>
       <div className="row"><button className="btn" onClick={close}>Close</button><button className="btn primary" onClick={() => { if (name.trim() && name !== g.name) api.updateGroup(g.id, { name: name.trim() }); close(); }}>Save</button></div>
     </div>
   );
 }
 
-// "Close and archive all" for one group: confirm, then end and archive each task (the ⏻ call), then a summary with
-// Restore all. The task list is fixed when the user confirms. The group file is not changed, so restored tasks are
-// still on the tab.
-function ArchiveAllPanel({ g, groups, tasks, close, onEnded, toast }: { g: Group; groups: Group[]; tasks: Task[]; close: () => void; onEnded: (ids: string[]) => void; toast: Props['toast'] }) {
+// One confirmation and summary for both group archive actions. The task list is fixed when the user confirms.
+// The combined action deletes the group only after all tasks archive. Its summary keeps the deleted group for undo.
+function ArchiveAllPanel({ g, deleteGroup, groups, tasks, close, onDeleted, onRestored, onEnded, toast }: { g: Group; deleteGroup: boolean; groups: Group[]; tasks: Task[]; close: () => void; onDeleted: () => void; onRestored: () => void; onEnded: (ids: string[]) => void; toast: Props['toast'] }) {
   const plan = archivePlan(g, groups, tasks);
-  const [run, setRun] = useState<null | { list: ArchiveTarget[]; finished: number; result?: ArchiveResult; restored?: 'running' | 'done' | string[] }>(null);
+  const [run, setRun] = useState<null | { list: ArchiveTarget[]; finished: number; result?: ArchiveResult; deleted?: Group; deleteError?: string; restored?: 'running' | 'done' | string[] }>(null);
   const list = run ? run.list : plan.targets;
   const num = (id: string) => '#' + (tasks.find(t => t.id === id)?.num ?? '?');
   const plural = (n: number) => `${n} ${n === 1 ? 'task' : 'tasks'}`;
-  const restore = async (done: ArchiveResult['done']) => {
+  const restore = async (done: ArchiveResult['done'], deleted?: Group) => {
     setRun(r => r && { ...r, restored: 'running' });
-    const failed = await restoreAll(done, api.setStatus);
+    let failed: string[];
+    try {
+      failed = deleted ? await restoreGroupAndTasks(deleted, done, api.restoreGroup, api.setStatus) : await restoreAll(done, api.setStatus);
+      if (deleted) onRestored();
+    } catch (e) { toast(`Could not restore group “${g.name}”: ${e instanceof Error ? e.message : String(e)}`); setRun(r => r && { ...r, restored: undefined }); return; }
     setRun(r => r && { ...r, restored: failed.length ? failed : 'done' });
-    toast(failed.length ? `Could not restore ${failed.map(num).join(', ')}.` : `Restored ${plural(done.length)} in ${g.name}. They are suspended: use “Resume” on the tab to start them again.`);
+    toast(failed.length ? `Could not restore ${failed.map(num).join(', ')}.` : `Restored ${deleted ? 'the group and ' : ''}${plural(done.length)} in ${g.name}. Tasks that were set aside stay set aside. The others are suspended.`);
   };
   const start = async () => {
     const frozen = plan.targets;
     setRun({ list: frozen, finished: 0 });
-    const result = await archiveAll(frozen.map(x => x.task), api.kill, finished => setRun(r => r && { ...r, finished }));
-    setRun(r => r && { ...r, result });
+    const outcome = deleteGroup
+      ? await archiveAndDelete(g, frozen.map(x => x.task), api.kill, id => api.deleteGroup(id, true), finished => setRun(r => r && { ...r, finished }))
+      : { archive: await archiveAll(frozen.map(x => x.task), api.kill, finished => setRun(r => r && { ...r, finished })) };
+    const result = outcome.archive;
+    setRun(r => r && { ...r, result, deleted: outcome.deleted, deleteError: outcome.deleteError });
     onEnded(result.done.map(d => d.id));
-    if (result.done.length) toast(`Archived ${plural(result.done.length)} in ${g.name}.${result.failed.length ? ` ${result.failed.length} failed.` : ''}`, { label: 'Restore all', fn: () => restore(result.done) });
+    if (outcome.deleted) onDeleted();
+    if (outcome.deleted) toast(`Archived ${plural(result.done.length)} and deleted “${g.name}”.`, { label: 'Restore group and tasks', fn: () => restore(result.done, outcome.deleted) });
+    else if (result.done.length) toast(`Archived ${plural(result.done.length)} in ${g.name}.${result.failed.length ? ` ${result.failed.length} failed.` : ''}${outcome.deleteError ? ` Group deletion failed: ${outcome.deleteError}` : ''}`, { label: 'Restore all', fn: () => restore(result.done) });
     else toast(`Could not archive any task in ${g.name}.`);
   };
   const busy = !!run && !run.result;
   const risky = plan.working + plan.waiting;
   return (
     <div className="gmenu garch" style={{ left: 12, top: 44 }} onKeyDown={e => { if (e.key === 'Escape' && !busy) close(); }}>
-      <h4>Close and archive all in “{g.name}”</h4>
+      <h4>{deleteGroup ? 'Close, archive all and delete' : 'Close and archive all'} in “{g.name}”</h4>
       {!run && <>
-        <div>This ends the tmux session of {plural(plan.targets.length)} and archives {plan.targets.length === 1 ? 'it' : 'them'}. The group stays.</div>
+        <div>This ends the tmux session of {plural(plan.targets.length)} and archives {plan.targets.length === 1 ? 'it' : 'them'}. {deleteGroup ? 'The group is deleted only after every task is archived.' : 'The group stays.'}</div>
         <div className="garch-sum">{plan.working} working now · {plan.waiting} waiting for you (needs you, stopped or review){plan.notRunning ? ` · ${plan.notRunning} not running (suspended or set aside)` : ''}</div>
         {risky > 0 && <div className="sel-warn garch-warn">⚠ {plural(risky)} {risky === 1 ? 'is' : 'are'} working or waiting for you. {risky === 1 ? 'Its' : 'Their'} running session ends now: a turn in progress stops and an open question is lost.</div>}
       </>}
       {busy && <div className="garch-sum">Archiving… {run.finished} of {run.list.length} done</div>}
       {run?.result && <div className="garch-sum">Archived {run.result.done.length} of {plural(run.list.length)} in {g.name}.{run.result.failed.length ? ` ${run.result.failed.length} failed (listed below).` : ''}</div>}
+      {run?.result && deleteGroup && <div className={run.deleted ? 'garch-sum' : 'sel-warn'}>{run.deleted ? 'The group was deleted.' : run.deleteError ? `The group stays. Deletion failed: ${run.deleteError}` : 'The group stays. Retry the failed tasks from this group.'}</div>}
       <div className="garch-list">{list.map(({ task: t, alsoIn }) => { const f = run?.result?.failed.find(x => x.id === t.id); const ok = run?.result?.done.some(x => x.id === t.id); return (
         <div key={t.id} className="garch-row"><Dot s={t.status} /><span className="n">#{t.num}</span><span className="ti" title={t.title}>{t.title}</span>
           <span className={`st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span>
@@ -398,8 +408,8 @@ function ArchiveAllPanel({ g, groups, tasks, close, onEnded, toast }: { g: Group
       {run?.result && run.result.done.length > 0 && <div className="garch-sum">Restore all sets them back as the single Restore does. They come back suspended and show on the canvas again after you resume them.</div>}
       {Array.isArray(run?.restored) && <div className="sel-warn">Could not restore {run.restored.map(num).join(', ')}.</div>}
       <div className="row">
-        {!run && <><button className="btn" autoFocus onClick={close}>Cancel</button><button className="btn danger" disabled={!plan.targets.length} onClick={start}>Close and archive {plural(plan.targets.length)}</button></>}
-        {run?.result && <>{run.result.done.length > 0 && <button className="btn" disabled={!!run.restored} onClick={() => restore(run.result!.done)}>{run.restored === 'done' ? 'Restored' : run.restored === 'running' ? 'Restoring…' : `Restore all (${run.result.done.length})`}</button>}<button className="btn primary" onClick={close}>Close</button></>}
+        {!run && <><button className="btn" autoFocus onClick={close}>Cancel</button><button className="btn danger" disabled={!plan.targets.length} onClick={start}>{deleteGroup ? `Close, archive ${plural(plan.targets.length)} and delete ${g.name}` : `Close and archive ${plural(plan.targets.length)}`}</button></>}
+        {run?.result && <>{run.result.done.length > 0 && <button className="btn" disabled={!!run.restored} onClick={() => restore(run.result!.done, run.deleted)}>{run.restored === 'done' ? 'Restored' : run.restored === 'running' ? 'Restoring…' : run.deleted ? 'Restore group and tasks' : `Restore all (${run.result.done.length})`}</button>}<button className="btn primary" onClick={close}>Close</button></>}
       </div>
     </div>
   );
