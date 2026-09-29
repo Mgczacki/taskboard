@@ -1,7 +1,7 @@
 // The task panel: status, goal/now/waiting, actions, and tabs for the live terminal and the log.
 import { useEffect, useState } from 'react';
 import type { Group, Task } from '../api';
-import { STATUS_LABEL, api, fmtWait, shortPath } from '../api';
+import { AGENT_NAME, STATUS_LABEL, api, fmtWait, shortPath } from '../api';
 import { AgentChip, ByController, Dot, MachineChip, ThreeLines, WhereChip } from './ui';
 import { Terminal } from './Terminal';
 import { DocsTab } from './Docs';
@@ -21,7 +21,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, initialTab }: {
   const [confirmTake, setConfirmTake] = useState(false);
   const [accts, setAccts] = useState<Account[]>([]);
   useEffect(() => { loadAccounts().then(setAccts).catch(() => {}); }, [t.status]);
-  const acct = accts.find(a => a.id === (t.account || (t.agent === 'claude' ? 'claude-default' : 'codex-default')));
+  const acct = accts.find(a => a.id === (t.account || `${t.agent}-default`));
 
   // read what changed since your last visit first, then mark the task as seen
   const [since, setSince] = useState<Awaited<ReturnType<typeof api.since>> | null>(null);
@@ -70,7 +70,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, initialTab }: {
       {dropping && <div className="dropnote">Drop to put in #{t.num}'s inbox</div>}
       <div className={`dr-head ${compact ? 'compact' : ''}`}>
         <div className="dr-row1"><span className="num">#{t.num}</span><h2>{t.title}</h2><button className="btn ghost icon" onClick={() => setCompact(c => !c)} title={compact ? 'Show the details (chips, goal, now, since you last looked, buttons)' : 'Fold the details so the terminal gets the room'}>{compact ? '▾' : '▴'}</button><button className="btn ghost icon" onClick={onClose} title="Close">✕</button></div>
-        {t.role === 'controller' && <div className="banner">The controller is {t.agent === 'claude' ? 'a Claude Code' : 'a Codex'} session in <code>~/AgentVault/controller</code> (choose its account and agent on the Accounts page).{t.remoteUrl && <> Remote Control is on: <a href={t.remoteUrl} target="_blank" rel="noreferrer">open it on claude.ai or the Claude app</a>.</>} It manages agents with the <code>tb</code> command: reading and organising run without asking; starting agents, typing into them and archiving wait for your approval here. Try: “what needs me?” or “split X into three parallel tasks”.</div>}
+        {t.role === 'controller' && <div className="banner">The controller is {t.agent === 'antigravity' ? 'an' : 'a'} {AGENT_NAME[t.agent]} session in <code>~/AgentVault/controller</code> (choose its account and agent on the Accounts page).{t.remoteUrl && <> Remote Control is on: <a href={t.remoteUrl} target="_blank" rel="noreferrer">open it on claude.ai or the Claude app</a>.</>} It manages agents with the <code>tb</code> command: reading and organising run without asking; starting agents, typing into them and archiving wait for your approval here. Try: “what needs me?” or “split X into three parallel tasks”.</div>}
         <div className="dr-meta"><ByController t={t} /><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} />{acct && <span className="chip" title={acct.dir}>{acct.name}</span>}<span className="chip mono">{shortPath(t.cwd)}</span>{t.branch && <span className="chip mono">{t.worktree ? 'worktree · ' : ''}{t.branch}</span>}</div>
         <div className="dr-meta">
           {groups.filter(g => g.tasks.includes(t.id)).map(g => <span key={g.id} className="chip gchip" style={{ borderColor: g.color + '66', color: g.color }}><span className="sw" style={{ background: g.color }} />{g.name}<span className="gx" title="Remove from group" onClick={() => api.updateGroup(g.id, { remove: t.id })}>×</span></span>)}
@@ -115,7 +115,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, initialTab }: {
           {t.status === 'parked' ? <button className="btn" onClick={() => act(api.setStatus(t.id, 'idle'))} title="Put it back on your lists as Idle">Bring back</button> : <button className="btn" onClick={() => act(api.setStatus(t.id, 'parked'))} title="Take it off Needs you, Unread and triage. The agent is not stopped; the task comes back by itself the next time the agent works or finishes a turn.">Set aside</button>}
           {t.status === 'archived' ? <button className="btn" onClick={() => act(api.setStatus(t.id, 'idle'))} title="Take it out of the archive; open it to resume the conversation">Restore</button> : <button className="btn" onClick={() => act(api.kill(t.id))} title={t.openElsewhere ? 'Archives the task; the session in the other terminal keeps running' : 'Ends the tmux session and archives the task'}>End & archive</button>}
           {t.role !== 'controller' && (!confirmRm ? <button className="btn ghost danger" onClick={() => setConfirmRm(true)} title="Delete the task from Taskboard (asks first). Its note goes to ~/.taskboard/trash; the conversation stays in the agent's own history">Remove…</button>
-            : <><span className="sel-warn">Remove from Taskboard? The note goes to ~/.taskboard/trash; the conversation stays in {t.agent === 'claude' ? 'Claude Code' : 'Codex'}.</span><button className="btn danger" onClick={() => api.remove(t.id).then(onClose, e => setErr(String(e.message || e)))}>Yes, remove</button><button className="btn ghost" onClick={() => setConfirmRm(false)}>Cancel</button></>)}
+            : <><span className="sel-warn">Remove from Taskboard? The note goes to ~/.taskboard/trash; the conversation stays in {AGENT_NAME[t.agent]}.</span><button className="btn danger" onClick={() => api.remove(t.id).then(onClose, e => setErr(String(e.message || e)))}>Yes, remove</button><button className="btn ghost" onClick={() => setConfirmRm(false)}>Cancel</button></>)}
         </div>
         <div className="tabs">
           <button className={tab === 'terminal' ? 'on' : ''} onClick={() => setTab('terminal')}>Terminal</button>
@@ -127,7 +127,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, initialTab }: {
         {tab === 'docs' && <DocsTab t={t} tasks={tasks} />}
         {tab === 'terminal' && t.openElsewhere && <div className="empty" style={{ padding: 20 }}>The terminal for this session belongs to {t.openElsewhere?.tty}. Last message from the agent:<pre className="logtext" style={{ marginTop: 10 }}>{t.now || '—'}</pre></div>}
         {tab === 'terminal' && !t.openElsewhere && (t.status === 'suspended'
-          ? <div className="empty" style={{ padding: 20 }}>Resuming with {t.agent === 'claude' ? 'claude --resume' : 'codex resume'} {t.sessionId}…</div>
+          ? <div className="empty" style={{ padding: 20 }}>Resuming with {t.agent === 'claude' ? 'claude --resume' : t.agent === 'codex' ? 'codex resume' : 'agy --conversation'} {t.sessionId}…</div>
           : <div className="term-wrap"><div className={`term-brief ${briefOpen ? 'open' : ''}`} onClick={() => setBriefOpen(o => !o)} title={briefOpen ? 'Click to show only the first lines' : 'Click to show the whole task description'}><b>Task</b><span>{t.desc}</span><i className="more">{briefOpen ? 'less' : 'more'}</i></div><Terminal taskId={t.id} autoFocus /></div>)}
         {tab === 'log' && <pre className="logtext">{log || 'No log entries yet.'}</pre>}
       </div>

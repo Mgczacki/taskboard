@@ -135,7 +135,7 @@ export function App() {
     else if (view === 'needs') setView('live');
     setOpenId(null); go('canvas');
   };
-  const item = (t: Task) => <div key={t.id} className="rail-item" onClick={() => setOpenId(t.id)}><Dot s={t.status} /><span className="t">{t.title}</span><span className="m">{t.agent === 'claude' ? 'CC' : 'CX'}</span></div>;
+  const item = (t: Task) => <div key={t.id} className="rail-item" onClick={() => setOpenId(t.id)}><Dot s={t.status} /><span className="t">{t.title}</span><span className="m">{t.agent === 'claude' ? 'CC' : t.agent === 'codex' ? 'CX' : 'AG'}</span></div>;
   const hideChrome = focusMode && page === 'canvas';
   // pending reviews for the sidebar count
   const [reviewCount, setReviewCount] = useState(0);
@@ -147,7 +147,7 @@ export function App() {
         <div className="brand" title={machineName ? `Taskboard on ${machineName}` : undefined}><Logo />Taskboard<small>{connected ? (machineName || 'v0.2') : 'offline'}</small></div>
         <button className="newtask" onClick={() => setNewOpen(true)} title={IN_APP ? 'New task: Command-T, from anywhere (N also works outside a terminal)' : 'New task: N (outside a terminal)'}>＋ New task <kbd>{IN_APP ? '⌘T' : 'N'}</kbd></button>
         <div className="rail-item ctl-item" onClick={openController} title="The controller agent manages the other agents. Shortcut: Command-K (or C)">{controller ? <Dot s={controller.status} /> : <span className="dot idle" />}<span className="t"><b>Controller</b>{controller ? '' : ' · start'}</span>{controller?.remoteUrl && <a className="rc-link" href={controller.remoteUrl} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} title="Remote Control is on: open the controller on claude.ai or the Claude mobile app">📱</a>}<kbd>⌘K</kbd></div>
-        <button className="importbtn" onClick={() => setImportOpen(true)} title="Bring in Claude Code and Codex sessions you started outside Taskboard">⇪ Import sessions</button>
+        <button className="importbtn" onClick={() => setImportOpen(true)} title="Bring in Claude Code, Codex and Antigravity sessions you started outside Taskboard">⇪ Import sessions</button>
         <nav className="nav">
           {(['list', 'board', 'graph', 'canvas', 'review', 'accounts', 'settings'] as Page[]).map(p => <a key={p} className={page === p ? 'on' : ''} onClick={() => go(p)}>{p[0].toUpperCase() + p.slice(1)}{p === 'list' && <span className="n">{tasks.filter(t => t.status !== 'archived').length}</span>}{p === 'review' && reviewCount > 0 && <span className="n" style={{ color: 'var(--st-review)' }}>{reviewCount}</span>}</a>)}
         </nav>
@@ -289,7 +289,7 @@ function SelectionBar({ ids, tasks, groups, clear, newGroup, toast }: { ids: str
       <button className="btn" onClick={() => run(list.map(t => api.setStatus(t.id, 'parked')), 'Set aside')} title="Take it off Needs you, Unread and triage. The agent is not stopped; the task comes back by itself the next time the agent works or finishes a turn.">Set aside</button>
       <button className="btn" onClick={() => run(list.map(t => api.kill(t.id)), 'Ended and archived')} title="Ends each tmux session (sessions in another terminal keep running) and archives the tasks">End & archive</button>
       {!confirmRm ? <button className="btn danger" onClick={() => setConfirmRm(true)} title="Delete these tasks from Taskboard (asks first). Notes go to ~/.taskboard/trash; the conversations stay in the agents' own history">Remove…</button>
-        : <><span className="sel-warn">Remove {list.length} from Taskboard? Their notes go to ~/.taskboard/trash; the conversations stay in Claude Code / Codex.</span>
+        : <><span className="sel-warn">Remove {list.length} from Taskboard? Their notes go to ~/.taskboard/trash; the conversations stay in Claude Code, Codex or Antigravity.</span>
           <button className="btn danger" onClick={() => run(list.map(t => api.remove(t.id)), 'Removed')}>Yes, remove</button><button className="btn ghost" onClick={() => setConfirmRm(false)}>Cancel</button></>}
       <button className="btn ghost" onClick={clear} title="Unselect all">Clear <kbd>Esc</kbd></button>
     </div>

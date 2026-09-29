@@ -13,7 +13,7 @@ interface Comment { id: string; v: number; block: number; quote: string; text: s
 interface Item {
   id: string; path: string; name: string; task: string; state: 'pending' | 'changes' | 'accepted'; version: number;
   versions: { v: number; at: string }[]; comments: Comment[]; requestedAt: string; updated: string;
-  taskNum?: number; taskTitle?: string; agent?: 'claude' | 'codex'; taskStatus?: string;
+  taskNum?: number; taskTitle?: string; agent?: Task['agent']; taskStatus?: string;
 }
 interface Block { raw: string; html: string; mermaid?: string }
 

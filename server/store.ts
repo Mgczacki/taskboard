@@ -6,7 +6,7 @@ import { basename, join } from 'node:path';
 import { TASKS_DIR, TB_DIR } from './config.ts';
 
 export type Status = 'working' | 'needs-you' | 'unread' | 'idle' | 'stopped' | 'review' | 'suspended' | 'parked' | 'archived';
-export type Agent = 'claude' | 'codex';
+export type Agent = 'claude' | 'codex' | 'antigravity';
 
 export interface Task {
   id: string;
@@ -19,7 +19,7 @@ export interface Task {
   branch?: string;
   worktree?: boolean;
   session: string;         // tmux session name
-  sessionId?: string;      // Claude session id / Codex thread id, used to resume
+  sessionId?: string;      // Claude session id / Codex thread id / Antigravity conversation id, used to resume
   transcript?: string;
   created: string;
   updated: string;

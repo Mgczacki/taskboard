@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// PreToolUse guard for Claude Code sessions started by Taskboard (Bash tool only). Blocks commands that would stop
+// PreToolUse guard for Claude Code sessions (Bash tool) and Antigravity sessions (run_command tool, with --agy)
+// started by Taskboard. Blocks commands that would stop
 // the running Taskboard server or its agents from inside a Taskboard task: an agent working on Taskboard itself once
 // stopped the real server with `pkill -f "tsx server/index.ts"` while meaning to stop its own test server.
 // Runs without the server, so it also protects while the server is being restarted. Never fails the tool call.
@@ -11,7 +12,10 @@ let input = '';
 process.stdin.setEncoding('utf8');
 for await (const chunk of process.stdin) input += chunk;
 let cmd = '';
-try { cmd = String(JSON.parse(input || '{}').tool_input?.command || ''); } catch { process.exit(0); }
+// Claude Code sends tool_input.command; agy sends toolCall.args.CommandLine
+const agy = process.argv.includes('--agy');
+if (agy && !process.env.TASK_ID) process.exit(0); // the agy plugin also runs in agy sessions that Taskboard did not start
+try { const j = JSON.parse(input || '{}'); cmd = String((agy ? j.toolCall?.args?.CommandLine : j.tool_input?.command) || ''); } catch { process.exit(0); }
 
 // the real server: the one this agent's Taskboard runs (TASKBOARD_DIR is only set for test servers)
 const tbDir = process.env.TASKBOARD_DIR || join(homedir(), '.taskboard');
@@ -49,9 +53,11 @@ if (/\b(rm|mv|rsync\s+--delete)\b[^\n]*(~|\$HOME|\/Users\/[^/\s]+)\/\.taskboard(
 const port = process.env.TASKBOARD_PORT || '4317';
 if (/\bkill\b|fuser\s+-k/.test(cmd) && new RegExp(`[:=\\s]${port}\\b`).test(cmd)) reasons.push(`port ${port} is the real Taskboard server`);
 if (reasons.length) {
-  process.stdout.write(JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny',
-    permissionDecisionReason: `Blocked by Taskboard: ${[...new Set(reasons)].join('; ')}. You are running inside Taskboard, so stopping it would cut off you and every other agent. ` +
+  const reason = `Blocked by Taskboard: ${[...new Set(reasons)].join('; ')}. You are running inside Taskboard, so stopping it would cut off you and every other agent. ` +
       'To stop a test server, kill it by the process id you started it with (for example `... & PID=$!` and later `kill $PID`), or run `pnpm stop` with that server\'s TASKBOARD_DIR set. ' +
-      'Test servers must use their own TASKBOARD_PORT, TASKBOARD_DIR, TASKBOARD_VAULT and TASKBOARD_TMUX_SOCKET (see CLAUDE.md in the Taskboard repository).' } }));
+      'Test servers must use their own TASKBOARD_PORT, TASKBOARD_DIR, TASKBOARD_VAULT and TASKBOARD_TMUX_SOCKET (see CLAUDE.md in the Taskboard repository).';
+  // agy: no output means "no decision" (the normal approval question follows); so we print only a denial
+  process.stdout.write(JSON.stringify(agy ? { decision: 'deny', reason }
+    : { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }));
 }
 process.exit(0);

@@ -1,9 +1,12 @@
 // Client state: the task list, kept current by the server's /ws/events stream.
 import { useSyncExternalStore } from 'react';
 
+export type Agent = 'claude' | 'codex' | 'antigravity';
+export const AGENT_NAME: Record<Agent, string> = { claude: 'Claude Code', codex: 'Codex', antigravity: 'Antigravity' };
+export const AGENTS = Object.keys(AGENT_NAME) as Agent[];
 export type Status = 'working' | 'needs-you' | 'unread' | 'idle' | 'stopped' | 'review' | 'suspended' | 'parked' | 'archived';
 export interface Task {
-  id: string; num: number; title: string; agent: 'claude' | 'codex'; status: Status;
+  id: string; num: number; title: string; agent: Agent; status: Status;
   cwd: string; folder: string; branch?: string; worktree?: boolean; session: string; sessionId?: string;
   created: string; updated: string; statusAt: string; statusSource?: string;
   goal?: string; now?: string; ask?: string; stopReason?: string; interrupted?: string; desc: string;
@@ -11,7 +14,7 @@ export interface Task {
 }
 
 export interface ImportCandidate {
-  agent: 'claude' | 'codex'; sessionId: string; title: string; cwd: string; branch?: string; firstPrompt?: string; lastMessage?: string;
+  agent: Agent; sessionId: string; title: string; cwd: string; branch?: string; firstPrompt?: string; lastMessage?: string;
   updated: string; source?: string; running?: { pid: number; tty: string; exact: boolean };
 }
 

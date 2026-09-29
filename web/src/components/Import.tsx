@@ -1,8 +1,8 @@
 // Import sessions started outside Taskboard. Imported sessions become Suspended tasks;
 // opening one resumes the conversation here. Sessions still open in a terminal must be exited there first.
 import { useEffect, useMemo, useState } from 'react';
-import type { ImportCandidate } from '../api';
-import { api, fmtWait, shortPath } from '../api';
+import type { Agent, ImportCandidate } from '../api';
+import { AGENTS, AGENT_NAME, api, fmtWait, shortPath } from '../api';
 import { AgentChip } from './ui';
 
 const ago = (iso: string) => fmtWait(Math.round((Date.now() - Date.parse(iso)) / 60000)) + ' ago';
@@ -11,7 +11,7 @@ export function Import({ onClose, onDone }: { onClose: () => void; onDone: (firs
   const [list, setList] = useState<ImportCandidate[] | null>(null);
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [q, setQ] = useState('');
-  const [agent, setAgent] = useState<'all' | 'claude' | 'codex'>('all');
+  const [agent, setAgent] = useState<'all' | Agent>('all');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
 
@@ -50,10 +50,10 @@ export function Import({ onClose, onDone }: { onClose: () => void; onDone: (firs
       <div className="modal" style={{ width: 860 }}>
         <header><h2>Import sessions</h2><button className="btn ghost icon" onClick={onClose}>✕</button></header>
         <div className="body">
-          <div className="help" style={{ fontSize: 12.5, color: 'var(--muted)' }}>Claude Code and Codex sessions from the last 14 days. Imported sessions start as <b>Suspended</b>; opening one resumes the same conversation inside Taskboard with <code>claude --resume</code> or <code>codex resume</code>. Nothing in <code>~/.claude</code> or <code>~/.codex</code> is changed.</div>
+          <div className="help" style={{ fontSize: 12.5, color: 'var(--muted)' }}>Claude Code, Codex and Antigravity sessions from the last 14 days. Imported sessions start as <b>Suspended</b>; opening one resumes the same conversation inside Taskboard with <code>claude --resume</code> or <code>codex resume</code>. Nothing in <code>~/.claude</code> or <code>~/.codex</code> is changed.</div>
           <div style={{ display: 'flex', gap: 8 }}>
             <input className="imp-q" value={q} onChange={e => setQ(e.target.value)} placeholder="Filter by title, folder or prompt" autoFocus />
-            <div className="seg">{(['all', 'claude', 'codex'] as const).map(a => <button key={a} className={agent === a ? 'on' : ''} onClick={() => setAgent(a)}>{a === 'all' ? 'All' : a === 'claude' ? 'Claude Code' : 'Codex'}</button>)}</div>
+            <div className="seg">{(['all', ...AGENTS] as const).map(a => <button key={a} className={agent === a ? 'on' : ''} onClick={() => setAgent(a)}>{a === 'all' ? 'All' : AGENT_NAME[a]}</button>)}</div>
           </div>
           <div className="imp-list">
             {!list && !err && <div className="empty">Reading sessions…</div>}

@@ -110,6 +110,16 @@ export async function sendKeys(name: string, text: string, enter = true) {
   if (enter) { await new Promise(r => setTimeout(r, 400)); await tmux('send-keys', '-t', '=' + name + ':', 'Enter'); }
 }
 
+// Paste text with several lines as one bracketed paste and submit it. Typed with send-keys, each newline would be an
+// Enter and submit a part of it (Antigravity's first prompt, typed in after its trust question; see agents.ts).
+export async function paste(name: string, text: string) {
+  const f = join(TB_DIR, `paste-${name}.txt`); writeFileSync(f, text);
+  await tmux('load-buffer', '-b', `tb-${name}`, f);
+  await tmux('paste-buffer', '-p', '-d', '-b', `tb-${name}`, '-t', '=' + name + ':');
+  await new Promise(r => setTimeout(r, 400));
+  await tmux('send-keys', '-t', '=' + name + ':', 'Enter');
+}
+
 export async function capture(name: string, lines = 40): Promise<string> {
   return (await tmuxQuiet('capture-pane', '-p', '-t', '=' + name + ':', '-S', String(-lines))) || '';
 }

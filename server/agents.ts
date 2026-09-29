@@ -1,12 +1,14 @@
 // Starting and resuming agents. Taskboard never changes your global Claude Code or Codex settings:
-// hooks are passed per session with `claude --settings <file>` and `codex -c notify=[...]`.
-import { execFile } from 'node:child_process';
+// hooks are passed per session with `claude --settings <file>` and `codex -c notify=[...]`. Antigravity (agy) has no
+// such flag, so Taskboard installs the agy plugin "taskboard" and a status line command once (see installAgyPlugin);
+// both do nothing in agy sessions that Taskboard did not start.
+import { execFile, execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { hostname } from 'node:os';
 import { promisify } from 'node:util';
-import { GUARD_SCRIPT, STATUSLINE_SCRIPT, ROOT, TB_DIR, CLAUDE_SETTINGS_FILE, CODEX_NOTIFY_SCRIPT, HOME, HOOK_SCRIPT, TOKEN_FILE, URL_BASE, VAULT, DOCS_DIR } from './config.ts';
+import { GUARD_SCRIPT, STATUSLINE_SCRIPT, ROOT, TB_DIR, CLAUDE_SETTINGS_FILE, CODEX_NOTIFY_SCRIPT, HOME, HOOK_SCRIPT, TOKEN_FILE, URL_BASE, VAULT, DOCS_DIR, AGY_HOME, AGY_PLUGIN_DIR, agyBin } from './config.ts';
 import * as store from './store.ts';
 import type { Agent, Task } from './store.ts';
 import * as tmux from './tmux.ts';
@@ -56,6 +58,64 @@ export function writeClaudeSettings() {
   for (const f of ['plain-english.md', 'check_wording.py']) copyFileSync(join(ROOT, 'writing', f), join(DOCS_DIR, f));
 }
 
+// Antigravity reads hooks only from its own folders (~/.gemini/config/hooks.json, plugins, or .agents/hooks.json in the
+// project). Taskboard installs the plugin "taskboard" with `agy plugin install`. The commands run in a shell and use
+// TB_HOOKS_DIR, which Taskboard sets for its own sessions only; in any other agy session they do nothing. Because the
+// plugin names no Taskboard folder, every Taskboard server (also a sandbox) installs the same plugin.
+// agy passes no event name to a hook, so it is the script's first argument. PreInvocation starts a model call,
+// Stop ends a run (fullyIdle: the turn is over), PreToolUse / PostToolUse surround a tool call.
+const agyCmd = (script: string, args = '') => `[ -n "$TB_HOOKS_DIR" ] && node "$TB_HOOKS_DIR/${script}"${args ? ' ' + args : ''} || true`;
+export function installAgyPlugin() {
+  const bin = agyBin();
+  if (bin === 'agy' && !existsSync(AGY_HOME)) return; // Antigravity is not installed
+  const h = (e: string) => ({ type: 'command', command: agyCmd('agy-hook.mjs', e), timeout: 10 });
+  const hooks = { taskboard: {
+    PreInvocation: [h('PreInvocation')], Stop: [h('Stop')],
+    PreToolUse: [{ matcher: '*', hooks: [h('PreToolUse')] }, { matcher: 'run_command', hooks: [{ type: 'command', command: agyCmd('guard.mjs', '--agy'), timeout: 5 }] }],
+    PostToolUse: [{ matcher: '*', hooks: [h('PostToolUse')] }],
+  } };
+  const plugin = { name: 'taskboard', description: 'Reports the state of agy sessions that Taskboard started to the Taskboard server. It does nothing in other agy sessions.' };
+  mkdirSync(AGY_PLUGIN_DIR, { recursive: true });
+  writeFileSync(join(AGY_PLUGIN_DIR, 'plugin.json'), JSON.stringify(plugin, null, 2));
+  writeFileSync(join(AGY_PLUGIN_DIR, 'hooks.json'), JSON.stringify(hooks, null, 2));
+  const installed = join(HOME, '.gemini', 'config', 'plugins', 'taskboard', 'hooks.json');
+  let same = false; try { same = readFileSync(installed, 'utf8') === readFileSync(join(AGY_PLUGIN_DIR, 'hooks.json'), 'utf8'); } catch { /* not installed */ }
+  if (!same) {
+    try {
+      if (existsSync(installed)) execFileSync(bin, ['plugin', 'uninstall', 'taskboard'], { stdio: 'ignore', timeout: 30000 });
+      execFileSync(bin, ['plugin', 'install', AGY_PLUGIN_DIR], { stdio: 'ignore', timeout: 30000 });
+    } catch (e) { console.error('agy plugin install failed', e); }
+  }
+  // The status line command sends the account's quota to Taskboard. It prints nothing, and stack_with_default keeps
+  // agy's own status line. A status line command that you set yourself is kept.
+  const f = join(AGY_HOME, 'settings.json');
+  try {
+    const cfg = existsSync(f) ? JSON.parse(readFileSync(f, 'utf8')) : {};
+    const want = { type: 'command', command: agyCmd('agy-statusline.mjs'), stack_with_default: true };
+    if (!cfg.statusLine || String(cfg.statusLine.command || '').includes('agy-statusline.mjs')) {
+      if (JSON.stringify(cfg.statusLine) !== JSON.stringify(want)) { cfg.statusLine = want; writeFileSync(f, JSON.stringify(cfg, null, 2)); }
+    }
+  } catch (e) { console.error('agy settings.json not updated', e); }
+}
+
+// agy asks "Do you trust the contents of this project?" once for each folder, and a prompt given with -i runs before
+// the answer, without the folder as its workspace (observed with agy 1.2.12). For a folder that is not trusted yet,
+// the prompt is kept here and typed in once the question is answered (see typePendingPrompt).
+function agyTrusted(cwd: string) {
+  try {
+    const list: string[] = JSON.parse(readFileSync(join(AGY_HOME, 'settings.json'), 'utf8')).trustedWorkspaces || [];
+    const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
+    return list.some(p => real(p) === real(cwd));
+  } catch { return false; }
+}
+export const pendingPrompt = new Map<string, string>();
+export async function typePendingPrompt(t: Task, screen: string) {
+  const p = pendingPrompt.get(t.id); if (!p) return;
+  if (/Do you trust the contents/i.test(screen) || !/\? for shortcuts/.test(screen)) return; // not at the prompt yet
+  pendingPrompt.delete(t.id);
+  await tmux.paste(t.session, p);
+}
+
 // Instructions appended to Claude Code's system prompt for every Taskboard task.
 const CONTROLLER_SETTINGS_FILE = join(TB_DIR, 'controller-settings.json');
 const CONTROLLER_DIR = join(VAULT, 'controller');
@@ -71,7 +131,7 @@ Use the \`tb\` command (run \`tb\` alone for help). Tasks are numbers like 12 or
 ## What you do
 - Answer questions about what each task is doing. Read \`tb list\` and \`tb log <task>\` first; use \`tb tail <task>\` if the log is not enough.
 - Pass the user's instructions to a task with \`tb send <task> "<text>"\`. Quote the user's intent; do not add work they did not ask for.
-- Start agents with \`tb new --agent claude|codex --folder <path> --title <title> "<prompt>"\`. For several pieces of work, write a plan to plans/<name>.json
+- Start agents with \`tb new --agent claude|codex|antigravity --folder <path> --title <title> "<prompt>"\`. For several pieces of work, write a plan to plans/<name>.json
   ([{"agent","folder","title","prompt","worktree"?,"group"?}]) and start them with one \`tb new --batch plans/<name>.json\`, each in its own worktree and one group.
 - Follow agents you started with \`tb wait <task…> --until any\`. When one finishes, read it with \`tb result <task>\` and tell the user in two or three lines.
   When one needs input, say what it asks; answer it only if the user already told you the answer.
@@ -93,7 +153,7 @@ export const controllerLaunchKey = (agent: string) => JSON.stringify({ agent, la
 
 export async function startController(): Promise<Task> {
   mkdirSync(join(CONTROLLER_DIR, 'plans'), { recursive: true });
-  // the same instructions for every agent: Claude Code reads CLAUDE.md, Codex reads AGENTS.md
+  // the same instructions for every agent: Claude Code reads CLAUDE.md, Codex and Antigravity read AGENTS.md
   writeFileSync(join(CONTROLLER_DIR, 'CLAUDE.md'), controllerMd());
   writeFileSync(join(CONTROLLER_DIR, 'AGENTS.md'), controllerMd());
   let t = store.get('controller');
@@ -108,6 +168,8 @@ export async function startController(): Promise<Task> {
       // named after this machine; with Remote Control on it can be reached from claude.ai/code and the Claude mobile app
       ? ['claude', '--settings', CONTROLLER_SETTINGS_FILE, ...(resume && t.sessionId ? ['--resume', t.sessionId] : t.sessionId ? ['--session-id', t.sessionId] : []),
         '--name', machine.controllerLabel(), ...(machine.get().controller.remoteControl ? ['--remote-control', machine.controllerLabel()] : [])]
+      // Antigravity: no approval prompts for the controller either
+      : t.agent === 'antigravity' ? [...command(t, null, !!t.sessionId), '--dangerously-skip-permissions']
       // Codex: tb talks to the Taskboard server on 127.0.0.1, which its sandbox blocks unless network access is on
       // no Codex approval prompts for the controller: Taskboard's Settings page decides what it may do
       : [...command(t, null, !!t.sessionId), '-c', 'sandbox_workspace_write.network_access=true', '-a', 'never'];
@@ -117,11 +179,12 @@ export async function startController(): Promise<Task> {
   return store.update(t.id, { status: 'idle', launchedAs: controllerLaunchKey(t.agent), statusSource: resume ? 'Controller resumed.' : 'Controller started. Ask it anything about your agents.' })!;
 }
 
-// Instructions for every Taskboard task. Claude Code writes its own log entry each turn. For Codex, Taskboard writes
-// the entry from the first paragraph of Codex's last reply (events.ts codexEvent), so Codex is told that instead.
+// Instructions for every Taskboard task. Claude Code and Antigravity write their own log entry each turn (their Stop
+// hook asks once if it is missing). For Codex, Taskboard writes the entry from the first paragraph of Codex's last
+// reply (events.ts codexEvent), so Codex is told that instead.
 function taskInstructions(t: Task) {
   const dir = store.taskDir(t.id);
-  const log = t.agent === 'claude' ? [
+  const log = t.agent !== 'codex' ? [
     `At the end of every turn, append one entry to ${dir}/log.md so the user can catch up quickly. Format exactly:`,
     `## <YYYY-MM-DD HH:MM>`,
     `- Did: <one sentence>`,
@@ -136,7 +199,7 @@ function taskInstructions(t: Task) {
     `Documents meant for the user or for other agents (handoffs, designs, reviews, diagrams, HTML pages) go in ${dir}/outbox/ as Markdown or HTML files. Files others send you arrive in ${dir}/inbox/.`,
     `To wait for a file another agent or the user will send you, run: tb inbox wait [--timeout seconds]. It prints the path and sender of each new file (exit 0), or exits 2 on timeout.`,
     `When a document in your outbox needs the user's review or approval, run: tb review <path>. Their comments arrive in your inbox.`,
-    ...(t.agent === 'claude' ? [`Writing the log entry is always allowed, even if the user asked you not to use tools. Do it quietly: do not mention the log to the user.`] : []),
+    ...(t.agent !== 'codex' ? [`Writing the log entry is always allowed, even if the user asked you not to use tools. Do it quietly: do not mention the log to the user.`] : []),
     writingRules('the log entries, the documents and artifacts in your outbox, and all other text for the user or for other agents'),
   ].join('\n');
 }
@@ -156,6 +219,8 @@ function baseEnv(t: Task): Record<string, string> {
   const env: Record<string, string> = {
     TASK_ID: t.id, TASK_DIR: store.taskDir(t.id), TASK_NUM: String(t.num),
     TB_URL: URL_BASE, TB_TOKEN_FILE: TOKEN_FILE, TASKBOARD_VAULT: VAULT,
+    // the agy plugin "taskboard" runs its scripts from here (it is the same plugin for every Taskboard server)
+    TB_HOOKS_DIR: join(TB_DIR, 'hooks'),
     // the tb command is on the agent's PATH
     PATH: `${join(TB_DIR, 'bin')}:${process.env.PATH || '/usr/bin:/bin'}`,
     ...accounts.envFor(accounts.get(t.account)),
@@ -181,6 +246,18 @@ function command(t: Task, prompt: string | null, resume: boolean): string[] {
     if (resume && t.sessionId) c.push('--resume', t.sessionId);
     else if (t.sessionId) c.push('--session-id', t.sessionId);
     if (prompt) c.push(prompt);
+    return c;
+  }
+  if (t.agent === 'antigravity') {
+    // agy has no flag for a system prompt: the instructions go before the first prompt, and a resumed conversation
+    // already has them. The controller reads AGENTS.md in its folder instead. --add-dir lets it write the task's log.
+    // the real path: agy compares real paths, and a vault behind a symbolic link (/var → /private/var) is "outside workspace"
+    const c = [agyBin(), '--add-dir', realpathSync(VAULT)];
+    if (resume && t.sessionId) return [...c, '--conversation', t.sessionId];
+    if (prompt) {
+      const text = t.role === 'controller' ? prompt : `${taskInstructions(t)}\n\n---\n\n${prompt}`;
+      if (agyTrusted(t.cwd)) c.push('-i', text); else pendingPrompt.set(t.id, text);
+    }
     return c;
   }
   const c = ['codex', ...codexFlags()];
@@ -251,8 +328,11 @@ export async function resumeTask(t: Task, force = false): Promise<Task> {
   }
   if (!t.sessionId) throw new Error('No session id recorded for this task, so it cannot be resumed.');
   await launch(t, null, true);
-  return store.update(t.id, { status: 'idle', statusSource: `Resumed with ${t.agent === 'claude' ? 'claude --resume' : 'codex resume'} ${t.sessionId}.` })!;
+  return store.update(t.id, { status: 'idle', statusSource: `Resumed with ${resumeCommand(t.agent)} ${t.sessionId}.` })!;
 }
+
+export const resumeCommand = (agent: Agent) => agent === 'claude' ? 'claude --resume' : agent === 'codex' ? 'codex resume' : 'agy --conversation';
+export const agentName = (agent: Agent) => agent === 'claude' ? 'Claude Code' : agent === 'codex' ? 'Codex' : 'Antigravity';
 
 // Tasks between "saved" and "tmux session running"; the watcher must not mark them as ended.
 export const launching = new Set<string>();
@@ -277,7 +357,7 @@ export function importSession(c: { agent: Agent; sessionId: string; title: strin
     cwd: c.cwd, folder: c.cwd, branch: c.branch, worktree: false, session: `task-${num}`, sessionId: c.sessionId,
     statusSource: c.running
       ? `Running in another terminal (${c.running.tty}, process ${c.running.pid}). Taskboard follows its activity; exit it there, or take it over here.`
-      : `Imported from ${c.agent === 'claude' ? 'Claude Code' : 'Codex'} (last active ${when}). Opening it resumes the session here.`,
+      : `Imported from ${agentName(c.agent)} (last active ${when}). Opening it resumes the session here.`,
     goal: c.title, now: c.lastMessage, desc: c.firstPrompt || c.title, imported: `${c.agent} session ${c.sessionId}, last active ${when}`,
     openElsewhere: c.running ? { pid: c.running.pid, tty: c.running.tty } : undefined,
   });
@@ -324,6 +404,7 @@ export async function setControllerAccount(toId: string): Promise<Task> {
 }
 
 // Move a Claude Code task to another account: copy its transcript into that account's folder and resume there.
+// Codex and Antigravity conversations cannot move (Antigravity has only one account: it signs in through the keychain).
 export async function moveAccount(t: Task, toId: string): Promise<Task> {
   const to = accounts.get(toId), from = accounts.get(t.account) || accounts.defaultFor(t.agent);
   if (!to || to.agent !== t.agent) throw new Error('Pick an account for the same agent.');
@@ -341,7 +422,8 @@ export async function utilSession(kind: 'login' | 'reset', a: accounts.Account):
   await tmux.killSession(name);
   const env = { ...accounts.envFor(a), PATH: process.env.PATH || '' };
   const cwd = join(TB_DIR); mkdirSync(cwd, { recursive: true });
-  const cmd = kind === 'login' ? (a.agent === 'claude' ? ['claude', 'auth', 'login'] : ['codex', 'login']) : ['claude'];
+  // agy signs in when it starts without a session; the user exits it with /exit afterwards
+  const cmd = kind === 'login' ? (a.agent === 'claude' ? ['claude', 'auth', 'login'] : a.agent === 'codex' ? ['codex', 'login'] : [agyBin()]) : ['claude'];
   await tmux.newSession(name, cwd, env, cmd, async () => { await ensureTmuxConfigured(); });
   if (kind === 'reset') {
     // Claude may first ask to trust this folder (Taskboard's own folder): accept it, then type the command.

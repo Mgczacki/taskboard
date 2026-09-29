@@ -99,5 +99,5 @@ export function BoardView({ tasks, groups, open, openDocs, selected, toggleSel, 
 }
 
 export function Empty() {
-  return <div className="emptyview"><h2>No tasks yet</h2><p>Press <kbd>N</kbd> to start an agent in a folder, or use <b>⇪ Import sessions</b> in the sidebar to bring in Claude Code and Codex sessions you already have. Each agent runs in its own tmux session, and its status shows up here from Claude Code's hooks or Codex's notify program.</p></div>;
+  return <div className="emptyview"><h2>No tasks yet</h2><p>Press <kbd>N</kbd> to start an agent in a folder, or use <b>⇪ Import sessions</b> in the sidebar to bring in Claude Code, Codex and Antigravity sessions you already have. Each agent runs in its own tmux session, and its status shows up here from Claude Code's hooks or Codex's notify program.</p></div>;
 }

@@ -52,6 +52,7 @@ for (const t of store.all()) if (t.openElsewhere && (t.status as string) === 'el
   store.update(t.id, { status: 'idle', transcript: t.transcript || importer.transcriptFor(t.agent, t.sessionId || '') });
 installRuntimeFiles();
 agents.writeClaudeSettings();
+agents.installAgyPlugin();
 await agents.configureIfRunning();
 
 app.use(express.json({ limit: '2mb' }));
@@ -73,6 +74,22 @@ app.post('/api/hooks/usage', (req, res) => {
     const w = (label: string, x: any) => x && typeof x.used_percentage === 'number' ? [{ label, usedPct: Math.round(x.used_percentage), resetsAt: x.resets_at ? x.resets_at * 1000 : undefined }] : [];
     const windows = [...w('5-hour', rl.five_hour), ...w('weekly', rl.seven_day)];
     if (windows.length) accounts.setUsage(t.account || accounts.defaultFor(t.agent).id, { windows, at: new Date().toISOString(), source: 'Claude Code status line' });
+  }
+  res.json({});
+});
+app.post('/api/hooks/antigravity', (req, res) => {
+  if (!tokenOk(req)) return res.status(401).end();
+  res.json(events.antigravityEvent(req.body.taskId, String(req.body.event || ''), req.body.input || {}));
+});
+// Quota from the Antigravity status line of a Taskboard session: one bucket per model family ("gemini-weekly",
+// "3p-weekly"), each with remaining_fraction (1 = unused) and reset_time. Stored on that task's account.
+app.post('/api/hooks/agy-usage', (req, res) => {
+  if (!tokenOk(req)) return res.status(401).end();
+  const t = store.get(String(req.body.taskId || '')); const q = req.body.quota || {};
+  if (t) {
+    const windows = Object.entries(q).filter(([, w]: [string, any]) => typeof w?.remaining_fraction === 'number')
+      .map(([k, w]: [string, any]) => ({ label: k.replace(/-/g, ' '), usedPct: Math.round((1 - w.remaining_fraction) * 100), resetsAt: Date.parse(w.reset_time) || undefined }));
+    if (windows.length) accounts.setUsage(t.account || accounts.defaultFor(t.agent).id, { windows, at: new Date().toISOString(), source: 'Antigravity status line', plan: req.body.plan || undefined });
   }
   res.json({});
 });
@@ -188,8 +205,8 @@ app.post('/api/controller/account', async (req, res) => {
 app.post('/api/tasks', async (req, res) => {
   try {
     const { title, desc, agent, folder, worktree, branch, parent, account } = req.body;
-    if (!title || !folder || !['claude', 'codex'].includes(agent)) throw new Error('title, folder and agent are required');
-    await guarded(req, res, `start “${title}” (${agent === 'claude' ? 'Claude Code' : 'Codex'})`, `Folder: ${folder}${worktree ? ` · new worktree ${branch || ''}` : ''}\nPrompt: ${desc || title}`, 'new',
+    if (!title || !folder || !['claude', 'codex', 'antigravity'].includes(agent)) throw new Error('title, folder and agent are required');
+    await guarded(req, res, `start “${title}” (${agents.agentName(agent)})`, `Folder: ${folder}${worktree ? ` · new worktree ${branch || ''}` : ''}\nPrompt: ${desc || title}`, 'new',
       async () => {
         const t = await agents.startTask({ title, desc: desc || title, agent, folder, worktree, branch, parent, account });
         if (req.body.group) { const g = groups.all().find(x => x.name === req.body.group || x.id === req.body.group) || groups.create(String(req.body.group)); groups.update(g.id, { tasks: [...g.tasks, t.id] }); }
@@ -246,7 +263,8 @@ app.post('/api/accounts/:id/clear-limit', (req, res) => { accounts.clearLimited(
 app.post('/api/accounts/:id/reset', async (req, res) => {
   if (!req.get('origin')) return res.status(403).json({ error: 'Limit resets can only be used from the dashboard.' });
   const a = accounts.get(req.params.id); if (!a) return res.status(404).end();
-  if (a.agent !== 'claude') return res.json({ open: 'https://chatgpt.com/codex/settings/usage', note: 'Codex has no command-line reset; spend banked resets in the Codex app or on the usage page.' });
+  if (a.agent === 'codex') return res.json({ open: 'https://chatgpt.com/codex/settings/usage', note: 'Codex has no command-line reset; spend banked resets in the Codex app or on the usage page.' });
+  if (a.agent === 'antigravity') return res.json({ open: 'https://antigravity.google/docs/cli/credits/', note: 'Antigravity has no limit reset. Its quota resets on its own; run /credits in agy to see or buy AI credits.' });
   try { res.json({ session: await agents.utilSession('reset', a) }); } catch (e) { fail(res, e); }
 });
 app.post('/api/tasks/:id/move-account', async (req, res) => { const t = store.get(req.params.id); if (!t) return res.status(404).end(); try { res.json(view(await agents.moveAccount(t, req.body.account))); } catch (e) { fail(res, e); } });
@@ -321,7 +339,8 @@ app.post('/api/tasks/:id/inbox/take', (req, res) => {
   if (!store.get(req.params.id)) return res.status(404).json({ error: 'no such task' });
   res.json({ files: docs.takePending(req.params.id) });
 });
-// Type the inbox notice into the agent's terminal (needed for Codex, which has no prompt hook here).
+// Type the inbox notice into the agent's terminal (needed for Codex, which has no prompt hook here, and for an idle
+// Antigravity task, which is told only at the end of a turn).
 app.post('/api/tasks/:id/inbox/tell', async (req, res) => {
   const t = store.get(req.params.id); if (!t) return res.status(404).end();
   const notice = docs.takeInboxNotice(t.id); if (!notice) return res.json({ told: false });
@@ -557,10 +576,12 @@ async function keepController(t: store.Task, s?: { dead: boolean }) {
   }
   // the controller folder is Taskboard's own (it only holds the controller instructions): accept the CLI's
   // "trust this folder" question there, so an unattended start (at login, after a crash) does not stop on it
-  if (s && !s.dead && Date.now() - controllerStartedAt < 120000) {
+  // (also after a change of the controller's account on the Accounts page, which launches it without a restart here)
+  if (s && !s.dead && Date.now() - Math.max(controllerStartedAt, store.launchedAt.get(t.id) || 0) < 120000) {
     const screen = await tmux.capture(t.session, 40);
     if (t.agent === 'claude' && /Yes, I trust this folder/.test(screen)) { await tmux.tmux('send-keys', '-t', '=' + t.session + ':', 'Down'); await tmux.tmux('send-keys', '-t', '=' + t.session + ':', 'Enter'); return; }
     if (t.agent === 'codex' && /Trust this folder\?/.test(screen) && /Trust and continue/.test(screen)) { await tmux.tmux('send-keys', '-t', '=' + t.session + ':', 'Enter'); return; }
+    if (t.agent === 'antigravity' && /Do you trust the contents of this project\?/.test(screen) && /Yes, I trust this folder/.test(screen)) { await tmux.tmux('send-keys', '-t', '=' + t.session + ':', 'Enter'); return; }
   }
   if (s && !s.dead && t.agent === 'claude' && machine.get().controller.remoteControl) {
     const m = (await tmux.capture(t.session, 60)).match(/https:\/\/claude\.ai\/code\/session_[A-Za-z0-9]+/);
@@ -613,6 +634,13 @@ async function reconcile() {
     const screenQuestion = t.status === 'needs-you' && t.statusSource?.startsWith(events.SCREEN_SOURCE);
     if (screenQuestion || (Date.now() - launched < 90000 && !events.sessionStarted.has(t.id) && ['working', 'idle'].includes(t.status)))
       events.screenCheck(t, (await tmux.capture(t.session, 0)).split('\n').filter(l => l.trim()).slice(-15).join('\n'));
+    // Antigravity: type in the first prompt once the trust question is answered; read approval questions from the screen
+    // while a tool call waits (agy has no event for either)
+    if (t.agent === 'antigravity' && (agents.pendingPrompt.has(t.id) || t.status === 'working')) {
+      const screen = (await tmux.capture(t.session, 0)).split('\n').filter(l => l.trim()).slice(-20).join('\n');
+      await agents.typePendingPrompt(t, screen);
+      events.agyApprovalCheck(store.get(t.id)!, screen);
+    }
     if (t.agent === 'codex' && t.sessionId) {
       let tr = t.transcript;
       if (!tr) { tr = importer.transcriptFor('codex', t.sessionId); if (tr) store.update(t.id, { transcript: tr }); }

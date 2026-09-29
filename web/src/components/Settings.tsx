@@ -20,7 +20,7 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
       <div className="acc-head"><div><h2>Settings</h2><p>For this machine ({info?.machine || '…'}).</p></div></div>
       {err && <div className="banner">{err} <button className="btn ghost" onClick={() => setErr('')}>OK</button></div>}
       <h3 className="set-h">Managing tasks</h3>
-      <p className="sub">Starting tasks, typing into them, setting them aside and archiving them with <code>tb</code> can run at once or wait for your Approve / Deny card on the dashboard. Neither Claude Code nor Codex asks separately for <code>tb</code> commands of the controller; this is the one place that decides.</p>
+      <p className="sub">Starting tasks, typing into them, setting them aside and archiving them with <code>tb</code> can run at once or wait for your Approve / Deny card on the dashboard. Neither Claude Code, Codex nor Antigravity asks separately for <code>tb</code> commands of the controller; this is the one place that decides.</p>
       {p && <div className="ctl-box">
         <label className="opt" title="When on, the controller's tb new / send / park / archive run immediately"><input type="checkbox" disabled={busy} checked={!p.controllerNeedsApproval} onChange={e => save({ controllerNeedsApproval: !e.target.checked })} /> <b>The controller may create and manage tasks without asking</b></label>
         <label className="opt" title="Agents other than the controller that use tb to start or type into tasks"><input type="checkbox" disabled={busy} checked={!p.agentsNeedApproval} onChange={e => save({ agentsNeedApproval: !e.target.checked })} /> Other agents may start, type into, set aside and archive tasks without asking</label>

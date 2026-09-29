@@ -1,14 +1,15 @@
 // Accounts: each account is a settings folder (CLAUDE_CONFIG_DIR for Claude Code, CODEX_HOME for Codex), so several
 // accounts run side by side and each task uses one. The CLIs log in themselves; Taskboard never reads credential files,
-// it only asks `claude auth status` / `codex login status`.
+// it only asks `claude auth status` / `codex login status` / `agy models`. Antigravity has only its default account:
+// agy keeps its sign-in in the macOS keychain and has no setting for another settings folder.
 import { execFile } from 'node:child_process';
 import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { promisify } from 'node:util';
-import { HOME, TB_DIR } from './config.ts';
+import { AGY_HOME, HOME, TB_DIR, agyBin } from './config.ts';
 
 const exec = promisify(execFile);
-export type AgentKind = 'claude' | 'codex';
+export type AgentKind = 'claude' | 'codex' | 'antigravity';
 export interface Account {
   id: string; agent: AgentKind; name: string; dir: string; isDefault?: boolean; maxParallel: number;
   limited?: { at: string; note: string };   // hit a usage limit; cleared when a turn on it succeeds
@@ -30,6 +31,7 @@ let accounts: Account[] = existsSync(FILE) ? JSON.parse(readFileSync(FILE, 'utf8
 const defaults: Account[] = [
   { id: 'claude-default', agent: 'claude', name: 'Claude Code (default)', dir: join(HOME, '.claude'), isDefault: true, maxParallel: 8, created: new Date(0).toISOString() },
   { id: 'codex-default', agent: 'codex', name: 'Codex (default)', dir: join(HOME, '.codex'), isDefault: true, maxParallel: 8, created: new Date(0).toISOString() },
+  { id: 'antigravity-default', agent: 'antigravity', name: 'Antigravity (default)', dir: AGY_HOME, isDefault: true, maxParallel: 8, created: new Date(0).toISOString() },
 ];
 for (const d of defaults) if (!accounts.some(a => a.id === d.id)) accounts.push(d);
 const save = () => { writeFileSync(FILE, JSON.stringify(accounts, null, 2)); emit(); };
@@ -40,6 +42,7 @@ export const defaultFor = (agent: AgentKind) => accounts.find(a => a.agent === a
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || 'account';
 
 export function create(agent: AgentKind, name: string): Account {
+  if (agent === 'antigravity') throw new Error('Antigravity has one account only: agy keeps its sign-in in the keychain, not in a settings folder.');
   const base = `${agent}-${slug(name)}`; let id = base, n = 2;
   while (accounts.some(a => a.id === id)) id = `${base}-${n++}`;
   const dir = join(HOME, (agent === 'claude' ? '.claude-' : '.codex-') + id.replace(/^(claude|codex)-/, ''));
@@ -53,7 +56,7 @@ export function update(id: string, patch: Partial<Pick<Account, 'name' | 'maxPar
 // Environment that points a CLI at an account's folder (nothing for the default folders).
 export function envFor(a?: Account): Record<string, string> {
   if (!a || a.isDefault) return {};
-  return a.agent === 'claude' ? { CLAUDE_CONFIG_DIR: a.dir } : { CODEX_HOME: a.dir };
+  return a.agent === 'claude' ? { CLAUDE_CONFIG_DIR: a.dir } : a.agent === 'codex' ? { CODEX_HOME: a.dir } : {};
 }
 
 const statusCache = new Map<string, AccountStatus>();
@@ -65,6 +68,11 @@ export async function status(a: Account, fresh = false): Promise<AccountStatus> 
     if (a.agent === 'claude') {
       const { stdout } = await exec('claude', ['auth', 'status'], { env, timeout: 15000 });
       const j = JSON.parse(stdout); s = { signedIn: !!j.loggedIn, who: j.email || j.orgName || j.authMethod, checkedAt: Date.now() };
+    } else if (a.agent === 'antigravity') {
+      // `agy models` lists the models when signed in; otherwise it prints "Please sign in to view available models."
+      const { stdout, stderr } = await exec(agyBin(), ['models'], { env, timeout: 20000 }).catch(e => ({ stdout: String(e.stdout || ''), stderr: String(e.stderr || '') }));
+      const out = stdout + stderr; const n = out.split('\n').filter(l => l.includes('\t')).length;
+      s = { signedIn: n > 0 && !/sign in/i.test(out), who: n > 0 ? `${n} models available` : undefined, checkedAt: Date.now() };
     } else {
       mkdirSync(a.dir, { recursive: true });
       const { stdout, stderr } = await exec('codex', ['login', 'status'], { env, timeout: 15000 }).catch(e => ({ stdout: String(e.stdout || ''), stderr: String(e.stderr || '') }));

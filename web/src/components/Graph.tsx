@@ -10,7 +10,7 @@
 // - Tasks with no links fill the free cells of their lane row by row: waiting on you first, then by task number.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Group, Status, Task } from '../api';
-import { ATTN, ORDER, STATUS_LABEL, fmtWait } from '../api';
+import { AGENT_NAME, ATTN, ORDER, STATUS_LABEL, fmtWait } from '../api';
 import '../graph.css';
 import { Dot } from './ui';
 
@@ -337,7 +337,7 @@ function NodeCard({ n, groups, mode, sel, hl, onEnter, onLeave, onClick }: { n: 
   const shown = mode === 'group' ? others : gs;
   return (
     <div className={`gnode task ${t.status} ${cls}`} style={{ ...style, '--sc': `var(${STVAR[t.status]})` } as React.CSSProperties} onPointerEnter={onEnter} onPointerLeave={onLeave} onClick={onClick}>
-      <div className="r1"><Dot s={t.status} /><span className="num">#{t.num}</span>{attn && <span className="wait">waiting {fmtWait(t.waitMin)}</span>}<span className="ag">{t.agent === 'claude' ? 'Claude' : 'Codex'}</span></div>
+      <div className="r1"><Dot s={t.status} /><span className="num">#{t.num}</span>{attn && <span className="wait">waiting {fmtWait(t.waitMin)}</span>}<span className="ag">{t.agent === 'claude' ? 'Claude' : AGENT_NAME[t.agent]}</span></div>
       <div className="ti">{t.title}</div>
       <div className="ln">{line}</div>
       <div className="ft">

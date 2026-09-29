@@ -1,8 +1,8 @@
 import type { Status, Task } from '../api';
-import { ATTN, STATUS_LABEL, fmtWait } from '../api';
+import { AGENT_NAME, ATTN, STATUS_LABEL, fmtWait } from '../api';
 
 export const Dot = ({ s }: { s: Status }) => <span className={`dot ${s}`} title={STATUS_LABEL[s]} />;
-export const AgentChip = ({ a }: { a: Task['agent'] }) => <span className={`chip agent-${a}`}>{a === 'claude' ? 'Claude Code' : 'Codex'}</span>;
+export const AgentChip = ({ a }: { a: Task['agent'] }) => <span className={`chip agent-${a}`}>{AGENT_NAME[a]}</span>;
 export const ByController = ({ t }: { t: Task }) => t.parent === 'controller' ? <span className="chip byctl" title="Started by the controller with tb new">↳ Controller</span> : null;
 // where the session runs, separate from its status: a terminal Taskboard does not own (imported while running)
 export const WhereChip = ({ t }: { t: Task }) => t.openElsewhere ? <span className="chip wchip" title={`Running in another terminal (${t.openElsewhere.tty}, process ${t.openElsewhere.pid}). Status is read from its transcript.`}>⧉ {t.openElsewhere.tty.replace(/^\/dev\//, '')}</span> : null;

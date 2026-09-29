@@ -41,7 +41,7 @@ async function task(ref) {
   if (!t) { console.error(`tb: no task ${ref}`); process.exit(1); }
   return t;
 }
-const line = t => `#${String(t.num).padEnd(4)} ${t.status.padEnd(10)} ${t.agent.padEnd(6)} ${t.title}${t.ask ? `  — waiting: ${t.ask}` : ''}`;
+const line = t => `#${String(t.num).padEnd(4)} ${t.status.padEnd(10)} ${t.agent.padEnd(11)} ${t.title}${t.ask ? `  — waiting: ${t.ask}` : ''}`;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 const HELP = `tb — Taskboard command line
@@ -53,7 +53,7 @@ const HELP = `tb — Taskboard command line
   tb result <task>                   the agent's last message and its outbox documents
   tb wait <task…> [--until done|needs-you|any] [--timeout seconds]
   tb send <task> "<text>"            type text into the agent's terminal and press Enter
-  tb new --agent claude|codex --folder <path> [--title <t>] [--worktree <branch>] [--group <name>] "<prompt>"
+  tb new --agent claude|codex|antigravity --folder <path> [--title <t>] [--worktree <branch>] [--group <name>] "<prompt>"
   tb new --batch <plan.json>         [{ agent, folder, title, prompt, worktree?, group? }, …]
   tb group list | tb group add <group> <task…> | tb group rm <group> <task…>
   tb doc send <task>:<file> <task>   send a document from one task's outbox to another task's inbox

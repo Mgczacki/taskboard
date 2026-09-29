@@ -34,3 +34,16 @@ export const GUARD_SCRIPT = join(TB_DIR, 'hooks', 'guard.mjs');
 export const STATUSLINE_SCRIPT = join(TB_DIR, 'hooks', 'claude-statusline.mjs');
 export const CODEX_NOTIFY_SCRIPT = join(TB_DIR, 'hooks', 'codex-notify.mjs');
 export const CLAUDE_SETTINGS_FILE = join(TB_DIR, 'claude-settings.json');
+// Antigravity (agy) has no flag that passes hooks for one session. Taskboard installs these as the agy plugin
+// "taskboard" (~/.gemini/config/plugins/taskboard); the scripts do nothing in agy sessions that Taskboard did not start.
+export const AGY_HOOK_SCRIPT = join(TB_DIR, 'hooks', 'agy-hook.mjs');
+export const AGY_STATUSLINE_SCRIPT = join(TB_DIR, 'hooks', 'agy-statusline.mjs');
+export const AGY_PLUGIN_DIR = join(TB_DIR, 'agy-plugin');
+export const AGY_HOME = join(HOME, '.gemini', 'antigravity-cli');
+// The agy command: on the PATH, or where the official installer puts it (~/.local/bin is often not on the PATH of a
+// server started at login).
+export function agyBin(): string {
+  for (const d of (process.env.PATH || '').split(':')) if (d && existsSync(join(d, 'agy'))) return join(d, 'agy');
+  const local = join(HOME, '.local', 'bin', 'agy');
+  return existsSync(local) ? local : 'agy';
+}

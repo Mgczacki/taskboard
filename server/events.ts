@@ -3,6 +3,7 @@ import { statSync } from 'node:fs';
 import * as docs from './docs.ts';
 import * as accounts from './accounts.ts';
 import * as store from './store.ts';
+import * as external from './external.ts';
 import type { Task } from './store.ts';
 
 const turnStart = new Map<string, number>();   // task id -> when the current turn began
@@ -98,12 +99,94 @@ export function codexEvent(taskId: string, p: any) {
 
 export const lastCodexEvent = new Map<string, number>();
 
+// Antigravity (agy) hooks, from the Taskboard plugin (server/hooks/agy-hook.mjs). agy has no prompt-submitted,
+// notification or permission event. A turn starts with PreInvocation (invocationNum 0: the first model call after a
+// prompt) and ends with Stop (fullyIdle true). An approval question has no event; the watcher reads it from the screen
+// while the task is working (agyApprovalCheck), and PostToolUse ends it. A Stop hook that answers {decision: "continue", reason}
+// makes agy run again with the reason as input (observed with agy 1.2.12); an empty answer lets it stop.
+export const agyPendingTool = new Map<string, string>(); // task id -> the tool call that has no PostToolUse yet
+function describeAgyTool(tc: any): string {
+  const a = tc?.args || {};
+  const oneLine = (x: string) => { const l = String(x).trim().split('\n'); return l[0].slice(0, 160) + (l.length > 1 || l[0].length > 160 ? ' …' : ''); };
+  if (a.CommandLine) return `Run: ${oneLine(a.CommandLine)}`;
+  const file = a.TargetFile || a.AbsolutePath || a.FilePath || a.Path;
+  return file ? `${tc?.name} ${file}` : String(tc?.name || 'a tool');
+}
+export function antigravityEvent(taskId: string, ev: string, input: any): { output?: unknown } {
+  const t = store.get(taskId); if (!t || t.status === 'archived') return {};
+  sessionStarted.add(t.id);
+  // every event carries the conversation id and transcript path; the first one is how Taskboard learns the id
+  const ids: Partial<Task> = {};
+  if (input.conversationId && input.conversationId !== t.sessionId) ids.sessionId = input.conversationId;
+  if (input.transcriptPath && input.transcriptPath !== t.transcript) ids.transcript = input.transcriptPath;
+  if (Object.keys(ids).length) store.update(t.id, ids);
+  switch (ev) {
+    case 'PreInvocation':
+      // a new turn (a Stop "continue" keeps the task working, so it is not one)
+      if (input.invocationNum === 0 && t.status !== 'working') {
+        answerBeforeLog.delete(t.id); turnStart.set(t.id, Date.now()); blockedOnce.delete(t.id); agyPendingTool.delete(t.id);
+        store.update(t.id, { status: 'working', ask: '', stopReason: undefined, interrupted: undefined, statusSource: `Antigravity PreInvocation hook at ${clock()}.` });
+      }
+      break;
+    case 'PreToolUse':
+      agyPendingTool.set(t.id, describeAgyTool(input.toolCall));
+      break;
+    case 'PostToolUse':
+      agyPendingTool.delete(t.id);
+      if (t.status === 'needs-you') store.update(t.id, { status: 'working', ask: '', statusSource: `Approved; tool ran at ${clock()}.` });
+      break;
+    case 'Stop': {
+      if (input.fullyIdle === false) break; // agy still has work queued
+      agyPendingTool.delete(t.id);
+      const err = String(input.error || '');
+      if (err) {
+        answerBeforeLog.delete(t.id);
+        if (/rate|limit|quota|exhaust|billing|credits/i.test(err)) accounts.markLimited(t.account || accounts.defaultFor(t.agent).id, `${err.slice(0, 80)} on #${t.num}`);
+        store.update(t.id, { status: 'stopped', stopReason: err.slice(0, 200), statusSource: `Antigravity Stop hook at ${clock()}: ${input.terminationReason || 'error'}.` });
+        break;
+      }
+      const reply = t.transcript ? external.readState('antigravity', t.transcript)?.text : undefined;
+      // ask for a log entry once per turn if the agent did not write one (as for Claude Code)
+      const started = turnStart.get(t.id) || 0;
+      let logged = true;
+      try { logged = statSync(store.logFile(t.id)).mtimeMs >= started; } catch { logged = false; }
+      if (!logged && started && t.role !== 'controller' && !blockedOnce.has(t.id)) {
+        blockedOnce.add(t.id);
+        answerBeforeLog.set(t.id, reply || '');
+        return { output: { decision: 'continue', reason: `Append your Did / Waiting / Next entry to ${store.logFile(t.id)} as described in your instructions, then stop. Do not mention the log in your reply.` } };
+      }
+      // agy has no event that adds context to a prompt: files that arrived in the inbox are passed on here instead
+      const notice = t.role === 'controller' ? null : docs.takeInboxNotice(t.id);
+      // the reply after reading the files is the newer answer, so no earlier one is kept for it
+      if (notice) { answerBeforeLog.delete(t.id); return { output: { decision: 'continue', reason: notice } }; }
+      accounts.clearLimited(t.account);
+      const msg = answerBeforeLog.get(t.id) || reply || '';
+      answerBeforeLog.delete(t.id);
+      store.update(t.id, { ...finishedStatus(t, msg), now: firstPara(msg) || t.now, statusSource: `Antigravity Stop hook at ${clock()}.` });
+      break;
+    }
+  }
+  return {};
+}
+// agy's approval questions differ by tool ("Run this command?", "Allow creation of this file?"), but each one ends
+// with a numbered list of answers from "1. Yes, …" to "No, cancel" or "No, deny …" (observed with agy 1.2.12).
+const AGY_APPROVAL = /^\s*(>\s*)?1\. Yes\b[\s\S]*\bNo, (cancel|deny)\b/m;
+export function agyApprovalCheck(t: Task, screen: string) {
+  if (t.status !== 'working' || !AGY_APPROVAL.test(screen)) return;
+  // the question line (for example "Allow creation of this file?") when no tool call was reported
+  const question = screen.split('\n').map(l => l.trim()).filter(l => /\?$/.test(l)).pop();
+  const tool = agyPendingTool.get(t.id);
+  store.update(t.id, { status: 'needs-you', ask: tool ? `Approve: ${tool}` : question || 'Antigravity asks for approval', statusSource: `${SCREEN_SOURCE} at ${clock()} (agy has no approval event).` });
+}
+
 // Some questions appear before any hook can fire, for example "Do you trust this folder?" the first time
 // an agent runs in a new folder. For a minute after launch the watcher reads the screen and flags these.
 const SCREEN_QUESTIONS: [RegExp, string][] = [
   [/trust this folder|Do you trust the (files|contents)/i, 'Asks whether to trust this folder (first run here). Answer in the terminal.'],
   [/Select login method|Please log in|Sign in with ChatGPT/i, 'Asks you to sign in. Answer in the terminal.'],
   [/Update available[\s\S]*(Update now|Skip)/i, 'Offers an update before starting. Answer in the terminal (Skip continues).'],
+  // while it is on screen, an Antigravity approval (set by agyApprovalCheck) stays in "needs you"
+  [AGY_APPROVAL, 'Asks to approve a tool call. Answer in the terminal.'],
 ];
 export const SCREEN_SOURCE = 'Read from the terminal';
 export function screenCheck(t: Task, screen: string) {
