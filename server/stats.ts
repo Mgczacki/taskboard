@@ -9,10 +9,10 @@ import { TB_DIR } from './config.ts';
 type Agent = accounts.AgentKind;
 type Event = { at: string; tokens?: number; kind: 'tokens' | 'turn'; id?: string };
 type FileData = { agent: Agent; account: string; session: string; size: number; mtime: number; head: string; tail?: string; events: Event[]; cumulative?: number; hasResponseUsage?: boolean };
-type Cache = { files: Record<string, FileData>; scannedAt?: string };
+type Cache = { schema: number; files: Record<string, FileData>; scannedAt?: string };
 const cachePath = join(TB_DIR, 'daily-stats.json');
-let cache: Cache = { files: {} };
-try { cache = JSON.parse(readFileSync(cachePath, 'utf8')); } catch { /* first scan */ }
+let cache: Cache = { schema: 2, files: {} };
+try { const saved = JSON.parse(readFileSync(cachePath, 'utf8')); if (saved.schema === 2) cache = saved; } catch { /* first scan */ }
 let scanning = false, scanned = 0, total = 0, version = 0;
 const grouped = new Map<string, { version: number; at: number; data: unknown }>();
 
@@ -43,10 +43,15 @@ function files(): { path: string; agent: Agent; account: string; session: string
   return out;
 }
 const positive = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : 0;
+function agyCharacters(o: any): number {
+  if (!['USER_INPUT', 'PLANNER_RESPONSE', 'GENERIC'].includes(o.type)) return 0;
+  const content = (v: unknown) => typeof v === 'string' ? v.length : v && typeof v === 'object' ? JSON.stringify(v).length : 0;
+  return content(o.content) + content(o.thinking) + (Array.isArray(o.tool_calls) ? o.tool_calls.reduce((n: number, call: unknown) => n + content(call), 0) : 0);
+}
 function addLine(data: FileData, line: string) {
   if (data.agent === 'claude' && !line.includes('"usage"') && !/"type"\s*:\s*"user"/.test(line)) return;
   if (data.agent === 'codex' && !line.includes('token_count') && !line.includes('token_usage_record') && !line.includes('user_message')) return;
-  if (data.agent === 'antigravity' && !line.includes('USER_INPUT')) return;
+  if (data.agent === 'antigravity' && !/"type"\s*:\s*"(USER_INPUT|PLANNER_RESPONSE|GENERIC)"/.test(line)) return;
   let o: any; try { o = JSON.parse(line); } catch { return; }
   const at = o.timestamp || o.created_at;
   if (!at || !Number.isFinite(Date.parse(at))) return;
@@ -68,7 +73,11 @@ function addLine(data: FileData, line: string) {
       data.events.push({ at, kind: 'tokens', tokens: n >= old ? n - old : n });
       data.cumulative = n;
     } else if (o.type === 'event_msg' && p.type === 'user_message') data.events.push({ at, kind: 'turn' });
-  } else if (o.type === 'USER_INPUT') data.events.push({ at, kind: 'turn', id: String(o.step_index) });
+  } else {
+    if (o.type === 'USER_INPUT') data.events.push({ at, kind: 'turn', id: String(o.step_index) });
+    const characters = agyCharacters(o);
+    if (characters) data.events.push({ at, kind: 'tokens', tokens: characters / 4 });
+  }
 }
 
 async function readOne(f: ReturnType<typeof files>[number], old?: FileData): Promise<FileData> {
@@ -99,23 +108,36 @@ async function refresh() {
       try { next[f.path] = await readOne(f, cache.files[f.path]); } catch { if (cache.files[f.path]) next[f.path] = cache.files[f.path]; }
       scanned++;
     }
-    cache = { files: next, scannedAt: new Date().toISOString() };
+    cache = { schema: 2, files: next, scannedAt: new Date().toISOString() };
     writeFileSync(cachePath, JSON.stringify(cache));
     version++; grouped.clear();
   } finally { scanning = false; }
 }
 
-export function get(timeZone: string) {
-  new Intl.DateTimeFormat('en-US', { timeZone });
+function maybeRefresh() {
   if (!scanning && (!cache.scannedAt || Date.now() - Date.parse(cache.scannedAt) > 60000))
     void refresh().catch(e => console.error('daily stats scan failed', e));
+}
+
+export function taskEstimate(t: store.Task): number | null {
+  if (t.agent !== 'antigravity') return null;
+  maybeRefresh();
+  const sessions = new Set([t.sessionId, ...(t.pastSessions || [])].filter((s): s is string => !!s));
+  const files = Object.values(cache.files).filter(f => f.agent === 'antigravity' && sessions.has(f.session));
+  if (!files.length) return null;
+  return Math.round(files.reduce((sum, f) => sum + f.events.reduce((n, e) => n + (e.kind === 'tokens' ? e.tokens || 0 : 0), 0), 0));
+}
+
+export function get(timeZone: string) {
+  new Intl.DateTimeFormat('en-US', { timeZone });
+  maybeRefresh();
   const saved = grouped.get(timeZone);
   if (saved?.version === version && Date.now() - saved.at < 15000) return { ...saved.data as object, scanning, scanned, total };
   const fmt = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' });
   const day = (at: string) => { const p = Object.fromEntries(fmt.formatToParts(new Date(at)).map(x => [x.type, x.value])); return `${p.year}-${p.month}-${p.day}`; };
-  type Row = { date: string; tokens: number; turns: number; started: number; imported: number; archived: number; byAccount: Record<string, { tokens: number; turns: number; taskboardTokens: number; otherTokens: number }> };
+  type Row = { date: string; tokens: number; estimatedTokens: number; turns: number; started: number; imported: number; archived: number; byAccount: Record<string, { tokens: number; turns: number; taskboardTokens: number; otherTokens: number }> };
   const days: Record<string, Row> = {};
-  const row = (at: string) => { const date = day(at); return days[date] ||= { date, tokens: 0, turns: 0, started: 0, imported: 0, archived: 0, byAccount: {} }; };
+  const row = (at: string) => { const date = day(at); return days[date] ||= { date, tokens: 0, estimatedTokens: 0, turns: 0, started: 0, imported: 0, archived: 0, byAccount: {} }; };
   const taskSessions = new Map<string, store.Task>();
   for (const t of store.all()) for (const s of [t.sessionId, ...(t.pastSessions || [])]) if (s) taskSessions.set(`${t.agent}:${s}`, t);
   const claudeAccounts = new Map<string, string>();
@@ -137,7 +159,7 @@ export function get(timeZone: string) {
       const account = f.agent === 'claude' && e.kind === 'tokens' && e.id ? claudeAccounts.get(e.id) || f.account : f.account;
       const r = row(e.at), a = r.byAccount[account] ||= { tokens: 0, turns: 0, taskboardTokens: 0, otherTokens: 0 };
       if (e.kind === 'turn') { r.turns++; a.turns++; }
-      else { const n = e.tokens || 0; r.tokens += n; a.tokens += n; if (t && (!t.imported || Date.parse(e.at) >= Date.parse(t.created))) a.taskboardTokens += n; else a.otherTokens += n; }
+      else { const n = e.tokens || 0; r.tokens += n; a.tokens += n; if (f.agent === 'antigravity') r.estimatedTokens += n; if (t && (!t.imported || Date.parse(e.at) >= Date.parse(t.created))) a.taskboardTokens += n; else a.otherTokens += n; }
     }
   }
   for (const t of store.all()) {

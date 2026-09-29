@@ -229,10 +229,15 @@ app.post('/api/machines', async (req, res) => {
 });
 app.delete('/api/machines/:id', (req, res) => { machines.remove(req.params.id); res.json({}); });
 
-const view = (t: store.Task) => ({ ...t, docs: docs.counts(t.id), waitMin: Math.round((Date.now() - Date.parse(t.statusAt)) / 60000), attach: `tmux -L taskboard attach -t ${t.session}` });
+const view = (t: store.Task) => ({ ...t, docs: docs.counts(t.id), waitMin: Math.round((Date.now() - Date.parse(t.statusAt)) / 60000), attach: `tmux -L taskboard attach -t ${t.session}`, ...(t.agent === 'antigravity' ? { tokenEstimate: stats.taskEstimate(t) } : {}) });
 const fail = (res: express.Response, e: unknown) => res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
 
 app.get('/api/tasks', (_req, res) => res.json([...store.all().map(view), ...machines.remoteTasks()]));
+app.get('/api/tasks/:id/token-estimate', (req, res) => {
+  const t = store.get(req.params.id);
+  if (!t) return res.status(404).json({ error: 'Task not found.' });
+  res.json({ tokens: stats.taskEstimate(t) });
+});
 app.post('/api/controller/start', async (_req, res) => { try { res.json(view(await agents.startController())); } catch (e) { fail(res, e); } });
 // Which account the controller runs on: chosen by you on the dashboard only (not by the controller or tb).
 app.post('/api/controller/account', async (req, res) => {

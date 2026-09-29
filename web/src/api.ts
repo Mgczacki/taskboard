@@ -10,7 +10,7 @@ export interface Task {
   cwd: string; folder: string; branch?: string; worktree?: boolean; session: string; sessionId?: string;
   created: string; updated: string; statusAt: string; statusSource?: string;
   goal?: string; now?: string; ask?: string; stopReason?: string; interrupted?: string; desc: string;
-  waitMin: number; attach: string; docs?: { inbox: number; outbox: number }; role?: 'controller'; parent?: string; account?: string; model?: string; machine?: { id: string; name: string }; imported?: string; openElsewhere?: { pid: number; tty: string }; moveWhenDone?: boolean; remoteUrl?: string; restartWhenDone?: boolean; unscrollable?: boolean;
+  waitMin: number; attach: string; docs?: { inbox: number; outbox: number }; role?: 'controller'; parent?: string; account?: string; model?: string; machine?: { id: string; name: string }; imported?: string; openElsewhere?: { pid: number; tty: string }; moveWhenDone?: boolean; remoteUrl?: string; restartWhenDone?: boolean; unscrollable?: boolean; tokenEstimate?: number | null;
 }
 
 export interface ImportCandidate {
@@ -118,6 +118,7 @@ export const api = {
   takeover: (id: string, when: 'now' | 'after-turn' | 'cancel' = 'now') => call<Task>('POST', `/api/tasks/${id}/takeover`, { when }),
   since: (id: string) => call<{ since: string; first: boolean; entries: string[]; files: string[]; commits: string[] }>('GET', `/api/tasks/${id}/since`),
   log: (id: string) => call<string>('GET', `/api/tasks/${id}/log`),
+  tokenEstimate: (id: string) => call<{ tokens: number | null }>('GET', `/api/tasks/${encodeURIComponent(id)}/token-estimate`),
   addMachine: (name: string, url: string, token: string) => call<Machine>('POST', '/api/machines', { name, url, token }),
   removeMachine: (id: string) => call('DELETE', `/api/machines/${id}`),
   foldersOn: (machine: string) => call<{ used: { path: string; uses: number; last: string; pinned?: boolean }[]; found: string[] }>('GET', `/api/folders${machine && machine !== 'local' ? '?machine=' + machine : ''}`),

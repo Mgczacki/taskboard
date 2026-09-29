@@ -33,7 +33,7 @@
 .stats-bar > span { display: block; width: 100%; }
 .stats-bar .agent-claude, .stats-series .agent-claude { background: #bf8df1; }
 .stats-bar .agent-codex, .stats-series .agent-codex { background: #4da8f1; }
-.stats-series .agent-antigravity { background: #aaa; }
+.stats-bar .agent-antigravity, .stats-series .agent-antigravity { background: #aaa; }
 .stats-bar .turns, .stats-series .turns { background: #5acba9; }
 .stats-bar .started, .stats-series .started { background: #ebad59; }
 .stats-bar .archived, .stats-series .archived { background: #9a9ca7; }

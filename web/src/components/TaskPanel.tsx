@@ -7,6 +7,7 @@ import { Terminal } from './Terminal';
 import { DocsTab } from './Docs';
 import { hasFiles, uploadAll } from '../drop';
 import { loadAccounts, usageText, type Account } from './Accounts';
+import { formatTokens } from '../formatTokens';
 
 // The drawer's width, set by dragging its left edge and kept across reloads. null means the default width.
 const WIDTH_KEY = 'tb-drawer-width', MIN_W = 420, EDGE = 120;
@@ -20,6 +21,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, initialTab }: {
   const [copied, setCopied] = useState(false);
   const [confirmTake, setConfirmTake] = useState(false);
   const [accts, setAccts] = useState<Account[]>([]);
+  const [tokenEstimate, setTokenEstimate] = useState<number | null>(t.tokenEstimate ?? null);
   const [moveOpen, setMoveOpen] = useState(false);
   const [targetAccount, setTargetAccount] = useState('');
   const [moving, setMoving] = useState(false);
@@ -29,6 +31,13 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, initialTab }: {
     return () => clearInterval(timer);
   }, [t.id, t.status, t.account]);
   useEffect(() => { setMoveOpen(false); setTargetAccount(''); }, [t.id]);
+  useEffect(() => {
+    setTokenEstimate(t.tokenEstimate ?? null);
+    if (t.agent !== 'antigravity' || t.machine) return;
+    let live = true;
+    const load = () => api.tokenEstimate(t.id).then(r => { if (live) setTokenEstimate(r.tokens); }).catch(() => { if (live) setTokenEstimate(null); });
+    void load(); const timer = setInterval(load, 5000); return () => { live = false; clearInterval(timer); };
+  }, [t.id, t.agent, t.machine?.id, t.tokenEstimate]);
   const acct = accts.find(a => a.id === (t.account || `${t.agent}-default`));
 
   // read what changed since your last visit first, then mark the task as seen
@@ -79,7 +88,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, initialTab }: {
       <div className={`dr-head ${compact ? 'compact' : ''}`}>
         <div className="dr-row1"><span className="num">#{t.num}</span><h2>{t.title}</h2><button className="btn ghost icon" onClick={() => setCompact(c => !c)} title={compact ? 'Show the details (chips, goal, now, since you last looked, buttons)' : 'Fold the details so the terminal gets the room'}>{compact ? '▾' : '▴'}</button><button className="btn ghost icon" onClick={onClose} title="Close">✕</button></div>
         {t.role === 'controller' && <div className="banner">The controller is {t.agent === 'antigravity' ? 'an' : 'a'} {AGENT_NAME[t.agent]} session in <code>~/AgentVault/controller</code> (choose its account and agent on the Accounts page).{t.remoteUrl && <> Remote Control is on: <a href={t.remoteUrl} target="_blank" rel="noreferrer">open it on claude.ai or the Claude app</a>.</>} It manages agents with the <code>tb</code> command: reading and organising run without asking; starting agents, typing into them and archiving wait for your approval here. Try: “what needs me?” or “split X into three parallel tasks”.</div>}
-        <div className="dr-meta"><ByController t={t} /><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} />{acct && <span className="chip" title={acct.dir}>{acct.name}</span>}<span className="chip mono">{shortPath(t.cwd)}</span>{t.branch && <span className="chip mono">{t.worktree ? 'worktree · ' : ''}{t.branch}</span>}</div>
+        <div className="dr-meta"><ByController t={t} /><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} />{acct && <span className="chip" title={acct.dir}>{acct.name}</span>}<span className="chip mono">{shortPath(t.cwd)}</span>{t.branch && <span className="chip mono">{t.worktree ? 'worktree · ' : ''}{t.branch}</span>}{t.agent === 'antigravity' && <span className="chip mono" title="Estimate from visible transcript text. Repeated model context is not included.">{tokenEstimate === null ? 'Estimate unavailable' : `~${formatTokens(tokenEstimate)} tokens`}</span>}</div>
         <div className="dr-meta">
           {groups.filter(g => g.tasks.includes(t.id)).map(g => <span key={g.id} className="chip gchip" style={{ borderColor: g.color + '66', color: g.color }}><span className="sw" style={{ background: g.color }} />{g.name}<span className="gx" title="Remove from group" onClick={() => api.updateGroup(g.id, { remove: t.id })}>×</span></span>)}
           <select className="gsel" value="" onChange={async e => { const v = e.target.value; if (v === '__new') { const n = prompt('Name for the new group'); if (n) await api.createGroup(n, [t.id]); } else if (v) await api.updateGroup(v, { add: t.id }); }}>
