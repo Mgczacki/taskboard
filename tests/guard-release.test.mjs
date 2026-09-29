@@ -38,3 +38,18 @@ test('a dashboard permit lets one task run one release command', () => {
     rmSync(dir, { recursive: true, force: true });
   }
 });
+
+test('a worktree task uses Taskboard for Git writes', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tb-git-guard-'));
+  const run = command => spawnSync(process.execPath, [guard], {
+    input: JSON.stringify({ tool_input: { command } }), encoding: 'utf8',
+    env: { ...process.env, TASKBOARD_DIR: dir, TASK_ID: 'task-41', TASK_WORKTREE: join(dir, 'work') },
+  }).stdout;
+  try {
+    assert.match(run('git commit -m test'), /permissionDecision.*deny/);
+    assert.match(run('git -C other merge master'), /permissionDecision.*deny/);
+    assert.equal(run('tb git commit "test"'), '');
+    assert.equal(run('tb git merge-request'), '');
+    assert.equal(run('git status --short'), '');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

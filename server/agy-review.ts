@@ -1,7 +1,8 @@
 // Review Antigravity tool calls for Taskboard sessions. A missing verdict asks the user.
 import { spawn } from 'node:child_process';
 import { closeSync, openSync, readSync, realpathSync, statSync } from 'node:fs';
-import { GUARD_SCRIPT } from './config.ts';
+import { GUARD_SCRIPT, TB_DIR } from './config.ts';
+import { join } from 'node:path';
 import * as accounts from './accounts.ts';
 import * as machine from './machine.ts';
 import type { Task } from './store.ts';
@@ -54,7 +55,8 @@ function localRead(t: Task, call: any): boolean {
   } catch { return false; }
 }
 
-const tbCommand = (command: string) => /^tb(?:\s|$)/.test(command.trim()) && !/[;&|`$<>(){}\[\]*?!#\\\n\r]/.test(command);
+const tbCommand = (command: string) => (command.trim().startsWith('tb ') || command.trim().startsWith(join(TB_DIR, 'bin', 'tb') + ' ')) && !/[;&|`$<>(){}\[\]*?!#\\\n\r]/.test(command);
+const taskboardCommand = (command: string) => command.trim().replace(new RegExp('^' + join(TB_DIR, 'bin', 'tb').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'tb');
 const withTbAccess = (command: string, verdict: Verdict): Verdict => verdict.decision === 'allow' && tbCommand(command)
   ? { ...verdict, permissionOverrides: ['unsandboxed(tb)'] } : verdict;
 
@@ -64,7 +66,7 @@ export async function review(t: Task, input: any): Promise<Verdict> {
   if (call.name === 'run_command') {
     const command = call.args.CommandLine;
     if (typeof command !== 'string') return ask('Taskboard could not read the proposed command.');
-    const guard = await run(process.execPath, [GUARD_SCRIPT, '--agy'], JSON.stringify(input), { ...process.env, TASK_ID: t.id }, 5000);
+    const guard = await run(process.execPath, [GUARD_SCRIPT, '--agy'], JSON.stringify(input), { ...process.env, TASK_ID: t.id, ...(t.worktree ? { TASK_WORKTREE: t.cwd } : {}) }, 5000);
     if (guard.code !== 0) return ask('Taskboard could not check the command guard.');
     if (guard.output) {
       try { return JSON.parse(guard.output); } catch { return ask('Taskboard could not read the command guard decision.'); }
@@ -73,6 +75,8 @@ export async function review(t: Task, input: any): Promise<Verdict> {
       return { decision: 'allow', reason: 'Read-only repository command.' };
     if (tbCommand(command) && /^tb (info|list|show|log|tail|result|wait)(?:\s|$)/.test(command.trim()))
       return withTbAccess(command, { decision: 'allow', reason: 'Read-only Taskboard command.' });
+    if (tbCommand(command) && (/^tb git (rebase|merge-request)$/.test(taskboardCommand(command)) || /^tb git commit\s+\S/.test(taskboardCommand(command))))
+      return withTbAccess(command, { decision: 'allow', reason: 'Taskboard checks this task branch before it changes Git.' });
   }
   if (localRead(t, call)) return { decision: 'allow', reason: 'Read inside the task folder.' };
   const settings = machine.get().review;

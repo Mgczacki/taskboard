@@ -227,6 +227,7 @@ export async function startController(): Promise<Task> {
 // antigravityEvent), so they are told that instead.
 function taskInstructions(t: Task) {
   const dir = store.taskDir(t.id);
+  const gitCli = join(TB_DIR, 'bin', 'tb');
   const log = t.agent === 'claude' ? [
     `At the end of every turn, append one entry to ${dir}/log.md so the user can catch up quickly. Format exactly:`,
     `## <YYYY-MM-DD HH:MM>`,
@@ -238,6 +239,11 @@ function taskInstructions(t: Task) {
   ];
   return [
     `You are running as task #${t.num} ("${t.title}") in Taskboard, which shows the user many agents at once.`,
+    ...(t.worktree ? [
+      `Your Git branch is ${t.branch} in ${t.cwd}. Use \`${gitCli} git commit "<message>"\` to commit and \`${gitCli} git rebase\` to rebase it.`,
+      `To merge your branch into local master, run \`${gitCli} git merge-request\`. The user approves that merge on the dashboard.`,
+      'Do not run raw git commands that change refs. Do not change another task branch. Do not push unless the user asks for that push.',
+    ] : []),
     ...log,
     `Documents meant for the user or for other agents (handoffs, designs, reviews, diagrams, HTML pages) go in ${dir}/outbox/ as Markdown or HTML files. Files others send you arrive in ${dir}/inbox/.`,
     `To wait for a file another agent or the user will send you, run: tb inbox wait [--timeout seconds]. It prints the path and sender of each new file (exit 0), or exits 2 on timeout.`,
@@ -246,6 +252,21 @@ function taskInstructions(t: Task) {
     ...(t.agent === 'claude' ? [`Writing the log entry is always allowed, even if the user asked you not to use tools. Do it quietly: do not mention the log to the user.`] : []),
     writingRules('the log entries, the documents and artifacts in your outbox, and all other text for the user or for other agents'),
   ].join('\n');
+}
+
+function claudeTaskSettings(t: Task): string {
+  if (!t.worktree || !t.branch) return CLAUDE_SETTINGS_FILE;
+  const file = join(TB_DIR, 'task-settings', `${t.id}.json`);
+  mkdirSync(join(TB_DIR, 'task-settings'), { recursive: true });
+  const settings = JSON.parse(readFileSync(CLAUDE_SETTINGS_FILE, 'utf8'));
+  settings.autoMode = {
+    environment: ['$defaults', `Taskboard task #${t.num} runs in ${t.cwd} on branch ${t.branch}. The separate checkout is ${t.folder}. Other task worktrees and the shared checkout are outside this task's write scope.`],
+    allow: ['$defaults', `Taskboard checks tb git commit and tb git rebase against this task's branch ${t.branch}. A merge into local master requires the Taskboard dashboard card. Other worktrees and branches are outside this task's scope.`],
+  };
+  const gitCli = join(TB_DIR, 'bin', 'tb');
+  settings.permissions.allow.push(`Bash(${gitCli} git commit:*)`, `Bash(${gitCli} git rebase)`, `Bash(${gitCli} git merge-request)`);
+  writeFileSync(file, JSON.stringify(settings, null, 2), { mode: 0o600 });
+  return file;
 }
 
 function codexOriginalNotify(t?: Task): string | undefined {
@@ -262,6 +283,7 @@ function codexOriginalNotify(t?: Task): string | undefined {
 function baseEnv(t: Task): Record<string, string> {
   const env: Record<string, string> = {
     TASK_ID: t.id, TASK_DIR: store.taskDir(t.id), TASK_NUM: String(t.num),
+    ...(t.worktree ? { TASK_WORKTREE: t.cwd } : {}),
     TB_URL: URL_BASE, TB_TOKEN_FILE: TOKEN_FILE, TASKBOARD_VAULT: VAULT,
     // the agy plugin "taskboard" runs its scripts from here (it is the same plugin for every Taskboard server)
     TB_HOOKS_DIR: join(TB_DIR, 'hooks'),
@@ -328,7 +350,7 @@ function codexFlags(): string[] {
 
 function command(t: Task, prompt: string | null, resume: boolean, codexTrust: string[] = []): string[] {
   if (t.agent === 'claude') {
-    const c = ['claude', '--settings', CLAUDE_SETTINGS_FILE, '--add-dir', VAULT, '--append-system-prompt', taskInstructions(t)];
+    const c = ['claude', '--settings', claudeTaskSettings(t), '--add-dir', VAULT, '--append-system-prompt', taskInstructions(t)];
     if (t.model) c.push('--model', t.model);
     c.push('--permission-mode', machine.get().permissions.autoReview ? 'auto' : 'default');
     if (resume && t.sessionId) c.push('--resume', t.sessionId);
