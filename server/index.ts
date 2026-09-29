@@ -28,7 +28,7 @@ import { acquire } from './lock.ts';
 import { ROLE, installRuntimeFiles, refuseReason } from './instance.ts';
 import { hostname } from 'node:os';
 import WebSocket from 'ws';
-import { mountMail } from './mail/routes.ts';
+import { messageLevelsChanged, mountMail } from './mail/routes.ts';
 import { mountReview, pendingFor, pendingForPath } from './review.ts';
 import { attach } from './pty.ts';
 import * as store from './store.ts';
@@ -144,10 +144,17 @@ app.get('/api/stats', (req, res) => {
   try { res.json(stats.get(String(req.query.timeZone || 'UTC'))); } catch { res.status(400).json({ error: 'Invalid time zone.' }); }
 });
 app.get('/api/approvals/:id', (req, res) => { const a = approvals.get(req.params.id); a ? res.json(a) : res.status(404).end(); });
-app.post('/api/approvals/:id/:decision', async (req, res) => {
+app.post('/api/approvals/:id/:decision', async (req, res, next) => {
+  // any other word (return) is a different route; it must never count as Deny
+  if (!['approve', 'deny'].includes(req.params.decision)) return next();
   // only you, from the dashboard, can decide
   if (!req.get('origin')) return res.status(403).json({ error: 'approvals are decided on the dashboard' });
   const a = await approvals.decide(req.params.id, req.params.decision === 'approve'); a ? res.json(a) : res.status(404).end();
+});
+// Send a message card back with a comment: to the controller (incoming) or to the agent that wrote the draft (outgoing).
+app.post('/api/approvals/:id/return', async (req, res) => {
+  if (!req.get('origin')) return res.status(403).json({ error: 'approvals are decided on the dashboard' });
+  try { const a = await approvals.giveBack(req.params.id, String(req.body.comment || '')); a ? res.json(a) : res.status(404).end(); } catch (e) { fail(res, e); }
 });
 // A release always needs a dashboard decision, even when other task actions run without approval.
 app.post('/api/release/request', (req, res) => {
@@ -206,16 +213,21 @@ const info = () => {
 app.get('/api/info', (_req, res) => res.json(info()));
 // Changes to the controller name, model, or Remote Control setting apply at its next restart between turns.
 app.patch('/api/info', async (req, res) => {
-  if (!req.get('origin')) return res.status(403).json({ error: 'Machine settings are changed on the dashboard.' });
+  if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Machine settings are changed on the dashboard.' });
   try {
-    const { name, routingRules, autostart, remoteControl, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, askAgent, askAccount, askModel, reviewAccount, reviewModel } = req.body;
+    const { name, routingRules, autostart, remoteControl, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, askAgent, askAccount, askModel, reviewAccount, reviewModel, messageIncoming, messageOutgoing, confirmLowerControl } = req.body;
+    // A higher message level gives the user less control. The page asks first and then sends confirmLowerControl.
+    const current = machine.get().messages;
+    if (confirmLowerControl !== true && ((messageIncoming ?? 0) > current.incoming || (messageOutgoing ?? 0) > current.outgoing))
+      return res.status(400).json({ error: 'Confirm on the Settings page before you give the controller more control over messages.' });
     if (askAgent && !['claude', 'codex'].includes(askAgent)) return res.status(400).json({ error: 'Antigravity does not have verified read-only Ask controls.' });
     const agent = askAgent || machine.get().ask.agent;
     if (askAccount && accounts.get(askAccount)?.agent !== agent) return res.status(400).json({ error: `Pick a ${agent} account for questions.` });
     if (askModel && (typeof askModel !== 'string' || !(agent === 'claude' ? ['sonnet', 'haiku', 'opus'].includes(askModel) : /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(askModel))))
       return res.status(400).json({ error: 'Pick a valid model for questions.' });
     if (reviewAccount && accounts.get(reviewAccount)?.agent !== 'claude') return res.status(400).json({ error: 'Pick a Claude Code account for auto review.' });
-    machine.update({ name, routingRules, autostart, remoteControl, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, askAgent, askAccount, askModel, reviewAccount, reviewModel });
+    machine.update({ name, routingRules, autostart, remoteControl, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, askAgent, askAccount, askModel, reviewAccount, reviewModel, messageIncoming, messageOutgoing });
+    if (messageIncoming !== undefined || messageOutgoing !== undefined) messageLevelsChanged();
     if (trustWorkspaces === false) trust.restore();
     res.json(info());
   } catch (e) { fail(res, e); }
@@ -292,7 +304,15 @@ app.post('/api/tasks/:id/restart', async (req, res) => {
   try { await restartTask(t); res.json(view(store.get(t.id)!)); } catch (e) { fail(res, e); }
 });
 mountReview(app);
-mountMail(app);
+// A notice from the mail module (a proposed task, a comment from an approval card) goes into the task's Taskboard inbox.
+// An idle agent is told at once; a busy one learns at its next prompt.
+mountMail(app, { notify: async (taskId, name, text) => {
+  docs.upload(taskId, name, Buffer.from(text));
+  const t = store.get(taskId); const pending = docs.pendingInboxNotice(taskId);
+  if (!t || t.status !== 'idle' || !pending) return;
+  await agents.sendTaskText(t, pending.notice);
+  docs.acknowledgeInboxNotice(taskId, pending.names);
+} });
 
 // ---------- accounts ----------
 const acctView = async (a: accounts.Account, fresh = false) => ({ ...a, status: await accounts.status(a, fresh), running: store.all().filter(t => (t.account || accounts.defaultFor(t.agent).id) === a.id && !['archived', 'parked', 'suspended'].includes(t.status)).length });

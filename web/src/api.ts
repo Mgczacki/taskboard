@@ -18,9 +18,10 @@ export interface ImportCandidate {
   updated: string; source?: string; running?: { pid: number; tty: string; exact: boolean };
 }
 
-export interface MachineInfo { role?: 'production' | 'sandbox'; root?: string; machine: string; host: string; url: string; settings: { name: string; routingRules: string; controller: { autostart: boolean; remoteControl: boolean; models: Record<Agent, string> }; permissions: { controllerNeedsApproval: boolean; agentsNeedApproval: boolean; trustWorkspaces: boolean; autoReview: boolean }; ask: { agent: 'claude' | 'codex'; account: string; model: string }; review: { account: string; model: string } }; controller: null | { agent: string; account?: string; status: string; remoteUrl?: string; label: string } }
+export interface MachineInfo { role?: 'production' | 'sandbox'; root?: string; machine: string; host: string; url: string; settings: { name: string; routingRules: string; controller: { autostart: boolean; remoteControl: boolean; models: Record<Agent, string> }; permissions: { controllerNeedsApproval: boolean; agentsNeedApproval: boolean; trustWorkspaces: boolean; autoReview: boolean }; ask: { agent: 'claude' | 'codex'; account: string; model: string }; review: { account: string; model: string }; messages: { incoming: MessageLevel; outgoing: MessageLevel } }; controller: null | { agent: string; account?: string; status: string; remoteUrl?: string; label: string } }
 export interface Machine { id: string; name: string; url: string; local?: boolean; online: boolean; latency?: number; lastSeen?: string; error?: string; tasks?: number }
-export interface Approval { id: string; actor: string; action: string; summary: string; detail: string; created: string; state: 'pending' | 'approved' | 'denied' | 'failed'; result?: string }
+export type MessageLevel = 1 | 2 | 3;
+export interface Approval { id: string; actor: string; action: string; summary: string; detail: string; created: string; state: 'pending' | 'approved' | 'denied' | 'failed' | 'returned'; result?: string; returnable?: boolean }
 // questions about a task, answered by a separate read-only agent (server/ask.ts)
 export interface AskItem { q: string; a?: string; state: 'running' | 'done' | 'failed' | 'stopped'; steps: string[]; costUsd?: number; ms?: number; agent?: 'claude' | 'codex'; model: string; account: string; at: string }
 export interface AskThread { sessionId?: string; items: AskItem[] }
@@ -107,7 +108,7 @@ export const api = {
   restart: (id: string, when: 'now' | 'after-turn' | 'cancel') => call<Task>('POST', `/api/tasks/${encodeURIComponent(id)}/restart`, { when }),
   remove: (id: string) => call('DELETE', `/api/tasks/${encodeURIComponent(id)}`),
   info: () => call<MachineInfo>('GET', '/api/info'),
-  updateInfo: (patch: { name?: string; routingRules?: string; autostart?: boolean; remoteControl?: boolean; controllerModels?: Partial<Record<Agent, string>>; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string }) => call<MachineInfo>('PATCH', '/api/info', patch),
+  updateInfo: (patch: { name?: string; routingRules?: string; autostart?: boolean; remoteControl?: boolean; controllerModels?: Partial<Record<Agent, string>>; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; confirmLowerControl?: boolean }) => call<MachineInfo>('PATCH', '/api/info', patch),
   setControllerAccount: (account: string) => call<Task>('POST', '/api/controller/account', { account }),
   // sent as raw bytes; octet-stream so the server's JSON parser leaves .json files alone
   upload: async (id: string, file: File) => {
@@ -128,6 +129,8 @@ export const api = {
   removeInbox: (id: string, name: string) => call('POST', `/api/tasks/${id}/inbox/remove`, { name }),
   tellInbox: (id: string) => call<{ told: boolean; resumed?: boolean }>('POST', `/api/tasks/${id}/inbox/tell`, {}),
   decide: (id: string, approve: boolean) => call<Approval>('POST', `/api/approvals/${id}/${approve ? 'approve' : 'deny'}`, {}),
+  // a message card goes back to the controller or to the agent that wrote the draft, with the comment
+  giveBack: (id: string, comment: string) => call<Approval>('POST', `/api/approvals/${id}/return`, { comment }),
   moveAccount: (id: string, account: string) => call<Task>('POST', `/api/tasks/${id}/move-account`, { account }),
   startController: () => call<Task>('POST', '/api/controller/start', {}),
   createGroup: (name: string, tasks: string[] = []) => call<Group>('POST', '/api/groups', { name, tasks }),

@@ -17,21 +17,20 @@ test('outbox keeps the recorded proposer after a store reload', () => {
   assert.deepEqual(new MailStore(s.file).get(m.id).proposedBy, { actor: 'controller' });
 });
 
-test('approval requires exact content and review, and controller delegation is explicit', () => {
+test('approval requires exact content and review, and follows the approver from the levels', () => {
   const s = new MailStore(join(root, 'approval.json')); const m = draft(s);
-  assert.throws(() => s.approve(m.id, 'user', m.hash), /review/);
+  assert.throws(() => s.approve(m.id, 'user', m.hash, 'user'), /review/);
   s.update(m.id, x => { x.review = review; });
-  assert.throws(() => s.approve(m.id, 'user', 'stale'), /changed/);
-  assert.throws(() => s.approve(m.id, 'controller', m.hash), /human/);
-  s.change(d => { d.controllerApproval = true; });
-  s.approve(m.id, 'controller', m.hash);
+  assert.throws(() => s.approve(m.id, 'user', 'stale', 'user'), /changed/);
+  assert.throws(() => s.approve(m.id, 'controller', m.hash, 'user'), /human/);
+  s.approve(m.id, 'controller', m.hash, 'controller');
   s.update(m.id, x => { x.review = { ...review, verdict: 'action-request' }; delete x.approval; });
-  assert.throws(() => s.approve(m.id, 'controller', m.hash), /human/);
-  s.approve(m.id, 'user', m.hash);
+  assert.throws(() => s.approve(m.id, 'user', m.hash, 'nobody'), /safety check/);
+  s.approve(m.id, 'user', m.hash, 'user');
   s.update(m.id, x => { x.review = { ...review, verdict: 'quarantine' }; delete x.approval; });
-  assert.throws(() => s.approve(m.id, 'user', m.hash), /Quarantined/);
+  assert.throws(() => s.approve(m.id, 'user', m.hash, 'user'), /Quarantined/);
   s.update(m.id, x => { x.review = review; x.dismissedAt = 'now'; });
-  assert.throws(() => s.approve(m.id, 'user', m.hash), /Restore/);
+  assert.throws(() => s.approve(m.id, 'user', m.hash, 'user'), /Restore/);
 });
 
 test('Slack import uses provider identity, ignores other text, and does not duplicate deliveries', async () => {
@@ -55,7 +54,7 @@ test('outbox never sends before approval and holds uncertain delivery without re
   } } as unknown as SlackClient;
   const service = new MailService(s, slack);
   await assert.rejects(service.send(m.id), /Approve/); assert.equal(sends, 0);
-  s.update(m.id, x => { x.review = review; }); s.approve(m.id, 'user', m.hash);
+  s.update(m.id, x => { x.review = review; }); s.approve(m.id, 'user', m.hash, 'user');
   await assert.rejects(service.send(m.id), /uncertain/); assert.equal(sends, 1);
   await assert.rejects(service.send(m.id), /uncertain/); assert.equal(sends, 1);
   assert.equal(s.get(m.id).sentAt, undefined);
@@ -136,7 +135,7 @@ test('workspace members can receive approved messages without contact requests',
   const m = draft(s);
   await assert.rejects(service.send(m.id), /Approve/);
   assert.equal(posted, 0);
-  s.update(m.id, x => { x.review = review; }); s.approve(m.id, 'user', m.hash);
+  s.update(m.id, x => { x.review = review; }); s.approve(m.id, 'user', m.hash, 'user');
   await service.send(m.id);
   assert.equal(posted, 1);
   assert.equal(s.get(m.id).slackChannel, 'D1');
