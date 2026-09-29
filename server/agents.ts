@@ -161,7 +161,7 @@ Use the \`tb\` command (run \`tb\` alone for help). Tasks are numbers like 12 or
 - Pass the user's instructions to a task with \`tb send <task> "<text>"\`. Quote the user's intent; do not add work they did not ask for.
 - Before starting tasks, run \`tb accounts\` to read current usage and routing rules.
 - Follow the user's explicit agent, account, or model choice. Otherwise use the routing rules and current usage.
-- Avoid accounts that are limited, not signed in, or already running their maximum number of tasks.
+- Avoid accounts that are limited, not signed in, or already running their maximum number of tasks. Only the user changes that maximum, on the Accounts page.
 - Start agents with \`tb new --agent claude|codex|antigravity --account <id> --folder <path> --title <title> "<prompt>"\`. Add \`--model <name>\` only when needed.
   For several pieces of work, write a plan to plans/<name>.json
   ([{"agent","folder","title","prompt","account"?,"model"?,"worktree"?,"group"?}]) and start them with one \`tb new --batch plans/<name>.json\`, each in its own worktree and one group.
@@ -402,7 +402,7 @@ export async function startTask(n: NewTask): Promise<Task> {
   if (n.model !== undefined && (typeof n.model !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(n.model))) throw new Error('Invalid model name.');
   const acct = n.account && n.account !== 'auto' ? accounts.get(n.account) : (await accounts.pick(n.agent, runningOn)).account;
   if (!acct || acct.agent !== n.agent) throw new Error('That account is for the other agent.');
-  if (acct.limited || accounts.fullUntil(acct) || runningOn(acct.id) >= acct.maxParallel) throw new Error(`Account ${acct.id} is at its usage or parallel task limit.`);
+  const why = accounts.unavailable(acct, runningOn(acct.id)); if (why) throw new Error(why);
   if (!(await accounts.status(acct)).signedIn) throw new Error(`Account ${acct.id} is not signed in.`);
   const num = store.nextNum();
   const id = `${slug(n.title)}-${num}`;
@@ -455,8 +455,8 @@ export async function resumeTask(t: Task, force = false): Promise<Task> {
 function checkResumeAccount(t: Task) {
   const account = accounts.get(t.account) || accounts.defaultFor(t.agent);
   const active = runningOn(account.id) - (['working', 'needs-you', 'unread', 'idle', 'review', 'stopped'].includes(t.status) ? 1 : 0);
-  if (account.limited || accounts.fullUntil(account) || active >= account.maxParallel)
-    throw new Error(`Account ${account.id} is at its usage or parallel task limit. Move the task to another account.`);
+  const why = accounts.unavailable(account, active);
+  if (why) throw new Error(`${why} Or move the task to another account.`);
 }
 
 const delivering = new Set<string>();

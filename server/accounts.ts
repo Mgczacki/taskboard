@@ -7,6 +7,7 @@ import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync,
 import { dirname, join, relative } from 'node:path';
 import { promisify } from 'node:util';
 import { AGY_HOME, HOME, TB_DIR, agyBin } from './config.ts';
+import * as machine from './machine.ts';
 
 const exec = promisify(execFile);
 export type AgentKind = 'claude' | 'codex' | 'antigravity';
@@ -48,21 +49,20 @@ export function create(agent: AgentKind, name: string): Account {
   while (accounts.some(a => a.id === id)) id = `${base}-${n++}`;
   const dir = join(HOME, (agent === 'claude' ? '.claude-' : '.codex-') + id.replace(/^(claude|codex)-/, ''));
   mkdirSync(dir, { recursive: true });
-  const a: Account = { id, agent, name, dir, maxParallel: 4, created: new Date().toISOString() };
+  const a: Account = { id, agent, name, dir, maxParallel: machine.get().accounts.defaultMaxParallel, created: new Date().toISOString() };
   accounts.push(a); save(); return a;
 }
 export function remove(id: string) { const a = get(id); if (!a || a.isDefault) throw new Error('The default accounts cannot be removed.'); accounts = accounts.filter(x => x.id !== id); save(); }
 export function update(id: string, patch: Partial<Pick<Account, 'name' | 'maxParallel' | 'routingRules'>>) {
   const a = get(id); if (!a) return;
   if (patch.name !== undefined) a.name = String(patch.name).trim().slice(0, 80);
-  if (patch.maxParallel !== undefined) {
-    const n = Number(patch.maxParallel);
-    if (!Number.isInteger(n) || n < 1 || n > 100) throw new Error('maxParallel must be an integer from 1 to 100.');
-    a.maxParallel = n;
-  }
+  if (patch.maxParallel !== undefined) a.maxParallel = machine.checkMaxParallel(patch.maxParallel);
   if (patch.routingRules !== undefined) a.routingRules = String(patch.routingRules).trim().slice(0, 500);
   save(); return a;
 }
+
+// Set every account's maximum to n. Running tasks keep running; only new starts check the maximum.
+export function setAllMaxParallel(n: number) { const max = machine.checkMaxParallel(n); for (const a of accounts) a.maxParallel = max; save(); }
 
 // Environment that points a CLI at an account's folder (nothing for the default folders).
 export function envFor(a?: Account): Record<string, string> {
@@ -107,6 +107,18 @@ export const fullUntil = (a: Account) => {
   const w = a.usage?.windows.filter(x => x.usedPct >= 100 && (!x.resetsAt || x.resetsAt > Date.now())) || [];
   return w.length ? Math.max(...w.map(x => x.resetsAt || 0)) : 0;
 };
+// "14:05" today, "Wed 30 Sep 14:05" on another day (server local time)
+const clock = (ms: number) => new Date(ms).toDateString() === new Date().toDateString()
+  ? new Date(ms).toTimeString().slice(0, 5)
+  : new Date(ms).toLocaleString('en-GB', { weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }).replace(',', '');
+// Why the account cannot take one more task, or undefined when it can. `running` is its number of running tasks.
+// The same text goes to the dashboard, tb and the controller.
+export function unavailable(a: Account, running: number): string | undefined {
+  const until = fullUntil(a);
+  if (until) return `Account ${a.id} is at 100% usage until ${clock(until)}.`;
+  if (a.limited) return `Account ${a.id} stopped at a usage limit at ${clock(Date.parse(a.limited.at))} (${a.limited.note}). Clear the limit mark on the Accounts page after the limit resets.`;
+  if (running >= a.maxParallel) return `Account ${a.id} is at its limit of ${a.maxParallel} tasks (raise it on the Accounts page).`;
+}
 const peak = (a: Account) => Math.max(0, ...(a.usage?.windows || []).filter(w => !w.resetsAt || w.resetsAt > Date.now()).map(w => w.usedPct));
 
 // Codex writes its current limits into every session file ("token_count" events with rate_limits). Read the newest.
@@ -144,10 +156,8 @@ export async function pick(agent: AgentKind, running: (id: string) => number): P
   const cands = accounts.filter(a => a.agent === agent);
   const skipped: string[] = [], ok: Account[] = [];
   for (const a of cands) {
-    if (a.limited) { skipped.push(`${a.name} is at its limit`); continue; }
-    const until = fullUntil(a);
-    if (until) { skipped.push(`${a.name} is at 100% until ${new Date(until).toTimeString().slice(0, 5)}`); continue; }
-    if (running(a.id) >= a.maxParallel) { skipped.push(`${a.name} already runs ${a.maxParallel} tasks`); continue; }
+    const why = unavailable(a, running(a.id));
+    if (why) { skipped.push(why.replace(/\.$/, '')); continue; }
     if (!(await status(a)).signedIn) { skipped.push(`${a.name} is not signed in`); continue; }
     ok.push(a);
   }

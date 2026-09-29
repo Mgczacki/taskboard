@@ -139,7 +139,7 @@ export function InboxPage({ tasks, open, documentLink }: { tasks: Task[]; open: 
     } catch (e) {
       const error = (e as Error).message;
       setMsg(error);
-      if (/usage or parallel task limit/.test(error)) {
+      if (/^Account \S+ (is at its limit of|is at 100% usage|stopped at a usage limit)/.test(error)) {
         setMoveOpen(true);
         loadAccounts().then(setAccounts).catch(() => setAccounts([]));
       }
