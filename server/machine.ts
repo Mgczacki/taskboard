@@ -12,6 +12,8 @@ export interface MachineSettings {
   controller: { autostart: boolean; remoteControl: boolean };
   // actions through `tb` that act on other tasks (new, send, set aside, archive): run at once, or wait for Approve
   permissions: { controllerNeedsApproval: boolean; agentsNeedApproval: boolean };
+  // questions about a task (server/ask.ts): the Claude Code account and model of the separate agent
+  ask: { account: string; model: string };
 }
 
 const FILE = join(TB_DIR, 'machine.json');
@@ -22,20 +24,22 @@ function defaultName() {
   return hostname().split('.')[0];
 }
 
-let settings: MachineSettings = { name: process.env.TASKBOARD_MACHINE_NAME || defaultName(), controller: { autostart: true, remoteControl: true }, permissions: { controllerNeedsApproval: false, agentsNeedApproval: true } };
+let settings: MachineSettings = { name: process.env.TASKBOARD_MACHINE_NAME || defaultName(), controller: { autostart: true, remoteControl: true }, permissions: { controllerNeedsApproval: false, agentsNeedApproval: true }, ask: { account: 'claude-default', model: 'sonnet' } };
 if (existsSync(FILE)) {
   const saved = JSON.parse(readFileSync(FILE, 'utf8'));
-  settings = { ...settings, ...saved, controller: { ...settings.controller, ...saved.controller }, permissions: { ...settings.permissions, ...saved.permissions } };
+  settings = { ...settings, ...saved, controller: { ...settings.controller, ...saved.controller }, permissions: { ...settings.permissions, ...saved.permissions }, ask: { ...settings.ask, ...saved.ask } };
 } else writeFileSync(FILE, JSON.stringify(settings, null, 2));
 
 export const get = () => settings;
 export const controllerLabel = () => `Taskboard controller · ${settings.name}`;
-export function update(patch: { name?: string; autostart?: boolean; remoteControl?: boolean; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean }) {
+export function update(patch: { name?: string; autostart?: boolean; remoteControl?: boolean; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; askAccount?: string; askModel?: string }) {
   if (patch.controllerNeedsApproval !== undefined) settings.permissions.controllerNeedsApproval = !!patch.controllerNeedsApproval;
   if (patch.agentsNeedApproval !== undefined) settings.permissions.agentsNeedApproval = !!patch.agentsNeedApproval;
   if (patch.name !== undefined && patch.name.trim()) settings.name = patch.name.trim().slice(0, 40);
   if (patch.autostart !== undefined) settings.controller.autostart = !!patch.autostart;
   if (patch.remoteControl !== undefined) settings.controller.remoteControl = !!patch.remoteControl;
+  if (patch.askAccount) settings.ask.account = patch.askAccount;
+  if (patch.askModel && ['sonnet', 'haiku', 'opus'].includes(patch.askModel)) settings.ask.model = patch.askModel;
   writeFileSync(FILE, JSON.stringify(settings, null, 2));
   return settings;
 }
