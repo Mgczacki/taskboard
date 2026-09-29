@@ -9,6 +9,7 @@ import { TB_DIR } from './config.ts';
 
 export interface MachineSettings {
   name: string;
+  routingRules: string;
   controller: { autostart: boolean; remoteControl: boolean };
   // actions through `tb` that act on other tasks (new, send, set aside, archive): run at once, or wait for Approve
   permissions: { controllerNeedsApproval: boolean; agentsNeedApproval: boolean; trustWorkspaces: boolean; autoReview: boolean };
@@ -25,7 +26,11 @@ function defaultName() {
   return hostname().split('.')[0];
 }
 
-let settings: MachineSettings = { name: process.env.TASKBOARD_MACHINE_NAME || defaultName(), controller: { autostart: true, remoteControl: true }, permissions: { controllerNeedsApproval: false, agentsNeedApproval: true, trustWorkspaces: true, autoReview: true }, ask: { agent: 'claude', account: 'claude-default', model: 'sonnet' }, review: { account: 'claude-default', model: 'sonnet' } };
+export const DEFAULT_ROUTING_RULES = `Use Claude Code or Codex for deep planning and hard coding work.
+Use Antigravity for routine work. Do not use it for deep planning.
+When Claude's 5-hour or weekly usage exceeds 70%, use Codex for deep planning.
+Avoid accounts at their limit or running their maximum number of tasks.`;
+let settings: MachineSettings = { name: process.env.TASKBOARD_MACHINE_NAME || defaultName(), routingRules: DEFAULT_ROUTING_RULES, controller: { autostart: true, remoteControl: true }, permissions: { controllerNeedsApproval: false, agentsNeedApproval: true, trustWorkspaces: true, autoReview: true }, ask: { agent: 'claude', account: 'claude-default', model: 'sonnet' }, review: { account: 'claude-default', model: 'sonnet' } };
 if (existsSync(FILE)) {
   const saved = JSON.parse(readFileSync(FILE, 'utf8'));
   settings = { ...settings, ...saved, controller: { ...settings.controller, ...saved.controller }, permissions: { ...settings.permissions, ...saved.permissions }, ask: { ...settings.ask, ...saved.ask }, review: { ...settings.review, ...saved.review } };
@@ -33,7 +38,11 @@ if (existsSync(FILE)) {
 
 export const get = () => settings;
 export const controllerLabel = () => `Taskboard controller · ${settings.name}`;
-export function update(patch: { name?: string; autostart?: boolean; remoteControl?: boolean; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string }) {
+export function update(patch: { name?: string; routingRules?: string; autostart?: boolean; remoteControl?: boolean; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string }) {
+  if (patch.routingRules !== undefined) {
+    if (typeof patch.routingRules !== 'string') throw new Error('routingRules must be text.');
+    settings.routingRules = patch.routingRules.trim().slice(0, 1000);
+  }
   if (patch.controllerNeedsApproval !== undefined) settings.permissions.controllerNeedsApproval = !!patch.controllerNeedsApproval;
   if (patch.agentsNeedApproval !== undefined) settings.permissions.agentsNeedApproval = !!patch.agentsNeedApproval;
   if (patch.trustWorkspaces !== undefined) settings.permissions.trustWorkspaces = !!patch.trustWorkspaces;

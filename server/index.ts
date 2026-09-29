@@ -206,20 +206,18 @@ app.get('/api/info', (_req, res) => res.json(info()));
 // renaming the machine or turning Remote Control on/off: the controller follows at its next restart (between turns)
 app.patch('/api/info', async (req, res) => {
   if (!req.get('origin')) return res.status(403).json({ error: 'Machine settings are changed on the dashboard.' });
-  const before = JSON.stringify(machine.get());
-  const { name, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, askAgent, askAccount, askModel, reviewAccount, reviewModel } = req.body;
-  if (askAgent && !['claude', 'codex'].includes(askAgent)) return res.status(400).json({ error: 'Antigravity does not have verified read-only Ask controls.' });
-  const agent = askAgent || machine.get().ask.agent;
-  if (askAccount && accounts.get(askAccount)?.agent !== agent) return res.status(400).json({ error: `Pick a ${agent} account for questions.` });
-  if (askModel && (typeof askModel !== 'string' || !(agent === 'claude' ? ['sonnet', 'haiku', 'opus'].includes(askModel) : /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(askModel))))
-    return res.status(400).json({ error: 'Pick a valid model for questions.' });
-  if (reviewAccount && accounts.get(reviewAccount)?.agent !== 'claude') return res.status(400).json({ error: 'Pick a Claude Code account for auto review.' });
-  machine.update({ name, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, askAgent, askAccount, askModel, reviewAccount, reviewModel });
-  if (trustWorkspaces === false) trust.restore();
-  // the running controller picks up a new name or Remote Control setting at its next restart, which keepController()
-  // does as soon as it is between turns
-  void before;
-  res.json(info());
+  try {
+    const { name, routingRules, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, askAgent, askAccount, askModel, reviewAccount, reviewModel } = req.body;
+    if (askAgent && !['claude', 'codex'].includes(askAgent)) return res.status(400).json({ error: 'Antigravity does not have verified read-only Ask controls.' });
+    const agent = askAgent || machine.get().ask.agent;
+    if (askAccount && accounts.get(askAccount)?.agent !== agent) return res.status(400).json({ error: `Pick a ${agent} account for questions.` });
+    if (askModel && (typeof askModel !== 'string' || !(agent === 'claude' ? ['sonnet', 'haiku', 'opus'].includes(askModel) : /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(askModel))))
+      return res.status(400).json({ error: 'Pick a valid model for questions.' });
+    if (reviewAccount && accounts.get(reviewAccount)?.agent !== 'claude') return res.status(400).json({ error: 'Pick a Claude Code account for auto review.' });
+    machine.update({ name, routingRules, autostart, remoteControl, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, askAgent, askAccount, askModel, reviewAccount, reviewModel });
+    if (trustWorkspaces === false) trust.restore();
+    res.json(info());
+  } catch (e) { fail(res, e); }
 });
 app.get('/api/machines', (_req, res) => res.json([{ id: 'local', name: machine.get().name, url: URL_BASE, local: true, online: true }, ...machines.all().map(m => ({ id: m.id, name: m.name, url: m.url, online: !!machines.stateOf(m.id)?.online, latency: machines.stateOf(m.id)?.latency, lastSeen: machines.stateOf(m.id)?.lastSeen, error: machines.stateOf(m.id)?.error, tasks: machines.stateOf(m.id)?.tasks.length || 0 }))]));
 app.post('/api/machines', async (req, res) => {
@@ -242,11 +240,11 @@ app.post('/api/controller/account', async (req, res) => {
 });
 app.post('/api/tasks', async (req, res) => {
   try {
-    const { title, desc, agent, folder, worktree, branch, parent, account } = req.body;
+    const { title, desc, agent, folder, worktree, branch, parent, account, model } = req.body;
     if (!title || !folder || !['claude', 'codex', 'antigravity'].includes(agent)) throw new Error('title, folder and agent are required');
-    await guarded(req, res, `start “${title}” (${agents.agentName(agent)})`, `Folder: ${folder}${worktree ? ` · new worktree ${branch || ''}` : ''}\nPrompt: ${desc || title}`, 'new',
+    await guarded(req, res, `start “${title}” (${agents.agentName(agent)})`, `Folder: ${folder}${worktree ? ` · new worktree ${branch || ''}` : ''}\nAccount: ${account && account !== 'auto' ? account : 'automatic'}\nModel: ${model || 'agent default'}\nPrompt: ${desc || title}`, 'new',
       async () => {
-        const t = await agents.startTask({ title, desc: desc || title, agent, folder, worktree, branch, parent, account });
+        const t = await agents.startTask({ title, desc: desc || title, agent, folder, worktree, branch, parent, account, model });
         if (req.body.group) { const g = groups.all().find(x => x.name === req.body.group || x.id === req.body.group) || groups.create(String(req.body.group)); groups.update(g.id, { tasks: [...g.tasks, t.id] }); }
         return view(t);
       }, (t: any) => `Started #${t.num} ${t.title} in ${t.cwd}${req.body.group ? ` (group ${req.body.group})` : ''}`);
@@ -293,7 +291,7 @@ mountReview(app);
 const acctView = async (a: accounts.Account, fresh = false) => ({ ...a, status: await accounts.status(a, fresh), running: store.all().filter(t => (t.account || accounts.defaultFor(t.agent).id) === a.id && !['archived', 'parked', 'suspended'].includes(t.status)).length });
 app.get('/api/accounts', async (req, res) => res.json(await Promise.all(accounts.all().map(a => acctView(a, req.query.fresh === '1')))));
 app.post('/api/accounts', async (req, res) => { try { const { agent, name } = req.body; if (!['claude', 'codex'].includes(agent) || !name) throw new Error('agent and name are required'); res.json(await acctView(accounts.create(agent, String(name)))); } catch (e) { fail(res, e); } });
-app.patch('/api/accounts/:id', (req, res) => res.json(accounts.update(req.params.id, req.body)));
+app.patch('/api/accounts/:id', (req, res) => { try { const a = accounts.update(req.params.id, req.body); a ? res.json(a) : res.status(404).end(); } catch (e) { fail(res, e); } });
 app.delete('/api/accounts/:id', (req, res) => { try { accounts.remove(req.params.id); res.json({}); } catch (e) { fail(res, e); } });
 app.post('/api/accounts/:id/login', async (req, res) => { const a = accounts.get(req.params.id); if (!a) return res.status(404).end(); try { res.json({ session: await agents.utilSession('login', a) }); } catch (e) { fail(res, e); } });
 app.post('/api/accounts/:id/clear-limit', (req, res) => { accounts.clearLimited(req.params.id); res.json({}); });

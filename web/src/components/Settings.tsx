@@ -14,8 +14,9 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
   const [reloadOn, setReloadOn] = useState(autoReload());
   const [askEnd, setAskEnd] = useState(confirmEnd());
   const [accts, setAccts] = useState<Account[]>([]);
-  useEffect(() => { api.info().then(setInfo).catch(e => setErr(String(e.message || e))); loadAccounts().then(setAccts).catch(() => {}); }, []);
-  const save = async (p: { controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string }) => {
+  const [routingRules, setRoutingRules] = useState('');
+  useEffect(() => { api.info().then(i => { setInfo(i); setRoutingRules(i.settings.routingRules || ''); }).catch(e => setErr(String(e.message || e))); loadAccounts().then(setAccts).catch(() => {}); }, []);
+  const save = async (p: { routingRules?: string; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string }) => {
     setBusy(true); try { setInfo(await api.updateInfo(p)); } catch (e) { setErr(String((e as Error).message || e)); } setBusy(false);
   };
   const ctl = tasks.find(t => t.role === 'controller');
@@ -31,6 +32,13 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
         <label className="opt" title="Agents other than the controller that use tb to start or type into tasks"><input type="checkbox" disabled={busy} checked={!p.agentsNeedApproval} onChange={e => save({ agentsNeedApproval: !e.target.checked })} /> Other agents may start, type into, set aside and archive tasks without asking</label>
         <div className="sub">A change reaches the controller when it next restarts, which Taskboard does by itself as soon as the controller is between turns (its conversation continues). Releasing or rolling back Taskboard and stopping its server stay blocked for every agent.</div>
       </div>}
+      <h3 className="set-h">Task routing</h3>
+      <div className="ctl-box">
+        <label className="opt" htmlFor="routing-rules">Rules for choosing an agent and account</label>
+        <textarea id="routing-rules" maxLength={1000} value={routingRules} onChange={e => setRoutingRules(e.target.value)} rows={5} />
+        <div className="sub">The controller reads these rules when it starts. A user request can choose an agent or account.</div>
+        <button className="btn" disabled={busy || routingRules === info?.settings.routingRules} onClick={() => save({ routingRules })}>Save routing rules</button>
+      </div>
       <h3 className="set-h">Agent sessions</h3>
       {p && <div className="ctl-box">
         <label className="opt"><input type="checkbox" disabled={busy} checked={p.trustWorkspaces} onChange={e => save({ trustWorkspaces: e.target.checked })} /> Trust each task folder before an agent starts</label>
