@@ -18,7 +18,13 @@ export interface Message {
 }
 export interface Contact { user: string; name: string; channel: string; oldest: string; status?: 'requested' | 'active' | 'needs-request'; requestId?: string }
 export interface ContactRequest { user: string; name: string; channel: string; requestId: string; at: string }
-export interface MailData { version: 1; messages: Message[]; contacts: Contact[]; requests?: ContactRequest[]; requestCursors?: Record<string, string>; staged?: MailFile[]; owner?: string; controllerApproval?: boolean }
+export interface MailScan { oldest: string; latest: string; cursor: string; lastPageAt: number }
+export interface MailData {
+  version: 1; messages: Message[]; contacts: Contact[];
+  requests?: ContactRequest[]; requestCursors?: Record<string, string>;
+  messageCursors?: Record<string, string>; messageScans?: Record<string, MailScan>; recentScans?: Record<string, MailScan>;
+  staged?: MailFile[]; owner?: string; controllerApproval?: boolean;
+}
 export function hashMessage(subject: string, body: string, to: string, files: MailFile[] = []) {
   return createHash('sha256').update(JSON.stringify([subject, body, to, files.map(f => [f.name, f.size, f.hash])])).digest('hex');
 }

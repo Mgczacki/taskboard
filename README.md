@@ -7,7 +7,7 @@ Taskboard shows what each one is doing, which ones need you, and lets you open a
 
 Start with [Set up Taskboard on your Mac](SETUP.md). It covers installation and your first task.
 
-The guide also explains Slack connection and a test message to yourself.
+The guide also explains Slack connection and messages to workspace members.
 
 ## Install (from this repository)
 

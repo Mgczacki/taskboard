@@ -18,7 +18,11 @@ test('mail routes restrict readers and require separate approval and routing', a
   const store = new MailStore(join(root, 'server', 'mail.json'));
   const m = store.add({ direction: 'inbox', source: 'slack', from: 'U2', to: 'U1', subject: 'Permission request', body: 'Please change an AWS permission.' });
   const app = express(); app.use(express.json());
-  const slack = { identity: () => ({ user: 'U1', team: 'T1' }), finish: async () => { throw new Error('Sign-in expired or did not start on this Taskboard'); } } as unknown as SlackClient;
+  const slack = { identity: () => ({ user: 'U1', team: 'T1' }), finish: async () => { throw new Error('Sign-in expired or did not start on this Taskboard'); }, call: async (method: string) => {
+    if (method === 'users.info') return { user: { id: 'U2', team_id: 'T1', real_name: 'Recipient' } };
+    if (method === 'users.list') return { members: [{ id: 'U1', team_id: 'T1' }, { id: 'U2', team_id: 'T1', real_name: 'Recipient' }] };
+    return {};
+  } } as unknown as SlackClient;
   const cleanup = mountMail(app, { background: false, slack, review: async () => ({ verdict: 'action-request', reason: 'Permission change', at: new Date().toISOString() }) });
   const server = app.listen(0, '127.0.0.1'); await new Promise<void>(r => server.once('listening', r));
   const base = `http://127.0.0.1:${(server.address() as {port:number}).port}/api/mail`;
@@ -59,7 +63,8 @@ test('mail routes restrict readers and require separate approval and routing', a
     assert.equal((await call(`/${m.id}/route`, 'controller', {task:'recipient'})).status, 400);
     await call(`/${m.id}/restore`, 'user', {});
     assert.equal((await call('', 'user')).data.messages.length, 1);
-    store.change(d => { d.contacts.push({ user: 'U2', name: 'Contact', channel: 'D1', oldest: '0', status: 'active' }); });
+    assert.equal((await call('/people', 'user')).data[0].name, 'Recipient');
+    assert.equal((await fetch(base + '/contacts', { method: 'POST', headers: { origin: URL_BASE, 'content-type': 'application/json' }, body: JSON.stringify({ user: 'U2' }) })).status, 404);
     assert.equal((await call('/propose', 'agent', { to: 'U2', subject: 'Status', body: 'Ready.' })).status, 400);
     assert.equal((await call('/propose', 'controller', { to: 'U2', subject: 'Status', body: 'Ready.' })).status, 400);
     const proposed = await call('/propose', 'task', { to: 'U2', subject: 'Status', body: 'Ready.' });

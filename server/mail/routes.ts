@@ -128,10 +128,7 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
   app.post('/api/mail/policy', endpoint(req => { user(req); store.change(d => { d.controllerApproval = req.body.enabled === true; }); return {}; }));
   app.post('/api/mail/slack/connect', endpoint(req => { user(req); signInError = ''; return { url: slack.begin(PORT) }; }));
   app.post('/api/mail/slack/disconnect', endpoint(req => { user(req); slack.disconnect(); return {}; }));
-  app.get('/api/mail/people', endpoint(async req => { user(req); return service.searchPeople(String(req.query.q || '')); }));
-  app.post('/api/mail/contacts', endpoint(async req => { user(req); await service.requestContact(String(req.body.user || '')); return {}; }));
-  app.post('/api/mail/contacts/respond', endpoint(async req => { user(req); await service.answerContact(String(req.body.user || ''), req.body.accept === true); return {}; }));
-  app.post('/api/mail/contacts/remove', endpoint(async req => { user(req); await service.removeContact(String(req.body.user || '')); return {}; }));
+  app.get('/api/mail/people', endpoint(async req => { user(req); return service.listPeople(); }));
   app.post('/api/mail/files/stage', endpoint(req => {
     user(req);
     if ((store.read().staged || []).length >= 10) throw new Error('Remove a staged file before adding another');
@@ -169,9 +166,9 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
     const m = store.add({ direction: 'inbox', source: 'agent', from: actor, to: 'user', subject: req.body.subject, body: req.body.body });
     void checkNext(); return { id: m.id };
   }));
-  app.post('/api/mail/draft', endpoint(req => {
+  app.post('/api/mail/draft', endpoint(async req => {
     owner(req); const identity = slack.identity(); if (!identity) throw new Error('Connect Slack first');
-    if (!store.read().contacts.some(c => c.user === req.body.to && c.status === 'active')) throw new Error('Wait for the recipient to accept your contact request');
+    await service.validateRecipient(String(req.body.to || ''));
     const ids = Array.isArray(req.body.files) ? req.body.files : [];
     if (ids.length > 5 || ids.some((id: unknown) => typeof id !== 'string')) throw new Error('Choose up to five files');
     const staged = store.read().staged || [];
@@ -187,12 +184,12 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
     store.change(d => { d.staged = (d.staged || []).filter(f => !ids.includes(f.id)); });
     void checkNext(); return { id: m.id };
   }));
-  app.post('/api/mail/propose', endpoint(req => {
+  app.post('/api/mail/propose', endpoint(async req => {
     if (human(req) || controller(req)) throw new Error('Submit this draft from a local task');
     const task = tasks.get(req.get('x-tb-actor') || '');
     if (!task || task.id === 'controller') throw new Error('Submit this draft from a local task');
     const identity = slack.identity(); if (!identity) throw new Error('Connect Slack first');
-    if (!store.read().contacts.some(c => c.user === req.body.to && c.status === 'active')) throw new Error('Wait for the recipient to accept your contact request');
+    await service.validateRecipient(String(req.body.to || ''));
     const body = String(req.body.body || '');
     if (Buffer.byteLength(body, 'utf8') > 30000) throw new Error('Task drafts must fit in a Slack message');
     const m = store.add({ direction: 'outbox', source: 'agent', from: identity.user, to: req.body.to, subject: req.body.subject, body,
