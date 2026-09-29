@@ -105,10 +105,10 @@ Agents that work on Taskboard itself run inside the real one, so the setup keeps
 | Review | Documents agents asked you to review (`tb review <file>`): comment, send feedback, compare versions, accept. |
 | Accounts | Settings folders per account, sign-in, limit marks, and limit resets (only you can use them). |
 
-Keys (press `?` in the app for the full list, with key names written out): `⌘K` (Command-K) controller, also from inside
-a terminal · `N` new task · `C` controller · `T` triage (everything waiting on you, longest first) · `⌘S` hide the sidebar.
-Single letters work when the cursor is not in a terminal or text field. On the canvas: `⌃⌥←→` focus, `⌃⌥↩` maximize, `⌃⌥L` layout, `⌃⌥F` focus mode (Esc or the button
-bottom-right exits), `⌃⌥G` next group tab, `⌃⌥⇧G` new group, `⌃⌥N` next waiting, `⌃⌥.` / `⌃⌥,` text size, `⌃⌥W` remove window, `⌃⌥PageUp` / `⌃⌥PageDown` (or `⌃⌥[` / `⌃⌥]`) previous / next page.
+Keys (press `?` in the app for the full list; change them on the Settings page): `⌘K` (Command-K) controller, also from inside
+a terminal · `N` new task · `C` controller · `T` or `⌃⌥Q` triage (everything waiting on you, longest first) · `⌃⌥U` canvas view Needs you + unread · `⌘S` hide the sidebar.
+Keys with ⌘ or ⌃ work everywhere, also inside a terminal. Single letters work when the cursor is not in a terminal or text field. On the canvas: `⌃⌥←→` focus, `⌃⌥↩` maximize, `⌃⌥L` layout, `⌃⌥F` focus mode (Esc or the button
+bottom-right exits), `⌃⌥G` / `⌃⌥⇥` / `⌘⇧]` next view, `⌃⌥⇧⇥` / `⌘⇧[` previous view, `⌃⌥⇧G` new group, `⌃⌥N` next waiting, `⌃⌥.` / `⌃⌥,` text size, `⌃⌥W` remove window, `⌃⌥PageUp` / `⌃⌥PageDown` (or `⌃⌥[` / `⌃⌥]`) previous / next page.
 A sideways swipe (or Shift + wheel) over a terminal scrolls the canvas, or turns one page when **Per page** is on.
 **Per page** sets the most tiles on a page. Tiles grow to fill a page with fewer tasks in Columns, Grid, and Rows.
 ⌘-click window headers or cards to select several. Drag a window header onto a group tab to add it.
