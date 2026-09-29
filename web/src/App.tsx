@@ -233,6 +233,8 @@ const KEYS: [string, string, string][] = [
   ['Canvas', '⌃⌥F', 'Focus mode (Control-Option-F); Esc or the button bottom-right exits'],
   ['Canvas', '⌃⌥G', 'Next group tab (Control-Option-G)'],
   ['Canvas', '⌃⌥N', 'Next task waiting on you (Control-Option-N)'],
+  ['Canvas', '⌃⌥PageUp / ⌃⌥PageDown', 'Previous / next page when Per page is on; ⌃⌥[ and ⌃⌥] do the same (Control-Option-Page Up / Page Down)'],
+  ['Canvas', 'Sideways swipe', 'Scrolls the canvas, or turns one page when Per page is on; Shift + mouse wheel does the same'],
   ['Canvas', '⌃⌥. / ⌃⌥,', 'Larger / smaller text (Control-Option-Period / Comma)'],
   ['Canvas', '⌃⌥W', 'Remove the focused window (Control-Option-W)'],
   ['Board and canvas', '⌘-click', 'Select several tasks (Command-click), then act on them in the bar at the bottom'],
