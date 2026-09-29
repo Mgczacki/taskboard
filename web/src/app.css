@@ -379,3 +379,15 @@ table.keyset .keycell { text-align: right; white-space: normal; }
 .keywait { margin-left: 6px; color: var(--accent, #58a6ff); font-size: 12px; }
 .keynote { font-size: 11.5px; color: var(--dim); margin-top: 2px; }
 .keynote.warn { color: var(--st-needs); }
+.gmenu .mi.off { opacity: .45; cursor: default; }
+.gmenu .mi.off:hover { background: none; }
+.gmenu.garch { width: 460px; max-width: calc(100vw - 24px); box-sizing: border-box; display: flex; flex-direction: column; gap: 8px; }
+.gmenu.garch h4 { margin: 0; }
+.gmenu.garch .row { margin-top: 2px; }
+.garch-sum { color: var(--dim); }
+.garch-warn { max-width: none; }
+.garch-list { max-height: 240px; overflow-y: auto; border: 1px solid var(--line); border-radius: 6px; padding: 4px; }
+.garch-row { display: flex; gap: 6px; align-items: center; padding: 3px 4px; font-size: 12px; }
+.garch-row .n { color: var(--dim); }
+.garch-row .ti { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.garch-row .st-label, .garch-also, .garch-ok { font-size: 11px; color: var(--dim); white-space: nowrap; }
