@@ -8,13 +8,14 @@ import { DocsTab } from './Docs';
 import { hasFiles, uploadAll } from '../drop';
 import { loadAccounts, usageText, type Account } from './Accounts';
 import { formatTokens } from '../formatTokens';
+import type { DocumentLink } from '../documentLinks';
 
 // The drawer's width, set by dragging its left edge and kept across reloads. null means the default width.
 const WIDTH_KEY = 'tb-drawer-width', MIN_W = 420, EDGE = 120;
 const maxW = () => Math.max(MIN_W, innerWidth - EDGE);
 const savedWidth = () => { try { const w = Number(localStorage.getItem(WIDTH_KEY)); return w > 0 ? w : null; } catch { return null; } };
 
-export function TaskPanel({ t, tasks, groups, onClose, onCanvas, initialTab }: { t: Task; tasks: Task[]; groups: Group[]; onClose: () => void; onCanvas: (id: string) => void; initialTab?: 'terminal' | 'log' | 'docs' }) {
+export function TaskPanel({ t, tasks, groups, onClose, onCanvas, initialTab, documentLink }: { t: Task; tasks: Task[]; groups: Group[]; onClose: () => void; onCanvas: (id: string) => void; initialTab?: 'terminal' | 'log' | 'docs'; documentLink?: DocumentLink | null }) {
   const [tab, setTab] = useState<'terminal' | 'log' | 'docs'>(initialTab || 'terminal');
   const [log, setLog] = useState('');
   const [err, setErr] = useState('');
@@ -160,7 +161,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, initialTab }: {
         </div>
       </div>
       <div className={`dr-body ${tab !== 'terminal' ? 'pad' : ''}`}>
-        {tab === 'docs' && <DocsTab t={t} tasks={tasks} />}
+        {tab === 'docs' && <DocsTab t={t} tasks={tasks} documentLink={documentLink} />}
         {tab === 'terminal' && t.openElsewhere && <div className="empty" style={{ padding: 20 }}>The terminal for this session belongs to {t.openElsewhere?.tty}. Last message from the agent:<pre className="logtext" style={{ marginTop: 10 }}>{t.now || '—'}</pre></div>}
         {tab === 'terminal' && !t.openElsewhere && (t.status === 'suspended'
           ? <div className="empty" style={{ padding: 20 }}>Resuming with {t.agent === 'claude' ? 'claude --resume' : t.agent === 'codex' ? 'codex resume' : 'agy --conversation'} {t.sessionId}…</div>

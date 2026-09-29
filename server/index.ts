@@ -29,7 +29,7 @@ import { ROLE, installRuntimeFiles, refuseReason } from './instance.ts';
 import { hostname } from 'node:os';
 import WebSocket from 'ws';
 import { mountMail } from './mail/routes.ts';
-import { mountReview, pendingFor } from './review.ts';
+import { mountReview, pendingFor, pendingForPath } from './review.ts';
 import { attach } from './pty.ts';
 import * as store from './store.ts';
 import * as stats from './stats.ts';
@@ -379,6 +379,11 @@ app.post('/api/tasks/:id/inbox/upload', express.raw({ type: () => true, limit: '
   try { const path = docs.upload(t.id, String(req.query.name || 'file'), req.body as Buffer); store.touch(t.id); res.json({ path }); } catch (e) { fail(res, e); }
 });
 app.get('/api/tasks/:id/docs', (req, res) => { if (!store.get(req.params.id)) return res.status(404).end(); res.json(docs.docsFor(req.params.id)); });
+app.get('/api/tasks/:id/document-link', (req, res) => {
+  const doc = docs.resolveDocumentLink(String(req.params.id), String(req.query.path || ''));
+  if (!doc) return res.status(404).json({ error: 'Document not found' });
+  res.json({ ...doc, reviewId: pendingForPath(doc.path)?.id });
+});
 app.get('/api/docs/edges', (_req, res) => res.json(docs.edges()));
 app.get('/api/docs/all', (_req, res) => res.json(Object.fromEntries(store.all().map(t => [t.id, docs.docsFor(t.id).outbox.map(d => ({ name: d.name, path: d.path, kind: d.kind, mtime: d.mtime }))]))));
 app.post('/api/docs/send', async (req, res) => {

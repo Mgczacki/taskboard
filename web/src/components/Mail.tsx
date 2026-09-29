@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Task } from '../api';
 import { InboxPage as Documents } from './Review';
+import type { DocumentLink } from '../documentLinks';
 import '../mail.css';
 interface Message {
   id: string; direction: 'inbox' | 'outbox'; from: string; to: string; subject: string; body: string; hash: string;
@@ -120,8 +121,9 @@ function MemberPicker({ people, value, onChange, disabled }: { people: Person[];
     </div>}
   </div>;
 }
-export function InboxPage(props: { tasks: Task[]; open: (id: string, tab?: 'terminal' | 'log' | 'docs') => void }) {
-  const [tab, setTab] = useState<'inbox' | 'sent' | 'documents'>('inbox');
+export function InboxPage(props: { tasks: Task[]; open: (id: string, tab?: 'terminal' | 'log' | 'docs') => void; documentLink?: DocumentLink | null }) {
+  const [tab, setTab] = useState<'inbox' | 'sent' | 'documents'>(props.documentLink ? 'documents' : 'inbox');
+  useEffect(() => { if (props.documentLink) setTab('documents'); }, [props.documentLink]);
   const [dismissed, setDismissed] = useState(false);
   const [data, setData] = useState<Mailbox | null>(null);
   const [error, setError] = useState('');

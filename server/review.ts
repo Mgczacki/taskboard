@@ -32,6 +32,10 @@ export function pendingFor(taskId: string): ReviewItem | undefined {
   return Object.values(load()).filter(x => x.task === taskId && x.state === 'pending').sort((a, b) => b.requestedAt.localeCompare(a.requestedAt))[0];
 }
 
+export function pendingForPath(path: string): ReviewItem | undefined {
+  return Object.values(load()).find(x => x.path === path && x.state === 'pending' && !x.dismissedAt);
+}
+
 export function mountReview(app: Express) {
   app.post('/api/review/request', (req, res) => {
     const path = docs.safePath(String(req.body.path || ''));

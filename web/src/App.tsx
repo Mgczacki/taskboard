@@ -15,6 +15,7 @@ import { InboxPage } from './components/Mail';
 import { AccountsPage } from './components/Accounts';
 import { SettingsPage } from './components/Settings';
 import { StatsPage } from './components/Stats';
+import type { DocumentLink } from './documentLinks';
 
 type Page = 'list' | 'board' | 'canvas' | 'graph' | 'inbox' | 'accounts' | 'stats' | 'settings';
 // #list · #board · #canvas · #canvas:<view>  (view = g:<group> | needs | live | t:<id,id>)
@@ -69,7 +70,20 @@ export function App() {
   const initParams = new URLSearchParams(location.search);
   const [openId, setOpenIdRaw] = useState<string | null>(initParams.get('open'));
   const [openTab, setOpenTab] = useState<'terminal' | 'log' | 'docs' | undefined>((initParams.get('tab') as 'terminal' | 'log' | 'docs') || undefined);
+  const [documentLink, setDocumentLink] = useState<DocumentLink | null>(null);
   const setOpenId = (id: string | null, tab?: 'terminal' | 'log' | 'docs') => { setOpenTab(tab); setOpenIdRaw(id); };
+  useEffect(() => {
+    const onDocument = (event: Event) => {
+      const link = (event as CustomEvent<DocumentLink>).detail;
+      setDocumentLink(link);
+      if (link.reviewId) { setOpenId(null); go('inbox'); }
+      else setOpenId(link.task, 'docs');
+    };
+    const onTask = (event: Event) => setOpenId((event as CustomEvent<string>).detail);
+    addEventListener('taskboard:document-link', onDocument);
+    addEventListener('taskboard:task-link', onTask);
+    return () => { removeEventListener('taskboard:document-link', onDocument); removeEventListener('taskboard:task-link', onTask); };
+  });
   useEffect(() => {
     const u = new URL(location.href);
     if (openId) u.searchParams.set('open', openId); else u.searchParams.delete('open');
@@ -213,13 +227,13 @@ export function App() {
           {page === 'accounts' && <AccountsPage tasks={allTasks} />}
           {page === 'stats' && <StatsPage />}
           {page === 'settings' && <SettingsPage tasks={allTasks} />}
-          {page === 'inbox' && <InboxPage tasks={tasks} open={(id, tab) => setOpenId(id, tab)} />}
+          {page === 'inbox' && <InboxPage tasks={tasks} open={(id, tab) => setOpenId(id, tab)} documentLink={documentLink?.reviewId ? documentLink : null} />}
           {page === 'graph' && <GraphView tasks={tasks} groups={groups} open={(id, tab) => setOpenId(id, tab)} />}
           {page === 'canvas' && <Canvas tasks={tasks} groups={groups} view={view} setView={setView} openPanel={id => setOpenId(id)} panelTaskId={openId} selected={selected} toggleSel={toggleSel} clearSel={() => setSelected(new Set())} solo={SOLO} focusMode={focusMode} setFocusMode={setFocusMode} toast={toast} />}
         </div>
       </div>
       {selected.size > 0 && <SelectionBar ids={[...selected]} tasks={tasks} groups={groups} clear={() => setSelected(new Set())} newGroup={ids => setGroupPrompt(ids)} toast={toast} />}
-      {open && <TaskPanel key={open.id + (openTab || '')} t={open} tasks={tasks} initialTab={openTab} groups={groups} onClose={() => setOpenId(null)} onCanvas={showOnCanvas} />}
+      {open && <TaskPanel key={open.id + (openTab || '')} t={open} tasks={tasks} initialTab={openTab} documentLink={documentLink?.task === open.id && !documentLink.reviewId ? documentLink : null} groups={groups} onClose={() => setOpenId(null)} onCanvas={showOnCanvas} />}
       {newOpen && <NewTask onClose={() => setNewOpen(false)} onStarted={id => { setNewOpen(false); setOpenId(id); }} />}
       {importOpen && <Import onClose={() => setImportOpen(false)} onDone={() => { setImportOpen(false); go('list'); }} />}
       {groupPrompt && <GroupPrompt ids={groupPrompt} close={() => setGroupPrompt(null)} done={(g, openWin) => { setGroupPrompt(null); setSelected(new Set()); toast(`Group “${g.name}” created`); if (openWin) openInWindow('g:' + g.id); else { setView('g:' + g.id); go('canvas'); } }} />}

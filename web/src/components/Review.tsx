@@ -11,6 +11,7 @@ import { hit, useKeymap } from '../keys';
 import { api } from '../api';
 import { loadAccounts, type Account } from './Accounts';
 import '../review.css';
+import type { DocumentLink } from '../documentLinks';
 
 interface Comment { id: string; v: number; block: number; quote: string; text: string; at: string; sent?: boolean }
 interface Item {
@@ -75,7 +76,7 @@ function Mermaid({ code, onClick, hasComments }: { code: string; onClick: () => 
   return <div className={`rv-diagram ${hasComments ? 'has' : ''}`} ref={ref} onClick={onClick} title="Click to comment on this diagram" />;
 }
 
-export function InboxPage({ tasks, open }: { tasks: Task[]; open: (id: string, tab?: 'terminal' | 'log' | 'docs') => void }) {
+export function InboxPage({ tasks, open, documentLink }: { tasks: Task[]; open: (id: string, tab?: 'terminal' | 'log' | 'docs') => void; documentLink?: DocumentLink | null }) {
   const [dismissed, setDismissed] = useState(false);
   const [items, setItems] = useState<Item[] | null>(null);
   useKeymap();
@@ -93,8 +94,9 @@ export function InboxPage({ tasks, open }: { tasks: Task[]; open: (id: string, t
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [moveTo, setMoveTo] = useState('');
   const docRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (documentLink?.reviewId) { setDismissed(false); setSel(documentLink.reviewId); } }, [documentLink]);
 
-  const load = useCallback(() => fetch(`/api/review${dismissed ? '?dismissed=1' : ''}`).then(r => r.json()).then((x: Item[]) => { setItems(x); setSel(s => s && x.some(i => i.id === s) ? s : x[0]?.id || null); }).catch(() => setItems([])), [dismissed]);
+  const load = useCallback(() => fetch(`/api/review${dismissed ? '?dismissed=1' : ''}`).then(r => r.json()).then((x: Item[]) => { setItems(x); setSel(s => s && x.some(i => i.id === s) ? s : documentLink?.reviewId && x.some(i => i.id === documentLink.reviewId) ? documentLink.reviewId : x[0]?.id || null); }).catch(() => setItems([])), [dismissed, documentLink?.reviewId]);
   useEffect(() => { load(); const iv = setInterval(load, 5000); return () => clearInterval(iv); }, [load]);
   useEffect(() => { load(); }, [tasks, load]);
 
@@ -107,6 +109,13 @@ export function InboxPage({ tasks, open }: { tasks: Task[]; open: (id: string, t
   }, [item?.id, item?.version]);
 
   const blocks = useMemo(() => (text && item && !isHtml(item.name) ? toBlocks(text) : []), [text, item?.name]);
+  useEffect(() => {
+    if (!item || item.id !== documentLink?.reviewId || !text || !docRef.current) return;
+    const target = documentLink.heading
+      ? [...docRef.current.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6')].find(h => h.textContent?.trim().toLowerCase().replace(/\s+/g, '-') === documentLink.heading?.toLowerCase())
+      : documentLink.line ? [...docRef.current.querySelectorAll<HTMLElement>('.rv-block')].find((b, index) => blocks.slice(0, index + 1).reduce((n, x) => n + x.raw.split('\n').length - 1, 0) >= documentLink.line!) : null;
+    requestAnimationFrame(() => target?.scrollIntoView({ block: 'start' }));
+  }, [documentLink, item?.id, text, blocks]);
   const shown = useMemo(() => compare && prevText ? diff(toBlocks(prevText), blocks) : blocks.map(b => ({ block: b, kind: 'same' as const })), [compare, prevText, blocks]);
   const current = item ? item.comments.filter(c => c.v === item.version) : [];
   const unsent = current.filter(c => !c.sent);
