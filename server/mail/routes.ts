@@ -4,13 +4,14 @@ import { join } from 'node:path';
 import { PORT, TB_DIR, TOKEN, URL_BASE } from '../config.ts';
 import * as tasks from '../store.ts';
 import * as accounts from '../accounts.ts';
-import { MailStore, savePrivate, type Message, type Verdict } from './store.ts';
+import { MailStore, savePrivate, validText, type Message, type Verdict } from './store.ts';
 import { SlackClient, SlackError } from './slack.ts';
 import { MailService } from './service.ts';
+import * as machine from '../machine.ts';
+import { needsBodyFile } from './presentation.ts';
 import { isControllerToken } from './auth.ts';
 import { reviewMessage } from './review.ts';
 import { extractText, publicFile, routeFile, stageBytes, stagePath, verifyFile } from './files.ts';
-import * as machine from '../machine.ts';
 import { approvalValid, approverFor, combinedVerdict, isTrusted, worse, type Levels } from './policy.ts';
 import { mailCards } from './cards.ts';
 
@@ -30,7 +31,7 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
   notify?: (task: string, name: string, text: string) => Promise<void> | void; levels?: () => Levels } = {}) {
   const store = new MailStore(join(TB_DIR, 'mail.json'));
   const slack = options.slack || new SlackClient(join(TB_DIR, 'slack-user.json'));
-  const service = new MailService(store, slack);
+  const service = new MailService(store, slack, () => machine.get().name);
   const levels = () => options.levels?.() || machine.get().messages;
   const approver = (m: Message) => approverFor(m, store.read(), levels());
   const valid = (m: Message) => approvalValid(m, store.read(), levels());
@@ -235,7 +236,8 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
     const files = ids.map((id: string) => { const f = staged.find(f => f.id === id); if (!f) throw new Error('Choose a staged file'); return f; });
     if (new Set(ids).size !== ids.length) throw new Error('Choose each file once');
     const body = String(req.body.body || '');
-    if (Buffer.byteLength(body, 'utf8') > 30000) {
+    validText(req.body.subject, 200, 'subject'); validText(body, 262144, 'message body');
+    if (needsBodyFile(body)) {
       if (files.length >= 5) throw new Error('A long message needs one free file slot');
       files.push({ ...stageBytes(Buffer.from(body), 'message.txt'), longBody: true });
     }
@@ -251,8 +253,9 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
     const identity = slack.identity(); if (!identity) throw new Error('Connect Slack first');
     await service.validateRecipient(String(req.body.to || ''));
     const body = String(req.body.body || '');
-    if (Buffer.byteLength(body, 'utf8') > 30000) throw new Error('Task drafts must fit in a Slack message');
-    const m = store.add({ direction: 'outbox', source: 'agent', from: identity.user, to: req.body.to, subject: req.body.subject, body,
+    validText(req.body.subject, 200, 'subject'); validText(body, 262144, 'message body');
+    const files = needsBodyFile(body) ? [{ ...stageBytes(Buffer.from(body), 'message.txt'), longBody: true }] : [];
+    const m = store.add({ direction: 'outbox', source: 'agent', from: identity.user, to: req.body.to, subject: req.body.subject, body, files,
       proposedBy: { actor: 'task', task: task.id, agent: task.agent } });
     void checkNext(); return { id: m.id };
   }));

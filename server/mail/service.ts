@@ -3,47 +3,44 @@ import { unlinkSync } from 'node:fs';
 import { MailStore, type MailFile, type Message } from './store.ts';
 import { SlackClient, SLACK_APP_ID } from './slack.ts';
 import { MAX_FILE, receiveBytes, verifyFile } from './files.ts';
+import { buildMessageBlocks, escapeSlack } from './presentation.ts';
+import * as tasks from '../store.ts';
+import { hostname } from 'node:os';
 
 export const PREFIX = '[Taskboard message v1]\n';
 export const FILE_PREFIX = '[Taskboard message v2]\n';
 const INBOX_SCAN_LIMIT = 25;
-const SETUP_URL = 'https://github.com/Mgczacki/taskboard/blob/master/SETUP.md';
-export function encodeMessage(m: Message) {
-  const summary = messageSummary(m);
+export function encodeMessage(m: Message, senderName = m.from) {
+  const summary = messageSummary(m, senderName);
   if (!m.files?.length) return `${summary}\n${PREFIX}` + JSON.stringify({ id: m.id, subject: m.subject, body: m.body });
   return `${summary}\n${FILE_PREFIX}` + JSON.stringify({ id: m.id, subject: m.subject, body: m.files.some(f => f.longBody) ? 'Full text is in the attached file.' : m.body,
     files: m.files.map(f => ({ id: f.slackId, name: f.name, size: f.size, hash: f.hash, longBody: !!f.longBody })) });
 }
-function messageSummary(m: Message) {
-  const subject = m.subject.replace(/\s+/g, ' ').trim().slice(0, 100);
-  return `Taskboard message: ${subject}. Open Taskboard Inbox to read.`;
-}
-function messageBlocks(m: Message) {
-  const body = m.files?.some(f => f.longBody) ? 'Full text is in the attached file.' : m.body;
-  const preview = body.length > 2500 ? `${body.slice(0, 2500)}\nOpen Taskboard Inbox for the full message.` : body;
-  return JSON.stringify([
-    { type: 'section', text: { type: 'plain_text', text: `${messageSummary(m)}\n${preview}` }, expand: false },
-    { type: 'context', elements: [{ type: 'mrkdwn', text: `New to Taskboard? <${SETUP_URL}|Get Taskboard>` }] },
-  ]);
+function messageSummary(m: Message, senderName: string) {
+  const subject = escapeSlack(m.subject.replace(/\s+/g, ' ').trim().slice(0, 100));
+  const sender = escapeSlack(senderName.replace(/\s+/g, ' ').trim().slice(0, 80));
+  return `Taskboard message: ${subject}. Sent automatically by Taskboard from ${sender}. Open Taskboard Inbox to read.`;
 }
 export function decodeMessage(text: unknown): { id: string; subject: string; body: string; files?: { id: string; name: string; size: number; hash: string; longBody?: boolean }[] } | null {
   if (typeof text !== 'string' || Buffer.byteLength(text) > 40000) return null;
-  const wire = text.startsWith('Taskboard message: ') ? text.slice(text.indexOf('\n') + 1) : text;
-  if (!wire.startsWith(PREFIX) && !wire.startsWith(FILE_PREFIX)) return null;
-  try {
-    const hasFiles = wire.startsWith(FILE_PREFIX);
-    const m = JSON.parse(wire.slice(hasFiles ? FILE_PREFIX.length : PREFIX.length));
-    if (typeof m.id !== 'string' || !/^[a-zA-Z0-9-]{1,80}$/.test(m.id) || typeof m.subject !== 'string' || typeof m.body !== 'string') return null;
-    if (hasFiles && (!Array.isArray(m.files) || m.files.length < 1 || m.files.length > 5 || m.files.some((f: any) => !/^F[A-Z0-9]+$/.test(f.id) || typeof f.name !== 'string' || !Number.isInteger(f.size) || f.size < 1 || f.size > MAX_FILE || !/^[a-f0-9]{64}$/.test(f.hash)))) return null;
-    return m;
-  } catch { return null; }
+  if (!text.startsWith('Taskboard message: ') && !text.startsWith('[Taskboard message v')) return null;
+  for (const match of text.matchAll(/\[Taskboard message v([12])\]\s+(?=\{)/g)) {
+    try {
+      const hasFiles = match[1] === '2';
+      const m = JSON.parse(text.slice(match.index! + match[0].length));
+      if (typeof m.id !== 'string' || !/^[a-zA-Z0-9-]{1,80}$/.test(m.id) || typeof m.subject !== 'string' || typeof m.body !== 'string') continue;
+      if (hasFiles && (!Array.isArray(m.files) || m.files.length < 1 || m.files.length > 5 || m.files.some((f: any) => !/^F[A-Z0-9]+$/.test(f.id) || typeof f.name !== 'string' || !Number.isInteger(f.size) || f.size < 1 || f.size > MAX_FILE || !/^[a-f0-9]{64}$/.test(f.hash)))) continue;
+      return m;
+    } catch { /* A subject can contain the marker before the actual data. */ }
+  }
+  return null;
 }
 export class MailService {
   private syncing = false;
   private lastInboxScanAt = 0;
   private directory?: { user: string; expires: number; people: { user: string; name: string; realName?: string; image?: string }[] };
   error = '';
-  constructor(readonly store: MailStore, readonly slack: SlackClient) {}
+  constructor(readonly store: MailStore, readonly slack: SlackClient, private machineName: () => string = () => process.env.TASKBOARD_MACHINE_NAME || hostname()) {}
 
   async listPeople() {
     const identity = this.slack.identity(); if (!identity) throw new Error('Connect Slack first');
@@ -192,7 +189,7 @@ export class MailService {
     if (m.sending) throw new Error('Delivery is uncertain. Check the Slack conversation before retrying.');
     if (m.files?.some(f => !f.review || f.review.verdict === 'quarantine')) throw new Error('Files must pass controller review before sending');
     if (m.files?.some(f => f.review?.verdict === 'action-request' && m.approval?.by !== 'user')) throw new Error('Files with action requests need user approval');
-    if (Buffer.byteLength(encodeMessage(m)) > 39000 && !m.files?.some(f => f.longBody)) throw new Error('The encoded message is too large for Slack');
+    if (Buffer.byteLength(encodeMessage(m, identity.name || identity.user)) > 39000 && !m.files?.some(f => f.longBody)) throw new Error('The encoded message is too large for Slack');
     const bytes = (m.files || []).map(verifyFile);
     await this.validateRecipient(m.to);
     const conversation = await this.slack.call('conversations.open', { users: m.to });
@@ -205,7 +202,12 @@ export class MailService {
         this.store.update(id, x => { const file = x.files?.find(x => x.id === f.id); if (file) file.slackId = slackId; });
       }
       const sent = this.store.get(id);
-      const result = await this.slack.call('chat.postMessage', { channel, text: encodeMessage(sent), blocks: messageBlocks(sent), mrkdwn: 'false', unfurl_links: 'false', unfurl_media: 'false', parse: 'none', client_msg_id: m.id });
+      const task = sent.proposedBy?.task ? tasks.get(sent.proposedBy.task) : undefined;
+      const proposer = sent.proposedBy?.actor === 'task'
+        ? task ? `Task #${task.num} ${task.title}` : `Task ${sent.proposedBy.task || 'unknown'}`
+        : sent.proposedBy?.actor === 'controller' ? 'Controller' : 'User';
+      const blocks = buildMessageBlocks(sent, identity.name || identity.user, this.machineName(), proposer);
+      const result = await this.slack.call('chat.postMessage', { channel, text: encodeMessage(sent, identity.name || identity.user), blocks: JSON.stringify(blocks), mrkdwn: 'false', unfurl_links: 'false', unfurl_media: 'false', parse: 'none', client_msg_id: m.id });
       if (!result.ts) throw new Error('Slack did not confirm delivery');
       return this.store.update(id, x => { x.sentAt = new Date().toISOString(); x.slackTs = result.ts; x.slackChannel = channel; x.sending = false; });
     } catch {

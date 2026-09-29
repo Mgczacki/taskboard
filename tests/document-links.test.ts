@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -35,4 +35,41 @@ test('rejects paths outside the task documents and missing files', () => {
 test('rejects a listed symlink whose target leaves the task folders', () => {
   symlinkSync('/etc/hosts', join(outbox, 'outside.md'));
   assert.equal(docs.resolveDocumentLink('link-test', 'outbox/outside.md'), null);
+});
+
+test('resolves links from a Markdown document', () => {
+  const json = join(outbox, 'layout-b.json');
+  writeFileSync(json, '{}');
+  assert.deepEqual(docs.resolveViewerLink(file, 'design.md#heading'), {
+    kind: 'document', document: docs.resolveDocumentLink('link-test', file + '#heading'),
+  });
+  assert.deepEqual(docs.resolveViewerLink(file, './design.md'), {
+    kind: 'document', document: docs.resolveDocumentLink('link-test', file),
+  });
+  assert.deepEqual(docs.resolveViewerLink(file, 'layout-b.json'), { kind: 'local', path: realpathSync(json) });
+  assert.deepEqual(docs.resolveViewerLink(file, 'https://example.com/test'), { kind: 'web', url: 'https://example.com/test' });
+  assert.equal(docs.resolveViewerLink(file, '/etc/hosts').kind, 'refused');
+});
+
+test('opens vault Markdown and rejects executable files', () => {
+  const guide = join(process.env.TASKBOARD_VAULT!, 'guide.md');
+  const script = join(outbox, 'run.sh');
+  writeFileSync(guide, '# Guide');
+  writeFileSync(script, 'echo test');
+  assert.deepEqual(docs.resolveViewerLink(file, guide + '#guide'), { kind: 'vault-document', path: realpathSync(guide), heading: 'guide' });
+  assert.equal(docs.openableLocalPath(script), null);
+  writeFileSync(join(outbox, 'active.svg'), '<svg onload="alert(1)"/>');
+  assert.equal(docs.openableLocalPath(join(outbox, 'active.svg')), null);
+  assert.equal(docs.openableLocalPath('/etc/hosts'), null);
+});
+
+test('serves only images in the vault with fixed image types', () => {
+  for (const ext of ['png', 'jpg', 'gif', 'webp', 'svg']) {
+    const path = join(outbox, `image.${ext}`);
+    writeFileSync(path, 'test');
+    assert.match(docs.resolveDocumentImage(file, `image.${ext}`)?.type || '', /^image\//);
+  }
+  assert.equal(docs.resolveDocumentImage(file, '/etc/hosts'), null);
+  assert.equal(docs.resolveDocumentImage(file, 'layout-b.json'), null);
+  assert.equal(docs.resolveDocumentImage(file, 'outside.md'), null);
 });

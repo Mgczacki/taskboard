@@ -3,7 +3,8 @@
 // inbox/.sent.json records where each inbox file came from.
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, extname, join, relative, resolve, sep } from 'node:path';
-import { TASKS_DIR, VAULT } from './config.ts';
+import { fileURLToPath } from 'node:url';
+import { HOME, TASKS_DIR, VAULT } from './config.ts';
 import * as store from './store.ts';
 
 export interface DocInfo { name: string; path: string; kind: 'md' | 'html' | 'other'; size: number; mtime: string; from?: { task: string; num: number; title: string; at: string }; sentTo?: { task: string; num: number; at: string }[] }
@@ -126,8 +127,64 @@ export function edges() {
 // Only files inside the vault can be served.
 export function safePath(p: string): string | null {
   const full = resolve(p.replace(/^~(?=\/)/, process.env.HOME || ''));
-  if (!full.startsWith(resolve(VAULT) + sep) || !existsSync(full)) return null;
-  return realpathSync(full).startsWith(realpathSync(VAULT) + sep) ? full : null;
+  if (!existsSync(full)) return null;
+  return inside(realpathSync(full), realpathSync(VAULT)) ? full : null;
+}
+
+const WORKTREES = join(HOME, 'taskboard-wt');
+const inside = (path: string, root: string) => path === root || path.startsWith(root + sep);
+export function safeLocalPath(input: string): string | null {
+  const path = resolve(input.replace(/^~(?=\/)/, HOME));
+  if (!existsSync(path)) return null;
+  const real = realpathSync(path);
+  return [VAULT, WORKTREES].some(root => existsSync(root) && inside(real, realpathSync(root))) ? real : null;
+}
+
+export type ViewerLink =
+  | { kind: 'document'; document: ReturnType<typeof resolveDocumentLink> }
+  | { kind: 'vault-document'; path: string; heading?: string }
+  | { kind: 'local'; path: string }
+  | { kind: 'web'; url: string }
+  | { kind: 'refused'; error: string };
+
+export function resolveViewerLink(source: string, href: string): ViewerLink {
+  if (!href || href.length > 4096) return { kind: 'refused', error: 'The link is invalid.' };
+  if (/^https?:\/\//i.test(href)) return { kind: 'web', url: href };
+  if (/^[a-z][a-z\d+.-]*:/i.test(href) && !href.startsWith('file://')) return { kind: 'refused', error: 'This link type cannot open.' };
+  const src = safeLocalPath(source);
+  if (!src) return { kind: 'refused', error: 'The source document is outside Taskboard.' };
+  let path = href, heading: string | undefined;
+  const hash = path.indexOf('#');
+  if (hash >= 0) { try { heading = decodeURIComponent(path.slice(hash + 1)); } catch { return { kind: 'refused', error: 'The heading is invalid.' }; } path = path.slice(0, hash); }
+  if (path.startsWith('file://')) { try { path = fileURLToPath(path); } catch { return { kind: 'refused', error: 'The file path is invalid.' }; } }
+  const full = resolve(path ? path.startsWith('~/') ? join(HOME, path.slice(2)) : path.startsWith('/') ? path : join(resolve(src, '..'), path) : src);
+  const safe = safeLocalPath(full);
+  if (!safe) return { kind: 'refused', error: `Taskboard cannot open ${full}. The file must be inside the vault or a Taskboard worktree.` };
+  const rel = relative(realpathSync(TASKS_DIR), safe).split(sep);
+  if (rel.length === 3 && ['inbox', 'outbox'].includes(rel[1])) {
+    const doc = resolveDocumentLink(rel[0], join(TASKS_DIR, ...rel) + (heading ? '#' + encodeURIComponent(heading) : ''));
+    if (doc && doc.kind === 'md') return { kind: 'document', document: doc };
+  }
+  if (/\.(md|markdown)$/i.test(safe) && inside(safe, realpathSync(VAULT))) return { kind: 'vault-document', path: safe, ...(heading ? { heading } : {}) };
+  return { kind: 'local', path: safe };
+}
+
+const blockedLocal = /\.(?:app|command|sh|bash|zsh|fish|js|mjs|cjs|ts|tsx|py|rb|pl|php|exe|bat|cmd|ps1|scpt|applescript|jar|dmg|pkg|html?|svg)$/i;
+export function openableLocalPath(path: string): string | null {
+  const safe = safeLocalPath(path);
+  if (!safe || !statSync(safe).isFile() || blockedLocal.test(safe) || (statSync(safe).mode & 0o111)) return null;
+  return safe;
+}
+
+export const imageTypes: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml' };
+export function resolveDocumentImage(source: string, href: string): { path: string; type: string } | null {
+  const src = safeLocalPath(source);
+  if (!src || !inside(src, realpathSync(VAULT)) || !href || href.includes('#') || href.includes('?')) return null;
+  const path = resolve(href.startsWith('/') ? href : join(resolve(src, '..'), href));
+  const safe = safeLocalPath(path);
+  const type = imageTypes[extname(path).toLowerCase()];
+  if (!safe || !type || !statSync(safe).isFile() || !inside(safe, realpathSync(VAULT))) return null;
+  return { path: safe, type };
 }
 
 export function resolveDocumentLink(sourceTask: string, input: string): (DocInfo & { task: string; box: 'inbox' | 'outbox'; line?: number; heading?: string }) | null {

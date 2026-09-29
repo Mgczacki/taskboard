@@ -12,6 +12,7 @@ import { api } from '../api';
 import { loadAccounts, type Account } from './Accounts';
 import '../review.css';
 import type { DocumentLink } from '../documentLinks';
+import { decorateDocument } from '../documentContent';
 
 interface Comment { id: string; v: number; block: number; quote: string; text: string; at: string; sent?: boolean }
 interface Item {
@@ -117,6 +118,11 @@ export function InboxPage({ tasks, open, documentLink }: { tasks: Task[]; open: 
     requestAnimationFrame(() => target?.scrollIntoView({ block: 'start' }));
   }, [documentLink, item?.id, text, blocks]);
   const shown = useMemo(() => compare && prevText ? diff(toBlocks(prevText), blocks) : blocks.map(b => ({ block: b, kind: 'same' as const })), [compare, prevText, blocks]);
+  useEffect(() => {
+    const root = docRef.current?.querySelector<HTMLElement>('.rv-md');
+    if (!root || !item) return;
+    return decorateDocument(root, item.path);
+  }, [shown, item?.path]);
   const current = item ? item.comments.filter(c => c.v === item.version) : [];
   const unsent = current.filter(c => !c.sent);
   const task = item && tasks.find(t => t.id === item.task);

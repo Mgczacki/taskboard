@@ -16,6 +16,7 @@ import { AccountsPage } from './components/Accounts';
 import { SettingsPage } from './components/Settings';
 import { StatsPage } from './components/Stats';
 import type { DocumentLink } from './documentLinks';
+import { readMarkdown } from './components/Docs';
 
 type Page = 'list' | 'board' | 'canvas' | 'graph' | 'inbox' | 'accounts' | 'stats' | 'settings';
 // #list · #board · #canvas · #canvas:<view>  (view = g:<group> | needs | live | t:<id,id>)
@@ -80,9 +81,14 @@ export function App() {
       else setOpenId(link.task, 'docs');
     };
     const onTask = (event: Event) => setOpenId((event as CustomEvent<string>).detail);
+    const onVaultDocument = (event: Event) => {
+      const link = (event as CustomEvent<{ path: string; heading?: string }>).detail;
+      readMarkdown(link.path, link.path.split('/').pop() || link.path, { heading: link.heading });
+    };
     addEventListener('taskboard:document-link', onDocument);
     addEventListener('taskboard:task-link', onTask);
-    return () => { removeEventListener('taskboard:document-link', onDocument); removeEventListener('taskboard:task-link', onTask); };
+    addEventListener('taskboard:vault-document', onVaultDocument);
+    return () => { removeEventListener('taskboard:document-link', onDocument); removeEventListener('taskboard:task-link', onTask); removeEventListener('taskboard:vault-document', onVaultDocument); };
   });
   useEffect(() => {
     const u = new URL(location.href);

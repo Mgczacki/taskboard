@@ -404,6 +404,27 @@ app.get('/api/tasks/:id/document-link', (req, res) => {
   if (!doc) return res.status(404).json({ error: 'Document not found' });
   res.json({ ...doc, reviewId: pendingForPath(doc.path)?.id });
 });
+app.get('/api/document-link', (req, res) => {
+  const link = docs.resolveViewerLink(String(req.query.source || ''), String(req.query.href || ''));
+  if (link.kind === 'document' && link.document) return res.json({ ...link, document: { ...link.document, reviewId: pendingForPath(link.document.path)?.id } });
+  res.json(link);
+});
+app.get('/api/document-image', (req, res) => {
+  const image = docs.resolveDocumentImage(String(req.query.source || ''), String(req.query.path || ''));
+  if (!image) return res.status(404).send('Image not found');
+  res.set('X-Content-Type-Options', 'nosniff');
+  res.set('Content-Security-Policy', "sandbox; default-src 'none'; script-src 'none'");
+  res.type(image.type).sendFile(image.path);
+});
+app.post('/api/open-local-file', (req, res) => {
+  if (!req.get('origin') || !originOk(req.get('origin')) || req.get('x-taskboard-token') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Only the dashboard can open local files.' });
+  const path = docs.openableLocalPath(String(req.body.path || ''));
+  if (!path) return res.status(403).json({ error: 'Taskboard cannot open this file. It must be a regular, non-executable file inside the vault or a Taskboard worktree.' });
+  execFile(process.platform === 'darwin' ? 'open' : 'xdg-open', [path], error => {
+    if (error) return res.status(500).json({ error: 'The operating system could not open this file.' });
+    res.json({ opened: path });
+  });
+});
 app.get('/api/docs/edges', (_req, res) => res.json(docs.edges()));
 app.get('/api/docs/all', (_req, res) => res.json(Object.fromEntries(store.all().map(t => [t.id, docs.docsFor(t.id).outbox.map(d => ({ name: d.name, path: d.path, kind: d.kind, mtime: d.mtime }))]))));
 app.post('/api/docs/send', async (req, res) => {

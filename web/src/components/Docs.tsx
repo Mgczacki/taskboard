@@ -9,6 +9,7 @@ import { createRoot } from 'react-dom/client';
 import type { Task } from '../api';
 import { api, fmtWait } from '../api';
 import type { DocumentLink } from '../documentLinks';
+import { decorateDocument } from '../documentContent';
 
 export interface DocInfo { name: string; path: string; kind: 'md' | 'html' | 'other'; size: number; mtime: string; from?: { task: string; num: number; title: string; at: string }; sentTo?: { task: string; num: number; at: string }[] }
 // files of tasks on another machine are fetched through this server (?machine=)
@@ -122,6 +123,7 @@ export function readMarkdown(path: string, name: string, location?: { line?: num
       div.appendChild(section);
     }
     el.appendChild(div);
+    decorateDocument(div, path);
     const target = location?.heading
       ? [...div.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6')].find(h => h.textContent?.trim().toLowerCase().replace(/\s+/g, '-') === location.heading?.toLowerCase())
       : location?.line ? [...div.querySelectorAll<HTMLElement>('section')].reverse().find(s => Number(s.dataset.line) <= location.line!) : null;

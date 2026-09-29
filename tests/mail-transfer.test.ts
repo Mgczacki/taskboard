@@ -29,14 +29,16 @@ test('a long message crosses Slack as a file and returns as exact text', async (
   await new MailService(sender, sendSlack).send(draft.id);
   assert.ok(text.includes(FILE_PREFIX));
   assert.ok(text.length < 40000);
-  assert.equal(JSON.parse(blocks)[0].text.text, 'Taskboard message: Long text. Open Taskboard Inbox to read.\nFull text is in the attached file.');
-  assert.equal(JSON.parse(blocks)[0].expand, false);
+  assert.equal(JSON.parse(blocks)[0].text.text, 'Long text');
+  assert.match(JSON.parse(blocks)[1].elements[0].text, /Sent automatically by Taskboard/);
+  assert.match(JSON.parse(blocks)[4].text.text, /Read the full text in message.txt sent above/);
+  assert.equal(JSON.parse(blocks)[4].expand, false);
   assert.ok(!blocks.includes(body));
-  assert.match(JSON.parse(blocks)[1].elements[0].text, /Get Taskboard/);
-  assert.match(JSON.parse(blocks)[1].elements[0].text, /github.com\/Mgczacki\/taskboard\/blob\/master\/SETUP.md/);
+  assert.match(JSON.parse(blocks)[6].elements[1].text, /Get Taskboard/);
+  assert.match(JSON.parse(blocks)[6].elements[1].text, /github.com\/Mgczacki\/taskboard\/blob\/master\/SETUP.md/);
 
   const recipient = new MailStore(join(root, 'recipient.json'));
-  const receiveSlack = { identity: () => ({ user: 'U2', team: 'T1' }), call: async (method: string) => method === 'conversations.list' ? { channels: [{ id: 'D1', user: 'U1' }] } : { messages: [{ ts: '1', user: 'U1', text }] }, download: async () => verifyFile(file) } as unknown as SlackClient;
+  const receiveSlack = { identity: () => ({ user: 'U2', team: 'T1' }), call: async (method: string) => method === 'conversations.list' ? { channels: [{ id: 'D1', user: 'U1' }] } : { messages: [{ ts: '1', user: 'U1', text: text.replace(/\n/g, ' ') }] }, download: async () => verifyFile(file) } as unknown as SlackClient;
   await new MailService(recipient, receiveSlack).sync();
   assert.equal(recipient.read().messages[0].body, body);
   assert.equal(recipient.read().messages[0].files?.[0].hash, file.hash);
