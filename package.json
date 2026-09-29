@@ -6,8 +6,8 @@
   "description": "A local board for Claude Code and Codex agents running in tmux.",
   "scripts": {
     "dev": "node scripts/sandbox.mjs dev",
-    "build": "pnpm check:inbox-controls && vite build",
-    "check:inbox-controls": "node scripts/check-inbox-controls.mjs",
+    "build": "pnpm check:ui-controls && vite build",
+    "check:ui-controls": "node scripts/check-ui-controls.mjs",
     "start": "NODE_ENV=production tsx server/index.ts",
     "typecheck": "tsc --noEmit -p .",
     "postinstall": "node scripts/fix-node-pty.mjs",

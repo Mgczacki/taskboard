@@ -360,7 +360,7 @@ body.in-app.app-buttons .app:not(:has(.rail)) .top { padding-left: 84px; }
 .ask-meta { font: 10.5px var(--mono); color: var(--dim); margin-top: 2px; }
 .ask-err { color: var(--st-needs); font-size: 12px; padding: 0 10px 4px; }
 .ask-in { flex: none; display: flex; gap: 6px; padding: 6px 8px; border-top: 1px solid var(--line); }
-.ask-in textarea { flex: 1; resize: none; font: 12.5px var(--sans, inherit); background: var(--bg2); color: var(--text); border: 1px solid var(--line2); border-radius: 6px; padding: 5px 7px; }
+.ask-in textarea { flex: 1; min-width: 0; width: auto; resize: none; font: 12.5px var(--sans); }
 
 /* task panel with its details folded: title, status line and tabs only */
 .dr-head.compact > .dr-meta, .dr-head.compact > .ctx, .dr-head.compact > .dr-actions, .dr-head.compact > .banner { display: none; }

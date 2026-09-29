@@ -37,8 +37,8 @@ export function AskPanel({ task, close }: { task: Task; close: () => void }) {
         <b>Ask about #{task.num}</b>
         <span className="sub">A separate agent reads the terminal and the transcript. #{task.num} does not see the question.</span>
         <span className="sp" />
-        {count > 0 && !busy && <button className="b" title="Start a new thread (the next question starts a new conversation)" onClick={() => api.askClear(task.id).then(setThread)}>New thread</button>}
-        <button className="b" title="Close (the thread is kept)" onClick={close}>✕</button>
+        {count > 0 && !busy && <button className="btn" title="Start a new thread (the next question starts a new conversation)" onClick={() => api.askClear(task.id).then(setThread)}>New thread</button>}
+        <button className="btn ghost icon" title="Close (the thread is kept)" aria-label="Close Ask panel" onClick={close}>✕</button>
       </div>
       <div className="ask-list" ref={list}>
         {!count && <div className="ask-empty">For example: “What has it done so far?”, “Why is it waiting?”, “Which files did it change?”</div>}
@@ -46,15 +46,15 @@ export function AskPanel({ task, close }: { task: Task; close: () => void }) {
           <div key={n} className="ask-item">
             <div className="ask-q">{i.q}</div>
             {i.steps.length > 0 && <div className="ask-steps">{i.steps.map((s, k) => <div key={k}>{s}</div>)}</div>}
-            {i.state === 'running' ? <div className="ask-wait">Working… <button className="b" onClick={() => api.askStop(task.id)}>Stop</button></div>
+            {i.state === 'running' ? <div className="ask-wait">Working… <button className="btn" onClick={() => api.askStop(task.id)}>Stop</button></div>
               : <div className={`ask-a md ${i.state}`} dangerouslySetInnerHTML={{ __html: md(i.a || '') }} />}
             {i.state !== 'running' && <div className="ask-meta">{[i.costUsd !== undefined ? `$${i.costUsd.toFixed(3)}` : '', secs(i.ms), i.agent === 'codex' ? 'Codex' : 'Claude Code', i.model, i.account].filter(Boolean).join(' · ')}</div>}
           </div>
         ))}
       </div>
       {err && <div className="ask-err">{err}</div>}
-      <div className="ask-in">
-        <textarea value={q} autoFocus rows={2} placeholder={busy ? 'Wait for the answer…' : count ? 'Ask a follow-up question (Enter sends, Shift+Enter adds a line)' : 'Ask a question about this session (Enter sends)'}
+      <div className="ask-in field">
+        <textarea value={q} autoFocus rows={2} aria-label="Question about this session" placeholder={busy ? 'Wait for the answer…' : count ? 'Ask a follow-up question (Enter sends, Shift+Enter adds a line)' : 'Ask a question about this session (Enter sends)'}
           onChange={e => setQ(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } if (e.key === 'Escape') close(); }} />
         <button className="btn primary" disabled={busy || !q.trim()} onClick={send}>Ask</button>
       </div>

@@ -238,7 +238,7 @@ function CommentCard({ c, item, reload, onJump }: { c: Comment; item: Item; relo
       {c.quote && <div className="rv-q" onClick={onJump}>“{c.quote.slice(0, 160)}”</div>}
       {edit ? <><textarea value={t} onChange={e => setT(e.target.value)} autoFocus /><div className="rv-row"><button className="btn ghost" onClick={() => setEdit(false)}>Cancel</button><button className="btn primary" onClick={save}>Save</button></div></>
         : <div className="rv-t">{c.text}</div>}
-      {!edit && <div className="rv-cm">{c.sent ? 'sent' : 'not sent yet'}{!c.sent && <> · <a onClick={() => setEdit(true)}>edit</a> · <a onClick={async () => { await send('DELETE', `/api/review/${item.id}/comment/${c.id}`); reload(); }}>delete</a></>}</div>}
+      {!edit && <div className="rv-cm">{c.sent ? 'sent' : 'not sent yet'}{!c.sent && <> · <button className="btn ghost" onClick={() => setEdit(true)}>edit</button> · <button className="btn ghost" onClick={async () => { await send('DELETE', `/api/review/${item.id}/comment/${c.id}`); reload(); }}>delete</button></>}</div>}
     </div>
   );
 }

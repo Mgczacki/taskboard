@@ -172,7 +172,7 @@ export function App() {
         <div className="rail-item ctl-item" onClick={openController} title={`The controller agent manages the other agents. Shortcut: ${keysText('controller')}`}>{controller ? <Dot s={controller.status} /> : <span className="dot idle" />}<span className="t"><b>Controller</b>{controller ? '' : ' · start'}</span>{controller?.remoteUrl && <a className="rc-link" href={controller.remoteUrl} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} title="Remote Control is on: open the controller on claude.ai or the Claude mobile app">📱</a>}{keyLabel('controller') && <kbd>{keyLabel('controller')}</kbd>}</div>
         <button className="importbtn" onClick={() => setImportOpen(true)} title="Bring in Claude Code, Codex and Antigravity sessions you started outside Taskboard">⇪ Import sessions</button>
         <nav className="nav">
-          {(['list', 'board', 'graph', 'canvas', 'inbox', 'accounts', 'stats', 'settings'] as Page[]).map(p => <a key={p} className={page === p ? 'on' : ''} onClick={() => go(p)}>{p[0].toUpperCase() + p.slice(1)}{p === 'list' && <span className="n">{tasks.filter(t => t.status !== 'archived').length}</span>}{p === 'inbox' && reviewCount > 0 && <span className="n" style={{ color: 'var(--st-review)' }}>{reviewCount}</span>}</a>)}
+          {(['list', 'board', 'graph', 'canvas', 'inbox', 'accounts', 'stats', 'settings'] as Page[]).map(p => <a key={p} href={p === 'canvas' ? `#canvas:${encodeURIComponent(view)}` : `#${p}`} className={page === p ? 'on' : ''} onClick={() => go(p)}>{p[0].toUpperCase() + p.slice(1)}{p === 'list' && <span className="n">{tasks.filter(t => t.status !== 'archived').length}</span>}{p === 'inbox' && reviewCount > 0 && <span className="n" style={{ color: 'var(--st-review)' }}>{reviewCount}</span>}</a>)}
         </nav>
         <div className="rail-scroll">
           <div className="rail-sec"><h6>Needs you<span>{needs.length}</span></h6>{needs.map(item)}{!needs.length && <div className="rail-empty">Nothing waiting</div>}</div>
@@ -191,8 +191,8 @@ export function App() {
         <div className="rail-foot">
           <div className="row"><span className={`dot ${connected ? 'ok' : 'stopped'}`} />server {connected ? 'connected' : 'not reachable'}</div>
           <div className="row" style={{ paddingLeft: 15 }}>{tasks.filter(t => !['archived', 'suspended', 'parked'].includes(t.status) && !t.openElsewhere).length} tmux sessions · vault <code>~/AgentVault</code></div>
-          <div className="row" style={{ paddingLeft: 15 }}><a onClick={() => setKeysHelp(true)}>Keyboard shortcuts {keyLabel('keysHelp') && <kbd>{keyLabel('keysHelp')}</kbd>}</a></div>
-          <div className="row" style={{ paddingLeft: 15 }}><a onClick={() => Notification.requestPermission()}>{typeof Notification !== 'undefined' && Notification.permission === 'granted' ? 'Notifications on' : 'Turn on notifications'}</a></div>
+          <div className="row" style={{ paddingLeft: 15 }}><button className="btn ghost" onClick={() => setKeysHelp(true)}>Keyboard shortcuts {keyLabel('keysHelp') && <kbd>{keyLabel('keysHelp')}</kbd>}</button></div>
+          <div className="row" style={{ paddingLeft: 15 }}><button className="btn ghost" onClick={() => Notification.requestPermission()}>{typeof Notification !== 'undefined' && Notification.permission === 'granted' ? 'Notifications on' : 'Turn on notifications'}</button></div>
         </div>
       </aside>}
       <div className="main">
@@ -257,7 +257,7 @@ function KeysHelp({ close, settings }: { close: () => void; settings: () => void
       <div className="modal" style={{ width: 640 }}>
         <header><h2>Keyboard shortcuts</h2><button className="btn ghost icon" onClick={close}>✕</button></header>
         <div className="body">
-          <div className="sub" style={{ marginBottom: 8 }}>Symbols: ⌘ Command · ⌥ Option · ⌃ Control · ⇧ Shift. Keys with ⌘ or ⌃ also work inside a terminal; single keys work when the cursor is not in a terminal or a text field. <a onClick={settings}>Change the keys in Settings</a>.</div>
+          <div className="sub" style={{ marginBottom: 8 }}>Symbols: ⌘ Command · ⌥ Option · ⌃ Control · ⇧ Shift. Keys with ⌘ or ⌃ also work inside a terminal; single keys work when the cursor is not in a terminal or a text field. <button className="btn ghost" onClick={settings}>Change the keys in Settings</button>.</div>
           <table className="keys"><tbody>{rows.map(([where, k, what], i) => <tr key={i}><td className="sub">{i === 0 || rows[i - 1][0] !== where ? where : ''}</td><td><kbd>{k}</kbd></td><td>{what}</td></tr>)}</tbody></table>
         </div>
       </div>
