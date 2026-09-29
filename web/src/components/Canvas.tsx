@@ -6,6 +6,7 @@ import type { Group, Task } from '../api';
 import { ATTN, STATUS_LABEL, api } from '../api';
 import { AgentChip, Dot, MachineChip, WhereChip } from './ui';
 import { Terminal } from './Terminal';
+import { AskPanel } from './Ask';
 
 type Layout = 'columns' | 'grid' | 'rows';
 const MINW = 640;
@@ -41,6 +42,8 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
   const [extra, setExtra] = useState<string[]>([]);
   const [dropTab, setDropTab] = useState<string | null>(null);
   const [reveal, setReveal] = useState(false);
+  const [asking, setAsking] = useState<Set<string>>(new Set()); // tiles with the Ask panel open
+  const toggleAsk = (id: string) => setAsking(s => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const stage = useRef<HTMLDivElement>(null);
   const [W, setW] = useState(1200);
 
@@ -182,11 +185,12 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
               <span className="ix">{i + 1}</span><Dot s={t.status} /><span className="n">#{t.num}</span><span className="ti">{t.title}</span>
               <span className={`st st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} />
               {(t.status === 'suspended' || t.openElsewhere) && <button className="b" onClick={() => openPanel(t.id)}>{t.openElsewhere ? 'Options…' : 'Resume…'}</button>}
+              <button className={`b ${asking.has(t.id) ? 'on' : ''}`} title="Ask a separate agent about this session. This agent does not see the question." onClick={() => toggleAsk(t.id)}>?</button>
               <button className="b" title="Maximize (⌃⌥↩)" onClick={() => setMaxId(m => m ? null : t.id)}>{maxId === t.id ? '⤡' : '⤢'}</button>
               <button className="b" title="Task panel" onClick={() => openPanel(t.id)}>☰</button>
               <button className="b" title="Remove from this view (⌃⌥W). The agent keeps running." onClick={() => removeFromView(t.id)}>✕</button>
             </div>
-            <div className="wb">{t.openElsewhere ? <div className="empty" style={{ padding: 16 }}>Running in another terminal ({t.openElsewhere?.tty}). <button className="btn" onClick={() => openPanel(t.id)}>Options…</button></div>
+            <div className="wb">{asking.has(t.id) && <AskPanel task={t} close={() => toggleAsk(t.id)} />}{t.openElsewhere ? <div className="empty" style={{ padding: 16 }}>Running in another terminal ({t.openElsewhere?.tty}). <button className="btn" onClick={() => openPanel(t.id)}>Options…</button></div>
               : t.status === 'suspended' ? <div className="empty" style={{ padding: 16 }}>Suspended. <button className="btn" onClick={() => openPanel(t.id)}>Resume…</button></div>
               // a tmux window has one size: while this task's panel is open, the panel shows the terminal and the tile waits
               : t.id === panelTaskId ? <div className="tile-in-panel"><div>Shown in the task panel.</div><div className="sub">One terminal per task at a time, so neither is cut off. Closing the panel brings it back here.</div><button className="btn" onClick={() => openPanel(null)}>Show it here instead</button></div>
