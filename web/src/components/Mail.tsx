@@ -13,11 +13,81 @@ export interface Message {
   created: string; dismissedAt?: string; sendStartedAt?: string; sentAt?: string; sending?: boolean; error?: string;
   proposedBy?: { actor: 'user' | 'controller' | 'task'; task?: string; agent?: string };
   review?: { verdict: string; reason: string; at: string }; approval?: { by: string; at: string }; routes: { task: string }[];
-  files?: { id: string; name: string; size: number; hash: string; review?: { verdict: string; reason: string }; routed?: { task: string } }[];
+  files?: (FileInfo & { routed?: { task: string } })[];
   source?: string; rejectedAt?: string; unseen?: boolean; proposedRoute?: { task: string | null }; returns?: { comment: string }[];
   // from the server's permission levels (server/mail/policy.ts): who may approve this message now
   approver?: 'user' | 'controller' | 'nobody'; trusted?: boolean;
+  // outgoing drafts: why the user cannot edit it now (null: the user can), the saved edits and the text before each one
+  editBlocked?: string | null; edits?: { at: string; by: 'user' }[];
+  versions?: { subject: string; body: string; files: FileInfo[]; hash: string; author: 'user' | 'controller' | 'task'; replacedAt: string; review?: { verdict: string } }[];
 }
+type FileInfo = { id: string; name: string; size: number; hash: string; longBody?: boolean; review?: { verdict: string; reason: string } };
+// The sizes that decide how Slack shows a message (POST /api/mail/measure, from server/mail/presentation.ts)
+interface Size { subjectBytes: number; bodyBytes: number; rendered: number; limits: { subjectBytes: number; header: number; section: number; bodyBytes: number } }
+const characters = (text: string) => Array.from(text).length;
+export function SlackSize({ subject, body }: { subject: string; body: string }) {
+  const [size, setSize] = useState<Size | null>(null);
+  useEffect(() => {
+    const timer = setTimeout(() => void request('/measure', { subject, body }).then(setSize).catch(() => setSize(null)), 300);
+    return () => clearTimeout(timer);
+  }, [subject, body]);
+  const notes: { text: string; warn?: boolean }[] = [];
+  notes.push({ text: `Subject: ${characters(subject)} characters${size ? ` (${size.subjectBytes} of ${size.limits.subjectBytes} bytes)` : ''}.` });
+  if (size && size.subjectBytes > size.limits.subjectBytes) notes.push({ text: `The subject is over the ${size.limits.subjectBytes}-byte limit. Taskboard cannot save it.`, warn: true });
+  else if (size && size.subjectBytes > size.limits.subjectBytes * 0.9) notes.push({ text: `The subject is near the ${size.limits.subjectBytes}-byte limit.`, warn: true });
+  if (size && characters(subject) > size.limits.header - 1) notes.push({ text: `Slack shows only the first ${size.limits.header - 1} characters of the subject in the message header.`, warn: true });
+  notes.push({ text: `Message: ${characters(body)} characters.${size ? ` Slack text section: ${size.rendered} of ${size.limits.section} characters after Slack formatting.` : ''}` });
+  if (size && size.bodyBytes > size.limits.bodyBytes) notes.push({ text: `The message is over the ${size.limits.bodyBytes}-byte limit. Taskboard cannot save it.`, warn: true });
+  else if (size && size.rendered > size.limits.section) notes.push({ text: `The message is over the Slack limit of ${size.limits.section} characters. Taskboard attaches the full text as message.md. Slack shows the first part only. This file uses one of the five file places.`, warn: true });
+  else if (size && size.rendered > size.limits.section * 0.9) notes.push({ text: `The message is near the Slack limit of ${size.limits.section} characters. Above the limit, Slack shows the first part only and the full text goes in message.md.`, warn: true });
+  return <div className="mail-size" aria-live="polite">{notes.map((note, i) => <p key={i} className={note.warn ? 'mail-size-warn' : undefined}>{note.text}</p>)}</div>;
+}
+// A line diff of two texts (longest common subsequence). Above 4,000,000 line pairs, it shows all old lines as removed and all new lines as added.
+export function lineDiff(before: string, after: string): { kind: 'same' | 'removed' | 'added'; text: string }[] {
+  const a = before.split('\n'), b = after.split('\n');
+  if (a.length * b.length > 4_000_000) return [...a.map(text => ({ kind: 'removed' as const, text })), ...b.map(text => ({ kind: 'added' as const, text }))];
+  const table = Array.from({ length: a.length + 1 }, () => new Uint32Array(b.length + 1));
+  for (let i = a.length - 1; i >= 0; i--) for (let j = b.length - 1; j >= 0; j--) table[i][j] = a[i] === b[j] ? table[i + 1][j + 1] + 1 : Math.max(table[i + 1][j], table[i][j + 1]);
+  const out: { kind: 'same' | 'removed' | 'added'; text: string }[] = [];
+  let i = 0, j = 0;
+  while (i < a.length && j < b.length) {
+    if (a[i] === b[j]) { out.push({ kind: 'same', text: a[i] }); i++; j++; }
+    else if (table[i + 1][j] >= table[i][j + 1]) out.push({ kind: 'removed', text: a[i++] });
+    else out.push({ kind: 'added', text: b[j++] });
+  }
+  while (i < a.length) out.push({ kind: 'removed', text: a[i++] });
+  while (j < b.length) out.push({ kind: 'added', text: b[j++] });
+  return out;
+}
+function TextChanges({ before, after }: { before: { subject: string; body: string; files: FileInfo[] }; after: { subject: string; body: string; files: FileInfo[] } }) {
+  const names = (files: FileInfo[]) => files.filter(f => !f.longBody).map(f => f.name).join(', ') || 'No files';
+  return <div className="mail-diff">
+    {before.subject !== after.subject && <p>Subject before: {before.subject}<br />Subject after: {after.subject}</p>}
+    {names(before.files) !== names(after.files) && <p>Files before: {names(before.files)}<br />Files after: {names(after.files)}</p>}
+    <pre aria-label="Changes to the message">{lineDiff(before.body, after.body).map((line, i) => <span key={i} className={`mail-diff-${line.kind}`}>{line.kind === 'removed' ? '- ' : line.kind === 'added' ? '+ ' : '  '}{line.text}{'\n'}</span>)}</pre>
+  </div>;
+}
+interface EditState { subject: string; body: string; files: string[] }
+function DraftEditor({ m, start, busy, act, close }: { m: Message; start: EditState; busy: boolean; act: (fn: () => Promise<unknown>) => Promise<void>; close: () => void }) {
+  const [subject, setSubject] = useState(start.subject);
+  const [body, setBody] = useState(start.body);
+  const [files, setFiles] = useState(start.files);
+  // the attachments of this draft and of its earlier versions; Taskboard makes message.md again from the text
+  const known = [...(m.files || []), ...(m.versions || []).flatMap(v => v.files)].filter((f, i, all) => !f.longBody && all.findIndex(x => x.id === f.id) === i);
+  return <form className="mail-editor" onSubmit={e => { e.preventDefault(); void act(async () => { await request(`/${m.id}/edit`, { subject, body, files, hash: m.hash }); close(); }); }}>
+    <h3>Edit this draft</h3>
+    <p>Saving removes the current approval. The controller checks the new text again before anyone can approve it.</p>
+    <div className="field"><label>Subject <input className="mail-input" value={subject} onChange={e => setSubject(e.target.value)} required /></label></div>
+    <div className="field"><label>Message (Markdown) <textarea className="mail-input" value={body} onChange={e => setBody(e.target.value)} rows={14} required /></label></div>
+    <SlackSize subject={subject} body={body} />
+    {!!known.length && <fieldset><legend>Files</legend>{known.map(f => <label key={f.id}><input className="mail-checkbox" type="checkbox" checked={files.includes(f.id)} onChange={e => setFiles(current => e.target.checked ? [...current, f.id] : current.filter(id => id !== f.id))} />Send {f.name} ({Math.ceil(f.size / 1024)} KiB){m.files?.some(x => x.id === f.id) ? '' : ' (from an earlier version)'}</label>)}</fieldset>}
+    <div className="mail-tabs">
+      <button className="btn" disabled={busy}>Save</button>
+      <button className="btn ghost" type="button" disabled={busy} onClick={close}>Cancel</button>
+    </div>
+  </form>;
+}
+const author = (who: 'user' | 'controller' | 'task', m: Message, tasks: Task[]) => who === 'user' ? 'you' : who === 'controller' ? 'the controller' : proposer(m, tasks);
 interface Mailbox { messages: Message[]; contacts: { user: string; name: string; status?: string }[]; requests: { user: string; name: string }[]; staged: { id: string; name: string; size: number; hash: string }[]; identity: { user: string; name?: string; needsReconnect?: boolean } | null; trustedSenders: { user: string; name: string }[]; levels: { incoming: number; outgoing: number }; error?: string }
 export function sentState(m: Message) {
   if (m.sentAt) return 'Sent';
@@ -58,12 +128,15 @@ function SentHistory({ messages, contacts, tasks, busy, act }: {
   const [proposerFilter, setProposerFilter] = useState('');
   const [stateFilter, setStateFilter] = useState('');
   const [selectedId, setSelectedId] = useState('');
+  const [editing, setEditing] = useState<(EditState & { id: string; key: number }) | null>(null);
   const outgoing = messages.filter(m => m.direction === 'outbox').sort((a, b) => b.created.localeCompare(a.created));
   const filtered = outgoing.filter(m => (!recipientFilter || m.to === recipientFilter) && (!proposerFilter || (m.proposedBy?.task || m.proposedBy?.actor || 'unknown') === proposerFilter) && (!stateFilter || sentState(m) === stateFilter));
   const selected = filtered.find(m => m.id === selectedId) || filtered[0];
   const contactName = (id: string) => contacts.find(c => c.user === id)?.name || id;
+  const edit = (m: Message, from: { subject: string; body: string; files: FileInfo[] }) => setEditing({ id: m.id, key: Date.now(), subject: from.subject, body: from.body, files: from.files.filter(f => !f.longBody).map(f => f.id) });
   const steps = selected ? [
     { label: 'Draft created', at: selected.created },
+    ...(selected.edits || []).map(e => ({ label: 'Edited by you', at: e.at })),
     { label: selected.review ? `Controller review: ${selected.review.verdict}` : 'Controller review pending', at: selected.review?.at },
     { label: selected.approval ? `Approved by ${selected.approval.by}` : 'Approval pending', at: selected.approval?.at },
     ...(selected.sendStartedAt ? [{ label: 'Slack post started', at: selected.sendStartedAt }] : []),
@@ -83,17 +156,33 @@ function SentHistory({ messages, contacts, tasks, busy, act }: {
       {selected && <article className="mail-item mail-history-detail">
         <h2>{selected.subject}</h2>
         <p>Sender: {selected.from}</p><p>Recipient: {contactName(selected.to)} ({selected.to})</p>
-        <p>Proposed by: {proposer(selected, tasks)}</p><p>Approved by: {selected.approval?.by || 'No approval recorded'}</p>
+        <p>Proposed by: {proposer(selected, tasks)}</p>
+        {!!selected.edits?.length && <p>Edited by you at {date(selected.edits[selected.edits.length - 1].at)}.</p>}
+        <p>Approved by: {selected.approval?.by || 'No approval recorded'}</p>
         <p>State: {sentState(selected)}{selected.dismissedAt ? ' · Dismissed' : ''}</p><p>Sent: {date(selected.sentAt)}</p>
-        <h3>Full message</h3><MailBody body={selected.body} />
+        <p>Check: {selected.review ? `${selected.review.verdict}. ${selected.review.reason}` : selected.error ? 'Failed.' : 'The controller checks this text now.'}</p>
+        {selected.editBlocked && selected.direction === 'outbox' && !selected.dismissedAt && <p>{selected.editBlocked}</p>}
+        {editing?.id === selected.id
+          ? <DraftEditor key={editing.key} m={selected} start={editing} busy={busy} act={act} close={() => setEditing(null)} />
+          : <><h3>Full message</h3><MailBody body={selected.body} /></>}
         {!!selected.files?.length && <><h3>Files</h3><ul>{selected.files.map(f => <li key={f.id}>{f.name} ({Math.ceil(f.size / 1024)} KiB). {f.review?.verdict || 'Waiting for controller review'}.</li>)}</ul></>}
         <h3>Recorded steps</h3><ol>{steps.map((step, i) => <li key={i}>{step.label}: {date(step.at)}</li>)}</ol>
+        {!!selected.versions?.length && <><h3>Earlier versions</h3>
+          <p>Taskboard keeps the text before each of your last 10 edits. Slack receives only the current text.</p>
+          {selected.versions.map((v, i) => ({ v, i })).reverse().map(({ v, i }) => <details key={v.hash + v.replacedAt} className="mail-version">
+            <summary>Text by {author(v.author, selected, tasks)}, replaced at {date(v.replacedAt)}</summary>
+            <TextChanges before={v} after={selected.versions![i + 1] || { subject: selected.subject, body: selected.body, files: selected.files || [] }} />
+            {!selected.editBlocked && <button className="btn ghost" disabled={busy} onClick={() => edit(selected, v)}>Restore this text in the editor</button>}
+          </details>)}
+        </>}
         {selected.error && <p role="alert">{selected.error}</p>}
         {selected.sentAt && <p>Slack confirmed this post. Taskboard has no record that the recipient saved or read it.</p>}
         <div className="mail-tabs">
           <button className="btn ghost" disabled={busy} onClick={() => void act(() => request(`/${selected.id}/${selected.dismissedAt ? 'restore' : 'dismiss'}`, {}))}>{selected.dismissedAt ? 'Restore' : 'Dismiss'}</button>
           {!selected.dismissedAt && !selected.review && <button className="btn" disabled={busy} onClick={() => void act(() => request(`/${selected.id}/review`, {}))}>Retry controller review</button>}
-          {!selected.dismissedAt && selected.review && selected.approver !== 'nobody' && !selected.approval && <button className="btn" disabled={busy} onClick={() => void act(() => request(`/${selected.id}/approve`, { hash: selected.hash }))}>Approve</button>}
+          {!selected.editBlocked && editing?.id !== selected.id && <button className="btn" disabled={busy} onClick={() => edit(selected, { subject: selected.subject, body: selected.body, files: selected.files || [] })}>Edit</button>}
+          {!selected.editBlocked && selected.review && selected.approver !== 'nobody' && !selected.approval && <button className="btn" disabled={busy} onClick={() => void act(() => request(`/${selected.id}/approve`, { hash: selected.hash }))}>Approve</button>}
+          {!selected.editBlocked && selected.review && selected.approver !== 'nobody' && editing?.id !== selected.id && <button className="btn" disabled={busy} onClick={() => void act(() => request(`/${selected.id}/approve-send`, { hash: selected.hash }))}>Approve and send</button>}
           {!selected.trusted && <button className="btn ghost" disabled={busy} onClick={() => void act(() => request('/trusted', { user: selected.to, name: contactName(selected.to), trusted: true }))}>Trust this person</button>}
           {!selected.dismissedAt && selected.approval && !selected.sentAt && <button className="btn" disabled={busy || selected.sending} onClick={() => void act(() => request(`/${selected.id}/send`, {}))}>Send approved message</button>}
         </div>
@@ -215,6 +304,7 @@ export function InboxPage(props: { tasks: Task[]; open: (id: string, tab?: 'term
         </div>
         <div className="field"><label>Subject <input className="mail-input" value={subject} onChange={e => setSubject(e.target.value)} maxLength={200} required /></label></div>
         <div className="field"><label>Message <textarea className="mail-input" value={body} onChange={e => setBody(e.target.value)} rows={5} required /></label></div>
+        {(subject || body) && <SlackSize subject={subject} body={body} />}
         <div className="field"><label>Attach files <input className="mail-input" type="file" multiple accept=".txt,.md,.pdf,.docx" onChange={e => { const files = Array.from(e.target.files || []); void act(async () => { for (const file of files) { const response = await fetch('/api/mail/files/upload', { method: 'POST', headers: { 'content-type': 'application/octet-stream', 'x-mail-filename': encodeURIComponent(file.name) }, body: file }); const result = await response.json(); if (!response.ok) throw new Error(result.error || 'File upload failed'); setSelectedFiles(current => [...current, result.id]); } }); e.target.value = ''; }} /></label></div>
         <button className="btn" type="button" disabled={busy} onClick={() => act(async () => { const response = await fetch('/api/docs/all'); if (!response.ok) throw new Error('Could not read task outboxes'); const all = await response.json() as Record<string, { name: string }[]>; setOutboxFiles(Object.entries(all).flatMap(([task, files]) => files.filter(f => /\.(txt|md|pdf|docx)$/i.test(f.name)).map(f => ({ task, name: f.name, taskName: props.tasks.find(t => t.id === task)?.title || task })))); })}>List task outbox files</button>
         {!!outboxFiles.length && <div><select className="mail-input" aria-label="Task outbox file" value={outboxChoice} onChange={e => setOutboxChoice(e.target.value)}><option value="">Choose a task outbox file</option>{outboxFiles.map((f, index) => <option key={`${f.task}/${f.name}`} value={String(index)}>{f.taskName}: {f.name}</option>)}</select><button className="btn" type="button" disabled={busy || !outboxChoice} onClick={() => act(async () => { const f = outboxFiles[Number(outboxChoice)]; const result = await request('/files/stage', { task: f.task, name: f.name }); setSelectedFiles(current => [...current, result.id]); setOutboxChoice(''); })}>Attach selected file</button></div>}

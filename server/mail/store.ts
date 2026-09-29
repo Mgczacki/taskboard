@@ -22,6 +22,15 @@ export interface Message {
   returns?: { comment: string; at: string }[];
   // routed by the controller without the user's approval, and the user has not opened it yet
   unseen?: boolean;
+  // outgoing drafts that the user changed in Inbox (server/mail/edit.ts): one entry for each saved edit, and the text
+  // before each of the last 10 edits
+  edits?: { at: string; by: 'user'; hash: string }[];
+  versions?: MessageVersion[];
+}
+// The text of a draft before an edit. author: who wrote this text. files: the attachments without the long body file.
+export interface MessageVersion {
+  subject: string; body: string; files: MailFile[]; hash: string; author: 'user' | 'controller' | 'task'; replacedAt: string;
+  review?: Message['review']; approval?: Message['approval'];
 }
 export interface TrustedSender { user: string; name: string; at: string }
 export interface Contact { user: string; name: string; channel: string; oldest: string; status?: 'requested' | 'active' | 'needs-request'; requestId?: string }

@@ -40,6 +40,7 @@ export function mailCards(store: MailStore, deps: CardDeps) {
       `Check: ${combinedVerdict(m)}. ${m.review?.reason || ''}`,
       ...(m.files?.length ? [`Files: ${m.files.map(f => `${f.name} (${f.review?.verdict || 'no check'})`).join(', ')}`] : []),
       ...(m.returns?.length ? [`Your earlier comment: ${m.returns[m.returns.length - 1].comment}`] : []),
+      ...(m.edits?.length ? [`Edited by you at ${new Date(m.edits[m.edits.length - 1].at).toLocaleString()}. Inbox shows the earlier text.`] : []),
       '',
       body,
     ].join('\n');
@@ -85,8 +86,10 @@ export function mailCards(store: MailStore, deps: CardDeps) {
       if (pending && pending.key === key) continue;
       if (pending) {
         const x = store.get(m.id);
+        const edited = x.edits?.some(e => e.hash === x.hash) && !pending.key.startsWith(x.hash);
         approvals.close(pending.approval, x.rejectedAt ? 'denied' : x.approval && x.approval.hash === x.hash ? 'approved' : 'expired',
-          x.rejectedAt ? 'Rejected in Inbox.' : x.approval && x.approval.hash === x.hash ? `Approved in Inbox by ${x.approval.by}.` : 'The message, its proposed task, or the permission level changed.');
+          x.rejectedAt ? 'Rejected in Inbox.' : x.approval && x.approval.hash === x.hash ? `Approved in Inbox by ${x.approval.by}.`
+            : edited ? 'You edited the message in Inbox. The check runs again on the new text.' : 'The message, its proposed task, or the permission level changed.');
       }
       open.delete(m.id);
       if (key) create(m, key);

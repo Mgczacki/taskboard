@@ -50,3 +50,17 @@
 .mail-member-options p { padding:6px 8px; color:var(--muted); }
 .mail-member-trigger:focus-visible,.mail-member-option:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
 @media (max-width:700px) { .mail-history-grid { grid-template-columns:1fr; } }
+.mail-editor { margin:12px 0; padding-top:4px; }
+.mail-editor .field { margin:12px 0; }
+.mail-editor .mail-input { display:block; margin-top:6px; }
+.mail-editor .field label { margin-bottom:0; }
+.mail-editor textarea.mail-input { font-family:var(--mono); min-height:220px; }
+.mail-editor fieldset label { display:flex; align-items:center; gap:8px; margin:6px 0; }
+.mail-size p { margin:4px 0; font-size:12px; color:var(--muted); }
+.mail-size .mail-size-warn { color:var(--st-needs); font-weight:600; }
+.mail-version { margin:8px 0; }
+.mail-version .btn { margin-top:8px; }
+.mail-diff pre { max-height:360px; overflow:auto; padding:8px; border:1px solid var(--line); border-radius:6px; background:var(--bg2); font-family:var(--mono); font-size:12px; white-space:pre-wrap; overflow-wrap:anywhere; }
+.mail-diff span { display:block; }
+.mail-diff-removed { background:color-mix(in srgb, var(--st-stopped) 18%, transparent); }
+.mail-diff-added { background:color-mix(in srgb, var(--st-working) 18%, transparent); }

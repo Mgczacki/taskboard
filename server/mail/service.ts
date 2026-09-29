@@ -271,7 +271,12 @@ export class MailService {
     const conversation = await this.slack.call('conversations.open', { users: m.to });
     const channel = conversation.channel?.id; if (!/^D[A-Z0-9]+$/.test(channel || '')) throw new Error('Slack did not return a direct conversation');
     if (this.slack.identity()?.user !== identity.user) throw new Error('Connection changed before sending');
-    this.store.update(id, x => { x.sending = true; x.sendStartedAt = new Date().toISOString(); delete x.error; });
+    // the user can edit the draft while the checks above wait for Slack: post only the text that was approved
+    this.store.update(id, x => {
+      if (x.hash !== m.hash || x.approval?.hash !== m.hash) throw new Error('The message changed. Approve it again before sending.');
+      if (x.sending || x.sentAt) throw new Error('Taskboard is already sending this message');
+      x.sending = true; x.sendStartedAt = new Date().toISOString(); delete x.error;
+    });
     try {
       for (const [index, f] of (m.files || []).entries()) {
         const slackId = await this.slack.upload(f.name, bytes[index], channel);
