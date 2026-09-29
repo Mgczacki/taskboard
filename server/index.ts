@@ -26,7 +26,7 @@ import { acquire } from './lock.ts';
 import { ROLE, installRuntimeFiles, refuseReason } from './instance.ts';
 import { hostname } from 'node:os';
 import WebSocket from 'ws';
-import { mountReview } from './review.ts';
+import { mountReview, pendingFor } from './review.ts';
 import { attach } from './pty.ts';
 import * as store from './store.ts';
 import * as tmux from './tmux.ts';
@@ -600,7 +600,8 @@ function betweenTurns(t: store.Task) {
   return Date.now() - Math.max(last, store.launchedAt.get(t.id) || 0) >= QUIET_MS;
 }
 let lastListWarn = 0;
-async function reconcile() {
+// first: the run at server start, before the status is read from the transcripts (see below)
+async function reconcile(first = false) {
   const sessions = await tmux.listSessions();
   if (!sessions) { if (Date.now() - lastListWarn > 60000) { lastListWarn = Date.now(); console.error(`${new Date().toISOString()} tmux did not answer; skipping status checks`); } return; }
   const byName = new Map(sessions.map(s => [s.name, s]));
@@ -630,21 +631,30 @@ async function reconcile() {
     if (t.agent === 'codex' && t.sessionId) {
       let tr = t.transcript;
       if (!tr) { tr = importer.transcriptFor('codex', t.sessionId, (accounts.get(t.account) || accounts.defaultFor('codex')).dir); if (tr) store.update(t.id, { transcript: tr }); }
-      try { if (tr) events.codexActivity(t, statSync(tr).mtimeMs); } catch { /* moved */ }
+      let mtime = 0;
+      // at start, a rollout file that changed while the server was down is read by the transcript check instead
+      try { if (tr) { mtime = statSync(tr).mtimeMs; if (!first) events.codexActivity(t, mtime); } } catch { /* moved */ }
+      // Questions Codex asks while it keeps working are only visible on screen. Read the screen while they are open,
+      // and for 10 s after the rollout file or the status changed (the questions appear right after the call is written).
+      const c = store.get(t.id)!;
+      if (events.codexQuestionsOpen(c) || Date.now() - Math.max(mtime, Date.parse(c.statusAt) || 0) < 10000)
+        events.codexQuestionCheck(c, (await tmux.capture(c.session, 0)).split('\n').filter(l => l.trim()).slice(-15).join('\n'));
     }
     // after the activity checks above, so a new Codex turn is seen first
     const cur = store.get(t.id)!;
     if (cur.restartWhenDone && betweenTurns(cur)) { await restartTask(cur); continue; }
   }
 }
-await reconcile();
+await reconcile(true);
 // Events sent while the server was down are lost; take the status from the transcripts once at start.
 for (const t of store.all()) {
   if (!t.transcript || t.openElsewhere || !['working', 'needs-you', 'idle', 'unread', 'review'].includes(t.status)) continue;
   const r = external.readState(t.agent, t.transcript); if (!r) continue;
   const newer = (r.at ?? 0) > (Date.parse(t.statusAt) || 0); // compare conversation records, not file writes
-  if (r.state === 'finished' && ['working', 'needs-you'].includes(t.status) && newer)
-    store.update(t.id, { status: 'unread', ask: '', now: r.text || t.now, statusSource: 'Turn ended while Taskboard was restarting (read from the transcript).' });
+  if (r.state === 'finished' && ['working', 'needs-you'].includes(t.status) && newer) {
+    const pending = pendingFor(t.id); // a document still waiting for review
+    store.update(t.id, { status: pending ? 'review' : 'unread', ask: pending ? `Review ${pending.name}` : '', now: r.text || t.now, statusSource: 'Turn ended while Taskboard was restarting (read from the transcript).' });
+  }
   else if ((r.state === 'busy' || r.state === 'tool') && ['idle', 'unread', 'review'].includes(t.status) && newer)
     store.update(t.id, { status: 'working', statusSource: 'Started working while Taskboard was restarting (read from the transcript).' });
 }

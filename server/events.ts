@@ -3,6 +3,7 @@ import { statSync } from 'node:fs';
 import * as docs from './docs.ts';
 import * as review from './review.ts';
 import * as accounts from './accounts.ts';
+import * as external from './external.ts';
 import * as store from './store.ts';
 import type { Task } from './store.ts';
 
@@ -114,7 +115,9 @@ export function codexEvent(taskId: string, p: any) {
   // thread's rollout file, so it is cleared and the watcher (index.ts reconcile) looks up the new thread's file.
   const thread: string | undefined = p['thread-id'];
   if (t.sessionId && thread && thread !== t.sessionId) store.update(t.id, { ...clearedPatch(t, thread, '/new'), transcript: undefined });
-  store.update(t.id, { sessionId: p['thread-id'] || t.sessionId, ...finishedStatus(t, msg), now: firstPara(msg) || t.now, statusSource: `Codex notify (agent-turn-complete) at ${clock()}.` });
+  // questions Codex asked during the turn can still be open on screen; codexQuestionCheck sets the status when they close
+  const status = codexQuestionsOpen(store.get(t.id)!) ? {} : { ...finishedStatus(t, msg), statusSource: `Codex notify (agent-turn-complete) at ${clock()}.` };
+  store.update(t.id, { sessionId: p['thread-id'] || t.sessionId, ...status, now: firstPara(msg) || t.now });
   if (msg) store.appendLog(t.id, { did: firstPara(msg).slice(0, 200), wait: endsWithQuestion(msg) ? lastSentence(msg) : 'Nothing.' });
   lastCodexEvent.set(t.id, Date.now());
 }
@@ -156,8 +159,33 @@ export function bell(session: string) {
 export function codexActivity(t: Task, transcriptMtime: number) {
   if (Date.now() - (store.launchedAt.get(t.id) || 0) < 20000) return; // starting or resuming, not working
   const last = Math.max(lastCodexEvent.get(t.id) || 0, Date.parse(t.statusAt) || 0, (store.launchedAt.get(t.id) || 0) + 20000);
-  if (transcriptMtime > last + 1500 && ['unread', 'idle', 'needs-you', 'review'].includes(t.status)) {
+  // a question read from the screen stays until the screen no longer shows it (screenCheck, codexQuestionCheck)
+  const fromScreen = t.statusSource?.startsWith(SCREEN_SOURCE) || codexQuestionsOpen(t);
+  if (transcriptMtime > last + 1500 && ['unread', 'idle', 'needs-you', 'review'].includes(t.status) && !fromScreen) {
     store.update(t.id, { status: 'working', ask: '', statusSource: `Codex transcript changed at ${clock()}.` });
     lastCodexEvent.set(t.id, transcriptMtime);
   }
+}
+
+// Codex can ask questions without ending its turn (the request_user_input_async tool). It keeps working, and the
+// questions wait above the input box ("? 3 questions" / "shift+← to answer"). No hook fires for them, and the rollout
+// file does not record the answers, so the screen is the only place that shows whether they are still open.
+const CODEX_QUESTIONS = /\?\s+(\d+)\s+questions?\b[^\n]*\n[^\n]*to answer/;
+const CODEX_QUESTION_SOURCE = 'Codex questions on screen';
+export const codexQuestionsOpen = (t: Task) => t.status === 'needs-you' && !!t.statusSource?.startsWith(CODEX_QUESTION_SOURCE);
+export function codexQuestionCheck(t: Task, screen: string) {
+  const m = screen.match(CODEX_QUESTIONS);
+  if (codexQuestionsOpen(t)) {
+    if (m) return;
+    // answered or dismissed: the rollout file shows whether the turn is still running
+    const r = t.transcript ? external.readState('codex', t.transcript) : null;
+    const done = r && ['finished', 'aborted'].includes(r.state);
+    store.update(t.id, { ...(done ? finishedStatus(t, r.text || '') : { status: 'working' as const, ask: '' }), statusSource: `Codex questions answered or dismissed (seen at ${clock()}).` });
+    return;
+  }
+  if (!m || !['working', 'unread', 'idle', 'review'].includes(t.status)) return;
+  const titles = t.transcript ? external.codexQuestions(t.transcript) : [];
+  const n = Number(m[1]);
+  const ask = `Codex asked ${n} question${n === 1 ? '' : 's'} and keeps working${titles.length ? `: ${titles.join(' / ')}` : '.'} Answer in the terminal (shift+←).`;
+  store.update(t.id, { status: 'needs-you', ask, statusSource: `${CODEX_QUESTION_SOURCE} at ${clock()} (request_user_input_async sends no event).` });
 }
