@@ -108,7 +108,8 @@ Agents that work on Taskboard itself run inside the real one, so the setup keeps
 Keys (press `?` in the app for the full list, with key names written out): `⌘K` (Command-K) controller, also from inside
 a terminal · `N` new task · `C` controller · `T` triage (everything waiting on you, longest first) · `⌘S` hide the sidebar.
 Single letters work when the cursor is not in a terminal or text field. On the canvas: `⌃⌥←→` focus, `⌃⌥↩` maximize, `⌃⌥L` layout, `⌃⌥F` focus mode (Esc or the button
-bottom-right exits), `⌃⌥G` next group tab, `⌃⌥⇧G` new group, `⌃⌥N` next waiting, `⌃⌥.` / `⌃⌥,` text size, `⌃⌥W` remove window.
+bottom-right exits), `⌃⌥G` next group tab, `⌃⌥⇧G` new group, `⌃⌥N` next waiting, `⌃⌥.` / `⌃⌥,` text size, `⌃⌥W` remove window, `⌃⌥PageUp` / `⌃⌥PageDown` (or `⌃⌥[` / `⌃⌥]`) previous / next page.
+A sideways swipe (or Shift + wheel) over a terminal scrolls the canvas, or turns one page when **Per page** is on.
 ⌘-click window headers or cards to select several. Drag a window header onto a group tab to add it.
 
 ## How it works
