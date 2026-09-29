@@ -44,6 +44,9 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
     };
     open();
     const input = term.onData(d => { if (ws && ws.readyState === 1) ws.send(d); });
+    // A paste event arrives before xterm.js sends its text. Tell tmux to leave copy mode first.
+    const onPaste = () => { if (ws && ws.readyState === 1) ws.send('\x00' + JSON.stringify({ t: 'paste' })); };
+    el.addEventListener('paste', onPaste, true);
     // Shift+Enter: Claude Code and Codex treat ESC+CR as a newline in the prompt
     term.attachCustomKeyEventHandler(e => {
       if (e.type === 'keydown' && e.key === 'Enter' && e.shiftKey) { if (ws && ws.readyState === 1) ws.send('\x1b\r'); return false; }
@@ -61,7 +64,7 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
     term.textarea?.addEventListener('focus', onF);
     if (autoFocus) setTimeout(() => term.focus(), 50);
 
-    return () => { closed = true; clearTimeout(sizeTimer); ro.disconnect(); input.dispose(); term.textarea?.removeEventListener('focus', onF); ws?.close(); term.dispose(); };
+    return () => { closed = true; clearTimeout(sizeTimer); ro.disconnect(); input.dispose(); el.removeEventListener('paste', onPaste, true); term.textarea?.removeEventListener('focus', onF); ws?.close(); term.dispose(); };
   }, [taskId, session]);
 
   useEffect(() => { if (termRef.current) termRef.current.options.fontSize = fontSize; }, [fontSize]);
