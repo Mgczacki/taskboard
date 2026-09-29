@@ -179,7 +179,7 @@ ${machine.get().permissions.controllerNeedsApproval
 ${writingRules('your reports to the user, the messages that you send to tasks, and the prompts for new agents')}
 `;
 // what the controller's command line depends on; when it changes, the running controller is restarted between turns
-export const controllerLaunchKey = (agent: string) => JSON.stringify({ mail: 1, agent, label: machine.controllerLabel(), remote: agent === 'claude' && machine.get().controller.remoteControl, approval: machine.get().permissions.controllerNeedsApproval });
+export const controllerLaunchKey = (agent: string) => JSON.stringify({ mail: 1, agent, model: machine.get().controller.models[agent as 'claude' | 'codex' | 'antigravity'] || '', label: machine.controllerLabel(), remote: agent === 'claude' && machine.get().controller.remoteControl, approval: machine.get().permissions.controllerNeedsApproval });
 
 export async function startController(): Promise<Task> {
   mkdirSync(join(CONTROLLER_DIR, 'plans'), { recursive: true });
@@ -195,11 +195,12 @@ export async function startController(): Promise<Task> {
   if (machine.get().permissions.trustWorkspaces) workspaceTrust.trust(t);
   launching.add(t.id); store.launchedAt.set(t.id, Date.now());
   try {
+    const model = machine.get().controller.models[t.agent] || '';
     const c = t.agent === 'claude'
       // named after this machine; with Remote Control on it can be reached from claude.ai/code and the Claude mobile app
-      ? ['claude', '--settings', CONTROLLER_SETTINGS_FILE, '--permission-mode', machine.get().permissions.autoReview ? 'auto' : 'default', ...(resume && t.sessionId ? ['--resume', t.sessionId] : t.sessionId ? ['--session-id', t.sessionId] : []),
+      ? ['claude', '--settings', CONTROLLER_SETTINGS_FILE, ...(model ? ['--model', model] : []), '--permission-mode', machine.get().permissions.autoReview ? 'auto' : 'default', ...(resume && t.sessionId ? ['--resume', t.sessionId] : t.sessionId ? ['--session-id', t.sessionId] : []),
         '--name', machine.controllerLabel(), ...(machine.get().controller.remoteControl ? ['--remote-control', machine.controllerLabel()] : [])]
-      : command(t, null, !!t.sessionId, await codexHookTrust(t));
+      : command({ ...t, model }, null, !!t.sessionId, await codexHookTrust(t));
     await tmux.newSession(t.session, CONTROLLER_DIR, baseEnv(t), c, async () => { await ensureTmuxConfigured(); });
     await ensureTmuxConfigured();
   } finally { launching.delete(t.id); }

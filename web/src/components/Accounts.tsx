@@ -37,23 +37,26 @@ export const loadAccounts = (fresh = false) => fetch('/api/accounts' + (fresh ? 
 const short = (p: string) => p.replace(/^\/Users\/[^/]+/, '~');
 
 // This machine's controller: its name (shown in the Claude app as "Taskboard controller · <name>"), whether it starts
-// with Taskboard, and Remote Control (Claude Code only).
+// with Taskboard, its model, and Remote Control (Claude Code only).
 export function ControllerBox({ ctl, setErr }: { ctl?: Task; setErr: (s: string) => void }) {
   const [info, setInfo] = useState<MachineInfo | null>(null);
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
   useEffect(() => { api.info().then(i => { setInfo(i); setName(i.machine); }); }, [ctl?.remoteUrl, ctl?.agent]);
   if (!info) return null;
-  const save = async (p: { name?: string; autostart?: boolean; remoteControl?: boolean }) => {
+  const save = async (p: { name?: string; autostart?: boolean; remoteControl?: boolean; controllerModels?: Partial<Record<Agent, string>> }) => {
     setBusy(true); try { const i = await api.updateInfo(p); setInfo(i); setName(i.machine); } catch (e) { setErr(String((e as Error).message || e)); } setBusy(false);
   };
-  const s = info.settings.controller, isClaude = (ctl?.agent || 'claude') === 'claude';
+  const s = info.settings.controller, agent = ctl?.agent || 'claude', isClaude = agent === 'claude';
   return (
     <div className="ctl-box">
       <div className="ctl-row"><b>This machine</b>
         <input type="text" value={name} onChange={e => setName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }} onBlur={() => { if (name.trim() && name.trim() !== info.machine) save({ name }); }} title="The name the controller uses for itself, and its session name in the Claude app" />
         <span className="sub">host {info.host} · one Taskboard server per machine</span></div>
       <label className="opt" title="When the Taskboard server starts, it starts the controller; if the controller exits, Taskboard starts it again within a minute"><input type="checkbox" checked={s.autostart} disabled={busy} onChange={e => save({ autostart: e.target.checked })} /> Start the controller with Taskboard and keep it running</label>
+      <div className="ctl-row"><label htmlFor="controller-model">Controller model for {AGENT_NAME[agent]}</label>
+        <input id="controller-model" type="text" maxLength={80} key={`${agent}:${s.models[agent]}`} defaultValue={s.models[agent]} disabled={busy} placeholder="Use the agent default" onBlur={e => { const model = e.target.value.trim(); if (model !== s.models[agent]) save({ controllerModels: { [agent]: model } }); }} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} />
+        <span className="sub">A change restarts the controller between turns.</span></div>
       <label className="opt" title={isClaude ? 'Lets you continue the controller from claude.ai/code or the Claude mobile app' : 'Remote Control is a Claude Code feature; it is off while the controller runs Codex'}><input type="checkbox" checked={s.remoteControl} disabled={busy || !isClaude} onChange={e => save({ remoteControl: e.target.checked })} /> Remote Control: reach the controller from the Claude app as “{info.controller?.label || 'Taskboard controller · ' + info.machine}”{!isClaude && ' (Claude Code only)'}</label>
       {isClaude && s.remoteControl && <div className="sub">{ctl?.remoteUrl ? <>Open it on any device: <a href={ctl.remoteUrl} target="_blank" rel="noreferrer">{ctl.remoteUrl}</a> — in the Claude mobile app it is listed under Code.</> : 'The link appears here once the controller runs with Remote Control. After a change, the controller restarts by itself as soon as it is between turns (its conversation continues).'}</div>}
     </div>

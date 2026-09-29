@@ -20,30 +20,37 @@ test('controller launches and restarts with mailbox access, ordinary task does n
 const fs=require('node:fs');const path=require('node:path');const cp=require('node:child_process');
 const expected=fs.readFileSync(path.join(path.dirname(process.env.TB_TOKEN_FILE),'mail-controller.token'),'utf8').trim();
 cp.execFile(process.execPath,[${JSON.stringify(cli)},'mail','list'],{env:process.env},(error,stdout)=>{
-const record={task:process.env.TASK_ID,hasToken:!!process.env.TB_MAIL_CONTROLLER_TOKEN,matches:process.env.TB_MAIL_CONTROLLER_TOKEN===expected,allowed:!error};
+const record={task:process.env.TASK_ID,hasToken:!!process.env.TB_MAIL_CONTROLLER_TOKEN,matches:process.env.TB_MAIL_CONTROLLER_TOKEN===expected,allowed:!error,args:process.argv.slice(2)};
 fs.appendFileSync(path.join(process.env.TASKBOARD_VAULT,'probe.jsonl'),JSON.stringify(record)+'\\n');
 });
 setInterval(()=>{},1000);
 `,{mode:0o700});
  process.env.PATH=bin+':'+process.env.PATH;
  mkdirSync(join(root,'server'),{recursive:true});
- writeFileSync(join(root,'server','machine.json'),JSON.stringify({controller:{autostart:false,remoteControl:false}}));
+ writeFileSync(join(root,'server','machine.json'),JSON.stringify({controller:{autostart:false,remoteControl:false},permissions:{trustWorkspaces:false}}));
  const {mountMail}=await import('../server/mail/routes.ts');const stop=mountMail(app,{background:false});
  const agents=await import('../server/agents.ts');const tasks=await import('../server/store.ts');const tmux=await import('../server/tmux.ts');
  const records=()=>existsSync(join(root,'vault','probe.jsonl'))?readFileSync(join(root,'vault','probe.jsonl'),'utf8').trim().split('\n').map(s=>JSON.parse(s)):[];
+ const withoutArgs=(r:Record<string,unknown>)=>{const {args,...rest}=r;return rest;};
  const waitFor=async (count:number)=>{for(let i=0;i<100;i++){if(records().length>=count)return;await new Promise(r=>setTimeout(r,100));}throw new Error('Fixture did not finish');};
  try {
   agents.writeClaudeSettings();
   const first=await agents.startController();await waitFor(1);
-  assert.deepEqual(records()[0],{task:'controller',hasToken:true,matches:true,allowed:true});
+  assert.deepEqual(records()[0].args.slice(records()[0].args.indexOf('--model'),records()[0].args.indexOf('--model')+2),['--model','claude-sonnet-5-5']);
+  assert.deepEqual(withoutArgs(records()[0]),{task:'controller',hasToken:true,matches:true,allowed:true});
   const key=JSON.parse(agents.controllerLaunchKey('claude'));assert.equal(key.mail,1);
+  assert.equal(key.model,'claude-sonnet-5-5');
   const old={...key};delete old.mail;assert.notEqual(JSON.stringify(old),first.launchedAs);
+  const machine=await import('../server/machine.ts');
+  machine.update({controllerModels:{claude:'claude-sonnet-5'}});
+  assert.notEqual(agents.controllerLaunchKey('claude'),first.launchedAs);
   await tmux.killSession(first.session);
   await agents.startController();await waitFor(2);
-  assert.deepEqual(records()[1],records()[0]);
+  assert.deepEqual(records()[1].args.slice(records()[1].args.indexOf('--model'),records()[1].args.indexOf('--model')+2),['--model','claude-sonnet-5']);
+  assert.deepEqual(withoutArgs(records()[1]),withoutArgs(records()[0]));
   const task=tasks.create({id:'ordinary',num:1,title:'Fixture',agent:'claude',status:'idle',cwd:root,folder:root,session:'ordinary',sessionId:randomUUID(),desc:''});
   await agents.resumeTask(task);await waitFor(3);
-  assert.deepEqual(records()[2],{task:'ordinary',hasToken:false,matches:false,allowed:false});
+  assert.deepEqual(withoutArgs(records()[2]),{task:'ordinary',hasToken:false,matches:false,allowed:false});
  } finally {
   await tmux.killSession('ordinary');await tmux.killSession('tb-controller');
   stop();await new Promise<void>(r=>server.close(()=>r()));rmSync(root,{recursive:true,force:true});
