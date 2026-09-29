@@ -1,6 +1,7 @@
 // Turning hook events into task status. Status must be trustworthy, so each rule is tied to a specific event.
 import { statSync } from 'node:fs';
 import * as docs from './docs.ts';
+import * as review from './review.ts';
 import * as accounts from './accounts.ts';
 import * as store from './store.ts';
 import type { Task } from './store.ts';
@@ -16,8 +17,10 @@ const endsWithQuestion = (s = '') => /\?\s*$/.test(s.trim());
 const clock = () => new Date().toTimeString().slice(0, 5);
 
 function finishedStatus(t: Task, msg: string) {
-  // a document waiting for your review keeps the task in 'review' until you act on it
-  if (t.status === 'review') return { status: 'review' as const, ask: t.ask || '' };
+  // a document waiting for your review puts the task back in 'review' at the end of every turn until you act on it.
+  // The review list decides, not the status: a new turn changes the status to 'working' in the meantime.
+  const pending = review.pendingFor(t.id);
+  if (pending) return { status: 'review' as const, ask: `Review ${pending.name}` };
   if (endsWithQuestion(msg)) return { status: 'needs-you' as const, ask: lastSentence(msg) };
   return { status: viewing.has(t.id) ? 'idle' as const : 'unread' as const, ask: '' };
 }
@@ -149,10 +152,11 @@ export function bell(session: string) {
 
 // Codex has no "prompt submitted" event here. Its transcript file only changes when the conversation does
 // (a prompt, a tool call, a reply), never for screen redraws, so a change after a finished turn means it is working again.
+// This includes 'review', as Claude's UserPromptSubmit does; finishedStatus sets 'review' again when the turn ends.
 export function codexActivity(t: Task, transcriptMtime: number) {
   if (Date.now() - (store.launchedAt.get(t.id) || 0) < 20000) return; // starting or resuming, not working
   const last = Math.max(lastCodexEvent.get(t.id) || 0, Date.parse(t.statusAt) || 0, (store.launchedAt.get(t.id) || 0) + 20000);
-  if (transcriptMtime > last + 1500 && ['unread', 'idle', 'needs-you'].includes(t.status)) {
+  if (transcriptMtime > last + 1500 && ['unread', 'idle', 'needs-you', 'review'].includes(t.status)) {
     store.update(t.id, { status: 'working', ask: '', statusSource: `Codex transcript changed at ${clock()}.` });
     lastCodexEvent.set(t.id, transcriptMtime);
   }

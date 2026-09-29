@@ -640,12 +640,12 @@ async function reconcile() {
 await reconcile();
 // Events sent while the server was down are lost; take the status from the transcripts once at start.
 for (const t of store.all()) {
-  if (!t.transcript || t.openElsewhere || !['working', 'needs-you', 'idle', 'unread'].includes(t.status)) continue;
+  if (!t.transcript || t.openElsewhere || !['working', 'needs-you', 'idle', 'unread', 'review'].includes(t.status)) continue;
   const r = external.readState(t.agent, t.transcript); if (!r) continue;
   const newer = (r.at ?? 0) > (Date.parse(t.statusAt) || 0); // compare conversation records, not file writes
   if (r.state === 'finished' && ['working', 'needs-you'].includes(t.status) && newer)
     store.update(t.id, { status: 'unread', ask: '', now: r.text || t.now, statusSource: 'Turn ended while Taskboard was restarting (read from the transcript).' });
-  else if ((r.state === 'busy' || r.state === 'tool') && ['idle', 'unread'].includes(t.status) && newer)
+  else if ((r.state === 'busy' || r.state === 'tool') && ['idle', 'unread', 'review'].includes(t.status) && newer)
     store.update(t.id, { status: 'working', statusSource: 'Started working while Taskboard was restarting (read from the transcript).' });
 }
 // start the controller together with Taskboard
