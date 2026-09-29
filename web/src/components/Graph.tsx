@@ -8,12 +8,16 @@
 // - Columns are ranks along the handoff chains: rank = longest path from a node with no inputs. A task, the
 //   document it wrote and the task that received it sit in consecutive columns.
 // - Tasks with no links fill the free cells of their lane row by row: waiting on you first, then by task number.
+// - People (the "People" checkbox): Slack members that a task, the controller or the user sent a message to, or whose
+//   message was routed to a task. They are in their own "People" lane at the bottom in every lane layout, with the
+//   Controller, You and Unknown sender nodes for messages that no task proposed. Data: GET /api/mail/graph.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Group, Status, Task } from '../api';
 import { AGENT_NAME, ATTN, ORDER, STATUS_LABEL, fmtWait } from '../api';
 import '../graph.css';
 import { Dot } from './ui';
 import { hit } from '../keys';
+import { Face, MessagePanel, type MailBrief, type MailGraph, type MailPerson } from './GraphMail';
 
 type Tab = 'terminal' | 'log' | 'docs';
 interface Props { tasks: Task[]; groups: Group[]; open: (id: string, tab?: Tab) => void }
@@ -21,14 +25,18 @@ interface Edge { from: string; to: string; name: string; at: string }
 interface OutDoc { name: string; path: string; kind: 'md' | 'html' | 'other'; mtime: string }
 type LaneMode = 'group' | 'folder' | 'status';
 
+const PEOPLE = 'p:people', PERSON_W = 220, PERSON_H = 62;
+const SOURCES: Record<string, string> = { controller: 'Controller', user: 'You', unknown: 'Unknown sender' };
 const LABEL_W = 180, PADX = 24, CELL_W = 240, DOC_W = 208, COL_GAP = 64, ROW_H = 112, DOC_H = 62, ROW_GAP = 16, PAD_Y = 18;
 const STVAR: Record<Status, string> = {
   'needs-you': '--st-needs', working: '--st-working', unread: '--st-unread', idle: '--st-idle', parked: '--st-parked',
   archived: '--st-archived', review: '--st-review', stopped: '--st-stopped', suspended: '--st-idle',
 };
 
-interface GNode { id: string; kind: 'task' | 'doc'; lane: string; w: number; h: number; x: number; y: number; row: number; col: number; t?: Task; owner?: string; doc?: OutDoc }
-interface GEdge { a: string; b: string; kind: 'wrote' | 'handoff' }
+interface PersonStats { sent: number; unsent: number; received: number; unrouted: number; last: string }
+interface GNode { id: string; kind: 'task' | 'doc' | 'person' | 'source'; lane: string; w: number; h: number; x: number; y: number; row: number; col: number; t?: Task; owner?: string; doc?: OutDoc; person?: MailPerson; stats?: PersonStats; src?: string }
+// message edges: ids of the messages on the edge, dashed (pending) while none of them is sent
+interface GEdge { a: string; b: string; kind: 'wrote' | 'handoff' | 'message'; ids?: string[]; pending?: boolean; last?: string }
 interface Lane { key: string; name: string; color: string; nodes: GNode[]; rows: number; y: number; h: number; alt: boolean; members: number }
 
 // Project folder of a task: the part before "-wt" for worktrees (~/code/app-wt/x → app), else the last segment.
@@ -39,7 +47,7 @@ export function folderOf(t: Task): string {
   return p.split('/').pop() || '—';
 }
 
-function build(tasksAll: Task[], groups: Group[], docsByTask: Record<string, OutDoc[]>, edgesAll: Edge[], mode: LaneMode, showDocs: boolean, showArch: boolean) {
+function build(tasksAll: Task[], groups: Group[], docsByTask: Record<string, OutDoc[]>, edgesAll: Edge[], mode: LaneMode, showDocs: boolean, showArch: boolean, mail: MailGraph, showPeople: boolean) {
   const tasks = tasksAll.filter(t => showArch || t.status !== 'archived');
   const tset = new Set(tasks.map(t => t.id));
   const laneOfTask = (t: Task) => {
@@ -73,10 +81,53 @@ function build(tasksAll: Task[], groups: Group[], docsByTask: Record<string, Out
   } else {
     for (const e of handoffs) if (!edges.some(x => x.a === 't:' + e.from && x.b === 't:' + e.to)) edges.push({ a: 't:' + e.from, b: 't:' + e.to, kind: 'handoff' });
   }
+  if (showPeople) {
+    // One edge for each sender and receiver pair. A message proposed by a hidden (archived) task is left out.
+    const addMsg = (a: string, b: string, m: MailBrief, sent: boolean) => {
+      let e = edges.find(x => x.kind === 'message' && x.a === a && x.b === b);
+      if (!e) edges.push(e = { a, b, kind: 'message', ids: [], pending: true, last: '' });
+      e.ids!.push(m.id); if (sent) e.pending = false;
+      const at = m.sentAt || m.created; if (at > e.last!) e.last = at;
+    };
+    const personNode = (m: MailBrief) => {
+      const id = 'p:' + m.person;
+      if (!nodes.has(id)) {
+        const person = mail.people.find(p => p.user === m.person) || { user: m.person, name: m.person, picture: '' };
+        nodes.set(id, { id, kind: 'person', person, stats: { sent: 0, unsent: 0, received: 0, unrouted: 0, last: '' }, lane: PEOPLE, w: PERSON_W, h: PERSON_H, x: 0, y: 0, row: 0, col: 0 });
+      }
+      const n = nodes.get(id)!; const at = m.sentAt || m.created; if (at > n.stats!.last) n.stats!.last = at;
+      return n;
+    };
+    for (const m of mail.messages) {
+      if (m.dismissedAt && !showArch) continue;
+      if (m.direction === 'outbox') {
+        const pb = m.proposedBy;
+        let from: string;
+        if (pb?.actor === 'task' && pb.task) { if (!tset.has(pb.task)) continue; from = 't:' + pb.task; }
+        else {
+          const k = pb?.actor === 'controller' || pb?.actor === 'user' ? pb.actor : 'unknown';
+          from = 'x:' + k;
+          if (!nodes.has(from)) nodes.set(from, { id: from, kind: 'source', src: k, stats: { sent: 0, unsent: 0, received: 0, unrouted: 0, last: '' }, lane: PEOPLE, w: PERSON_W, h: PERSON_H, x: 0, y: 0, row: 0, col: 0 });
+          const st = nodes.get(from)!.stats!; if (m.sentAt) st.sent++; else st.unsent++;
+        }
+        const n = personNode(m);
+        if (m.sentAt) n.stats!.sent++; else n.stats!.unsent++;
+        addMsg(from, n.id, m, !!m.sentAt);
+      } else {
+        const n = personNode(m);
+        n.stats!.received++;
+        if (!m.routes.length) n.stats!.unrouted++;
+        for (const r of m.routes) if (tset.has(r.task)) addMsg(n.id, 't:' + r.task, m, true);
+      }
+    }
+  }
 
   // ranks: longest path from a node without inputs
+  // A person who got a message and also sent one back to a task would make a cycle. For ranks, only the messages to
+  // that person count, so the person is to the right of the task and the reply arrow goes back to the left.
+  const receives = new Set(edges.filter(e => e.kind === 'message' && e.b.startsWith('p:')).map(e => e.b));
   const preds = new Map<string, string[]>([...nodes.keys()].map(k => [k, []]));
-  edges.forEach(e => preds.get(e.b)?.push(e.a));
+  edges.forEach(e => { if (!(e.kind === 'message' && receives.has(e.a))) preds.get(e.b)?.push(e.a); });
   const linked = new Set(edges.flatMap(e => [e.a, e.b]));
   const rank = new Map<string, number>();
   const rk = (id: string, seen = new Set<string>()): number => {
@@ -93,10 +144,12 @@ function build(tasksAll: Task[], groups: Group[], docsByTask: Record<string, Out
   if (mode === 'group') laneDefs = [...groups.map(g => ({ key: 'g:' + g.id, name: g.name, color: g.color })), { key: 'g:__none', name: 'Not in any group', color: 'var(--line2)' }];
   else if (mode === 'folder') laneDefs = [...new Set(tasks.map(folderOf))].sort((a, b) => a.localeCompare(b)).map(f => ({ key: 'f:' + f, name: f, color: 'var(--line2)' }));
   else laneDefs = ORDER.map(s => ({ key: 's:' + s, name: STATUS_LABEL[s], color: `var(${STVAR[s]})` }));
+  if (showPeople) laneDefs.push({ key: PEOPLE, name: 'People', color: 'var(--st-review)' });
 
   const lanes: Lane[] = laneDefs.map(l => {
     const ns = [...nodes.values()].filter(n => n.lane === l.key);
-    const members = l.key.startsWith('g:') && l.key !== 'g:__none' ? (groups.find(g => 'g:' + g.id === l.key)?.tasks.filter(id => tset.has(id)).length || 0) : ns.filter(n => n.kind === 'task').length;
+    const members = l.key === PEOPLE ? ns.filter(n => n.kind === 'person').length
+      : l.key.startsWith('g:') && l.key !== 'g:__none' ? (groups.find(g => 'g:' + g.id === l.key)?.tasks.filter(id => tset.has(id)).length || 0) : ns.filter(n => n.kind === 'task').length;
     return { ...l, nodes: ns, members, rows: 1, y: 0, h: 0, alt: false };
   }).filter(l => l.nodes.length || l.members > 0);
 
@@ -138,10 +191,22 @@ function build(tasksAll: Task[], groups: Group[], docsByTask: Record<string, Out
   return { nodes, edges, lanes, width, height: y };
 }
 
-function edgePath(a: GNode, b: GNode, kind: GEdge['kind']) {
-  const x1 = a.x + a.w, y1 = a.y + a.h / 2, x2 = b.x - (kind === 'handoff' ? 8 : 0), y2 = b.y + b.h / 2;
-  const c = Math.max(36, (x2 - x1) / 2);
-  return `M${x1},${y1} C${x1 + c},${y1} ${x2 - c},${y2} ${x2},${y2}`;
+// A cubic curve from the right side of a to the left side of b. An edge to a node on the left (a reply from a person
+// to the task that wrote to them) goes from the left side of a to the right side of b. For nodes in the same column
+// it loops out to the left. mx, my: the middle of the curve, where the message count goes.
+// both: a message edge that has an edge in the other direction (a task and a person who replied). The two curves
+// then move 8px apart, and each count sits at 30% of its curve from its start, so the counts do not overlap.
+function edgePath(a: GNode, b: GNode, kind: GEdge['kind'], both = false) {
+  const off = both ? (a.kind === 'person' ? 8 : -8) : 0;
+  const tip = kind === 'wrote' ? 0 : 8, y1 = a.y + a.h / 2 + off, y2 = b.y + b.h / 2 + off;
+  let x1: number, x2: number, c1: number, c2: number;
+  if (a.x + a.w <= b.x) { x1 = a.x + a.w; x2 = b.x - tip; c1 = c2 = Math.max(36, (x2 - x1) / 2); }
+  else if (b.x + b.w <= a.x) { x1 = a.x; x2 = b.x + b.w + tip; c1 = c2 = -Math.max(36, (x1 - x2) / 2); }
+  else { x1 = a.x; x2 = b.x - tip; c1 = -60; c2 = 60; }
+  const p1x = x1 + c1, p2x = x2 - c2;
+  // a point of the cubic curve at t: (1-t)^3 P0 + 3(1-t)^2 t P1 + 3(1-t) t^2 P2 + t^3 P3
+  const t = both ? 0.3 : 0.5, u = 1 - t, w = [u * u * u, 3 * u * u * t, 3 * u * t * t, t * t * t];
+  return { d: `M${x1},${y1} C${p1x},${y1} ${p2x},${y2} ${x2},${y2}`, mx: w[0] * x1 + w[1] * p1x + w[2] * p2x + w[3] * x2, my: w[0] * y1 + w[1] * y1 + w[2] * y2 + w[3] * y2 };
 }
 
 // How far the view can move. On each axis the empty space past the content is at most MARGIN of the viewport,
@@ -162,6 +227,10 @@ export function GraphView({ tasks, groups, open }: Props) {
   const [mode, setMode] = useState<LaneMode>(() => (localStorage.getItem('tb-graph-lanes') as LaneMode) || 'group');
   const [showDocs, setShowDocs] = useState(() => localStorage.getItem('tb-graph-docs') !== '0');
   const [showArch, setShowArch] = useState(false);
+  const [showPeople, setShowPeople] = useState(() => localStorage.getItem('tb-graph-people') !== '0');
+  const [mail, setMail] = useState<MailGraph>({ people: [], messages: [] });
+  // the message panel: all messages of a node, or the messages on the edge from a to b
+  const [panel, setPanel] = useState<{ node: string } | { a: string; b: string } | null>(null);
   const [edgesAll, setEdges] = useState<Edge[]>([]);
   const [docsByTask, setDocs] = useState<Record<string, OutDoc[]>>({});
   const [tf, setTfRaw] = useState<View>({ x: PAD, y: PAD, k: 1 });
@@ -171,7 +240,7 @@ export function GraphView({ tasks, groups, open }: Props) {
   const stage = useRef<HTMLDivElement>(null);
   const tfRef = useRef(tf); tfRef.current = tf;
 
-  useEffect(() => { localStorage.setItem('tb-graph-lanes', mode); localStorage.setItem('tb-graph-docs', showDocs ? '1' : '0'); }, [mode, showDocs]);
+  useEffect(() => { localStorage.setItem('tb-graph-lanes', mode); localStorage.setItem('tb-graph-docs', showDocs ? '1' : '0'); localStorage.setItem('tb-graph-people', showPeople ? '1' : '0'); }, [mode, showDocs, showPeople]);
 
   // documents and handoffs: refetch shortly after the task list changes
   const taskKey = tasks.map(t => `${t.id}:${t.docs?.inbox ?? 0}:${t.docs?.outbox ?? 0}`).join(',');
@@ -185,8 +254,16 @@ export function GraphView({ tasks, groups, open }: Props) {
     }, 500);
     return () => { dead = true; clearTimeout(h); };
   }, [taskKey]);
+  // people and messages: the task list does not change when a message arrives, so load them every 30 seconds too
+  useEffect(() => {
+    if (!showPeople) return;
+    let dead = false;
+    const load = () => fetch('/api/mail/graph').then(r => r.ok ? r.json() : null).then(d => { if (!dead && d && Array.isArray(d.messages)) setMail(d); }).catch(() => {});
+    const h = setTimeout(load, 500), iv = setInterval(load, 30_000);
+    return () => { dead = true; clearTimeout(h); clearInterval(iv); };
+  }, [taskKey, showPeople]);
 
-  const L = useMemo(() => build(tasks, groups, docsByTask, edgesAll, mode, showDocs, showArch), [tasks, groups, docsByTask, edgesAll, mode, showDocs, showArch]);
+  const L = useMemo(() => build(tasks, groups, docsByTask, edgesAll, mode, showDocs, showArch, mail, showPeople), [tasks, groups, docsByTask, edgesAll, mode, showDocs, showArch, mail, showPeople]);
   // every view change goes through clampView, so the content cannot leave the screen
   const size = useRef({ w: L.width, h: L.height }); size.current = { w: L.width, h: L.height };
   const setTf = useCallback((v: View | ((t: View) => View)) => setTfRaw(t => clampView(typeof v === 'function' ? v(t) : v, stage.current, size.current.w, size.current.h)), []);
@@ -200,11 +277,12 @@ export function GraphView({ tasks, groups, open }: Props) {
     setTf({ k, x: Math.max(PAD, (W - L.width * k) / 2), y: PAD });
   }, [L.width, setTf]);
   // fit when the options change (not on every live update, so zoom and pan are kept)
-  useEffect(() => { fit(); }, [mode, showDocs, showArch]);
+  useEffect(() => { fit(); }, [mode, showDocs, showArch, showPeople]);
   const fitted = useRef(false);
   useEffect(() => { if (!fitted.current && L.nodes.size) { fitted.current = true; fit(); } }, [L.nodes.size, fit]);
   useEffect(() => { const on = () => fit(); addEventListener('resize', on); return () => removeEventListener('resize', on); }, [fit]);
   useEffect(() => { if (sel && !L.nodes.has(sel)) setSel(null); }, [L, sel]);
+  useEffect(() => { if (panel && !L.nodes.has('node' in panel ? panel.node : panel.a)) setPanel(null); }, [L, panel]);
 
   // hover or selection highlights the whole chain, before and after the node
   const focusId = hover || sel;
@@ -221,7 +299,7 @@ export function GraphView({ tasks, groups, open }: Props) {
 
   const openNode = useCallback((id: string) => {
     const n = L.nodes.get(id); if (!n) return;
-    if (n.kind === 'task') open(n.t!.id); else open(n.owner!, 'docs');
+    if (n.kind === 'task') open(n.t!.id); else if (n.kind === 'doc') open(n.owner!, 'docs'); else setPanel({ node: id });
   }, [L, open]);
 
   const select = useCallback((id: string) => {
@@ -242,6 +320,8 @@ export function GraphView({ tasks, groups, open }: Props) {
       const tgt = e.target as HTMLElement;
       if (tgt?.closest?.('input,textarea,select,[contenteditable=true],.xterm,.modal')) return;
       if (document.querySelector('.drawer.open, .scrim.open, .triage.open')) return;
+      if (e.key === 'Escape' && panel) { e.preventDefault(); setPanel(null); return; }
+      if (tgt?.closest?.('.gpanel')) return;
       if (hit(e, 'graphFit')) { e.preventDefault(); fit(); return; }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === 'Enter' && sel) { e.preventDefault(); openNode(sel); return; }
@@ -262,11 +342,11 @@ export function GraphView({ tasks, groups, open }: Props) {
       if (best) select(best);
     };
     addEventListener('keydown', on); return () => removeEventListener('keydown', on);
-  }, [L, sel, fit, openNode, select]);
+  }, [L, sel, fit, openNode, select, panel]);
 
   // pan by dragging the background; scroll pans, ⌘/ctrl + scroll zooms
   const onPointerDown = (e: React.PointerEvent) => {
-    if ((e.target as HTMLElement).closest('.gnode')) return;
+    if ((e.target as HTMLElement).closest('.gnode, .gclick')) return;
     const el = stage.current!; el.setPointerCapture(e.pointerId); setPanning(true);
     const s = { x: e.clientX, y: e.clientY, tx: tfRef.current.x, ty: tfRef.current.y };
     const mv = (ev: PointerEvent) => setTf(t => ({ ...t, x: s.tx + ev.clientX - s.x, y: s.ty + ev.clientY - s.y }));
@@ -285,6 +365,30 @@ export function GraphView({ tasks, groups, open }: Props) {
 
   const nodes = [...L.nodes.values()];
   const nTasks = nodes.filter(n => n.kind === 'task').length, nDocs = nodes.filter(n => n.kind === 'doc').length, nHand = L.edges.filter(e => e.kind === 'handoff').length;
+  const nPeople = nodes.filter(n => n.kind === 'person').length, nMsg = nodes.reduce((s, n) => s + (n.kind === 'person' ? n.stats!.sent + n.stats!.unsent + n.stats!.received : 0), 0);
+
+  // what the message panel shows, from the current layout so that it follows live updates
+  const shown = (m: MailBrief) => showArch || !m.dismissedAt;
+  const nodeName = (id: string) => { const n = L.nodes.get(id); return !n ? id : n.kind === 'task' ? `#${n.t!.num} ${n.t!.title}` : n.kind === 'person' ? n.person!.name : SOURCES[n.src!] || id; };
+  let panelView: React.ReactNode = null;
+  if (panel) {
+    const close = () => setPanel(null);
+    const personId = 'node' in panel ? panel.node : [panel.a, panel.b].find(x => x.startsWith('p:'));
+    const pn = personId ? L.nodes.get(personId) : undefined;
+    const person = pn?.kind === 'person' ? pn.person : undefined;
+    const title = person ? person.name : nodeName('node' in panel ? panel.node : panel.a);
+    let msgs: MailBrief[];
+    if ('node' in panel && person) msgs = mail.messages.filter(m => m.person === person.user && shown(m));
+    else {
+      const ids = new Set(L.edges.filter(e => e.kind === 'message' && ('node' in panel ? e.a === panel.node : e.a === panel.a && e.b === panel.b)).flatMap(e => e.ids!));
+      msgs = mail.messages.filter(m => ids.has(m.id));
+    }
+    const st = (pn || L.nodes.get('node' in panel ? panel.node : ''))?.stats; // a person, or the Controller, You or Unknown sender node
+    const sub = [person?.user, st?.sent && `${st.sent} sent`, st?.unsent && `${st.unsent} not sent`, st?.received && `${st.received} received`, st?.unrouted && `${st.unrouted} not routed`].filter(Boolean).join(' · ');
+    const note = 'node' in panel ? undefined : <>Messages from <b>{nodeName(panel.a)}</b> to <b>{nodeName(panel.b)}</b></>;
+    panelView = <MessagePanel title={title} person={person} sub={sub} note={note} messages={msgs} tasks={tasks} onClose={close}
+      onShowAll={person && !('node' in panel) ? () => setPanel({ node: personId! }) : undefined} />;
+  }
   const zoomBtn = (f: number) => { const el = stage.current; if (el) zoomAt(tf.k * f, el.clientWidth / 2, el.clientHeight / 2); };
 
   return (
@@ -293,17 +397,20 @@ export function GraphView({ tasks, groups, open }: Props) {
         <span className="lbl">Lanes by</span>
         <div className="seg">{(['group', 'folder', 'status'] as LaneMode[]).map(m => <button key={m} className={mode === m ? 'on' : ''} onClick={() => setMode(m)}>{m[0].toUpperCase() + m.slice(1)}</button>)}</div>
         <label className="opt"><input type="checkbox" checked={showDocs} onChange={e => setShowDocs(e.target.checked)} /> Documents</label>
+        <label className="opt"><input type="checkbox" checked={showPeople} onChange={e => setShowPeople(e.target.checked)} /> People</label>
         <label className="opt"><input type="checkbox" checked={showArch} onChange={e => setShowArch(e.target.checked)} /> Archived</label>
-        <span className="cnt">{nTasks} tasks · {nDocs} documents · {nHand} handoffs</span>
+        <span className="cnt">{nTasks} tasks · {nDocs} documents · {nHand} handoffs{showPeople && ` · ${nPeople} people · ${nMsg} messages`}</span>
         <span className="sp" />
         <div className="lg">
           {(['needs-you', 'stopped', 'unread', 'working', 'idle'] as Status[]).map(s => <span key={s}><Dot s={s} />{STATUS_LABEL[s]}</span>)}
           <span><svg width="26" height="10"><path d="M1 5h18" stroke="var(--accent)" strokeWidth="1.9" /><path d="M18 1.5 25 5l-7 3.5z" fill="var(--accent)" /></svg>handoff</span>
           <span><svg width="22" height="10"><path d="M1 5h20" stroke="var(--line2)" strokeWidth="1.6" /></svg>wrote</span>
+          {showPeople && <><span><svg width="26" height="10"><path d="M1 5h18" stroke="var(--st-review)" strokeWidth="1.9" /><path d="M18 1.5 25 5l-7 3.5z" fill="var(--st-review)" /></svg>message</span>
+            <span><svg width="26" height="10"><path d="M1 5h18" stroke="var(--st-review)" strokeWidth="1.7" strokeDasharray="5 4" /><path d="M18 1.5 25 5l-7 3.5z" fill="var(--st-review)" /></svg>not sent yet</span></>}
         </div>
         <button className="btn icon" onClick={() => zoomBtn(1 / 1.2)} title="Zoom out">−</button><span className="zl">{Math.round(tf.k * 100)}%</span><button className="btn icon" onClick={() => zoomBtn(1.2)} title="Zoom in">＋</button><button className="btn" onClick={fit} title="Fit (F)">Fit</button>
       </div>
-      <div className={`gstage ${panning ? 'panning' : ''}`} ref={stage} onPointerDown={onPointerDown} onClick={e => { if (!(e.target as HTMLElement).closest('.gnode')) setSel(null); }}>
+      <div className={`gstage ${panning ? 'panning' : ''}`} ref={stage} onPointerDown={onPointerDown} onClick={e => { if (!(e.target as HTMLElement).closest('.gnode, .gclick')) setSel(null); }}>
         {!nodes.length ? <div className="gempty">{tasks.length ? 'No tasks to show. Turn on “Archived” to see archived tasks.' : 'No tasks yet. Press N to start an agent.'}</div> :
           <div className={`gworld ${chain ? 'focusing' : ''}`} style={{ width: L.width, height: L.height, transform: `translate(${tf.x}px,${tf.y}px) scale(${tf.k})` }}>
             {L.lanes.map((l, i) => {
@@ -313,20 +420,34 @@ export function GraphView({ tasks, groups, open }: Props) {
                 <div key={l.key} className={`glane ${l.alt ? 'alt' : ''} ${i === L.lanes.length - 1 ? 'last' : ''}`} style={{ top: l.y, height: l.h, width: L.width }}>
                   <div className="glane-label">
                     <div className="nm"><span className="sw" style={{ background: l.color }} />{l.name}</div>
-                    <div className="ct">{l.members} task{l.members === 1 ? '' : 's'}{elsewhere > 0 ? ` · ${elsewhere} shown in a lane above` : ''}</div>
-                    {mode !== 'status' && <div className="sum">{ORDER.filter(s => ts.some(t => t.status === s)).map(s => <span key={s} title={STATUS_LABEL[s]}><Dot s={s} />{ts.filter(t => t.status === s).length}</span>)}</div>}
+                    <div className="ct">{l.key === PEOPLE ? `${l.members} ${l.members === 1 ? 'person' : 'people'}` : <>{l.members} task{l.members === 1 ? '' : 's'}{elsewhere > 0 ? ` · ${elsewhere} shown in a lane above` : ''}</>}</div>
+                    {mode !== 'status' && l.key !== PEOPLE && <div className="sum">{ORDER.filter(s => ts.some(t => t.status === s)).map(s => <span key={s} title={STATUS_LABEL[s]}><Dot s={s} />{ts.filter(t => t.status === s).length}</span>)}</div>}
                   </div>
                 </div>
               );
             })}
             <svg className="gedges" width={L.width} height={L.height}>
-              <defs><marker id="garr" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 10 5 0 10z" style={{ fill: 'var(--accent)' }} /></marker></defs>
-              {L.edges.map((e, i) => { const a = L.nodes.get(e.a), b = L.nodes.get(e.b); if (!a || !b) return null; return <path key={i} className={`gedge ${e.kind} ${chain?.eset.has(i) ? 'hl' : ''}`} d={edgePath(a, b, e.kind)} markerEnd={e.kind === 'handoff' ? 'url(#garr)' : undefined} />; })}
+              <defs><marker id="garr" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 10 5 0 10z" style={{ fill: 'var(--accent)' }} /></marker>
+                <marker id="gmarr" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 10 5 0 10z" style={{ fill: 'var(--st-review)' }} /></marker></defs>
+              {L.edges.map((e, i) => {
+                const a = L.nodes.get(e.a), b = L.nodes.get(e.b); if (!a || !b) return null;
+                const both = e.kind === 'message' && L.edges.some(x => x.kind === 'message' && x.a === e.b && x.b === e.a);
+                const g = edgePath(a, b, e.kind, both), cls = `gedge ${e.kind} ${e.pending ? 'pending' : ''} ${chain?.eset.has(i) ? 'hl' : ''}`;
+                if (e.kind !== 'message') return <path key={i} className={cls} d={g.d} markerEnd={e.kind === 'handoff' ? 'url(#garr)' : undefined} />;
+                const n = e.ids!.length;
+                // the wide transparent path and the count take the click; the tooltip has no message text
+                return <g key={i} className={`gclick ${chain?.eset.has(i) ? 'hl' : ''}`} onClick={() => setPanel({ a: e.a, b: e.b })}>
+                  <title>{`${n} message${n === 1 ? '' : 's'} from ${nodeName(e.a)} to ${nodeName(e.b)}${e.pending ? ', not sent yet' : ''}. Last: ${new Date(e.last!).toLocaleString()}`}</title>
+                  <path className={cls} d={g.d} markerEnd="url(#gmarr)" /><path className="ghit" d={g.d} />
+                  <g className="gcount"><rect x={g.mx - 11} y={g.my - 9} width={22} height={18} rx={9} /><text x={g.mx} y={g.my + 4}>{n}</text></g>
+                </g>;
+              })}
             </svg>
             {nodes.map(n => <NodeCard key={n.id} n={n} groups={groups} mode={mode} sel={sel === n.id} hl={!!chain?.set.has(n.id)}
               onEnter={() => setHover(n.id)} onLeave={() => setHover(null)} onClick={() => { select(n.id); openNode(n.id); }} />)}
           </div>}
       </div>
+      {panelView}
     </div>
   );
 }
@@ -334,6 +455,17 @@ export function GraphView({ tasks, groups, open }: Props) {
 function NodeCard({ n, groups, mode, sel, hl, onEnter, onLeave, onClick }: { n: GNode; groups: Group[]; mode: LaneMode; sel: boolean; hl: boolean; onEnter: () => void; onLeave: () => void; onClick: () => void }) {
   const style = { left: n.x, top: n.y, width: n.w, height: n.h } as React.CSSProperties;
   const cls = `${sel ? 'sel' : ''} ${hl ? 'hl' : ''}`;
+  if (n.kind === 'person' || n.kind === 'source') {
+    const p = n.person, st = n.stats;
+    const name = p ? p.name : SOURCES[n.src!];
+    const counts = [st!.sent && `${st!.sent} sent`, st!.unsent && `${st!.unsent} not sent`, st!.received && `${st!.received} in`, st!.unrouted && `${st!.unrouted} not routed`].filter(Boolean).join(' · ');
+    return (
+      <div className={`gnode ${n.kind} ${cls}`} style={style} title={`${name}${p ? ` (${p.user})` : ''} · ${[st!.sent && `${st!.sent} sent`, st!.unsent && `${st!.unsent} not sent`, st!.received && `${st!.received} received`, st!.unrouted && `${st!.unrouted} not routed`].filter(Boolean).join(' · ')}${st?.last ? ` · last ${new Date(st.last).toLocaleString()}` : ''}`} onPointerEnter={onEnter} onPointerLeave={onLeave} onClick={onClick}>
+        {p ? <Face person={p} /> : <span className="gface src" aria-hidden="true">{name[0]}</span>}
+        <div className="pn">{name}</div><div className="pc">{counts}</div>
+      </div>
+    );
+  }
   if (n.kind === 'doc') {
     const d = n.doc!;
     return (
