@@ -3,9 +3,10 @@
 // Grid, Rows. Every command is ⌃⌥ + key so typing into agents is not affected.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Group, Task } from '../api';
-import { ATTN, STATUS_LABEL, api } from '../api';
+import { ATTN, STATUS_LABEL, api, confirmEnd } from '../api';
 import { AgentChip, Dot, MachineChip, WhereChip } from './ui';
 import { Terminal } from './Terminal';
+import { AskPanel } from './Ask';
 
 type Layout = 'columns' | 'grid' | 'rows';
 const MINW = 640;
@@ -47,6 +48,9 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
   const [extra, setExtra] = useState<string[]>([]);
   const [dropTab, setDropTab] = useState<string | null>(null);
   const [reveal, setReveal] = useState(false);
+  const [ending, setEnding] = useState<string | null>(null); // the window whose header asks "End & archive?"
+  const [asking, setAsking] = useState<Set<string>>(new Set()); // tiles with the Ask panel open
+  const toggleAsk = (id: string) => setAsking(s => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const stage = useRef<HTMLDivElement>(null);
   const [W, setW] = useState(1200);
 
@@ -94,6 +98,14 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
     if (group) { api.updateGroup(group.id, { remove: id }); toast(`Removed from ${group.name}. The agent keeps running.`); }
     else if (view.startsWith('t:')) setView('t:' + view.slice(2).split(',').filter(x => x !== id).join(','));
     else { setFrozen(f => (f || []).filter(x => x !== id)); setExtra(e => e.filter(x => x !== id)); }
+  };
+  // ends the tmux session and archives the task (as in its panel); the window then leaves the canvas by itself
+  const endTask = (t: Task) => {
+    setEnding(null);
+    api.kill(t.id).then(() => {
+      if (panelTaskId === t.id) openPanel(null);
+      toast(`#${t.num} ended and archived.`, { label: 'Restore', fn: () => { api.setStatus(t.id, 'idle'); } });
+    }, e => toast(`Could not end #${t.num}: ${e.message || e}`));
   };
 
   // a tile on another page is mounted only after the page changes, so look for it after the next render
@@ -247,12 +259,15 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
             <div className="wh" onPointerDown={e => startDrag(e, t.id)} onDoubleClick={() => setMaxId(m => m ? null : t.id)}>
               <span className="ix">{i + 1}</span><Dot s={t.status} /><span className="n">#{t.num}</span><span className="ti">{t.title}</span>
               <span className={`st st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} />
+              {ending === t.id ? <><span className="sel-warn">End & archive?</span><button className="b" onClick={() => endTask(t)}>Yes, end it</button><button className="b" onClick={() => setEnding(null)}>Cancel</button></> : <>
               {(t.status === 'suspended' || t.openElsewhere) && <button className="b" onClick={() => openPanel(t.id)}>{t.openElsewhere ? 'Options…' : 'Resume…'}</button>}
+              <button className={`b ${asking.has(t.id) ? 'on' : ''}`} title="Ask a separate agent about this session. This agent does not see the question." onClick={() => toggleAsk(t.id)}>?</button>
               <button className="b" title="Maximize (⌃⌥↩)" onClick={() => setMaxId(m => m ? null : t.id)}>{maxId === t.id ? '⤡' : '⤢'}</button>
               <button className="b" title="Task panel" onClick={() => openPanel(t.id)}>☰</button>
-              <button className="b" title="Remove from this view (⌃⌥W). The agent keeps running." onClick={() => removeFromView(t.id)}>✕</button>
+              {t.role !== 'controller' && <button className="b" title={t.openElsewhere ? 'End & archive: archives the task; the session in the other terminal keeps running' : 'End & archive: ends the tmux session and archives the task'} onClick={() => confirmEnd() ? setEnding(t.id) : endTask(t)}>⏻</button>}
+              <button className="b" title="Remove from this view (⌃⌥W). The agent keeps running." onClick={() => removeFromView(t.id)}>✕</button></>}
             </div>
-            <div className="wb">{t.openElsewhere ? <div className="empty" style={{ padding: 16 }}>Running in another terminal ({t.openElsewhere?.tty}). <button className="btn" onClick={() => openPanel(t.id)}>Options…</button></div>
+            <div className="wb">{asking.has(t.id) && <AskPanel task={t} close={() => toggleAsk(t.id)} />}{t.openElsewhere ? <div className="empty" style={{ padding: 16 }}>Running in another terminal ({t.openElsewhere?.tty}). <button className="btn" onClick={() => openPanel(t.id)}>Options…</button></div>
               : t.status === 'suspended' ? <div className="empty" style={{ padding: 16 }}>Suspended. <button className="btn" onClick={() => openPanel(t.id)}>Resume…</button></div>
               // a tmux window has one size: while this task's panel is open, the panel shows the terminal and the tile waits
               : t.id === panelTaskId ? <div className="tile-in-panel"><div>Shown in the task panel.</div><div className="sub">One terminal per task at a time, so neither is cut off. Closing the panel brings it back here.</div><button className="btn" onClick={() => openPanel(null)}>Show it here instead</button></div>
