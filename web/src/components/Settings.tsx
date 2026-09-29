@@ -13,7 +13,7 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
   const [askEnd, setAskEnd] = useState(confirmEnd());
   const [accts, setAccts] = useState<Account[]>([]);
   useEffect(() => { api.info().then(setInfo).catch(e => setErr(String(e.message || e))); loadAccounts().then(setAccts).catch(() => {}); }, []);
-  const save = async (p: { controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; askAccount?: string; askModel?: string }) => {
+  const save = async (p: { controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string }) => {
     setBusy(true); try { setInfo(await api.updateInfo(p)); } catch (e) { setErr(String((e as Error).message || e)); } setBusy(false);
   };
   const ctl = tasks.find(t => t.role === 'controller');
@@ -28,6 +28,17 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
         <label className="opt" title="When on, the controller's tb new / send / park / archive run immediately"><input type="checkbox" disabled={busy} checked={!p.controllerNeedsApproval} onChange={e => save({ controllerNeedsApproval: !e.target.checked })} /> <b>The controller may create and manage tasks without asking</b></label>
         <label className="opt" title="Agents other than the controller that use tb to start or type into tasks"><input type="checkbox" disabled={busy} checked={!p.agentsNeedApproval} onChange={e => save({ agentsNeedApproval: !e.target.checked })} /> Other agents may start, type into, set aside and archive tasks without asking</label>
         <div className="sub">A change reaches the controller when it next restarts, which Taskboard does by itself as soon as the controller is between turns (its conversation continues). Releasing or rolling back Taskboard and stopping its server stay blocked for every agent.</div>
+      </div>}
+      <h3 className="set-h">Agent sessions</h3>
+      {p && <div className="ctl-box">
+        <label className="opt"><input type="checkbox" disabled={busy} checked={p.trustWorkspaces} onChange={e => save({ trustWorkspaces: e.target.checked })} /> Trust each task folder before an agent starts</label>
+        <label className="opt"><input type="checkbox" disabled={busy} checked={p.autoReview} onChange={e => save({ autoReview: e.target.checked })} /> Review tool requests automatically</label>
+        <div className="sub">Claude Code and Codex use their own auto review. Taskboard reviews Antigravity tool calls with the account below. A reviewer can still ask you.</div>
+        {info && <>
+          <label className="opt">Review account <select disabled={busy || !p.autoReview} value={info.settings.review.account} onChange={e => save({ reviewAccount: e.target.value })}>{accts.filter(a => a.agent === 'claude').map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label>
+          <label className="opt">Review model <select disabled={busy || !p.autoReview} value={info.settings.review.model} onChange={e => save({ reviewModel: e.target.value })}><option value="sonnet">Sonnet</option><option value="opus">Opus</option></select></label>
+        </>}
+        <div className="sub">Claude Code and Codex use these choices when they start or resume. Antigravity uses the current review choice for each tool call. Taskboard keeps the command guard on.</div>
       </div>}
       <h3 className="set-h">Canvas</h3>
       <div className="ctl-box">
