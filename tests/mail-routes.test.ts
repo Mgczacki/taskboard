@@ -70,6 +70,14 @@ test('mail routes restrict readers and require separate approval and routing', a
     const proposed = await call('/propose', 'task', { to: 'U2', subject: 'Status', body: 'Ready.' });
     assert.equal(proposed.status, 200);
     assert.deepEqual(store.get(proposed.data.id).proposedBy, { actor: 'task', task: 'recipient', agent: 'claude' });
+    const longBody = 'Read this text. '.repeat(180);
+    const longProposed = await call('/propose', 'task', { to: 'U2', subject: 'Long text', body: longBody });
+    assert.equal(longProposed.status, 200);
+    assert.equal(store.get(longProposed.data.id).files?.[0].longBody, true);
+    assert.equal(readFileSync(store.get(longProposed.data.id).files![0].path, 'utf8'), longBody);
+    const longDraft = await call('/draft', 'user', { to: 'U2', subject: 'Long text', body: longBody });
+    assert.equal(longDraft.status, 200);
+    assert.equal(store.get(longDraft.data.id).files?.[0].longBody, true);
     const draft = await call('/draft', 'user', { to: 'U2', subject: 'Status', body: 'Ready.' });
     assert.equal(store.get(draft.data.id).proposedBy?.actor, 'user');
     await call(`/${draft.data.id}/dismiss`, 'user', {});

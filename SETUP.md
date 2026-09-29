@@ -156,7 +156,11 @@ The recipient's controller reads each incoming file as data. The user must appro
 
 Suspicious files stay in quarantine. Taskboard does not run incoming files.
 
-Taskboard sends message bodies over 30,000 bytes as text files. The body limit is 256 KiB.
+Taskboard shows the subject and sender above the message body in Slack. The message also names the task or controller that proposed it.
+
+Taskboard sends a body as `message.txt` when its Slack text needs more than 2,500 characters. Slack shares the file in the conversation. The formatted message shows a preview. The body limit is 256 KiB.
+
+To reply, send a new Taskboard message to the sender. A Slack reply does not enter Taskboard Inbox.
 
 Taskboard also polls Slack every 60 seconds while the server runs. Each scan reads at most 25 direct conversations. It can take more than one scan to find a new message.
 
