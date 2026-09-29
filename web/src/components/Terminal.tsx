@@ -4,15 +4,21 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { ClipboardAddon } from '@xterm/addon-clipboard';
 import { Terminal as XTerm } from '@xterm/xterm';
+import type { IBufferRange, ILink } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { useEffect, useRef } from 'react';
 import { taskboardKey } from '../keys';
+import { useStore } from '../api';
+import { openDocumentLink, type DocumentLink } from '../documentLinks';
 
 const cssVar = (n: string, fallback: string) => getComputedStyle(document.documentElement).getPropertyValue(n).trim() || fallback;
 
 export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, onFocus }: { taskId: string; session?: string; fontSize?: number; autoFocus?: boolean; onFocus?: () => void }) {
   const box = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
+  const tasks = useStore().tasks;
+  const tasksRef = useRef(tasks);
+  tasksRef.current = tasks;
 
   useEffect(() => {
     const el = box.current!;
@@ -26,6 +32,87 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
     term.loadAddon(fit); term.loadAddon(new WebLinksAddon());
     term.open(el);
     termRef.current = term;
+    const mac = /Mac|iPhone|iPad/.test(navigator.platform);
+    const modified = (e: MouseEvent) => mac ? e.metaKey : e.ctrlKey;
+    let activeLink: (() => void) | null = null;
+    const underline = document.createElement('div');
+    underline.className = 'taskboard-link-underline';
+    term.element?.querySelector('.xterm-screen')?.appendChild(underline);
+    const drawUnderline = (range: IBufferRange) => {
+      underline.replaceChildren();
+      const screen = underline.parentElement;
+      if (!screen) return;
+      const cellWidth = screen.clientWidth / term.cols, cellHeight = screen.clientHeight / term.rows;
+      for (let row = range.start.y; row <= range.end.y; row++) {
+        const visible = row - term.buffer.active.viewportY - 1;
+        if (visible < 0 || visible >= term.rows) continue;
+        const start = row === range.start.y ? range.start.x - 1 : 0;
+        const end = row === range.end.y ? range.end.x : term.cols;
+        const segment = document.createElement('span');
+        Object.assign(segment.style, { left: `${start * cellWidth}px`, top: `${(visible + 1) * cellHeight - 2}px`, width: `${(end - start) * cellWidth}px` });
+        underline.appendChild(segment);
+      }
+    };
+    const onModifiedMouse = (event: MouseEvent) => {
+      if (!activeLink || !modified(event)) return;
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      if (event.type === 'click') activeLink();
+    };
+    for (const type of ['mousedown', 'mouseup', 'click'] as const) el.addEventListener(type, onModifiedMouse, true);
+    const pathPattern = /(?:~\/AgentVault\/tasks\/|\/(?:[^\s"'<>]+\/)*tasks\/|(?:\.\/)?(?:inbox|outbox)\/)[^\s"'<>`]+/g;
+    const quotedPathPattern = /(["'`])((?:~\/AgentVault\/tasks\/|\/[^\r\n"'`]*?\/tasks\/|(?:\.\/)?(?:inbox|outbox)\/)[^\r\n"'`]+)\1/g;
+    const taskPattern = /(?:^|[\s(])(#\d+|task-\d+)(?=$|[\s),.;])/g;
+    const linkCache = new Map<string, Promise<DocumentLink | null>>();
+    const lookup = (path: string, fresh = false) => {
+      if (fresh) linkCache.delete(path);
+      if (!linkCache.has(path)) linkCache.set(path, fetch(`/api/tasks/${encodeURIComponent(taskId)}/document-link?path=${encodeURIComponent(path)}`, { cache: 'no-store' })
+        .then(r => r.ok ? r.json() as Promise<DocumentLink> : null).then(doc => {
+          if (!doc) return null;
+          if (taskId.includes('~')) { doc.task = taskId.split('~')[0] + '~' + doc.task; delete doc.reviewId; }
+          return doc;
+        }).catch(() => null));
+      return linkCache.get(path)!;
+    };
+    const provider = taskId && !session ? term.registerLinkProvider({ provideLinks(y, callback) {
+      const buffer = term.buffer.active;
+      let first = y - 1, last = y - 1;
+      while (first > 0 && buffer.getLine(first)?.isWrapped) first--;
+      while (buffer.getLine(last + 1)?.isWrapped && last - first < 30) last++;
+      const lines = Array.from({ length: last - first + 1 }, (_, i) => buffer.getLine(first + i)?.translateToString(i < last - first ? false : true) || '');
+      const content = lines.join('');
+      const range = (start: number, end: number) => ({ start: { x: start % term.cols + 1, y: first + Math.floor(start / term.cols) + 1 }, end: { x: (end - 1) % term.cols + 1, y: first + Math.floor((end - 1) / term.cols) + 1 } });
+      const found = [
+        ...[...content.matchAll(pathPattern)].map(m => ({ text: m[0].replace(/[),.;]+$/, ''), start: m.index! })),
+        ...[...content.matchAll(quotedPathPattern)].map(m => ({ text: m[2], start: m.index! + 1 })),
+      ];
+      const refs = [...content.matchAll(taskPattern)].map(m => ({ text: m[1], start: m.index! + m[0].indexOf(m[1]) }));
+      const refLinks: ILink[] = [];
+      for (const ref of refs) {
+        const num = Number(ref.text.replace(/\D/g, ''));
+        const task = tasksRef.current.find(t => t.num === num);
+        if (!task) continue;
+        refLinks.push({ range: range(ref.start, ref.start + ref.text.length), text: ref.text,
+          activate: event => { if (modified(event)) dispatchEvent(new CustomEvent('taskboard:task-link', { detail: task.id })); },
+          hover: () => { activeLink = () => dispatchEvent(new CustomEvent('taskboard:task-link', { detail: task.id })); drawUnderline(range(ref.start, ref.start + ref.text.length)); el.title = `${mac ? 'Command' : 'Control'}-click to open task #${num}`; },
+          leave: () => { activeLink = null; underline.replaceChildren(); el.title = ''; },
+        });
+      }
+      if (!found.length) { callback(refLinks); return; }
+      Promise.all(found.map(async match => {
+        const doc = await lookup(match.text);
+        if (!doc) return null;
+        return { range: range(match.start, match.start + match.text.length), text: match.text,
+          activate: (event: MouseEvent) => { if (modified(event)) void lookup(match.text, true).then(now => now && openDocumentLink(now)); },
+          hover: () => { activeLink = () => { void lookup(match.text, true).then(now => now && openDocumentLink(now)); }; drawUnderline(range(match.start, match.start + match.text.length)); el.title = `${mac ? 'Command' : 'Control'}-click to open in Taskboard`; },
+          leave: () => { activeLink = null; underline.replaceChildren(); el.title = ''; },
+        } satisfies ILink;
+      })).then(paths => {
+        const links: ILink[] = [...refLinks];
+        for (const path of paths) if (path) links.push(path);
+        callback(links);
+      }).catch(() => callback([]));
+    } }) : null;
     // GPU renderer: much faster than the default DOM renderer for fast output. Browsers allow a limited number of
     // WebGL contexts; when one is lost the terminal falls back to the DOM renderer.
     try { const gl = new WebglAddon(); gl.onContextLoss(() => gl.dispose()); term.loadAddon(gl); } catch { /* no WebGL */ }
@@ -64,7 +151,7 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
     term.textarea?.addEventListener('focus', onF);
     if (autoFocus) setTimeout(() => term.focus(), 50);
 
-    return () => { closed = true; clearTimeout(sizeTimer); ro.disconnect(); input.dispose(); el.removeEventListener('paste', onPaste, true); term.textarea?.removeEventListener('focus', onF); ws?.close(); term.dispose(); };
+    return () => { closed = true; clearTimeout(sizeTimer); ro.disconnect(); input.dispose(); provider?.dispose(); underline.remove(); for (const type of ['mousedown', 'mouseup', 'click'] as const) el.removeEventListener(type, onModifiedMouse, true); el.removeEventListener('paste', onPaste, true); term.textarea?.removeEventListener('focus', onF); ws?.close(); term.dispose(); };
   }, [taskId, session]);
 
   useEffect(() => { if (termRef.current) termRef.current.options.fontSize = fontSize; }, [fontSize]);

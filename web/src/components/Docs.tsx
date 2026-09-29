@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { Task } from '../api';
 import { api, fmtWait } from '../api';
+import type { DocumentLink } from '../documentLinks';
 
 export interface DocInfo { name: string; path: string; kind: 'md' | 'html' | 'other'; size: number; mtime: string; from?: { task: string; num: number; title: string; at: string }; sentTo?: { task: string; num: number; at: string }[] }
 // files of tasks on another machine are fetched through this server (?machine=)
@@ -16,19 +17,25 @@ export const fileUrl = (path: string, machine = currentMachine) => `/api/file?pa
 const ago = (iso: string) => fmtWait(Math.round((Date.now() - Date.parse(iso)) / 60000)) + ' ago';
 const kb = (n: number) => n < 1024 ? `${n} B` : `${Math.round(n / 1024)} KB`;
 
-export function openDoc(d: { path: string; name: string; kind: string }) {
-  if (d.kind === 'html') previewHtml(d.path, d.name);
-  else if (d.kind === 'md') readMarkdown(d.path, d.name);
+export function openDoc(d: { path: string; name: string; kind: string }, location?: { line?: number; heading?: string }) {
+  if (d.kind === 'html') previewHtml(d.path, d.name, location?.heading);
+  else if (d.kind === 'md') readMarkdown(d.path, d.name, location);
   else window.open(fileUrl(d.path), '_blank');
 }
 export const openInBrowser = (path: string) => window.open(fileUrl(path), '_blank');
 
-export function DocsTab({ t, tasks }: { t: Task; tasks: Task[] }) {
+export function DocsTab({ t, tasks, documentLink }: { t: Task; tasks: Task[]; documentLink?: DocumentLink | null }) {
   const [d, setD] = useState<{ inbox: DocInfo[]; outbox: DocInfo[] } | null>(null);
   const [msg, setMsg] = useState('');
   currentMachine = t.machine?.id || '';
   const load = () => fetch(`/api/tasks/${encodeURIComponent(t.id)}/docs`).then(r => r.json()).then(setD);
   useEffect(() => { load(); }, [t.id, t.updated, (t as Task & { docs?: { inbox: number; outbox: number } }).docs?.outbox, (t as Task & { docs?: { inbox: number } }).docs?.inbox]);
+  const opened = useRef<DocumentLink | null>(null);
+  useEffect(() => {
+    if (!d || !documentLink || opened.current === documentLink) return;
+    const file = [...d.inbox, ...d.outbox].find(x => x.path === documentLink.path);
+    if (file) { opened.current = documentLink; openDoc(file, documentLink); }
+  }, [d, documentLink]);
   if (!d) return <div className="empty">Loading…</div>;
   const others = tasks.filter(x => x.id !== t.id && x.status !== 'archived');
 
@@ -96,16 +103,28 @@ function FloatWin({ title, sub, path, close, host, body }: { title: string; sub:
     </>
   );
 }
-export function previewHtml(path: string, name: string) {
+export function previewHtml(path: string, name: string, heading?: string) {
   floating(name, path.replace(/^\/Users\/[^/]+/, '~'), path, el => {
-    const f = document.createElement('iframe'); f.setAttribute('sandbox', 'allow-scripts allow-popups'); f.src = fileUrl(path); el.appendChild(f);
+    const f = document.createElement('iframe'); f.setAttribute('sandbox', 'allow-scripts allow-popups'); f.src = fileUrl(path) + (heading ? '#' + encodeURIComponent(heading) : ''); el.appendChild(f);
   });
 }
-export function readMarkdown(path: string, name: string) {
+export function readMarkdown(path: string, name: string, location?: { line?: number; heading?: string }) {
   floating(name, path.replace(/^\/Users\/[^/]+/, '~'), path, async el => {
     const text = await fetch(fileUrl(path)).then(r => r.text());
     const div = document.createElement('div'); div.className = 'md doc';
-    div.innerHTML = DOMPurify.sanitize(await marked.parse(text));
+    const tokens = marked.lexer(text).filter(t => t.type !== 'space');
+    let line = 1;
+    for (const token of tokens) {
+      const section = document.createElement('section');
+      section.dataset.line = String(line);
+      line += token.raw.split('\n').length - 1;
+      section.innerHTML = DOMPurify.sanitize(marked.parser([token] as never));
+      div.appendChild(section);
+    }
     el.appendChild(div);
+    const target = location?.heading
+      ? [...div.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6')].find(h => h.textContent?.trim().toLowerCase().replace(/\s+/g, '-') === location.heading?.toLowerCase())
+      : location?.line ? [...div.querySelectorAll<HTMLElement>('section')].reverse().find(s => Number(s.dataset.line) <= location.line!) : null;
+    target?.scrollIntoView({ block: 'start' });
   });
 }

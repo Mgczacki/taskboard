@@ -1,9 +1,9 @@
 // Inbox and outbox. Each task folder has outbox/ (documents the agent writes for you or other agents)
 // and inbox/ (documents sent to it). Sending copies the file, so the agent reads it like any local file.
 // inbox/.sent.json records where each inbox file came from.
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
-import { basename, extname, join, resolve } from 'node:path';
-import { VAULT } from './config.ts';
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { basename, extname, join, relative, resolve, sep } from 'node:path';
+import { TASKS_DIR, VAULT } from './config.ts';
 import * as store from './store.ts';
 
 export interface DocInfo { name: string; path: string; kind: 'md' | 'html' | 'other'; size: number; mtime: string; from?: { task: string; num: number; title: string; at: string }; sentTo?: { task: string; num: number; at: string }[] }
@@ -110,5 +110,27 @@ export function edges() {
 // Only files inside the vault can be served.
 export function safePath(p: string): string | null {
   const full = resolve(p.replace(/^~(?=\/)/, process.env.HOME || ''));
-  return full.startsWith(resolve(VAULT) + '/') && existsSync(full) ? full : null;
+  if (!full.startsWith(resolve(VAULT) + sep) || !existsSync(full)) return null;
+  return realpathSync(full).startsWith(realpathSync(VAULT) + sep) ? full : null;
+}
+
+export function resolveDocumentLink(sourceTask: string, input: string): (DocInfo & { task: string; box: 'inbox' | 'outbox'; line?: number; heading?: string }) | null {
+  if (!store.get(sourceTask) || !input || input.length > 2048) return null;
+  let path = input.replace(/[),.;]+$/, '');
+  let line: number | undefined, heading: string | undefined;
+  const fragment = path.match(/#([^#]+)$/);
+  if (fragment) { try { heading = decodeURIComponent(fragment[1]); } catch { return null; } path = path.slice(0, -fragment[0].length); }
+  const number = path.match(/:(\d+)$/);
+  if (number) { line = Number(number[1]); path = path.slice(0, -number[0].length); }
+  if (path.startsWith('~/AgentVault/')) path = join(VAULT, path.slice('~/AgentVault/'.length));
+  else if (path.startsWith('~/')) return null;
+  const full = resolve(path.startsWith('/') ? path : join(store.taskDir(sourceTask), path));
+  const rel = relative(TASKS_DIR, full).split(sep);
+  if (rel.length !== 3 || !rel[0] || !['inbox', 'outbox'].includes(rel[1]) || !rel[2]) return null;
+  const [task, box, name] = rel;
+  if (!store.get(task)) return null;
+  if (!safePath(full) || !realpathSync(full).startsWith(realpathSync(TASKS_DIR) + sep)) return null;
+  const doc = list(join(store.taskDir(task), box)).find(x => x.name === name && x.path === full);
+  if (!doc) return null;
+  return { ...doc, kind: kindOf(name), task, box: box as 'inbox' | 'outbox', ...(line && line > 0 ? { line } : {}), ...(heading ? { heading } : {}) };
 }
