@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
+import type { Approver } from './policy.ts';
 
-export type Verdict = 'communication' | 'action-request' | 'quarantine';
+export type Verdict = 'communication' | 'uncertain' | 'action-request' | 'quarantine';
 export interface MailFile { id: string; name: string; size: number; hash: string; path: string; slackId?: string; longBody?: boolean; review?: { verdict: Verdict; reason: string; at: string }; routed?: { task: string; path: string; at: string } }
 export interface Message {
   id: string; direction: 'inbox' | 'outbox'; source: 'agent' | 'slack' | 'user';
@@ -13,9 +14,16 @@ export interface Message {
   approval?: { by: 'user' | 'controller'; at: string; hash: string };
   rejectedAt?: string; sendStartedAt?: string; sentAt?: string; slackTs?: string; slackChannel?: string;
   sending?: boolean; error?: string;
-  routes: { task: string; path: string; at: string }[];
+  routes: { task: string; path: string; at: string; by?: 'user' | 'controller' }[];
   files?: MailFile[];
+  // incoming: the task the controller proposes (null: no task needs it); the user approves it on the approval card
+  proposedRoute?: { task: string | null; at: string };
+  // comments from the user when they sent the approval card back
+  returns?: { comment: string; at: string }[];
+  // routed by the controller without the user's approval, and the user has not opened it yet
+  unseen?: boolean;
 }
+export interface TrustedSender { user: string; name: string; at: string }
 export interface Contact { user: string; name: string; channel: string; oldest: string; status?: 'requested' | 'active' | 'needs-request'; requestId?: string }
 export interface ContactRequest { user: string; name: string; channel: string; requestId: string; at: string }
 export interface MailScan { oldest: string; latest: string; cursor: string; lastPageAt: number }
@@ -23,7 +31,9 @@ export interface MailData {
   version: 1; messages: Message[]; contacts: Contact[];
   requests?: ContactRequest[]; requestCursors?: Record<string, string>;
   messageCursors?: Record<string, string>; messageScans?: Record<string, MailScan>; recentScans?: Record<string, MailScan>;
-  staged?: MailFile[]; owner?: string; controllerApproval?: boolean;
+  staged?: MailFile[]; owner?: string; trustedSenders?: TrustedSender[];
+  // replaced by the outgoing level in machine.json; read once to migrate the Inbox checkbox
+  controllerApproval?: boolean;
   peopleSearches?: { at: string; task: string; text: string }[];
 }
 export function hashMessage(subject: string, body: string, to: string, files: MailFile[] = []) {
@@ -70,13 +80,15 @@ export class MailStore {
       data.messages.push(m); return m;
     });
   }
-  approve(id: string, by: 'user' | 'controller', expectedHash: string) {
+  // approver: who the permission levels allow to approve this message now (server/mail/policy.ts)
+  approve(id: string, by: 'user' | 'controller', expectedHash: string, approver: Approver) {
     return this.update(id, m => {
       if (expectedHash !== m.hash) throw new Error('The message changed. Read it again before approving.');
       if (m.dismissedAt || m.rejectedAt) throw new Error('Restore the message before approval');
       if (!m.review) throw new Error('Controller review must finish first');
       if (m.review?.verdict === 'quarantine') throw new Error('Quarantined messages cannot be approved');
-      if (by === 'controller' && (!this.read().controllerApproval || m.review?.verdict !== 'communication')) throw new Error('This message needs human approval');
+      if (by === 'controller' && approver !== 'controller') throw new Error('This message needs human approval');
+      if (by === 'user' && approver === 'nobody') throw new Error('This message failed the safety check and cannot be approved');
       m.approval = { by, at: new Date().toISOString(), hash: m.hash };
     });
   }
