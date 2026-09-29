@@ -1,4 +1,4 @@
-/* Review page. Colours come from the theme tokens so every style works. */
+/* User Inbox. Colours come from the theme tokens so every style works. */
 .rv { height: 100%; display: grid; grid-template-columns: 280px 1fr; min-height: 0; }
 .rv-queue { border-right: 1px solid var(--line); background: var(--bg2); overflow: auto; padding: 10px 8px; }
 .rv-qh { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); font-weight: 600; padding: 10px 8px 6px; }

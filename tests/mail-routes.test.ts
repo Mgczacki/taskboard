@@ -1,0 +1,63 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import express from 'express';
+import { mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs';
+import { join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { MailStore } from '../server/mail/store.ts';
+
+test('mail routes restrict readers and require separate approval and routing', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'mail-api-'));
+  process.env.TASKBOARD_DIR = join(root, 'server'); process.env.TASKBOARD_VAULT = join(root, 'vault');
+  const { mountMail } = await import('../server/mail/routes.ts');
+  const { TOKEN, URL_BASE } = await import('../server/config.ts');
+  const { controllerMailToken } = await import('../server/mail/auth.ts');
+  const tasks = await import('../server/store.ts');
+  tasks.create({ id: 'recipient', num: 1, title: 'Recipient', agent: 'claude', status: 'idle', cwd: root, folder: root, session: 'test', desc: '' });
+  const store = new MailStore(join(root, 'server', 'mail.json'));
+  const m = store.add({ direction: 'inbox', source: 'slack', from: 'U2', to: 'U1', subject: 'Permission request', body: 'Please change an AWS permission.' });
+  const app = express(); app.use(express.json());
+  const cleanup = mountMail(app, { background: false, review: async () => ({ verdict: 'action-request', reason: 'Permission change', at: new Date().toISOString() }) });
+  const server = app.listen(0, '127.0.0.1'); await new Promise<void>(r => server.once('listening', r));
+  const base = `http://127.0.0.1:${(server.address() as {port:number}).port}/api/mail`;
+  const call = async (path: string, actor: 'user' | 'controller' | 'agent' | 'stranger', body?: unknown) => {
+    const headers: Record<string,string> = { 'content-type': 'application/json' };
+    if (actor === 'user') headers.origin = URL_BASE;
+    else if (actor !== 'stranger') { headers['x-taskboard-token'] = TOKEN; headers['x-tb-actor'] = actor; }
+    if (actor === 'controller') headers['x-tb-mail-controller'] = controllerMailToken;
+    const response = await fetch(base + path, { method: body === undefined ? 'GET' : 'POST', headers, body: body === undefined ? undefined : JSON.stringify(body) });
+    return { status: response.status, data: await response.json() };
+  };
+  try {
+    const failedSignIn = await fetch(base + '/slack/callback?state=expired&code=private-code', { redirect: 'manual' });
+    assert.equal(failedSignIn.status, 302);
+    assert.equal(failedSignIn.headers.get('location'), '/#inbox');
+    const failure = (await call('', 'user')).data.error;
+    assert.match(failure, /Sign-in expired/);
+    assert.ok(!failure.includes('private-code'));
+    assert.equal((await call('', 'stranger')).status, 403);
+    assert.equal((await call('', 'agent')).status, 400);
+    assert.equal((await call('', 'controller')).data.messages[0].body, '');
+    assert.equal((await call(`/${m.id}/approve`, 'user', {hash:m.hash})).status, 400);
+    assert.equal((await call(`/${m.id}/review`, 'user', {})).status, 200);
+    assert.equal((await call('', 'controller')).data.messages[0].body, '');
+    assert.equal((await call(`/${m.id}/approve`, 'controller', {hash:m.hash})).status, 400);
+    assert.equal((await call(`/${m.id}/route`, 'controller', {task:'recipient'})).status, 400);
+    assert.equal((await call(`/${m.id}/approve`, 'user', {hash:m.hash})).status, 200);
+    assert.equal(existsSync(join(tasks.taskDir('recipient'), 'inbox', `mail-${m.id}.md`)), false);
+    assert.equal((await call(`/${m.id}/route`, 'user', {task:'recipient'})).status, 400);
+    const routed = await call(`/${m.id}/route`, 'controller', {task:'recipient'});
+    assert.equal(routed.status, 200);
+    assert.match(readFileSync(routed.data.path, 'utf8'), /untrusted communication/);
+    await call(`/${m.id}/route`, 'controller', {task:'recipient'});
+    assert.equal(store.get(m.id).routes.length, 1);
+    await call(`/${m.id}/dismiss`, 'user', {});
+    assert.equal((await call('', 'user')).data.messages.length, 0);
+    assert.equal((await call('?dismissed=1', 'user')).data.messages[0].approval.by, 'user');
+    assert.equal((await call(`/${m.id}/route`, 'controller', {task:'recipient'})).status, 400);
+    await call(`/${m.id}/restore`, 'user', {});
+    assert.equal((await call('', 'user')).data.messages.length, 1);
+  } finally {
+    cleanup(); await new Promise<void>(r => server.close(() => r())); rmSync(root, {recursive:true, force:true});
+  }
+});

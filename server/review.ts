@@ -1,4 +1,4 @@
-// Document review. An agent runs `tb review <file>`; the file shows up on the Review page. You comment on
+// Document review. An agent runs `tb review <file>`; the file shows up on the user Inbox. You comment on
 // paragraphs or diagrams, then "Send feedback" writes the comments into the agent's inbox and tells the agent.
 // When the agent runs `tb review` again on the same file, that becomes the next version.
 // State: ~/.taskboard/reviews.json. Each requested version is copied to ~/.taskboard/reviews/<id>/v<N><ext>.
@@ -15,7 +15,7 @@ export interface Comment { id: string; v: number; block: number; quote: string; 
 export interface ReviewItem {
   id: string; path: string; name: string; task: string; state: 'pending' | 'changes' | 'accepted';
   version: number; versions: { v: number; at: string; file: string }[]; comments: Comment[];
-  requestedAt: string; updated: string;
+  requestedAt: string; updated: string; dismissedAt?: string;
 }
 
 const FILE = join(TB_DIR, 'reviews.json');
@@ -45,6 +45,7 @@ export function mountReview(app: Express) {
     const copy = join(DIR, item.id, `v${item.version}${extname(path)}`);
     copyFileSync(path, copy);
     item.versions.push({ v: item.version, at: now(), file: copy });
+    delete item.dismissedAt;
     item.state = 'pending'; item.requestedAt = now(); item.updated = now();
     if (task) item.task = task;
     save(all);
@@ -52,8 +53,8 @@ export function mountReview(app: Express) {
     res.json(item);
   });
 
-  app.get('/api/review', (_req, res) => {
-    const items = Object.values(load()).map(x => {
+  app.get('/api/review', (req, res) => {
+    const items = Object.values(load()).filter(x => req.query.dismissed === '1' ? !!x.dismissedAt : !x.dismissedAt).map(x => {
       const t = store.get(x.task);
       return { ...x, taskNum: t?.num, taskTitle: t?.title, agent: t?.agent, taskStatus: t?.status };
     });
@@ -69,6 +70,24 @@ export function mountReview(app: Express) {
     const x = load()[req.params.id]; const v = x?.versions.find(y => y.v === Number(req.params.v));
     if (!v || !existsSync(v.file)) return res.status(404).send('Not found');
     res.type('text/plain; charset=utf-8').send(readFileSync(v.file, 'utf8'));
+  });
+
+  app.post('/api/review/:id/dismiss', (req, res) => {
+    const all = load(); const x = all[req.params.id]; if (!x) return res.status(404).end();
+    if (!x.dismissedAt) { x.dismissedAt = now(); x.updated = x.dismissedAt; save(all); }
+    res.json(x);
+  });
+  app.post('/api/review/:id/restore', (req, res) => {
+    const all = load(); const x = all[req.params.id]; if (!x) return res.status(404).end();
+    if (x.dismissedAt) { delete x.dismissedAt; x.updated = now(); save(all); }
+    res.json(x);
+  });
+
+  // Dismissal changes visibility only. Restore before taking a review action.
+  app.use('/api/review/:id', (req, res, next) => {
+    if (req.method !== 'GET' && load()[req.params.id]?.dismissedAt)
+      return res.status(409).json({ error: 'Restore this inbox item before changing its review.' });
+    next();
   });
 
   app.post('/api/review/:id/comment', (req, res) => {

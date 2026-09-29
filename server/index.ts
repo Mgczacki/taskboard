@@ -25,6 +25,7 @@ import { acquire } from './lock.ts';
 import { ROLE, installRuntimeFiles, refuseReason } from './instance.ts';
 import { hostname } from 'node:os';
 import WebSocket from 'ws';
+import { mountMail } from './mail/routes.ts';
 import { mountReview } from './review.ts';
 import { attach } from './pty.ts';
 import * as store from './store.ts';
@@ -233,6 +234,7 @@ app.post('/api/tasks/:id/restart', async (req, res) => {
   try { await restartTask(t); res.json(view(store.get(t.id)!)); } catch (e) { fail(res, e); }
 });
 mountReview(app);
+mountMail(app);
 
 // ---------- accounts ----------
 const acctView = async (a: accounts.Account, fresh = false) => ({ ...a, status: await accounts.status(a, fresh), running: store.all().filter(t => (t.account || accounts.defaultFor(t.agent).id) === a.id && !['archived', 'parked', 'suspended'].includes(t.status)).length });
