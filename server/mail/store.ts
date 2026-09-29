@@ -24,6 +24,7 @@ export interface MailData {
   requests?: ContactRequest[]; requestCursors?: Record<string, string>;
   messageCursors?: Record<string, string>; messageScans?: Record<string, MailScan>; recentScans?: Record<string, MailScan>;
   staged?: MailFile[]; owner?: string; controllerApproval?: boolean;
+  peopleSearches?: { at: string; task: string; text: string }[];
 }
 export function hashMessage(subject: string, body: string, to: string, files: MailFile[] = []) {
   return createHash('sha256').update(JSON.stringify([subject, body, to, files.map(f => [f.name, f.size, f.hash])])).digest('hex');
@@ -51,6 +52,9 @@ export class MailStore {
     const data = this.read(); const result = fn(data); savePrivate(this.file, data); return result;
   }
   get(id: string) { const m = this.read().messages.find(x => x.id === id); if (!m) throw new Error('No such message'); return m; }
+  logPeopleSearch(task: string, text: string) {
+    this.change(data => { data.peopleSearches = [...(data.peopleSearches || []).slice(-999), { at: new Date().toISOString(), task, text }]; });
+  }
   update(id: string, fn: (m: Message) => void) {
     return this.change(data => { const m = data.messages.find(x => x.id === id); if (!m) throw new Error('No such message'); fn(m); m.updated = new Date().toISOString(); return m; });
   }

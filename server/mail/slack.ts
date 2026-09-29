@@ -5,7 +5,7 @@ import { savePrivate } from './store.ts';
 export const SLACK_APP_ID = 'A0C57MV7K6V';
 export const SLACK_CLIENT_ID = '8696283833057.12177743257233';
 export const SLACK_TEAM_ID = 'T08LG8BQH1P';
-export const SLACK_SCOPES = ['chat:write', 'im:write', 'im:read', 'im:history', 'users:read', 'files:write', 'files:read'];
+export const SLACK_SCOPES = ['chat:write', 'im:write', 'im:read', 'im:history', 'users:read', 'users:read.email', 'files:write', 'files:read'];
 interface Credentials { user: string; team: string; name?: string; scopes?: string[]; access: string; refresh: string; expires: number }
 export class SlackError extends Error {
   constructor(message: string, readonly retryAfter = 0) { super(message); }
@@ -17,7 +17,7 @@ export class SlackClient {
   private pending?: { state: string; verifier: string; redirect: string; expires: number };
   constructor(readonly file: string, private fetcher: typeof fetch = fetch) {}
   private credentials(): Credentials | undefined { return existsSync(this.file) ? JSON.parse(readFileSync(this.file, 'utf8')) : undefined; }
-  identity() { const c = this.credentials(); return c ? { user: c.user, team: c.team, name: c.name, needsReconnect: !c.scopes || SLACK_SCOPES.some(s => !c.scopes?.includes(s)) } : null; }
+  identity() { const c = this.credentials(); return c ? { user: c.user, team: c.team, name: c.name, scopes: c.scopes, needsReconnect: !c.scopes || SLACK_SCOPES.some(s => !c.scopes?.includes(s)) } : null; }
   disconnect() { this.generation++; this.pending = undefined; if (existsSync(this.file)) unlinkSync(this.file); }
   begin(port: number) {
     if (![4317, 4399, 4409, 4410].includes(port)) throw new Error('Slack sign-in requires port 4317 or a registered test port');

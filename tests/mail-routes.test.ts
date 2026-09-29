@@ -63,7 +63,7 @@ test('mail routes restrict readers and require separate approval and routing', a
     assert.equal((await call(`/${m.id}/route`, 'controller', {task:'recipient'})).status, 400);
     await call(`/${m.id}/restore`, 'user', {});
     assert.equal((await call('', 'user')).data.messages.length, 1);
-    assert.equal((await call('/people', 'user')).data[0].name, 'Recipient');
+    assert.equal((await call('/people?q=Recipient', 'user')).data.matches[0].name, 'Recipient');
     assert.equal((await fetch(base + '/contacts', { method: 'POST', headers: { origin: URL_BASE, 'content-type': 'application/json' }, body: JSON.stringify({ user: 'U2' }) })).status, 404);
     assert.equal((await call('/propose', 'agent', { to: 'U2', subject: 'Status', body: 'Ready.' })).status, 400);
     assert.equal((await call('/propose', 'controller', { to: 'U2', subject: 'Status', body: 'Ready.' })).status, 400);

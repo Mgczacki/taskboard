@@ -6,7 +6,7 @@ import * as tasks from '../store.ts';
 import * as accounts from '../accounts.ts';
 import { MailStore, savePrivate, validText, type Message, type Verdict } from './store.ts';
 import { SlackClient, SlackError } from './slack.ts';
-import { MailService } from './service.ts';
+import { MailService, RecipientMatchError } from './service.ts';
 import * as machine from '../machine.ts';
 import { needsBodyFile } from './presentation.ts';
 import { isControllerToken } from './auth.ts';
@@ -86,7 +86,7 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
     return { ...shown, subject: '(held for review)', body: '', files: [], review: m.review ? { ...m.review, reason: '(visible to user only)' } : undefined };
   };
   const endpoint = (fn: (req: Request) => unknown | Promise<unknown>) => async (req: Request, res: Response) => {
-    try { res.json(await fn(req)); } catch (e) { res.status(400).json({ error: (e as Error).message }); }
+    try { res.json(await fn(req)); } catch (e) { res.status(400).json(e instanceof RecipientMatchError ? { error: e.message, matches: e.matches, hasMore: e.hasMore } : { error: (e as Error).message }); }
   };
   const owner = (req: Request) => { if (!human(req) && !controller(req)) throw new Error('Only the user or controller can perform this action'); };
   const user = (req: Request) => { if (!human(req)) throw new Error('Use the Taskboard page for this action'); };
@@ -130,7 +130,23 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
   app.post('/api/mail/policy', endpoint(req => { user(req); store.change(d => { d.controllerApproval = req.body.enabled === true; }); return {}; }));
   app.post('/api/mail/slack/connect', endpoint(req => { user(req); signInError = ''; return { url: slack.begin(PORT) }; }));
   app.post('/api/mail/slack/disconnect', endpoint(req => { user(req); slack.disconnect(); return {}; }));
-  app.get('/api/mail/people', endpoint(async req => { user(req); return service.listPeople(); }));
+  const searchCaller = (req: Request) => human(req) ? 'user' : req.get('x-tb-actor') || 'controller';
+  app.get('/api/mail/people', endpoint(async req => {
+    const query = String(req.query.q || '').trim();
+    if (query.length < 2 || query.length > 200) throw new Error('Search text must have 2 to 200 characters');
+    store.logPeopleSearch(searchCaller(req), query);
+    return service.searchPeople(query);
+  }));
+  app.get('/api/mail/search', endpoint(req => {
+    const query = String(req.query.q || '').trim().toLocaleLowerCase();
+    if (query.length < 2 || query.length > 200) throw new Error('Search text must have 2 to 200 characters');
+    const matches = store.read().messages.slice().reverse().flatMap(m => {
+      const shown = present(m, req);
+      if (![shown.subject, shown.from, shown.to, shown.body].some(value => value.toLocaleLowerCase().includes(query))) return [];
+      return [{ id: m.id, direction: m.direction, person: m.direction === 'outbox' ? m.to : m.from, subject: shown.subject, time: m.sentAt || m.created }];
+    });
+    return { matches: matches.slice(0, 10), hasMore: matches.length > 10 };
+  }));
   app.post('/api/mail/files/stage', endpoint(req => {
     user(req);
     if ((store.read().staged || []).length >= 10) throw new Error('Remove a staged file before adding another');
@@ -170,7 +186,9 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
   }));
   app.post('/api/mail/draft', endpoint(async req => {
     owner(req); const identity = slack.identity(); if (!identity) throw new Error('Connect Slack first');
-    await service.validateRecipient(String(req.body.to || ''));
+    const recipientInput = String(req.body.to || '');
+    if (!/^[UW][A-Z0-9]+$/.test(recipientInput.trim())) store.logPeopleSearch(searchCaller(req), recipientInput.trim());
+    const recipient = await service.resolveRecipient(recipientInput);
     const ids = Array.isArray(req.body.files) ? req.body.files : [];
     if (ids.length > 5 || ids.some((id: unknown) => typeof id !== 'string')) throw new Error('Choose up to five files');
     const staged = store.read().staged || [];
@@ -182,23 +200,25 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
       if (files.length >= 5) throw new Error('A long message needs one free file slot');
       files.push({ ...stageBytes(Buffer.from(body), 'message.txt'), longBody: true });
     }
-    const m = store.add({ direction: 'outbox', source: 'user', from: identity.user, to: req.body.to, subject: req.body.subject, body, files,
+    const m = store.add({ direction: 'outbox', source: 'user', from: identity.user, to: recipient.user, subject: req.body.subject, body, files,
       proposedBy: { actor: human(req) ? 'user' : 'controller' } });
     store.change(d => { d.staged = (d.staged || []).filter(f => !ids.includes(f.id)); });
-    void checkNext(); return { id: m.id };
+    void checkNext(); return { id: m.id, recipient };
   }));
   app.post('/api/mail/propose', endpoint(async req => {
     if (human(req) || controller(req)) throw new Error('Submit this draft from a local task');
     const task = tasks.get(req.get('x-tb-actor') || '');
     if (!task || task.id === 'controller') throw new Error('Submit this draft from a local task');
     const identity = slack.identity(); if (!identity) throw new Error('Connect Slack first');
-    await service.validateRecipient(String(req.body.to || ''));
+    const recipientInput = String(req.body.to || '');
+    if (!/^[UW][A-Z0-9]+$/.test(recipientInput.trim())) store.logPeopleSearch(searchCaller(req), recipientInput.trim());
+    const recipient = await service.resolveRecipient(recipientInput);
     const body = String(req.body.body || '');
     validText(req.body.subject, 200, 'subject'); validText(body, 262144, 'message body');
     const files = needsBodyFile(body) ? [{ ...stageBytes(Buffer.from(body), 'message.txt'), longBody: true }] : [];
-    const m = store.add({ direction: 'outbox', source: 'agent', from: identity.user, to: req.body.to, subject: req.body.subject, body, files,
+    const m = store.add({ direction: 'outbox', source: 'agent', from: identity.user, to: recipient.user, subject: req.body.subject, body, files,
       proposedBy: { actor: 'task', task: task.id, agent: task.agent } });
-    void checkNext(); return { id: m.id };
+    void checkNext(); return { id: m.id, recipient };
   }));
   app.get('/api/mail/:id/files/:file/download', async (req, res) => {
     try {

@@ -142,7 +142,7 @@ test('workspace members can receive approved messages without contact requests',
     return {};
   } } as unknown as SlackClient;
   const service = new MailService(s, slack);
-  assert.deepEqual((await service.listPeople()).map(p => p.user), ['U2']);
+  assert.deepEqual((await service.searchPeople('Recipient')).matches.map(p => p.user), ['U2']);
   const m = draft(s);
   await assert.rejects(service.send(m.id), /Approve/);
   assert.equal(posted, 0);

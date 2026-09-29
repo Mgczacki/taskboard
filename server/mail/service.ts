@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
-import { unlinkSync } from 'node:fs';
-import { MailStore, type MailFile, type Message } from './store.ts';
+import { existsSync, readFileSync, unlinkSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { MailStore, savePrivate, type MailFile, type Message } from './store.ts';
 import { SlackClient, SLACK_APP_ID } from './slack.ts';
 import { MAX_FILE, receiveBytes, verifyFile } from './files.ts';
 import { buildMessageBlocks, escapeSlack } from './presentation.ts';
@@ -9,6 +10,10 @@ import { hostname } from 'node:os';
 
 export const PREFIX = '[Taskboard message v1]\n';
 export const FILE_PREFIX = '[Taskboard message v2]\n';
+export interface Person { user: string; name: string; realName: string; title: string; isBot: boolean; deleted: boolean; handle?: string; email?: string }
+export class RecipientMatchError extends Error {
+  constructor(message: string, readonly matches: Omit<Person, 'handle'>[], readonly hasMore: boolean) { super(message); }
+}
 const INBOX_SCAN_LIMIT = 25;
 export function encodeMessage(m: Message, senderName = m.from) {
   const summary = messageSummary(m, senderName);
@@ -38,30 +43,101 @@ export function decodeMessage(text: unknown): { id: string; subject: string; bod
 export class MailService {
   private syncing = false;
   private lastInboxScanAt = 0;
-  private directory?: { user: string; expires: number; people: { user: string; name: string; realName?: string; image?: string }[] };
+  private directory?: { user: string; team: string; expires: number; people: Person[] };
+  private directoryLoading?: Promise<Person[]>;
   error = '';
   constructor(readonly store: MailStore, readonly slack: SlackClient, private machineName: () => string = () => process.env.TASKBOARD_MACHINE_NAME || hostname()) {}
 
-  async listPeople() {
-    const identity = this.slack.identity(); if (!identity) throw new Error('Connect Slack first');
-    if (this.directory?.user === identity.user && this.directory.expires > Date.now()) return this.directory.people;
-    const people: { user: string; name: string; realName?: string; image?: string }[] = [];
+  private scope(name: string) {
+    const identity = this.slack.identity();
+    if (!identity) throw new Error('Connect Slack first');
+    if (identity.scopes && !identity.scopes.includes(name)) throw new Error(`Add Slack scope ${name}, then reconnect Slack`);
+    return identity;
+  }
+
+  private async loadPeople() {
+    const identity = this.scope('users:read');
+    const file = join(dirname(this.store.file), 'mail-people-cache.json');
+    if (this.directory?.user === identity.user && this.directory.team === identity.team && this.directory.expires > Date.now()) return this.directory.people;
+    if (!this.directory && existsSync(file)) {
+      try {
+        const cached = JSON.parse(readFileSync(file, 'utf8'));
+        if (cached.user === identity.user && cached.team === identity.team && cached.expires > Date.now() && Array.isArray(cached.people)) {
+          this.directory = cached;
+          return cached.people as Person[];
+        }
+      } catch { /* Refresh a damaged cache. */ }
+    }
+    if (this.directoryLoading) return this.directoryLoading;
+    this.directoryLoading = this.fetchPeople(identity, file).finally(() => { this.directoryLoading = undefined; });
+    return this.directoryLoading;
+  }
+
+  private async fetchPeople(identity: { user: string; team: string }, file: string) {
+    const people: Person[] = [];
     let cursor = '';
     do {
-      const page = await this.slack.call('users.list', { limit: '200', ...(cursor ? { cursor } : {}) });
+      let page: any;
+      try { page = await this.slack.call('users.list', { limit: '200', ...(cursor ? { cursor } : {}) }); }
+      catch (error) { if (/missing_scope/.test((error as Error).message)) throw new Error('Add Slack scope users:read, then reconnect Slack'); throw error; }
       if (this.slack.identity()?.user !== identity.user) throw new Error('Connection changed while loading people');
-      for (const person of page.members || []) {
-        if (!person.id || person.deleted || person.is_bot || person.is_app_user || person.id === identity.user) continue;
-        if (person.team_id !== identity.team && !person.teams?.includes(identity.team)) continue;
-        const name = String(person.profile?.display_name || person.real_name || person.name || person.id);
-        const realName = String(person.real_name || person.profile?.real_name || '');
-        people.push({ user: person.id, name, ...(realName && realName !== name ? { realName } : {}), image: person.profile?.image_48 });
+      for (const member of page.members || []) {
+        if (!member.id || member.team_id !== identity.team && !member.teams?.includes(identity.team)) continue;
+        people.push({ user: String(member.id), name: String(member.profile?.display_name || member.real_name || member.name || member.id),
+          realName: String(member.real_name || member.profile?.real_name || ''), title: String(member.profile?.title || ''),
+          isBot: !!(member.is_bot || member.is_app_user), deleted: !!member.deleted,
+          handle: String(member.name || ''), email: String(member.profile?.email || '') });
       }
       cursor = page.response_metadata?.next_cursor || '';
     } while (cursor);
     people.sort((a, b) => a.name.localeCompare(b.name) || a.user.localeCompare(b.user));
-    this.directory = { user: identity.user, expires: Date.now() + 300_000, people };
+    this.directory = { user: identity.user, team: identity.team, expires: Date.now() + 300_000, people };
+    savePrivate(file, this.directory);
     return people;
+  }
+
+  async searchPeople(raw: string) {
+    const query = raw.trim();
+    if (query.length < 2 || query.length > 200) throw new Error('Search text must have 2 to 200 characters');
+    const identity = this.slack.identity(); if (!identity) throw new Error('Connect Slack first');
+    const exactEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(query);
+    if (exactEmail) {
+      this.scope('users:read.email');
+      let member: any;
+      try { member = (await this.slack.call('users.lookupByEmail', { email: query })).user; }
+      catch (error) {
+        if (/users_not_found/.test((error as Error).message)) {
+          const person = (await this.loadPeople()).find(p => p.email?.toLocaleLowerCase() === query.toLocaleLowerCase());
+          return { matches: person ? [{ user: person.user, name: person.name, realName: person.realName, title: person.title,
+            isBot: person.isBot, deleted: person.deleted, email: person.email }] : [], hasMore: false };
+        }
+        if (/missing_scope/.test((error as Error).message)) throw new Error('Add Slack scope users:read.email, then reconnect Slack');
+        throw error;
+      }
+      if (!member || member.team_id !== identity.team && !member.teams?.includes(identity.team)) return { matches: [], hasMore: false };
+      const person: Person = { user: String(member.id), name: String(member.profile?.display_name || member.real_name || member.name || member.id),
+        realName: String(member.real_name || member.profile?.real_name || ''), title: String(member.profile?.title || ''),
+        isBot: !!(member.is_bot || member.is_app_user), deleted: !!member.deleted, email: String(member.profile?.email || '') };
+      if ((person.email || '').toLocaleLowerCase() !== query.toLocaleLowerCase()) return { matches: [], hasMore: false };
+      return { matches: [person], hasMore: false };
+    }
+    const term = query.toLocaleLowerCase();
+    const matches = (await this.loadPeople()).filter(person => [person.name, person.realName, person.handle || ''].some(value => value.toLocaleLowerCase().includes(term)));
+    return { matches: matches.slice(0, 10).map(({ handle, email, ...person }) => person), hasMore: matches.length > 10 };
+  }
+
+  async resolveRecipient(raw: string) {
+    const value = raw.trim();
+    if (/^[UW][A-Z0-9]+$/.test(value)) {
+      const member = await this.validateRecipient(value);
+      return { user: value, name: String(member.profile?.display_name || member.real_name || member.name || value) };
+    }
+    const result = await this.searchPeople(value);
+    if (result.matches.length !== 1 || result.hasMore) throw new RecipientMatchError(result.matches.length ? 'Several members match. Choose a Slack member ID.' : 'No members match.', result.matches, result.hasMore);
+    const person = result.matches[0];
+    if (person.isBot || person.deleted) throw new RecipientMatchError('Choose an active person in this workspace.', result.matches, false);
+    await this.validateRecipient(person.user);
+    return { user: person.user, name: person.name };
   }
 
   async validateRecipient(id: string) {

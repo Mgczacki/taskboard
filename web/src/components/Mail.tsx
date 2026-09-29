@@ -81,15 +81,31 @@ async function request(path: string, body?: unknown) {
   const response = await fetch('/api/mail' + path, { method: body === undefined ? 'GET' : 'POST', headers: { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
   const data = await response.json(); if (!response.ok) throw new Error(data.error || 'Request failed'); return data;
 }
-interface Person { user: string; name: string; realName?: string; image?: string }
-function MemberPicker({ people, value, onChange, disabled }: { people: Person[]; value: string; onChange: (user: string) => void; disabled: boolean }) {
+interface Person { user: string; name: string; realName: string; title: string; isBot: boolean; deleted: boolean; email?: string }
+function MemberPicker({ value, onChange, disabled }: { value: string; onChange: (user: string) => void; disabled: boolean }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
   const [highlight, setHighlight] = useState(0);
+  const [people, setPeople] = useState<Person[]>([]);
+  const [chosen, setChosen] = useState<Person | null>(null);
+  const [error, setError] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
   const root = useRef<HTMLDivElement>(null);
   const search = useRef<HTMLInputElement>(null);
-  const chosen = people.find(person => person.user === value);
-  const shown = people.filter(person => `${person.name} ${person.realName || ''}`.toLocaleLowerCase().includes(query.trim().toLocaleLowerCase()));
+  const shown = people;
+  useEffect(() => {
+    if (!open || query.trim().length < 2) { setPeople([]); setHasMore(false); setLoading(false); return; }
+    setPeople([]); setHasMore(false);
+    let cancelled = false;
+    const timer = setTimeout(() => {
+      setLoading(true); setError('');
+      void request('/people?q=' + encodeURIComponent(query.trim())).then((result: { matches: Person[]; hasMore: boolean }) => {
+        if (!cancelled) { setPeople(result.matches); setHasMore(result.hasMore); }
+      }).catch(e => { if (!cancelled) setError(e.message); }).finally(() => { if (!cancelled) setLoading(false); });
+    }, 250);
+    return () => { cancelled = true; clearTimeout(timer); };
+  }, [open, query]);
   useEffect(() => {
     if (!open) return;
     search.current?.focus();
@@ -98,25 +114,28 @@ function MemberPicker({ people, value, onChange, disabled }: { people: Person[];
     return () => document.removeEventListener('pointerdown', close);
   }, [open]);
   useEffect(() => { if (open) root.current?.querySelector('[data-highlighted="true"]')?.scrollIntoView({ block: 'nearest' }); }, [highlight, open]);
-  const choose = (person: Person) => { onChange(person.user); setOpen(false); setQuery(''); setHighlight(0); };
+  const choose = (person: Person) => { onChange(person.user); setChosen(person); setOpen(false); setQuery(''); setHighlight(0); };
   return <div className="mail-member-picker" ref={root}>
     <button className="btn mail-member-trigger" type="button" role="combobox" aria-label="To" aria-haspopup="listbox" aria-expanded={open} aria-controls={open ? 'mail-member-options' : undefined} disabled={disabled} onClick={() => setOpen(!open)}>
-      {chosen ? <>{chosen.image && <img src={chosen.image} alt="" />}{chosen.name}</> : <span>Choose a Slack member</span>}
+      {chosen && chosen.user === value ? chosen.name : <span>Choose a Slack member</span>}
       <span className="mail-member-chevron" aria-hidden="true">⌄</span>
     </button>
     {open && <div className="mail-member-menu">
       <input className="mail-input" ref={search} type="search" aria-label="Find a workspace member" placeholder="Find a workspace member" value={query} onChange={event => { setQuery(event.target.value); setHighlight(0); }} onKeyDown={event => {
         if (event.key === 'Escape') { setOpen(false); event.preventDefault(); }
-        if (event.key === 'ArrowDown') { setHighlight(index => Math.min(index + 1, shown.length - 1)); event.preventDefault(); }
+        if (event.key === 'ArrowDown') { setHighlight(index => Math.min(index + 1, Math.max(0, shown.length - 1))); event.preventDefault(); }
         if (event.key === 'ArrowUp') { setHighlight(index => Math.max(index - 1, 0)); event.preventDefault(); }
-        if (event.key === 'Enter' && shown[highlight]) { choose(shown[highlight]); event.preventDefault(); }
+        if (event.key === 'Enter' && shown[highlight] && !shown[highlight].isBot && !shown[highlight].deleted) { choose(shown[highlight]); event.preventDefault(); }
       }} />
       <div id="mail-member-options" className="mail-member-options" role="listbox" aria-label="Workspace members">
-        {shown.map((person, index) => <button className="btn mail-member-option" type="button" role="option" aria-selected={person.user === value} data-highlighted={index === highlight} key={person.user} onMouseEnter={() => setHighlight(index)} onClick={() => choose(person)}>
-          {person.image && <img src={person.image} alt="" />}
-          <span>{person.name}{person.realName && <small>{person.realName}</small>}</span>
+        {shown.map((person, index) => <button className="btn mail-member-option" type="button" role="option" aria-selected={person.user === value} data-highlighted={index === highlight} key={person.user} disabled={person.isBot || person.deleted} onMouseEnter={() => setHighlight(index)} onClick={() => choose(person)}>
+          <span>{person.name}<small>{person.title || 'No title'} · {person.user}{person.isBot ? ' · Bot' : ''}{person.deleted ? ' · Deactivated' : ''}</small></span>
         </button>)}
-        {!shown.length && <p>No matching members.</p>}
+        {query.trim().length < 2 && <p>Enter at least two characters.</p>}
+        {loading && <p>Searching Slack members…</p>}
+        {error && <p role="alert">{error}</p>}
+        {!loading && !error && query.trim().length >= 2 && !shown.length && <p>No matching members.</p>}
+        {hasMore && <p>More members match. Enter more text.</p>}
       </div>
     </div>}
   </div>;
@@ -132,23 +151,12 @@ export function InboxPage(props: { tasks: Task[]; open: (id: string, tab?: 'term
   const [recipient, setRecipient] = useState('');
   const [subject, setSubject] = useState('');
   const [body, setBody] = useState('');
-  const [people, setPeople] = useState<Person[]>([]);
-  const [directoryFor, setDirectoryFor] = useState('');
-  const [peopleError, setPeopleError] = useState('');
-  const [peopleLoading, setPeopleLoading] = useState(false);
   const [selectedFiles, setSelectedFiles] = useState<string[]>([]);
   const [destinations, setDestinations] = useState<Record<string, string>>({});
   const [outboxFiles, setOutboxFiles] = useState<{ task: string; taskName: string; name: string }[]>([]);
   const [outboxChoice, setOutboxChoice] = useState('');
   const load = () => request(dismissed ? '?dismissed=1' : '').then(data => { setData(data); setLoadError(''); }).catch(e => setLoadError(e.message));
   useEffect(() => { void load(); const timer = setInterval(load, 5000); return () => clearInterval(timer); }, [dismissed]);
-  useEffect(() => {
-    if (tab !== 'sent' || !data?.identity || directoryFor === data.identity.user) return;
-    setDirectoryFor(data.identity.user);
-    setPeopleError('');
-    setPeopleLoading(true);
-    void request('/people').then(setPeople).catch(e => setPeopleError(e.message)).finally(() => setPeopleLoading(false));
-  }, [tab, data?.identity?.user, directoryFor]);
   async function act(fn: () => Promise<unknown>) { setBusy(true); setError(''); try { await fn(); await load(); } catch (e) { setError((e as Error).message); } finally { setBusy(false); } }
   return <div className="account-mail">
     <nav className="mail-tabs" aria-label="Inbox sections">
@@ -161,7 +169,7 @@ export function InboxPage(props: { tasks: Task[]; open: (id: string, tab?: 'term
     {tab === 'documents' ? <Documents {...props} /> : <>
       <details className="mail-settings"><summary>Slack connection and approval settings</summary>
         <p>{data?.identity ? `Connected as ${data.identity.name || data.identity.user}` : 'Connect your Slack account to exchange private messages.'}</p>
-        {data?.identity?.needsReconnect && <p role="alert">Reconnect Slack to grant file access. Disconnect Slack, then connect it again.</p>}
+        {data?.identity?.needsReconnect && <p role="alert">Reconnect Slack to grant the current permissions. Disconnect Slack, then connect it again.</p>}
 
         <button className="btn" disabled={busy} onClick={() => act(async () => { if (data?.identity) await request('/slack/disconnect', {}); else { const r = await request('/slack/connect', {}); location.assign(r.url); } })}>{data?.identity ? 'Disconnect Slack' : 'Connect Slack'}</button>
         <p>Taskboard reads Taskboard messages in your Slack direct conversations.</p>
@@ -178,9 +186,7 @@ export function InboxPage(props: { tasks: Task[]; open: (id: string, tab?: 'term
         <h2>New message</h2>
         <div className="field">
           <div className="mail-recipient-label">To</div>
-          <MemberPicker people={people} value={recipient} onChange={setRecipient} disabled={busy || !data?.identity || peopleLoading} />
-          {peopleLoading && <p>Loading Slack members…</p>}
-          {peopleError && <p role="alert">Could not load Slack members: {peopleError} <button className="btn" type="button" onClick={() => setDirectoryFor('')}>Try again</button></p>}
+          <MemberPicker value={recipient} onChange={setRecipient} disabled={busy || !data?.identity} />
         </div>
         <div className="field"><label>Subject <input className="mail-input" value={subject} onChange={e => setSubject(e.target.value)} maxLength={200} required /></label></div>
         <div className="field"><label>Message <textarea className="mail-input" value={body} onChange={e => setBody(e.target.value)} rows={5} required /></label></div>
@@ -191,7 +197,7 @@ export function InboxPage(props: { tasks: Task[]; open: (id: string, tab?: 'term
 
         <button className="btn" disabled={busy || !data?.identity || !recipient}>Save draft for approval</button>
       </form>}
-      {tab === 'sent' && data && <SentHistory messages={data.messages} contacts={[...people, ...data.contacts]} tasks={props.tasks} busy={busy} act={act} />}
+      {tab === 'sent' && data && <SentHistory messages={data.messages} contacts={data.contacts} tasks={props.tasks} busy={busy} act={act} />}
       {tab === 'inbox' && data && !data.messages.some(m => m.direction === 'inbox') && <p>{dismissed ? 'No dismissed messages.' : 'Your message inbox is empty.'}</p>}
       {tab === 'inbox' && data?.messages.filter(m => m.direction === 'inbox').map(m => <article key={m.id} className="mail-item">
         <h2>{m.subject}</h2><p>From {m.from} · To {m.to}</p>

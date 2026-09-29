@@ -18,6 +18,7 @@
         "im:read",
         "im:history",
         "users:read",
+        "users:read.email",
         "files:write",
         "files:read"
       ]

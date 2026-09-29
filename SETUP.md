@@ -119,17 +119,19 @@ If Slack requires administrator approval, ask your workspace administrator to ap
 
 Each member must complete their own authorization. Do not copy another person's credentials.
 
-The Slack permissions allow Taskboard to find people, read direct messages, send messages, upload files, and download files.
+The Slack permissions allow Taskboard to find people, look up an exact email, read direct messages, send messages, upload files, and download files. Member search needs `users:read`. Exact email search needs `users:read.email`.
 
 Taskboard scans direct conversations for Taskboard messages from workspace members. It stores only messages with the Taskboard format.
 
-Existing Slack connections must authorize the new file permissions before files can move through Inbox. Disconnect Slack, then connect it again.
+Existing Slack connections must authorize the new file and email permissions. Disconnect Slack, then connect it again.
 
 Taskboard sends message text to Claude for its separate content check. The checking process cannot use tools.
 
 ## Choose a recipient
 
-Open **Sent**. The **To** menu lists members of the Sekai Slack workspace. Browse the menu or search inside it.
+Open **Sent**. Search for a member in the **To** menu. Taskboard shows up to 10 matches with names, titles, and Slack member IDs. Select one member.
+
+In Terminal, use `tb mail people <text>` to find a member. Use `tb mail search <text>` to find past Taskboard messages. `tb mail draft <name|email|Slack ID> <subject> <body>` accepts a name or exact email. If several members match, choose an ID from the results and try again.
 
 You can prepare a draft for any active member. Taskboard checks the member again before it sends the message.
 
