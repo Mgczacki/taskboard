@@ -5,7 +5,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Group, Task } from '../api';
 import { ATTN, STATUS_LABEL, api, confirmEnd } from '../api';
 import { AgentChip, Dot, MachineChip, WhereChip } from './ui';
-import { Terminal } from './Terminal';
+import { Terminal, terminalDebugRecord } from './Terminal';
 import { hit as key, hitIn, keyLabel, keysText, useKeymap } from '../keys';
 import { AskPanel } from './Ask';
 import { archiveAll, archivePlan, restoreAll, type ArchiveResult, type ArchiveTarget } from '../groupArchive';
@@ -111,6 +111,12 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
     else if (view === 'ungrouped') { setHidden(h => [...h, id]); setExtra(e => e.filter(x => x !== id)); }
     else if (view.startsWith('t:')) setView('t:' + view.slice(2).split(',').filter(x => x !== id).join(','));
     else { setFrozen(f => (f || []).filter(x => x !== id)); setExtra(e => e.filter(x => x !== id)); }
+  };
+  // the tile header's ⚙: copies this task's terminal debug record (Terminal.tsx) for a freeze that needs a diagnosis
+  const copyDebugRecord = (t: Task) => {
+    const record = terminalDebugRecord(t.id);
+    if (!record) { toast(`#${t.num} has no open terminal in this window, so there is no debug record.`); return; }
+    navigator.clipboard.writeText(JSON.stringify(record, null, 1)).then(() => toast(`Copied the terminal debug record of #${t.num}.`), e => toast(`Could not copy: ${e.message || e}`));
   };
   // ends the tmux session and archives the task (as in its panel); the window then leaves the canvas by itself
   const endTask = (t: Task) => {
@@ -291,6 +297,7 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
               <button className={`b ${asking.has(t.id) ? 'on' : ''}`} title="Ask a separate agent about this session. This agent does not see the question." onClick={() => toggleAsk(t.id)}>?</button>
               <button className="b" title={`Maximize (${keysText('maximize')})`} onClick={() => setMaxId(m => m ? null : t.id)}>{maxId === t.id ? '⤡' : '⤢'}</button>
               <button className="b" title="Task panel" onClick={() => openPanel(t.id)}>☰</button>
+              <button className="b" title="Copy the terminal debug record: recent output sizes and escape sequences, without text. Use it when the terminal stops drawing." onClick={() => copyDebugRecord(t)}>⚙</button>
               {t.role !== 'controller' && <button className="b" title={t.openElsewhere ? 'End & archive: archives the task; the session in the other terminal keeps running' : 'End & archive: ends the tmux session and archives the task'} onClick={() => confirmEnd() ? setEnding(t.id) : endTask(t)}>⏻</button>}
               <button className="b" title={`Remove from this view (${keysText('removeWindow')}). The agent keeps running.`} onClick={() => removeFromView(t.id)}>✕</button></>}
             </div>

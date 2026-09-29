@@ -4,7 +4,7 @@ import { execFileSync } from 'node:child_process';
 import * as pty from 'node-pty';
 import type { WebSocket } from 'ws';
 import { TMUX_SOCKET } from './config.ts';
-import { TMUX_BIN, loadCopyBindings } from './tmux.ts';
+import { TMUX_BIN, loadCopyBindings, tmux } from './tmux.ts';
 let bindingsLoaded = false;
 
 // Attaching or resizing makes Codex redraw, which looks like new output. Ignore activity for a moment after those.
@@ -19,7 +19,7 @@ const tmuxSync = (...args: string[]) => { try { return execFileSync(TMUX_BIN, ['
 // with its size and when it was last used (opened, clicked or typed in), and gives the window the size of the most
 // recently used one. When that terminal closes, the next most recent one takes over; when none is left, the window
 // goes back to tmux's own sizing (window-size latest), so terminals attached from iTerm behave as before.
-interface Viewer { cols: number; rows: number; usedAt: number }
+interface Viewer { cols: number; rows: number; usedAt: number; ws: WebSocket; pid: number; lastOut: number; healedAt: number; sent?: string }
 const viewers = new Map<string, Set<Viewer>>();
 const sizedBy = new Map<string, Viewer>();
 const clamp = (v: Viewer) => [String(Math.max(20, v.cols)), String(Math.max(5, v.rows))];
@@ -35,6 +35,63 @@ function sizeWindow(session: string) {
 }
 const use = (session: string, v: Viewer) => { v.usedAt = Date.now(); sizeWindow(session); };
 
+// Copy mode and terminals that stopped drawing. A mouse drag, a double-click or the wheel in a pane whose program does
+// not read the mouse (Codex) puts the pane in tmux copy mode. Copy mode shows the screen from the time it started and
+// no new output, for every terminal that shows the session; only a key or "Back to live" ends it. So once a second,
+// while a browser terminal shows the session, the server reads the pane's mode and:
+// - ends copy mode (a copy-mode command, no key reaches the agent) when it hides new output, its view is at the
+//   bottom (the user is not reading older output), no text is selected and no terminal sent input in the last 3 s;
+//   right after a terminal attaches, output of unknown age counts as new
+// - tells each terminal the mode, so the page shows "Scrolled back" and "Back to live" (a NUL byte, then JSON)
+// - asks tmux to redraw a terminal (refresh-client) that got nothing for 2 s before the pane's last output, outside
+//   copy mode; this has not been seen, it covers causes that could not be tested (at most once in 10 s)
+interface Watch { timer: NodeJS.Timeout; lastInput: number; modeActivity: number | null; copySeen: number; fresh: boolean; busy: boolean }
+const watches = new Map<string, Watch>();
+const control = (v: Viewer, m: object) => { if (v.ws.readyState === v.ws.OPEN) v.ws.send('\x00' + JSON.stringify(m)); };
+const FORMAT = ['#{pane_mode}', '#{scroll_position}', '#{selection_present}', '#{window_activity}', '#{window_width}', '#{window_height}'].join('|');
+
+async function check(session: string) {
+  const w = watches.get(session);
+  if (!w || w.busy) return;
+  w.busy = true;
+  try {
+    const target = '=' + session + ':';
+    const [mode, scrollText, sel, act, ww, wh] = (await tmux('display-message', '-p', '-t', target, FORMAT)).trim().split('|');
+    const activity = Number(act) * 1000, scroll = Number(scrollText) || 0, selection = sel === '1';
+    let copy = mode === 'copy-mode', left = false;
+    if (copy) {
+      if (w.modeActivity === null) w.modeActivity = w.fresh ? -1 : activity;
+      if (activity > w.modeActivity && scroll === 0 && !selection && Date.now() - w.lastInput >= 3000) {
+        await tmux('send-keys', '-X', '-t', target, 'cancel');
+        copy = false; left = true;
+      }
+    }
+    if (!copy) w.modeActivity = null;
+    if (copy || left) w.copySeen = Date.now();
+    w.fresh = false;
+    const state = JSON.stringify({ t: 'state', copy, scroll: copy ? scroll : 0, selection: copy && selection, hidden: copy && w.modeActivity !== null && activity > w.modeActivity });
+    const list = [...(viewers.get(session) || [])];
+    for (const v of list) {
+      if (left) control(v, { t: 'left-copy-mode' });
+      if (v.sent !== state) { v.sent = state; v.ws.readyState === v.ws.OPEN && v.ws.send('\x00' + state); }
+    }
+    // tmux sends nothing to the terminals while copy mode shows, so that gap is not a stall
+    if (copy || Date.now() - w.copySeen < 3000) return;
+    const now = Date.now(), stalled = list.filter(v => activity - v.lastOut > 2000 && now - v.healedAt > 10000);
+    if (!stalled.length) return;
+    const clients = (await tmux('list-clients', '-t', '=' + session, '-F', '#{client_pid}|#{client_name}|#{client_width}|#{client_height}')).trim().split('\n').map(l => l.split('|'));
+    for (const v of stalled) {
+      const c = clients.find(x => Number(x[0]) === v.pid);
+      // a terminal smaller than the window shows only a part of it and gets nothing for changes outside that part
+      if (!c || Number(c[2]) < Number(ww) || Number(c[3]) < Number(wh)) continue;
+      v.healedAt = now;
+      await tmux('refresh-client', '-t', c[1]);
+      control(v, { t: 'redrawn', gapMs: activity - v.lastOut });
+    }
+  } catch { /* the session ended or tmux did not answer; try again next second */ }
+  finally { w.busy = false; }
+}
+
 export function attach(ws: WebSocket, session: string, cols: number, rows: number) {
   quiet(session);
   // also set here: a tmux server started by an earlier Taskboard version lacks these
@@ -44,14 +101,18 @@ export function attach(ws: WebSocket, session: string, cols: number, rows: numbe
     name: 'xterm-256color', cols: Math.max(20, cols), rows: Math.max(5, rows),
     env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' } as Record<string, string>,
   });
-  const me: Viewer = { cols, rows, usedAt: Date.now() };
+  const me: Viewer = { cols, rows, usedAt: Date.now(), ws, pid: p.pid, lastOut: Date.now(), healedAt: 0 };
   if (!viewers.has(session)) viewers.set(session, new Set());
   viewers.get(session)!.add(me);
   sizeWindow(session);
+  let watch = watches.get(session);
+  if (!watch) { watch = { timer: setInterval(() => void check(session), 1000), lastInput: 0, modeActivity: null, copySeen: 0, fresh: true, busy: false }; watches.set(session, watch); }
+  watch.fresh = true;
+  const w = watch;
   // coalesce output: one WebSocket message per 8 ms instead of one per read from the pseudo-terminal
   let buf = '', timer: NodeJS.Timeout | null = null;
   const flush = () => { timer = null; if (buf && ws.readyState === ws.OPEN) ws.send(buf); buf = ''; };
-  p.onData(d => { buf += d; if (buf.length > 65536) { if (timer) clearTimeout(timer); flush(); } else if (!timer) timer = setTimeout(flush, 8); });
+  p.onData(d => { me.lastOut = Date.now(); buf += d; if (buf.length > 65536) { if (timer) clearTimeout(timer); flush(); } else if (!timer) timer = setTimeout(flush, 8); });
   p.onExit(() => { if (ws.readyState === ws.OPEN) ws.close(4000, 'detached'); });
   ws.on('message', (raw, isBinary) => {
     const s = raw.toString();
@@ -61,18 +122,23 @@ export function attach(ws: WebSocket, session: string, cols: number, rows: numbe
         const m = JSON.parse(s.slice(1));
         if (m.t === 'resize') { quiet(session); me.cols = m.cols; me.rows = m.rows; p.resize(Math.max(20, me.cols), Math.max(5, me.rows)); sizeWindow(session); }
         if (m.t === 'focus') use(session, me);
-        if (m.t === 'paste' && tmuxSync('display-message', '-p', '-t', '=' + session + ':', '#{pane_mode}').trim() === 'copy-mode')
+        if ((m.t === 'paste' || m.t === 'live') && tmuxSync('display-message', '-p', '-t', '=' + session + ':', '#{pane_mode}').trim() === 'copy-mode')
           tmuxSync('send-keys', '-X', '-t', '=' + session + ':', 'cancel');
+        if (m.t === 'live') void check(session);
+        // the "Refresh" button: tmux draws this terminal's whole screen again
+        if (m.t === 'refresh') { const c = tmuxSync('list-clients', '-t', '=' + session, '-F', '#{client_pid} #{client_name}').split('\n').find(l => l.startsWith(p.pid + ' ')); if (c) tmuxSync('refresh-client', '-t', c.slice(c.indexOf(' ') + 1)); }
       } catch { /* ignore malformed control message */ }
       return;
     }
-    // typing counts as using this terminal (only a change of terminal resizes the window)
+    // typing counts as using this terminal (only a change of terminal resizes the window); mouse events arrive here too
+    w.lastInput = Date.now();
     if (sizedBy.get(session) !== me) use(session, me); else me.usedAt = Date.now();
     p.write(s);
   });
   ws.on('close', () => {
     try { p.kill(); } catch { /* already gone */ }
     viewers.get(session)?.delete(me);
+    if (!viewers.get(session)?.size) { clearInterval(w.timer); watches.delete(session); }
     if (sizedBy.get(session) === me) sizedBy.delete(session);
     sizeWindow(session);
   });

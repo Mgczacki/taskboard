@@ -6,7 +6,7 @@ import { ClipboardAddon } from '@xterm/addon-clipboard';
 import { Terminal as XTerm } from '@xterm/xterm';
 import type { IBufferRange, ILink } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { taskboardKey } from '../keys';
 import { useStore } from '../api';
 import { openDocumentLink, type DocumentLink } from '../documentLinks';
@@ -14,12 +14,33 @@ import { continues, findPaths, joinRows, type Row } from '../terminalPaths';
 
 const cssVar = (n: string, fallback: string) => getComputedStyle(document.documentElement).getPropertyValue(n).trim() || fallback;
 
+// Debug record: each terminal keeps its last 300 events (WebSocket messages with their size and first escape
+// sequences, input lengths, connection changes, stalls, messages from the server). It holds no text the agent printed
+// or you typed; OSC sequences keep only their number, because OSC 52 carries clipboard text. The tile header copies
+// it (terminalDebugRecord), and window.taskboardTerminalDebug() in the browser console returns all of them.
+const records = new Map<string, () => unknown>();
+export const terminalDebugRecord = (id: string) => records.get(id)?.();
+(window as unknown as { taskboardTerminalDebug: () => unknown }).taskboardTerminalDebug = () => [...records.values()].map(r => r());
+const ESCAPE = /\x1b(?:\[[0-?]*[ -/]*[@-~]|\][0-9]*|[()#][0-9A-Za-z]|[@-_=>78c])/g;
+function escapes(d: string) {
+  const esc: string[] = []; let count = 0;
+  for (const m of d.matchAll(ESCAPE)) { if (esc.length < 8) esc.push(m[0].replace('\x1b', 'ESC')); count++; }
+  return { esc, escCount: count };
+}
+
+// what the server says about the tmux pane (server/pty.ts): copy mode, its scroll position and whether it hides output
+interface PaneState { copy: boolean; scroll: number; selection: boolean; hidden: boolean }
+
 export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, onFocus }: { taskId: string; session?: string; fontSize?: number; autoFocus?: boolean; onFocus?: () => void }) {
   const box = useRef<HTMLDivElement>(null);
   const termRef = useRef<XTerm | null>(null);
   const tasks = useStore().tasks;
   const tasksRef = useRef(tasks);
   tasksRef.current = tasks;
+  const [pane, setPane] = useState<PaneState | null>(null);
+  const [offline, setOffline] = useState(false);
+  const [redrawn, setRedrawn] = useState(false);
+  const actions = useRef({ live: () => {}, refresh: () => {} });
 
   useEffect(() => {
     const el = box.current!;
@@ -114,26 +135,76 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
         callback(links);
       }).catch(() => callback([]));
     } }) : null;
+    const events: Record<string, unknown>[] = [];
+    const log = (k: string, x: Record<string, unknown> = {}) => { events.push({ at: Date.now(), k, ...x }); if (events.length > 300) events.shift(); };
     // GPU renderer: much faster than the default DOM renderer for fast output. Browsers allow a limited number of
     // WebGL contexts; when one is lost the terminal falls back to the DOM renderer.
-    try { const gl = new WebglAddon(); gl.onContextLoss(() => gl.dispose()); term.loadAddon(gl); } catch { /* no WebGL */ }
+    let renderer = 'dom';
+    try { const gl = new WebglAddon(); gl.onContextLoss(() => { log('webgl-context-lost'); renderer = 'dom'; gl.dispose(); }); term.loadAddon(gl); renderer = 'webgl'; } catch { /* no WebGL */ }
     // tmux sends copied text as OSC 52; this puts it on the system clipboard
     term.loadAddon(new ClipboardAddon());
     try { fit.fit(); } catch { /* not visible yet */ }
 
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    let ws: WebSocket | null = null, closed = false;
+    let ws: WebSocket | null = null, closed = false, lastState: unknown = null;
+    const send = (m: object) => { if (ws && ws.readyState === 1) ws.send('\x00' + JSON.stringify(m)); };
+    let redrawnTimer: ReturnType<typeof setTimeout> | undefined;
+    const showRedrawn = () => { setRedrawn(true); clearTimeout(redrawnTimer); redrawnTimer = setTimeout(() => setRedrawn(false), 6000); };
     const open = () => {
       ws = new WebSocket(`${proto}://${location.host}/ws/term?${session ? 'session=' + encodeURIComponent(session) : 'task=' + encodeURIComponent(taskId)}&cols=${term.cols}&rows=${term.rows}`);
-      ws.onmessage = e => term.write(typeof e.data === 'string' ? e.data : new Uint8Array(e.data));
+      ws.onmessage = e => {
+        const d = typeof e.data === 'string' ? e.data : '';
+        // messages from the server start with a NUL byte, like the ones this page sends; everything else is output
+        if (d.charCodeAt(0) === 0) {
+          try {
+            const m = JSON.parse(d.slice(1));
+            log('server', m);
+            if (m.t === 'state') { lastState = m; setPane(m.copy ? m : null); }
+            if (m.t === 'redrawn') showRedrawn();
+          } catch { /* ignore a malformed message */ }
+          return;
+        }
+        log('output', { bytes: typeof e.data === 'string' ? d.length : (e.data as ArrayBuffer).byteLength, ...escapes(d) });
+        term.write(typeof e.data === 'string' ? e.data : new Uint8Array(e.data));
+      };
       // this terminal decides the tmux window size while it is the one you opened or typed in last
-      ws.onopen = () => sendFocus();
-      ws.onclose = ev => { if (!closed && ev.code !== 4004) setTimeout(open, 1500); };
+      ws.onopen = () => { log('open'); setOffline(false); sendFocus(); };
+      ws.onclose = ev => {
+        log('close', { code: ev.code, reason: ev.reason });
+        if (!closed && ev.code !== 4004) { setOffline(true); setTimeout(open, 1500); }
+      };
     };
     open();
-    const input = term.onData(d => { if (ws && ws.readyState === 1) ws.send(d); });
+    const input = term.onData(d => { log('input', { bytes: d.length }); if (ws && ws.readyState === 1) ws.send(d); });
+    // A terminal that got output but did not draw it for 2 s while it is visible is drawn again. This has not been
+    // seen; it covers causes that could not be tested (a stalled renderer). xterm.js itself stops drawing while the
+    // terminal is off the screen and draws everything when it comes back, so an invisible terminal is not a stall.
+    let parsedSince = 0, lastRender = 0, renders = 0, onScreen = true;
+    const parsed = term.onWriteParsed(() => { if (!parsedSince) parsedSince = Date.now(); });
+    const rendered = term.onRender(() => { parsedSince = 0; lastRender = Date.now(); renders++; });
+    const io = new IntersectionObserver(e => { onScreen = e[e.length - 1].isIntersecting; });
+    io.observe(el);
+    const stallCheck = setInterval(() => {
+      if (!parsedSince || Date.now() - parsedSince < 2000 || document.visibilityState !== 'visible' || !onScreen || !el.offsetWidth) return;
+      log('render-stall', { waitedMs: Date.now() - parsedSince });
+      parsedSince = Date.now();
+      term.refresh(0, term.rows - 1);
+      showRedrawn();
+    }, 1000);
+    actions.current = {
+      live: () => { log('back-to-live'); send({ t: 'live' }); },
+      refresh: () => { log('refresh'); try { fit.fit(); } catch { /* hidden */ } term.refresh(0, term.rows - 1); send({ t: 'refresh' }); },
+    };
+    const id = taskId || session || '';
+    const record = () => {
+      const b = term.buffer.active;
+      return { terminal: id, at: new Date().toISOString(), page: { visibility: document.visibilityState, onScreen, width: el.clientWidth, height: el.clientHeight, userAgent: navigator.userAgent },
+        socket: ws?.readyState, renderer, cols: term.cols, rows: term.rows, buffer: { type: b.type, cursorX: b.cursorX, cursorY: b.cursorY, baseY: b.baseY, viewportY: b.viewportY, length: b.length },
+        modes: term.modes, renders, lastRender, waitingToDrawSince: parsedSince, paneState: lastState, events: [...events] };
+    };
+    records.set(id, record);
     // A paste event arrives before xterm.js sends its text. Tell tmux to leave copy mode first.
-    const onPaste = () => { if (ws && ws.readyState === 1) ws.send('\x00' + JSON.stringify({ t: 'paste' })); };
+    const onPaste = () => { log('paste'); send({ t: 'paste' }); };
     el.addEventListener('paste', onPaste, true);
     // Shift+Enter: Claude Code and Codex treat ESC+CR as a newline in the prompt
     term.attachCustomKeyEventHandler(e => {
@@ -142,17 +213,18 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
       if (taskboardKey(e)) return false;
       return true;
     });
-    const sendSize = () => { if (ws && ws.readyState === 1) ws.send('\x00' + JSON.stringify({ t: 'resize', cols: term.cols, rows: term.rows })); };
+    const sendSize = () => { log('resize', { cols: term.cols, rows: term.rows }); send({ t: 'resize', cols: term.cols, rows: term.rows }); };
     // refit at once, but tell tmux only once the size settles: a drag changes it every frame, and each resize redraws the agent's screen
     let sizeTimer: ReturnType<typeof setTimeout> | undefined;
-    const ro = new ResizeObserver(() => { try { fit.fit(); clearTimeout(sizeTimer); sizeTimer = setTimeout(sendSize, 100); } catch { /* hidden */ } });
+    // a hidden terminal (a parent with display: none) has no size; fitting it would make the tmux window 20 x 5
+    const ro = new ResizeObserver(() => { if (!el.clientWidth || !el.clientHeight) return; try { fit.fit(); clearTimeout(sizeTimer); sizeTimer = setTimeout(sendSize, 100); } catch { /* hidden */ } });
     ro.observe(el);
-    const sendFocus = () => { if (ws && ws.readyState === 1) ws.send('\x00' + JSON.stringify({ t: 'focus' })); };
+    const sendFocus = () => send({ t: 'focus' });
     const onF = () => { sendFocus(); if (onFocus) onFocus(); };
     term.textarea?.addEventListener('focus', onF);
     if (autoFocus) setTimeout(() => term.focus(), 50);
 
-    return () => { closed = true; clearTimeout(sizeTimer); ro.disconnect(); input.dispose(); provider?.dispose(); underline.remove(); for (const type of ['mousedown', 'mouseup', 'click'] as const) el.removeEventListener(type, onModifiedMouse, true); el.removeEventListener('paste', onPaste, true); term.textarea?.removeEventListener('focus', onF); ws?.close(); term.dispose(); };
+    return () => { closed = true; clearTimeout(sizeTimer); clearTimeout(redrawnTimer); clearInterval(stallCheck); io.disconnect(); parsed.dispose(); rendered.dispose(); if (records.get(id) === record) records.delete(id); ro.disconnect(); input.dispose(); provider?.dispose(); underline.remove(); for (const type of ['mousedown', 'mouseup', 'click'] as const) el.removeEventListener(type, onModifiedMouse, true); el.removeEventListener('paste', onPaste, true); term.textarea?.removeEventListener('focus', onF); ws?.close(); term.dispose(); };
   }, [taskId, session]);
 
   useEffect(() => { if (termRef.current) termRef.current.options.fontSize = fontSize; }, [fontSize]);
@@ -162,5 +234,16 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
   }, []);
   useEffect(() => { if (autoFocus) termRef.current?.focus(); }, [autoFocus]);
 
-  return <div className="xterm-box" ref={box} />;
+  // The bar at the top right says when the terminal does not show the agent's newest output, and why.
+  const message = offline ? 'Disconnected · reconnecting'
+    : pane ? `${pane.selection ? 'Text selected' : pane.scroll ? 'Scrolled back' : 'Copy mode'} · ${pane.hidden ? 'new output below' : 'output paused'}`
+    : redrawn ? 'Display was stalled · redrawn' : '';
+  return <div className="xterm-box" ref={box}>
+    {/* null, not '': an empty string child makes React set the box's text, which removes xterm.js from it */}
+    {message ? <div className="term-bar" onMouseDown={e => e.stopPropagation()}>
+      <span>{message}</span>
+      {pane && <button className="btn" onClick={() => actions.current.live()} title="Leave tmux copy mode and show the newest output. No key is sent to the agent.">Back to live</button>}
+      {!offline && <button className="btn" onClick={() => actions.current.refresh()} title="Draw the whole terminal again">Refresh</button>}
+    </div> : null}
+  </div>;
 }
