@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Group, Status, Task } from '../web/src/api.ts';
-import { archiveAll, archivePlan, restoreAll } from '../web/src/groupArchive.ts';
+import { archiveAll, archiveAndDelete, archivePlan, restoreAll, restoreGroupAndTasks } from '../web/src/groupArchive.ts';
 
 const task = (id: string, status: Status, extra: Partial<Task> = {}) => ({ id, num: Number(id.slice(1)), title: 'Task ' + id, status, ...extra }) as Task;
 const group = (id: string, name: string, tasks: string[]): Group => ({ id, name, color: '#fff', tasks, created: '' });
@@ -62,4 +62,39 @@ test('restoreAll sets idle, or parked for a task that was set aside, and reports
     async (id, s) => { calls.push([id, s]); if (id === 'x') throw new Error('404'); });
   assert.deepEqual(calls, [['t1', 'idle'], ['t7', 'parked'], ['x', 'idle']]);
   assert.deepEqual(failed, ['x']);
+});
+
+test('archiveAndDelete deletes only after every task end call finishes', async () => {
+  const calls: string[] = [];
+  const list = [tasks[0], tasks[1]];
+  const result = await archiveAndDelete(a, list, async id => { calls.push('end ' + id); }, async id => {
+    calls.push('delete ' + id);
+    return a;
+  });
+  assert.deepEqual(calls, ['end t1', 'end t2', 'delete a']);
+  assert.equal(result.deleted, a);
+});
+
+test('archiveAndDelete keeps the group when one task fails and continues with other tasks', async () => {
+  const calls: string[] = [];
+  const result = await archiveAndDelete(a, [tasks[0], tasks[1], tasks[2]], async id => {
+    calls.push('end ' + id);
+    if (id === 't2') throw new Error('end failed');
+  }, async id => { calls.push('delete ' + id); return a; });
+  assert.deepEqual(calls, ['end t1', 'end t2', 'end t3']);
+  assert.equal(result.deleted, undefined);
+  assert.deepEqual(result.archive.failed, [{ id: 't2', error: 'end failed' }]);
+});
+
+test('archiveAndDelete keeps the group when deletion fails', async () => {
+  const result = await archiveAndDelete(a, [tasks[0]], async () => {}, async () => { throw new Error('409'); });
+  assert.equal(result.deleted, undefined);
+  assert.equal(result.deleteError, '409');
+});
+
+test('restoreGroupAndTasks recreates the group before restoring tasks', async () => {
+  const calls: string[] = [];
+  const failed = await restoreGroupAndTasks(a, [{ id: 't1', before: 'working' }], async g => { calls.push('restore group ' + g.id); }, async id => { calls.push('restore task ' + id); });
+  assert.deepEqual(calls, ['restore group a', 'restore task t1']);
+  assert.deepEqual(failed, []);
 });

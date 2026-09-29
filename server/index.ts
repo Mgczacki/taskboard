@@ -377,7 +377,15 @@ app.patch('/api/groups/:id', (req, res) => {
   if (remove) list = list.filter((t: string) => ![].concat(remove).includes(t as never));
   res.json(groups.update(g.id, { ...(name ? { name } : {}), ...(color ? { color } : {}), tasks: list }));
 });
-app.delete('/api/groups/:id', (req, res) => { const g = groups.remove(req.params.id); g ? res.json(g) : res.status(404).end(); });
+app.delete('/api/groups/:id', (req, res) => {
+  const g = groups.get(req.params.id);
+  if (!g) return res.status(404).end();
+  if (req.query.requireArchived === '1') {
+    const live = g.tasks.filter(id => { const t = store.get(id); return t && t.status !== 'archived'; });
+    if (live.length) return res.status(409).json({ error: `The group still has ${live.length} unarchived task(s).` });
+  }
+  res.json(groups.remove(g.id));
+});
 app.post('/api/groups/restore', (req, res) => { groups.restore(req.body); res.json({}); });
 
 app.get('/api/import', async (_req, res) => {
