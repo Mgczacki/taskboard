@@ -7,6 +7,7 @@ import { Terminal as XTerm } from '@xterm/xterm';
 import type { IBufferRange, ILink } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
 import { useEffect, useRef, useState } from 'react';
+import { terminalSocket } from '../terminalSocket';
 import { taskboardKey } from '../keys';
 import { useStore } from '../api';
 import { openDocumentLink, type DocumentLink } from '../documentLinks';
@@ -146,13 +147,12 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
     try { fit.fit(); } catch { /* not visible yet */ }
 
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
-    let ws: WebSocket | null = null, closed = false, lastState: unknown = null;
+    let ws: ReturnType<typeof terminalSocket> | null = null, lastState: unknown = null;
     const send = (m: object) => { if (ws && ws.readyState === 1) ws.send('\x00' + JSON.stringify(m)); };
     let redrawnTimer: ReturnType<typeof setTimeout> | undefined;
     const showRedrawn = () => { setRedrawn(true); clearTimeout(redrawnTimer); redrawnTimer = setTimeout(() => setRedrawn(false), 6000); };
-    const open = () => {
-      ws = new WebSocket(`${proto}://${location.host}/ws/term?${session ? 'session=' + encodeURIComponent(session) : 'task=' + encodeURIComponent(taskId)}&cols=${term.cols}&rows=${term.rows}`);
-      ws.onmessage = e => {
+    ws = terminalSocket(() => `${proto}://${location.host}/ws/term?${session ? 'session=' + encodeURIComponent(session) : 'task=' + encodeURIComponent(taskId)}&cols=${term.cols}&rows=${term.rows}`, {
+      message: e => {
         const d = typeof e.data === 'string' ? e.data : '';
         // messages from the server start with a NUL byte, like the ones this page sends; everything else is output
         if (d.charCodeAt(0) === 0) {
@@ -166,15 +166,14 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
         }
         log('output', { bytes: typeof e.data === 'string' ? d.length : (e.data as ArrayBuffer).byteLength, ...escapes(d) });
         term.write(typeof e.data === 'string' ? e.data : new Uint8Array(e.data));
-      };
+      },
       // this terminal decides the tmux window size while it is the one you opened or typed in last
-      ws.onopen = () => { log('open'); setOffline(false); sendFocus(); };
-      ws.onclose = ev => {
+      open: () => { log('open'); setOffline(false); sendFocus(); },
+      close: ev => {
         log('close', { code: ev.code, reason: ev.reason });
-        if (!closed && ev.code !== 4004) { setOffline(true); setTimeout(open, 1500); }
-      };
-    };
-    open();
+        setOffline(ev.code !== 4004);
+      },
+    });
     const input = term.onData(d => { log('input', { bytes: d.length }); if (ws && ws.readyState === 1) ws.send(d); });
     // A terminal that got output but did not draw it for 2 s while it is visible is drawn again. This has not been
     // seen; it covers causes that could not be tested (a stalled renderer). xterm.js itself stops drawing while the
@@ -182,7 +181,20 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
     let parsedSince = 0, lastRender = 0, renders = 0, onScreen = true;
     const parsed = term.onWriteParsed(() => { if (!parsedSince) parsedSince = Date.now(); });
     const rendered = term.onRender(() => { parsedSince = 0; lastRender = Date.now(); renders++; });
-    const io = new IntersectionObserver(e => { onScreen = e[e.length - 1].isIntersecting; });
+    const restoreDisplay = () => {
+      if (document.visibilityState !== 'visible' || !el.clientWidth || !el.clientHeight) return;
+      log('visible-refresh');
+      try { fit.fit(); } catch { /* layout is not ready */ }
+      term.refresh(0, term.rows - 1);
+      send({ t: 'refresh' });
+    };
+    const io = new IntersectionObserver(e => {
+      const visible = e[e.length - 1].isIntersecting;
+      if (visible && !onScreen) restoreDisplay();
+      onScreen = visible;
+    });
+    document.addEventListener('visibilitychange', restoreDisplay);
+    window.addEventListener('focus', restoreDisplay);
     io.observe(el);
     const stallCheck = setInterval(() => {
       if (!parsedSince || Date.now() - parsedSince < 2000 || document.visibilityState !== 'visible' || !onScreen || !el.offsetWidth) return;
@@ -224,7 +236,7 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
     term.textarea?.addEventListener('focus', onF);
     if (autoFocus) setTimeout(() => term.focus(), 50);
 
-    return () => { closed = true; clearTimeout(sizeTimer); clearTimeout(redrawnTimer); clearInterval(stallCheck); io.disconnect(); parsed.dispose(); rendered.dispose(); if (records.get(id) === record) records.delete(id); ro.disconnect(); input.dispose(); provider?.dispose(); underline.remove(); for (const type of ['mousedown', 'mouseup', 'click'] as const) el.removeEventListener(type, onModifiedMouse, true); el.removeEventListener('paste', onPaste, true); term.textarea?.removeEventListener('focus', onF); ws?.close(); term.dispose(); };
+    return () => { document.removeEventListener('visibilitychange', restoreDisplay); window.removeEventListener('focus', restoreDisplay); clearTimeout(sizeTimer); clearTimeout(redrawnTimer); clearInterval(stallCheck); io.disconnect(); parsed.dispose(); rendered.dispose(); if (records.get(id) === record) records.delete(id); ro.disconnect(); input.dispose(); provider?.dispose(); underline.remove(); for (const type of ['mousedown', 'mouseup', 'click'] as const) el.removeEventListener(type, onModifiedMouse, true); el.removeEventListener('paste', onPaste, true); term.textarea?.removeEventListener('focus', onF); ws?.dispose(); termRef.current = null; term.dispose(); };
   }, [taskId, session]);
 
   useEffect(() => { if (termRef.current) termRef.current.options.fontSize = fontSize; }, [fontSize]);
