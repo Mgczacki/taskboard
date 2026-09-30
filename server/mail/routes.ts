@@ -1,9 +1,11 @@
 import express, { type Express, type Request, type Response } from 'express';
 import { existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { PORT, TB_DIR, TOKEN, URL_BASE } from '../config.ts';
 import * as tasks from '../store.ts';
 import * as accounts from '../accounts.ts';
+import * as docs from '../docs.ts';
+import type { Delivery } from '../inbox-delivery.ts';
 import { MailStore, savePrivate, validText, type Message, type Verdict } from './store.ts';
 import { SlackClient, SlackError } from './slack.ts';
 import { MailService, RecipientMatchError } from './service.ts';
@@ -14,7 +16,7 @@ import { isControllerToken } from './auth.ts';
 import { reviewMessage } from './review.ts';
 import { extractText, publicFile, routeFile, stageBytes, stagePath, verifyFile } from './files.ts';
 import { approvalValid, approverFor, combinedVerdict, isTrusted, worse, type Levels } from './policy.ts';
-import { mailCards } from './cards.ts';
+import { mailCards, returnTarget, type Told } from './cards.ts';
 import { Avatars, isSlackUser } from './avatars.ts';
 
 // Set by mountMail: makes the approval cards again after the permission levels change on the Settings page.
@@ -28,16 +30,50 @@ function human(req: Request) {
   try { return req.get('sec-fetch-site') === 'same-origin' && origins.has(new URL(req.get('referer') || '').origin); } catch { return false; }
 }
 const controller = (req: Request) => isControllerToken(req.get('x-tb-mail-controller'));
-// notify: puts a short file in a task's Taskboard inbox and tells the agent (server/index.ts); levels: tests set them
+// Tells agents about files in their Taskboard inbox. server/index.ts passes server/inbox-delivery.ts. Without it (tests),
+// the files stay pending and nothing is typed.
+export interface DeliveryDeps {
+  deliver: (task: string, name: string) => Promise<Delivery>;
+  get: (task: string, name: string) => Delivery | undefined;
+  track: (task: string, name: string, problem?: string) => Delivery;
+}
+const noDelivery = (): DeliveryDeps => {
+  const items = new Map<string, Delivery>();
+  const track = (task: string, name: string, problem = 'This server does not tell agents about inbox files.') => {
+    const d = items.get(`${task}/${name}`) || { task, name, queued: new Date().toISOString(), problem }; items.set(`${task}/${name}`, d); return d;
+  };
+  return { track, get: (task, name) => items.get(`${task}/${name}`), deliver: async (task, name) => track(task, name) };
+};
+// levels: tests set them
 export function mountMail(app: Express, options: { review?: typeof reviewMessage; slack?: SlackClient; background?: boolean;
-  notify?: (task: string, name: string, text: string) => Promise<void> | void; levels?: () => Levels } = {}) {
+  delivery?: DeliveryDeps; levels?: () => Levels } = {}) {
   const store = new MailStore(join(TB_DIR, 'mail.json'));
   const slack = options.slack || new SlackClient(join(TB_DIR, 'slack-user.json'));
   const service = new MailService(store, slack, () => machine.get().name);
   const levels = () => options.levels?.() || machine.get().messages;
   const approver = (m: Message) => approverFor(m, store.read(), levels());
   const valid = (m: Message) => approvalValid(m, store.read(), levels());
-  const notify = async (task: string, name: string, text: string) => { try { await options.notify?.(task, name, text); } catch { /* the file stays in the inbox */ } };
+  const delivery = options.delivery || noDelivery();
+  const told = (d: Delivery): Told => ({ name: d.name, delivered: !!d.deliveredAt, resumed: d.resumed, problem: d.problem });
+  // Tells the agent about a file in its inbox. A failure is saved with the delivery and tried again later
+  // (server/inbox-delivery.ts); the result says whether the agent was told.
+  const tell = async (task: string, name: string): Promise<Told> => {
+    try { return told(await delivery.deliver(task, name)); } catch (e) { return { name, delivered: false, problem: (e as Error).message }; }
+  };
+  // Puts a short file in a task's Taskboard inbox and tells the agent.
+  const notify = async (task: string, name: string, text: string): Promise<Told> => {
+    let file = name;
+    try { file = basename(docs.upload(task, name, Buffer.from(text))); } catch (e) { return { name, delivered: false, problem: `Taskboard could not write the file: ${(e as Error).message}` }; }
+    return tell(task, file);
+  };
+  // What the page shows for a file that the server put in a task's inbox: delivered (with the time when it is known)
+  // or not delivered yet (with the reason from the last try).
+  const deliveryOf = (task: string, name: string) => {
+    const d = delivery.get(task, name);
+    if (d) return d.deliveredAt ? { task, delivered: true, at: d.deliveredAt, resumed: d.resumed } : { task, delivered: false, at: d.triedAt, problem: d.problem };
+    let pending: string[] = []; try { pending = docs.pendingNames(task); } catch { /* no inbox */ }
+    return { task, delivered: !pending.includes(name) };
+  };
   // Copies an approved incoming message into a task's inbox. The task comes from the controller or the user, never
   // from the message text.
   const routeMessage = (m: Message, taskId: string, by: 'user' | 'controller') => {
@@ -57,7 +93,16 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
     store.update(m.id, x => { x.routes.push(route); if (x.approval?.by === 'controller') x.unseen = true; });
     return route;
   };
-  const cards = mailCards(store, { levels, route: routeMessage, send: id => service.send(id), notify });
+  const cards = mailCards(store, { levels, route: routeMessage, send: id => service.send(id), notify, tell });
+  // Files that an earlier Taskboard version put in an inbox without telling the agent: they wait for the next try.
+  const inboxFiles = (m: Message) => [
+    ...(m.returns || []).map(r => returnTarget(m, r)),
+    ...m.routes.map(r => ({ task: r.task, file: basename(r.path) })),
+    ...(m.files || []).flatMap(f => f.routed ? [{ task: f.routed.task, file: basename(f.routed.path) }] : []),
+  ];
+  for (const m of store.read().messages) for (const { task, file } of inboxFiles(m)) {
+    try { if (!delivery.get(task, file) && docs.pendingNames(task).includes(file)) delivery.track(task, file, 'Taskboard did not tell the agent about this file. It tries again when the task next waits for input.'); } catch { /* no inbox */ }
+  }
   levelsChanged = () => { try { cards.sync(); } catch { /* the next change retries */ } };
   // After a check, tell the controller what it may do. The notice has server fields only, never the subject or body.
   const tellController = (m: Message) => {
@@ -134,7 +179,10 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
   // the controller or the user approve it (the controller proposes the task for the user's card). A message that no
   // one may approve (quarantine, failed check at level 3, no check yet) stays hidden from it.
   const present = (m: Message, req: Request) => {
-    const shown = { ...m, files: m.files?.map(publicFile), approver: approver(m), trusted: isTrusted(m, store.read()),
+    const shown = { ...m, files: m.files?.map(f => ({ ...publicFile(f), ...(f.routed ? { routed: { ...f.routed, delivery: deliveryOf(f.routed.task, basename(f.routed.path)) } } : {}) })),
+      approver: approver(m), trusted: isTrusted(m, store.read()),
+      returns: m.returns?.map(r => { const target = returnTarget(m, r); return { ...r, ...target, delivery: deliveryOf(target.task, target.file) }; }),
+      routes: m.routes.map(r => ({ ...r, delivery: deliveryOf(r.task, basename(r.path)) })),
       editBlocked: m.direction === 'outbox' ? editBlocked(m) : undefined,
       versions: m.versions?.map(v => ({ ...v, files: v.files.map(publicFile) })) };
     if (human(req)) return shown;
@@ -329,7 +377,7 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
       res.send((await import('./files.ts')).verifyFile(file));
     } catch (error) { res.status(400).json({ error: (error as Error).message }); }
   });
-  app.post('/api/mail/:id/files/:file/route', endpoint(req => {
+  app.post('/api/mail/:id/files/:file/route', endpoint(async req => {
     user(req);
     const m = store.get(String(req.params.id));
     const file = m.files?.find(f => f.id === req.params.file);
@@ -345,7 +393,7 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
     const pending: string[] = read('.pending.json', []); if (!pending.includes(name)) pending.push(name); savePrivate(join(dir, '.pending.json'), pending);
     const routed = { task: task.id, path, at: new Date().toISOString() };
     store.update(m.id, x => { const f = x.files?.find(f => f.id === file.id); if (f) f.routed = routed; });
-    return routed;
+    return { ...routed, told: await tell(task.id, name) };
   }));
   // The user changes a draft that is not sent yet (server/mail/edit.ts). The old approval and its card end, and the
   // review runs again on the new text.
@@ -401,14 +449,14 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
     return { proposed: target ? target.id : null };
   }));
   // The user approves and routes in one step from Inbox (the same as Approve on the approval card).
-  app.post('/api/mail/:id/route-to', endpoint(req => {
+  app.post('/api/mail/:id/route-to', endpoint(async req => {
     user(req);
     let m = store.get(String(req.params.id));
     if (m.direction !== 'inbox' || m.dismissedAt) throw new Error('Choose an incoming message');
     if (!valid(m)) m = store.approve(m.id, 'user', String(req.body.hash || ''), approver(m));
     const route = routeMessage(m, String(req.body.task || ''), 'user');
     cards.sync();
-    return route;
+    return { ...route, told: await tell(route.task, basename(route.path)) };
   }));
   app.post('/api/mail/:id/seen', endpoint(req => { user(req); store.update(String(req.params.id), m => { delete m.unseen; }); return {}; }));
   // after the user edits a draft, only the user changes it
@@ -419,13 +467,14 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
   app.post('/api/mail/:id/restore', endpoint(req => {
     ownerOrEditor(req); store.update(String(req.params.id), m => { delete m.dismissedAt; }); cards.sync(); return {};
   }));
-  app.post('/api/mail/:id/route', endpoint(req => {
+  app.post('/api/mail/:id/route', endpoint(async req => {
     if (!controller(req)) throw new Error('Ask your controller to route this message');
     const m = store.get(String(req.params.id));
     if (m.direction !== 'inbox' || m.dismissedAt || combinedVerdict(m) === 'quarantine' || !valid(m)) throw new Error('Review and approve the incoming message first');
     // at level 1 the user chooses the task on the approval card or in Inbox
     if (levels().incoming === 1) throw new Error('The user routes each message at this level. Propose a task with tb mail propose-route.');
-    return routeMessage(m, String(req.body.task || ''), 'controller');
+    const route = routeMessage(m, String(req.body.task || ''), 'controller');
+    return { ...route, told: await tell(route.task, basename(route.path)) };
   }));
   // One message with its full text, for the message panel of the Graph page. Registered last so that it does not
   // match the other GET routes with one path segment.

@@ -12,15 +12,19 @@ export interface Message {
   id: string; direction: 'inbox' | 'outbox'; from: string; to: string; subject: string; body: string; hash: string;
   created: string; dismissedAt?: string; sendStartedAt?: string; sentAt?: string; sending?: boolean; error?: string;
   proposedBy?: { actor: 'user' | 'controller' | 'task'; task?: string; agent?: string };
-  review?: { verdict: string; reason: string; at: string }; approval?: { by: string; at: string }; routes: { task: string }[];
-  files?: (FileInfo & { routed?: { task: string } })[];
-  source?: string; rejectedAt?: string; unseen?: boolean; proposedRoute?: { task: string | null }; returns?: { comment: string }[];
+  review?: { verdict: string; reason: string; at: string }; approval?: { by: string; at: string }; routes: { task: string; delivery?: Delivery }[];
+  files?: (FileInfo & { routed?: { task: string; delivery?: Delivery } })[];
+  source?: string; rejectedAt?: string; unseen?: boolean; proposedRoute?: { task: string | null };
+  // comments from Send back on the approval card, and whether the agent was told (server/inbox-delivery.ts)
+  returns?: { comment: string; at: string; task: string; delivery?: Delivery }[];
   // from the server's permission levels (server/mail/policy.ts): who may approve this message now
   approver?: 'user' | 'controller' | 'nobody'; trusted?: boolean;
   // outgoing drafts: why the user cannot edit it now (null: the user can), the saved edits and the text before each one
   editBlocked?: string | null; edits?: { at: string; by: 'user' }[];
   versions?: { subject: string; body: string; files: FileInfo[]; hash: string; author: 'user' | 'controller' | 'task'; replacedAt: string; review?: { verdict: string } }[];
 }
+// Whether the agent of a task was told about a file that the server put in its inbox
+type Delivery = { task: string; delivered: boolean; at?: string; resumed?: boolean; problem?: string };
 type FileInfo = { id: string; name: string; size: number; hash: string; longBody?: boolean; review?: { verdict: string; reason: string } };
 // The sizes that decide how Slack shows a message (POST /api/mail/measure, from server/mail/presentation.ts)
 interface Size { subjectBytes: number; bodyBytes: number; rendered: number; limits: { subjectBytes: number; header: number; section: number; bodyBytes: number } }
@@ -100,6 +104,19 @@ export function sentState(m: Message) {
   return m.error ? 'Review failed' : 'Awaiting review';
 }
 function taskLabel(id: string, tasks: Task[]) { const t = tasks.find(x => x.id === id); return t ? `#${t.num} ${t.title}` : id; }
+function taskNumber(id: string, tasks: Task[]) { if (id === 'controller') return 'the controller'; const t = tasks.find(x => x.id === id); return t ? `#${t.num}` : id; }
+// what: "Comment" or "Message"
+export function deliveryNote(what: string, d: Delivery | undefined, tasks: Task[]) {
+  if (!d) return '';
+  if (d.delivered) return `${what} delivered to ${taskNumber(d.task, tasks)}${d.at ? ` at ${date(d.at)}` : ''}.${d.resumed ? ' The task was resumed first.' : ''}`;
+  return `Not delivered to ${taskNumber(d.task, tasks)} yet${d.problem ? `: ${d.problem}` : '.'} Taskboard tries again when the task next waits for input.`;
+}
+function Comments({ m, tasks }: { m: Message; tasks: Task[] }) {
+  if (!m.returns?.length) return null;
+  return <><h3>Your comments</h3><ul>{m.returns.map(r => <li key={r.at}>
+    <p>{date(r.at)}: {r.comment}</p><p role={r.delivery && !r.delivery.delivered ? 'alert' : undefined}>{deliveryNote('Comment', r.delivery, tasks)}</p>
+  </li>)}</ul></>;
+}
 // What happens next to an incoming message, from the server's permission levels
 export function inboxState(m: Message, tasks: Task[]) {
   if (m.rejectedAt) return 'Rejected. No agent receives it.';
@@ -166,6 +183,7 @@ function SentHistory({ messages, contacts, tasks, busy, act }: {
           ? <DraftEditor key={editing.key} m={selected} start={editing} busy={busy} act={act} close={() => setEditing(null)} />
           : <><h3>Full message</h3><MailBody body={selected.body} /></>}
         {!!selected.files?.length && <><h3>Files</h3><ul>{selected.files.map(f => <li key={f.id}>{f.name} ({Math.ceil(f.size / 1024)} KiB). {f.review?.verdict || 'Waiting for controller review'}.</li>)}</ul></>}
+        <Comments m={selected} tasks={tasks} />
         <h3>Recorded steps</h3><ol>{steps.map((step, i) => <li key={i}>{step.label}: {date(step.at)}</li>)}</ol>
         {!!selected.versions?.length && <><h3>Earlier versions</h3>
           <p>Taskboard keeps the text before each of your last 10 edits. Slack receives only the current text.</p>
@@ -324,7 +342,7 @@ export function InboxPage(props: { tasks: Task[]; open: (id: string, tab?: 'term
         {!!m.files?.length && <div><h3>Files</h3><ul>{m.files.map(f => <li key={f.id}>{f.name} ({Math.ceil(f.size / 1024)} KiB). {f.review?.verdict || 'Waiting for controller review'}.
           {m.direction === 'inbox' && f.review && f.review.verdict !== 'quarantine' && <a href={`/api/mail/${m.id}/files/${f.id}/download`}>Download</a>}
           {m.direction === 'inbox' && m.approval && f.review && f.review.verdict !== 'quarantine' && !f.routed && <><select className="mail-input" aria-label={`Task for ${f.name}`} value={destinations[f.id] || ''} onChange={e => setDestinations(current => ({ ...current, [f.id]: e.target.value }))}><option value="">Choose a task</option>{props.tasks.filter(t => t.id !== 'controller').map(t => <option key={t.id} value={t.id}>{t.title}</option>)}</select><button className="btn" disabled={busy || !destinations[f.id]} onClick={() => act(() => request(`/${m.id}/files/${f.id}/route`, { task: destinations[f.id], hash: f.hash }))}>Approve file for task</button></>}
-          {f.routed && ` Sent to ${f.routed.task}.`}</li>)}</ul></div>}
+          {f.routed && ` Sent to ${taskLabel(f.routed.task, props.tasks)}. ${deliveryNote('File', f.routed.delivery, props.tasks)}`}</li>)}</ul></div>}
         {m.error && <p role="alert">{m.error}</p>}
         <div className="mail-tabs">
           <button className="btn ghost" disabled={busy} onClick={() => act(() => request(`/${m.id}/${dismissed ? 'restore' : 'dismiss'}`, {}))}>{dismissed ? 'Restore' : 'Dismiss'}</button>
@@ -333,7 +351,8 @@ export function InboxPage(props: { tasks: Task[]; open: (id: string, tab?: 'term
           {!dismissed && m.direction === 'inbox' && m.review && m.approver !== 'nobody' && !m.rejectedAt && <><select className="mail-input" aria-label={`Task for message ${m.subject}`} value={destinations[m.id] || m.proposedRoute?.task || ''} onChange={e => setDestinations(current => ({ ...current, [m.id]: e.target.value }))}><option value="">Choose a task</option>{props.tasks.filter(t => t.id !== 'controller').map(t => <option key={t.id} value={t.id}>{t.title}</option>)}</select><button className="btn" disabled={busy || !(destinations[m.id] || m.proposedRoute?.task)} onClick={() => act(() => request(`/${m.id}/route-to`, { task: destinations[m.id] || m.proposedRoute?.task, hash: m.hash }))}>Approve and send to task</button></>}
           {!dismissed && m.direction === 'outbox' && m.approval && !m.sentAt && <button className="btn" disabled={busy || m.sending} onClick={() => act(() => request(`/${m.id}/send`, {}))}>Send approved message</button>}
         </div>
-        {!!m.routes.length && <p>Routed to {m.routes.map(r => taskLabel(r.task, props.tasks)).join(', ')}</p>}
+        {!!m.routes.length && <ul>{m.routes.map(r => <li key={r.task}>Routed to {taskLabel(r.task, props.tasks)}. {deliveryNote('Message', r.delivery, props.tasks)}</li>)}</ul>}
+        <Comments m={m} tasks={props.tasks} />
         {dismissed && <p>Dismissed items keep their content and approval state. Dismiss sends no feedback.</p>}
       </article>)}
     </>}

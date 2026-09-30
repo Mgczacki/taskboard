@@ -63,7 +63,8 @@ test('the server enforces the levels for approval, routing, sending and cards', 
     return {};
   } } as unknown as SlackClient;
   const app = express(); app.use(express.json());
-  const cleanup = mountMail(app, { background: false, slack, levels: () => levels, notify: (task, _name, text) => { notices.push({ task, text }); },
+  const cleanup = mountMail(app, { background: false, slack, levels: () => levels, delivery: { get: () => undefined, track: (task, name) => ({ task, name, queued: '' }),
+    deliver: async (task, name) => { notices.push({ task, text: readFileSync(join(tasks.taskDir(task), 'inbox', name), 'utf8') }); return { task, name, queued: '', deliveredAt: new Date().toISOString() }; } },
     review: async m => { if (verdictFor[m.subject] === undefined) throw new Error('model down'); return { verdict: verdictFor[m.subject], reason: 'Fixture', at: new Date().toISOString() }; } });
   const server = app.listen(0, '127.0.0.1'); await new Promise<void>(r => server.once('listening', r));
   const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/mail`;

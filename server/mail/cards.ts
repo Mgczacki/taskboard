@@ -9,13 +9,26 @@ import * as tasks from '../store.ts';
 import type { MailStore, Message } from './store.ts';
 import { approvalValid, approverFor, combinedVerdict, isTrusted, type Levels } from './policy.ts';
 
+// The result of telling an agent about a file in its Taskboard inbox (server/inbox-delivery.ts).
+export interface Told { name: string; delivered: boolean; resumed?: boolean; problem?: string }
 export interface CardDeps {
   levels: () => Levels;
-  route: (m: Message, task: string, by: 'user' | 'controller') => unknown;
+  route: (m: Message, task: string, by: 'user' | 'controller') => { task: string; path: string };
   send: (id: string) => Promise<unknown>;
-  notify: (task: string, name: string, text: string) => Promise<void> | void;
+  // puts a file with this text in the task's inbox and tells the agent; tell: only tells, for a file already there
+  notify: (task: string, name: string, text: string) => Promise<Told>;
+  tell: (task: string, name: string) => Promise<Told>;
 }
 const BODY_LIMIT = 4000;
+
+// The task that receives a comment the user sent back, and the name of the comment file in its inbox. Comments saved
+// before the file name was recorded use the name that giveBack gave them.
+export function returnTarget(m: Message, r: NonNullable<Message['returns']>[number]) {
+  const task = r.task || (m.direction === 'inbox' ? 'controller' : m.proposedBy?.actor === 'task' && m.proposedBy.task ? m.proposedBy.task : 'controller');
+  return { task, file: r.file || `mail-${m.id}-comment-${r.at.replace(/\D/g, '')}.md` };
+}
+// The text for the card result. It says "Sent back" only when the agent was told.
+const notToldYet = (told: Told) => `the agent was not told yet: ${(told.problem || 'unknown reason').replace(/\.?$/, '.')} Taskboard tries again when the task next waits for input.`;
 
 export function mailCards(store: MailStore, deps: CardDeps) {
   const open = new Map<string, { approval: string; key: string }>(); // message id → its pending card
@@ -59,7 +72,12 @@ export function mailCards(store: MailStore, deps: CardDeps) {
       let x = current();
       const approver = approverFor(x, store.read(), deps.levels());
       if (!approvalValid(x, store.read(), deps.levels())) x = store.approve(x.id, 'user', hash, approver);
-      if (x.direction === 'inbox') { deps.route(x, task, 'user'); return `Approved and routed to ${taskName(task)}.`; }
+      if (x.direction === 'inbox') {
+        const route = deps.route(x, task, 'user');
+        const told = await deps.tell(route.task, route.path.split('/').pop()!);
+        return told.delivered ? `Approved and routed to ${taskName(task)}. The agent was told${told.resumed ? ' after the task was resumed' : ''}.`
+          : `Approved and routed to ${taskName(task)}, but ${notToldYet(told)}`;
+      }
       await deps.send(x.id); return `Approved and sent to ${name(x.to)}.`;
     }, {
       onDeny: () => { try { store.update(m.id, x => { x.rejectedAt ||= new Date().toISOString(); }); } catch { /* removed */ } },
@@ -67,12 +85,17 @@ export function mailCards(store: MailStore, deps: CardDeps) {
         const text = comment.trim().slice(0, 4000);
         if (!text) throw new Error('Write a comment first.');
         const x = current(), at = new Date().toISOString();
-        store.update(x.id, y => { (y.returns ||= []).push({ comment: text, at }); if (y.direction === 'inbox') delete y.proposedRoute; else y.rejectedAt = at; });
         const to = x.direction === 'inbox' ? 'controller' : who;
-        await deps.notify(to, `mail-${x.id}-comment-${at.replace(/\D/g, '')}.md`, x.direction === 'inbox'
+        const file = `mail-${x.id}-comment-${at.replace(/\D/g, '')}.md`;
+        store.update(x.id, y => { (y.returns ||= []).push({ comment: text, at, task: to, file }); if (y.direction === 'inbox') delete y.proposedRoute; else y.rejectedAt = at; });
+        const told = await deps.notify(to, file, x.direction === 'inbox'
           ? `# The user sent back your proposed task for message ${x.id}\n\nYou proposed ${taskName(task)}. The user's comment:\n\n${text}\n\nPropose a task again with \`tb mail propose-route ${x.id} <task>\`, or \`tb mail propose-route ${x.id} none\`.\n`
           : `# The user sent back your draft to ${x.to}\n\nSubject: ${x.subject}\n\nThe user's comment:\n\n${text}\n\nThe draft is closed. Write a new draft with \`tb mail draft\` if the comment asks for one.\n`);
-        return x.direction === 'inbox' ? 'Sent back to the controller with your comment.' : `Sent back to ${who === 'controller' ? 'the controller' : taskName(who)} with your comment.`;
+        // docs.upload adds a number to the name when a file with that name is already in the inbox
+        if (told.name !== file) store.update(x.id, y => { const r = y.returns?.find(r => r.at === at); if (r) r.file = told.name; });
+        const label = to === 'controller' ? 'the controller' : taskName(to);
+        return told.delivered ? `Sent back to ${label} with your comment.${told.resumed ? ' The task was resumed.' : ''}`
+          : `Your comment is in the inbox of ${label}, but ${notToldYet(told)}`;
       },
     });
     open.set(m.id, { approval: card.id, key });

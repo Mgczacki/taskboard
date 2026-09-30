@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { HOME, TASKS_DIR, VAULT } from './config.ts';
 import * as store from './store.ts';
 
-export interface DocInfo { name: string; path: string; kind: 'md' | 'html' | 'other'; size: number; mtime: string; from?: { task: string; num: number; title: string; at: string }; sentTo?: { task: string; num: number; at: string }[] }
+export interface DocInfo { name: string; path: string; kind: 'md' | 'html' | 'other'; size: number; mtime: string; from?: { task: string; num: number; title: string; at: string }; sentTo?: { task: string; num: number; at: string }[]; pending?: boolean }
 
 export const outboxDir = (id: string) => join(store.taskDir(id), 'outbox');
 export const inboxDir = (id: string) => join(store.taskDir(id), 'inbox');
@@ -24,9 +24,10 @@ function list(dir: string): { name: string; path: string; size: number; mtime: s
 
 export function docsFor(id: string) {
   const sent = readJson<Record<string, { task: string; at: string }>>(sentFile(id), {});
+  const pending = new Set(readJson<string[]>(pendingFile(id), []));
   const inbox: DocInfo[] = list(inboxDir(id)).map(f => {
     const s = sent[f.name]; const src = s && store.get(s.task);
-    return { ...f, kind: kindOf(f.name), from: s ? { task: s.task, num: src?.num ?? 0, title: s.task === '__review' ? 'User Inbox (your comments)' : src?.title ?? s.task, at: s.at } : undefined };
+    return { ...f, kind: kindOf(f.name), ...(pending.has(f.name) ? { pending: true } : {}), from: s ? { task: s.task, num: src?.num ?? 0, title: s.task === '__review' ? 'User Inbox (your comments)' : s.task === '__account_inbox' ? 'Taskboard messages' : src?.title ?? s.task, at: s.at } : undefined };
   });
   // who received each outbox file: scan other tasks' inbox records
   const receivers: Record<string, { task: string; num: number; at: string }[]> = {};
@@ -83,6 +84,7 @@ export function takePending(taskId: string): InboxArrival[] {
   const pending = readJson<string[]>(pendingFile(taskId), []);
   if (!pending.length) return [];
   writeFileSync(pendingFile(taskId), '[]');
+  told(taskId, pending);
   const sent = readJson<Record<string, { task: string }>>(sentFile(taskId), {});
   return pending.map(n => {
     const s = sent[n]; const t = s && store.get(s.task);
@@ -98,6 +100,9 @@ export function takeInboxNotice(taskId: string): string | null {
   return `New file${pending.length > 1 ? 's' : ''} in your Taskboard inbox. Read ${pending.length > 1 ? 'them' : 'it'} before continuing if relevant:\n${lines.join('\n')}`;
 }
 
+// Inbox files the agent has not been told about yet.
+export const pendingNames = (taskId: string) => readJson<string[]>(pendingFile(taskId), []);
+
 export function pendingInboxNotice(taskId: string): { notice: string; names: string[] } | null {
   const names = readJson<string[]>(pendingFile(taskId), []);
   if (!names.length) return null;
@@ -112,7 +117,13 @@ export function pendingInboxNotice(taskId: string): { notice: string; names: str
 export function acknowledgeInboxNotice(taskId: string, names: string[]) {
   const delivered = new Set(names);
   writeFileSync(pendingFile(taskId), JSON.stringify(readJson<string[]>(pendingFile(taskId), []).filter(name => !delivered.has(name))));
+  told(taskId, names);
 }
+
+// Runs each time the agent is told about inbox files (server/inbox-delivery.ts records the time).
+const toldListeners = new Set<(taskId: string, names: string[]) => void>();
+export const onInboxTold = (fn: (taskId: string, names: string[]) => void) => { toldListeners.add(fn); };
+const told = (taskId: string, names: string[]) => toldListeners.forEach(fn => { try { fn(taskId, names); } catch { /* a listener must not stop the notice */ } });
 
 // Every send between tasks, for the graph: document → receiving task.
 export function edges() {
