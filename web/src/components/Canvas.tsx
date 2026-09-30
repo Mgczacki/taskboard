@@ -9,7 +9,7 @@ import { Terminal, terminalDebugRecord } from './Terminal';
 import { hit as key, hitIn, keyLabel, keysText, useKeymap } from '../keys';
 import { AskPanel } from './Ask';
 import { archiveAll, archiveAndDelete, archivePlan, restoreAll, restoreGroupAndTasks, type ArchiveResult, type ArchiveTarget } from '../groupArchive';
-import { dropHint, planGroupDrop, planUngroup, type DropPlan } from '../groupMove';
+import { dropHint, planCanvasTabDrop, planUngroup, type DropPlan } from '../groupMove';
 import { runGroupChange } from '../groupActions';
 
 type Layout = 'columns' | 'grid' | 'rows';
@@ -216,21 +216,21 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
     addEventListener('mousemove', on); return () => removeEventListener('mousemove', on);
   }, [focusMode, menu]);
 
-  // Drag a window header onto a tab. A group tab adds the task to that group. With ⌥ held it moves the task there
-  // from the group of the current tab. The Ungrouped tab takes the task out of the group of the current tab, or out of
+  // Drag a window header onto a tab. A group tab moves the task from the current group, or adds it from another view.
+  // The Ungrouped tab takes the task out of the group of the current tab, or out of
   // every group when the current tab is not a group. A tab that refuses the drop shows why (groupMove.ts).
   const startDrag = (e: React.PointerEvent, id: string) => {
     if ((e.target as HTMLElement).closest('button')) return;
     if (e.metaKey || e.shiftKey) { toggleSel(id); return; }
     const num = tasks.find(t => t.id === id)?.num ?? '?';
     const fromGroup = group?.id;
-    const sx = e.clientX, sy = e.clientY; let moving = false, key: string | null = null, plan: DropPlan | null = null, x = sx, y = sy, alt = e.altKey;
+    const sx = e.clientX, sy = e.clientY; let moving = false, key: string | null = null, plan: DropPlan | null = null, x = sx, y = sy;
     const ghost = document.createElement('div');
-    const idle = `#${num} → drop on a group tab${fromGroup ? ` (⌥ moves it from ${group!.name})` : ''} or on Ungrouped`;
+    const idle = `#${num} → drop on a group tab or on Ungrouped`;
     const show = () => {
       const tab = (document.elementFromPoint(x, y) as HTMLElement | null)?.closest('[data-drop]') as HTMLElement | null;
       key = tab ? tab.dataset.drop! : null;
-      plan = !key ? null : key === 'ungrouped' ? planUngroup(id, num, groups, fromGroup) : planGroupDrop(id, num, groups, key.slice(2), fromGroup, alt);
+      plan = planCanvasTabDrop(id, num, groups, key, fromGroup);
       const refused = plan && 'refused' in plan ? plan.refused : undefined;
       ghost.textContent = !plan ? idle : 'change' in plan ? `#${num} → ${dropHint(plan.change)}` : `⊘ ${refused}`;
       ghost.classList.toggle('refused', !!refused);
@@ -239,19 +239,18 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
     const mv = (ev: PointerEvent) => {
       if (!moving && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 8) return;
       if (!moving) { moving = true; ghost.className = 'drag-ghost'; document.body.appendChild(ghost); }
-      x = ev.clientX; y = ev.clientY; alt = ev.altKey;
+      x = ev.clientX; y = ev.clientY;
       ghost.style.left = x + 12 + 'px'; ghost.style.top = y + 12 + 'px';
       show();
     };
-    const altKey = (ev: KeyboardEvent) => { if (ev.key === 'Alt' && moving) { alt = ev.type === 'keydown'; show(); } };
     const up = (ev: PointerEvent) => {
-      removeEventListener('pointermove', mv); removeEventListener('pointerup', up); removeEventListener('keydown', altKey, true); removeEventListener('keyup', altKey, true);
+      removeEventListener('pointermove', mv); removeEventListener('pointerup', up);
       ghost.remove(); setDropTab(null);
       if (!moving || !key) return;
-      alt = ev.altKey; show(); setDropTab(null);
+      x = ev.clientX; y = ev.clientY; show(); setDropTab(null);
       if (plan && 'change' in plan) runGroupChange(plan.change, toast); else if (plan) toast(plan.refused + '.');
     };
-    addEventListener('pointermove', mv); addEventListener('pointerup', up); addEventListener('keydown', altKey, true); addEventListener('keyup', altKey, true);
+    addEventListener('pointermove', mv); addEventListener('pointerup', up);
   };
 
   const dropClass = (k: string) => dropTab?.key === k ? (dropTab.refused ? 'nodrop' : 'drop') : '';
@@ -265,7 +264,7 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
       {!solo && <div className="gtabs">
         {groups.map(g => { const l = g.tasks.filter(id => live(tasks.find(t => t.id === id))); const w = waiting(l); return (
           <div key={g.id} data-drop={'g:' + g.id} className={`gtab ${view === 'g:' + g.id ? 'on' : ''} ${dropClass('g:' + g.id)}`} style={{ '--gc': g.color } as React.CSSProperties}
-            onClick={e => { if (!(e.target as HTMLElement).closest('button,input')) setView('g:' + g.id); }} onDoubleClick={() => setMenu({ group: g.id })} title={dropTitle('g:' + g.id) ?? `Drop a window here to add it. Hold ⌥ to move it from the current group. Double-click for options. Next / previous tab: ${keysText('nextView')} / ${keysText('prevView')}`}>
+            onClick={e => { if (!(e.target as HTMLElement).closest('button,input')) setView('g:' + g.id); }} onDoubleClick={() => setMenu({ group: g.id })} title={dropTitle('g:' + g.id) ?? `Drop a window here to move it from the current group, or add it from another view. Double-click for options. Next / previous tab: ${keysText('nextView')} / ${keysText('prevView')}`}>
             <span className="gdot" /><span className="gname">{g.name}</span><span className="gn">{l.length}</span>{w > 0 && <span className="gw">● {w}</span>}
             <span className="gact"><button title="Open in its own window" onClick={() => openInWindow('g:' + g.id)}>↗</button><button title="Rename, colour, delete" onClick={() => setMenu({ group: g.id })}>⋯</button></span>
           </div>); })}

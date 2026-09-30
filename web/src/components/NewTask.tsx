@@ -4,12 +4,12 @@ import { AGENTS, AGENT_NAME, api } from '../api';
 import type { Agent, Group } from '../api';
 import { loadAccounts, usageText, type Account } from './Accounts';
 
-export function NewTask({ onClose, onStarted, initialFolder, groups = [], initialGroup }: { onClose: () => void; onStarted: (id: string, group: string) => void; initialFolder?: string; groups?: Group[]; initialGroup?: string }) {
+export function NewTask({ onClose, onStarted, initialFolder, groups = [], initialGroup }: { onClose: () => void; onStarted: (id: string, group: string, choice?: string) => void; initialFolder?: string; groups?: Group[]; initialGroup?: string }) {
   const [title, setTitle] = useState('');
   const [desc, setDesc] = useState('');
   // Images pasted into the description (⌘V / Ctrl+V). The server saves them in the task folder and lists their paths in the first prompt.
   const [images, setImages] = useState<{ type: string; data: string; url: string }[]>([]);
-  const [agent, setAgent] = useState<Agent>(() => (localStorage.getItem('tb-agent') as Agent) || 'claude');
+  const [agent, setAgent] = useState<Agent | 'auto'>('claude');
   const [folder, setFolder] = useState(initialFolder || '');
   const [group, setGroup] = useState(initialGroup || '');
   const [q, setQ] = useState('');
@@ -22,7 +22,7 @@ export function NewTask({ onClose, onStarted, initialFolder, groups = [], initia
   const [machine, setMachine] = useState('local');
   const [machineList, setMachineList] = useState<{ id: string; name: string; online: boolean; latency?: number; local?: boolean }[]>([]);
   useEffect(() => { fetch('/api/machines').then(r => r.json()).then(setMachineList).catch(() => {}); }, []);
-  useEffect(() => { loadAccounts().then(setAccts).catch(() => {}); }, []);
+  useEffect(() => { loadAccounts().then(setAccts).catch(() => {}); api.info().then(i => setAgent(i.settings.newTaskDefaultAgent || 'claude')).catch(() => {}); }, []);
   useEffect(() => { setAccount('auto'); }, [agent]);
   const [err, setErr] = useState('');
   const [mode, setMode] = useState<'recent' | 'browse'>('recent');
@@ -54,10 +54,11 @@ export function NewTask({ onClose, onStarted, initialFolder, groups = [], initia
   const typed = (q.startsWith('~') || q.startsWith('/')) && ![...folders.used.map(x => x.path), ...folders.found].includes(q) ? q : '';
 
   const cmd = useMemo(() => {
+    if (agent === 'auto' && account === 'auto') return 'Taskboard chooses an agent and account when the task starts.';
     const cwd = worktree ? `${folder}-wt/${slug}` : folder;
     return (worktree ? `git -C ${folder} worktree add ${cwd} -b ${branch || 'task/' + slug}\n` : '') +
-      `tmux -L taskboard new-session -d -s task-N -c ${cwd} \\\n  -e TASK_ID=… -e TASK_DIR=~/AgentVault/tasks/… \\\n  ${agent === 'claude' ? 'claude --settings ~/.taskboard/claude-settings.json --session-id <uuid> …' : agent === 'codex' ? 'codex -c notify=[…] …' : 'agy --add-dir ~/AgentVault -i'} "<your prompt>"`;
-  }, [folder, worktree, branch, slug, agent]);
+      `tmux -L taskboard new-session -d -s task-N -c ${cwd} \\\n  -e TASK_ID=… -e TASK_DIR=~/AgentVault/tasks/… \\\n  ${agent === 'auto' ? (accts.find(a => a.id === account)?.agent === 'claude' ? 'claude …' : accts.find(a => a.id === account)?.agent === 'codex' ? 'codex …' : 'agy …') : agent === 'claude' ? 'claude --settings ~/.taskboard/claude-settings.json --session-id <uuid> …' : agent === 'codex' ? 'codex -c notify=[…] …' : 'agy --add-dir ~/AgentVault -i'} "<your prompt>"`;
+  }, [folder, worktree, branch, slug, agent, account, accts]);
 
   const onPaste = (e: ClipboardEvent) => {
     const files = [...e.clipboardData.files].filter(f => ['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(f.type));
@@ -75,9 +76,8 @@ export function NewTask({ onClose, onStarted, initialFolder, groups = [], initia
     if (!title.trim() || !folder) { setErr('A title and a folder are needed.'); return; }
     setBusy(true); setErr('');
     try {
-      localStorage.setItem('tb-agent', agent);
       const t = await api.create({ title: title.trim(), desc: desc.trim() || title.trim(), agent, folder, worktree, branch: worktree ? (branch || `task/${slug}`) : undefined, account: machine === 'local' ? account : 'auto', machine, group: group || undefined, images: images.length ? images.map(({ type, data }) => ({ type, data })) : undefined });
-      onStarted(t.id, group);
+      onStarted(t.id, group, agent === 'auto' ? `${AGENT_NAME[t.agent]} on ${accts.find(a => a.id === t.account)?.name || t.account}` : undefined);
     } catch (e) { setErr(String((e as Error).message || e)); setBusy(false); }
   };
   const row = (path: string, meta: string, pin?: boolean) => (
@@ -132,7 +132,7 @@ export function NewTask({ onClose, onStarted, initialFolder, groups = [], initia
             </div>}
           </div>
           <div className="row2">
-            <div className="field"><label>Agent</label><div className="seg">{AGENTS.map(a => <button key={a} className={agent === a ? 'on' : ''} onClick={() => setAgent(a)}>{AGENT_NAME[a]}</button>)}</div></div>
+            <div className="field"><label>Agent</label><div className="seg"><button className={agent === 'auto' ? 'on' : ''} onClick={() => setAgent('auto')}>Auto</button>{AGENTS.map(a => <button key={a} className={agent === a ? 'on' : ''} onClick={() => setAgent(a)}>{AGENT_NAME[a]}</button>)}</div></div>
             <div className="field"><label>Working copy</label>
               <label className="opt"><input type="radio" checked={!worktree} onChange={() => setWorktree(false)} /> Use the folder as is</label>
               <label className="opt"><input type="radio" checked={worktree} onChange={() => setWorktree(true)} /> New git worktree on branch <input type="text" value={branch} placeholder={`task/${slug}`} onChange={e => setBranch(e.target.value)} style={{ width: 160, padding: '3px 6px', font: '11.5px var(--mono)' }} /></label>
@@ -140,8 +140,8 @@ export function NewTask({ onClose, onStarted, initialFolder, groups = [], initia
           </div>
           <div className="field"><label>Account</label>
             <select className="acct-sel" value={account} onChange={e => setAccount(e.target.value)}>
-              <option value="auto">Automatic: least busy signed-in account that is not at its limit</option>
-              {accts.filter(a => a.agent === agent).map(a => <option key={a.id} value={a.id} disabled={!a.status.signedIn}>{a.name}{a.status.signedIn ? '' : ' (not signed in)'}{a.limited ? ' · at its limit' : ''} · {a.running} running{usageText(a) ? ' · ' + usageText(a) : ''}</option>)}
+              <option value="auto">Automatic: choose by usage and task capacity</option>
+              {accts.filter(a => agent === 'auto' || a.agent === agent).map(a => <option key={a.id} value={a.id} disabled={!a.status.signedIn}>{a.name}{a.status.signedIn ? '' : ' (not signed in)'}{a.limited ? ' · at its limit' : ''} · {a.running} running{usageText(a) ? ' · ' + usageText(a) : ''}</option>)}
             </select>
             <div className="help">Add accounts and sign in on the Accounts page.</div>
           </div>

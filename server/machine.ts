@@ -10,6 +10,7 @@ import { TB_DIR, TASKS_DIR } from './config.ts';
 export interface MachineSettings {
   name: string;
   routingRules: string;
+  newTaskDefaultAgent: 'auto' | 'claude' | 'codex' | 'antigravity';
   controller: { autostart: boolean; remoteControl: boolean; dangerouslySkipPermissions: boolean; models: Record<'claude' | 'codex' | 'antigravity', string> };
   // actions through `tb` that act on other tasks (new, send, set aside, archive): run at once, or wait for Approve
   permissions: { controllerNeedsApproval: boolean; agentsNeedApproval: boolean; trustWorkspaces: boolean; autoReview: boolean; controllerCanApprovePermits: boolean };
@@ -38,7 +39,7 @@ export const DEFAULT_ROUTING_RULES = `Use Claude Code or Codex for deep planning
 Use Antigravity for routine work. Do not use it for deep planning.
 When Claude's usage is high, use Codex for deep planning.
 Avoid accounts at their limit or running their maximum number of tasks.`;
-let settings: MachineSettings = { name: process.env.TASKBOARD_MACHINE_NAME || defaultName(), routingRules: DEFAULT_ROUTING_RULES, controller: { autostart: true, remoteControl: true, dangerouslySkipPermissions: true, models: { claude: 'claude-sonnet-5-5', codex: '', antigravity: '' } }, permissions: { controllerNeedsApproval: false, agentsNeedApproval: true, trustWorkspaces: true, autoReview: true, controllerCanApprovePermits: false }, permitFolders: [], pushes: { taskBranches: 'run', ownRepositories: [], protectedBranches: [] }, ask: { agent: 'claude', account: 'claude-default', model: 'sonnet' }, review: { account: 'claude-default', model: 'sonnet' }, messages: { incoming: 2, outgoing: 2, checkPrivateNotes: true }, accounts: { defaultMaxParallel: 4 } };
+let settings: MachineSettings = { name: process.env.TASKBOARD_MACHINE_NAME || defaultName(), routingRules: DEFAULT_ROUTING_RULES, newTaskDefaultAgent: 'claude', controller: { autostart: true, remoteControl: true, dangerouslySkipPermissions: true, models: { claude: 'claude-sonnet-5-5', codex: '', antigravity: '' } }, permissions: { controllerNeedsApproval: false, agentsNeedApproval: true, trustWorkspaces: true, autoReview: true, controllerCanApprovePermits: false }, permitFolders: [], pushes: { taskBranches: 'run', ownRepositories: [], protectedBranches: [] }, ask: { agent: 'claude', account: 'claude-default', model: 'sonnet' }, review: { account: 'claude-default', model: 'sonnet' }, messages: { incoming: 2, outgoing: 2, checkPrivateNotes: true }, accounts: { defaultMaxParallel: 4 } };
 if (existsSync(FILE)) {
   const saved = JSON.parse(readFileSync(FILE, 'utf8'));
   // Before the levels, the Inbox checkbox "Allow my controller to approve ordinary communication" (mail.json
@@ -58,10 +59,14 @@ export function checkMaxParallel(value: unknown): number {
   return n;
 }
 export const controllerLabel = () => `Taskboard controller · ${settings.name}`;
-export function update(patch: { name?: string; routingRules?: string; autostart?: boolean; remoteControl?: boolean; dangerouslySkipPermissions?: boolean; controllerModels?: Partial<Record<'claude' | 'codex' | 'antigravity', string>>; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; permitFolders?: string[]; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: number; messageOutgoing?: number; checkPrivateNotes?: boolean; defaultMaxParallel?: number }) {
+export function update(patch: { name?: string; routingRules?: string; newTaskDefaultAgent?: MachineSettings['newTaskDefaultAgent']; autostart?: boolean; remoteControl?: boolean; dangerouslySkipPermissions?: boolean; controllerModels?: Partial<Record<'claude' | 'codex' | 'antigravity', string>>; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; permitFolders?: string[]; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: number; messageOutgoing?: number; checkPrivateNotes?: boolean; defaultMaxParallel?: number }) {
   if (patch.routingRules !== undefined) {
     if (typeof patch.routingRules !== 'string') throw new Error('routingRules must be text.');
     settings.routingRules = patch.routingRules.trim().slice(0, 1000);
+  }
+  if (patch.newTaskDefaultAgent !== undefined) {
+    if (!['auto', 'claude', 'codex', 'antigravity'].includes(patch.newTaskDefaultAgent)) throw new Error('Choose Auto or a fixed agent for new tasks.');
+    settings.newTaskDefaultAgent = patch.newTaskDefaultAgent;
   }
   if (patch.controllerNeedsApproval !== undefined) settings.permissions.controllerNeedsApproval = !!patch.controllerNeedsApproval;
   if (patch.agentsNeedApproval !== undefined) settings.permissions.agentsNeedApproval = !!patch.agentsNeedApproval;

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import type { Group } from '../web/src/api.ts';
-import { applyChange, changeNotice, dropHint, planGroupDrop, planUngroup, undoChange, type UpdateGroup } from '../web/src/groupMove.ts';
+import { applyChange, changeNotice, dropHint, planCanvasTabDrop, planGroupDrop, planUngroup, undoChange, type UpdateGroup } from '../web/src/groupMove.ts';
 
 const group = (id: string, name: string, tasks: string[]): Group => ({ id, name, color: '#fff', tasks, created: '' });
 
@@ -88,4 +88,50 @@ test('a group tab refuses its own tab, and a group that already has the task unl
   const p = planGroupDrop('t2', 2, fresh(), 'b', 'a', true);
   assert.ok('change' in p);
   assert.equal(changeNotice(p.change), 'Removed #2 from Auth. It is still in Beta.');
+});
+
+test('a canvas drop moves a tile from its group with one server call', async () => {
+  const gs = fresh();
+  const p = planCanvasTabDrop('t1', 1, gs, 'g:c', 'a');
+  assert.ok(p && 'change' in p);
+  const calls: string[] = [];
+  await applyChange(p.change, async () => { throw new Error('Separate group updates are not expected'); }, async (taskId, fromId, toId) => {
+    calls.push(`${taskId}:${fromId}:${toId}`);
+    const from = gs.find(g => g.id === fromId)!;
+    const to = gs.find(g => g.id === toId)!;
+    from.tasks = from.tasks.filter(id => id !== taskId);
+    to.tasks = [...new Set([...to.tasks, taskId])];
+  });
+  assert.deepEqual(calls, ['t1:a:c']);
+  assert.deepEqual(gs.map(g => g.tasks), [['t2', 't3'], ['t2'], ['t1']]);
+});
+
+test('a canvas drop on its own tab or outside any tab changes no group', () => {
+  assert.deepEqual(planCanvasTabDrop('t1', 1, fresh(), 'g:a', 'a'), { refused: '#1 is already in Auth' });
+  assert.equal(planCanvasTabDrop('t1', 1, fresh(), null, 'a'), null);
+});
+
+test('a canvas drop removes the source when the target already has the tile', async () => {
+  const gs = fresh();
+  const p = planCanvasTabDrop('t2', 2, gs, 'g:b', 'a');
+  assert.ok(p && 'change' in p);
+  assert.deepEqual(p.change.added, []);
+  await applyChange(p.change, server(gs));
+  assert.deepEqual(gs.map(g => g.tasks), [['t1', 't3'], ['t2'], []]);
+});
+
+test('a canvas drop from a group keeps membership in other groups', async () => {
+  const gs = fresh();
+  const p = planCanvasTabDrop('t2', 2, gs, 'g:c', 'a');
+  assert.ok(p && 'change' in p);
+  await applyChange(p.change, server(gs));
+  assert.deepEqual(gs.map(g => g.tasks), [['t1', 't3'], ['t2'], ['t2']]);
+});
+
+test('a canvas drop from a view without a source group adds the tile', async () => {
+  const gs = fresh();
+  const p = planCanvasTabDrop('t1', 1, gs, 'g:c');
+  assert.ok(p && 'change' in p);
+  await applyChange(p.change, server(gs));
+  assert.deepEqual(gs.map(g => g.tasks), [['t1', 't2', 't3'], ['t2'], ['t1']]);
 });

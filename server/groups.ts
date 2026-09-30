@@ -43,6 +43,23 @@ export function update(id: string, patch: Partial<Pick<Group, 'name' | 'color' |
   if (patch.tasks) patch.tasks = [...new Set(patch.tasks)];
   Object.assign(g, patch); write(g); emit(); return g;
 }
+export function moveTask(taskId: string, fromId: string, toId: string): Group[] {
+  const from = groups.get(fromId), to = groups.get(toId);
+  if (!from || !to) throw new Error('The source or target group no longer exists.');
+  if (fromId === toId) throw new Error('The source and target groups are the same.');
+  if (!from.tasks.includes(taskId)) throw new Error('The task is no longer in the source group.');
+  const beforeFrom = from.tasks, beforeTo = to.tasks;
+  from.tasks = from.tasks.filter(id => id !== taskId);
+  to.tasks = [...new Set([...to.tasks, taskId])];
+  try { write(to); write(from); }
+  catch (e) {
+    from.tasks = beforeFrom; to.tasks = beforeTo;
+    write(to); write(from);
+    throw e;
+  }
+  emit();
+  return [from, to];
+}
 export function remove(id: string): Group | undefined {
   const g = groups.get(id); if (!g) return;
   groups.delete(id); const f = join(DIR, id + '.md'); if (existsSync(f)) unlinkSync(f); emit(); return g;

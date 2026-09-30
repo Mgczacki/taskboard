@@ -8,6 +8,7 @@ import type { Group } from './api';
 
 // the PATCH /api/groups/:id call (api.updateGroup)
 export type UpdateGroup = (id: string, patch: { tasks?: string[]; add?: string; remove?: string }) => Promise<unknown>;
+export type MoveGroupTask = (taskId: string, fromId: string, toId: string) => Promise<unknown>;
 
 // One change to the groups of one task. `removed` keeps each group's position of the task, so Undo puts it back there.
 export interface GroupChange {
@@ -46,6 +47,12 @@ export function planGroupDrop(taskId: string, num: number | string, groups: Grou
   return { change: { taskId, num, added: inTarget ? [] : [{ id: t.id, name: t.name }], removed, stillIn: after.map(g => g.name) } };
 }
 
+export function planCanvasTabDrop(taskId: string, num: number | string, groups: Group[], target: string | null, fromGroup?: string): DropPlan | null {
+  if (!target) return null;
+  return target === 'ungrouped' ? planUngroup(taskId, num, groups, fromGroup)
+    : planGroupDrop(taskId, num, groups, target.slice(2), fromGroup, !!fromGroup);
+}
+
 // The notice after a change, for example "Removed #4 from Auth. It is still in Release."
 export function changeNotice(c: GroupChange): string {
   const r = names(c.removed.map(g => g.name));
@@ -60,7 +67,11 @@ export function dropHint(c: GroupChange): string {
   return c.removed.length ? `Move to ${c.added[0].name}` : `Add to ${c.added[0].name}`;
 }
 
-export async function applyChange(c: GroupChange, update: UpdateGroup) {
+export async function applyChange(c: GroupChange, update: UpdateGroup, move?: MoveGroupTask) {
+  if (move && c.added.length === 1 && c.removed.length === 1) {
+    await move(c.taskId, c.removed[0].id, c.added[0].id);
+    return;
+  }
   for (const g of c.added) await update(g.id, { add: c.taskId });
   for (const g of c.removed) await update(g.id, { remove: c.taskId });
 }

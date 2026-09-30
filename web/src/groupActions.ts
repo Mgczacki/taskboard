@@ -5,7 +5,7 @@ import { applyChange, changeNotice, undoChange, type GroupChange } from './group
 export type Toast = (s: string, action?: { label: string; fn: () => void }) => void;
 
 export async function runGroupChange(c: GroupChange, toast: Toast) {
-  try { await applyChange(c, api.updateGroup); }
+  try { await applyChange(c, api.updateGroup, api.moveGroupTask); }
   catch (e) { toast(`Could not change the groups of #${c.num}: ${(e as Error).message || e}`); return; }
   toast(changeNotice(c), { label: 'Undo', fn: () => {
     undoChange(c, currentGroups(), api.updateGroup).then(

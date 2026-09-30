@@ -12,6 +12,7 @@ import * as store from './store.ts';
 import type { Agent, Task } from './store.ts';
 import * as tmux from './tmux.ts';
 import * as accounts from './accounts.ts';
+import { chooseAuto } from './auto-choice.ts';
 import * as machine from './machine.ts';
 import { controllerMailToken } from './mail/auth.ts';
 import { buildHandoff } from './handoff.ts';
@@ -416,7 +417,7 @@ export async function configureIfRunning() { if ((await tmux.listSessions())?.le
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'task';
 
-export interface NewTask { title: string; desc: string; agent: Agent; folder: string; worktree?: boolean; branch?: string; parent?: string; account?: string; model?: string; images?: NewTaskImage[] }
+export interface NewTask { title: string; desc: string; agent: Agent | 'auto'; folder: string; worktree?: boolean; branch?: string; parent?: string; account?: string; model?: string; images?: NewTaskImage[] }
 // An image pasted into the New task form: its media type and its bytes as base64.
 export interface NewTaskImage { type: string; data: string }
 const IMAGE_EXT: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' };
@@ -444,8 +445,17 @@ export async function startTask(n: NewTask): Promise<Task> {
   const folder = n.folder.replace(/^~(?=\/|$)/, HOME);
   if (!existsSync(folder)) throw new Error(`Folder does not exist: ${folder}`);
   if (n.model !== undefined && (typeof n.model !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(n.model))) throw new Error('Invalid model name.');
-  const acct = n.account && n.account !== 'auto' ? accounts.get(n.account) : (await accounts.pick(n.agent, runningOn)).account;
-  if (!acct || acct.agent !== n.agent) throw new Error('That account is for the other agent.');
+  const explicit = n.account && n.account !== 'auto' ? accounts.get(n.account) : undefined;
+  if (n.account && n.account !== 'auto' && !explicit) throw new Error(`Unknown account ${n.account}.`);
+  let acct: accounts.Account;
+  if (explicit) acct = explicit;
+  else if (n.agent === 'auto') {
+    accounts.refreshCodexUsage();
+    const inputs = await Promise.all(accounts.all().map(async account => ({ account, running: runningOn(account.id), status: accounts.unavailable(account, runningOn(account.id)) ? { signedIn: false, checkedAt: Date.now() } : await accounts.status(account) })));
+    acct = chooseAuto(inputs, `${n.title}\n${n.desc}`, machine.get().routingRules).account;
+  } else acct = (await accounts.pick(n.agent, runningOn)).account;
+  const agent = n.agent === 'auto' ? acct.agent : n.agent;
+  if (acct.agent !== agent) throw new Error('That account is for the other agent.');
   const why = accounts.unavailable(acct, runningOn(acct.id)); if (why) throw new Error(why);
   if (!(await accounts.status(acct)).signedIn) throw new Error(`Account ${acct.id} is not signed in.`);
   const images = checkImages(n.images);
@@ -460,8 +470,8 @@ export async function startTask(n: NewTask): Promise<Task> {
     try { branch = (await exec('git', ['-C', folder, 'rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim(); } catch { /* not a git repo */ }
   }
   const t = store.create({
-    id, num, title: n.title, agent: n.agent, status: 'working', cwd, folder, branch, worktree: !!n.worktree,
-    session: `task-${num}`, sessionId: n.agent === 'claude' ? randomUUID() : undefined,
+    id, num, title: n.title, agent, status: 'working', cwd, folder, branch, worktree: !!n.worktree,
+    session: `task-${num}`, sessionId: agent === 'claude' ? randomUUID() : undefined,
     statusSource: n.parent === 'controller' ? 'Started by the controller (tb new) just now.' : 'Started just now.', goal: n.title, desc: n.desc, parent: n.parent, account: acct.id, model: n.model,
   });
   await launch(t, attachImages(t, n.desc, images), false);

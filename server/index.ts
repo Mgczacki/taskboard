@@ -483,7 +483,7 @@ app.get('/api/info', (_req, res) => res.json(info()));
 app.patch('/api/info', async (req, res) => {
   if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Machine settings are changed on the dashboard.' });
   try {
-    const { name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, messageIncoming, messageOutgoing, checkPrivateNotes, confirmLowerControl, defaultMaxParallel, applyMaxParallelToAll } = req.body;
+    const { name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, messageIncoming, messageOutgoing, checkPrivateNotes, confirmLowerControl, defaultMaxParallel, newTaskDefaultAgent, applyMaxParallelToAll } = req.body;
     // A higher message level gives the user less control. The page asks first and then sends confirmLowerControl.
     const current = machine.get().messages;
     if (confirmLowerControl !== true && ((messageIncoming ?? 0) > current.incoming || (messageOutgoing ?? 0) > current.outgoing || (controllerCanApprovePermits === true && !machine.get().permissions.controllerCanApprovePermits)))
@@ -495,7 +495,7 @@ app.patch('/api/info', async (req, res) => {
       return res.status(400).json({ error: 'Pick a valid model for questions.' });
     if (reviewAccount && accounts.get(reviewAccount)?.agent !== 'claude') return res.status(400).json({ error: 'Pick a Claude Code account for auto review.' });
     if (defaultMaxParallel !== undefined) machine.checkMaxParallel(defaultMaxParallel); // refuse before anything is saved
-    machine.update({ name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, messageIncoming, messageOutgoing, checkPrivateNotes, defaultMaxParallel });
+    machine.update({ name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, messageIncoming, messageOutgoing, checkPrivateNotes, defaultMaxParallel, newTaskDefaultAgent });
     // the Settings page confirms first; running tasks keep running, only new starts check the new maximum
     if (applyMaxParallelToAll === true) accounts.setAllMaxParallel(machine.get().accounts.defaultMaxParallel);
     if (messageIncoming !== undefined || messageOutgoing !== undefined || checkPrivateNotes !== undefined) messageLevelsChanged();
@@ -530,14 +530,14 @@ app.post('/api/controller/account', async (req, res) => {
 app.post('/api/tasks', async (req, res) => {
   try {
     const { title, desc, agent, folder, worktree, branch, parent, account, model } = req.body;
-    if (!title || !folder || !['claude', 'codex', 'antigravity'].includes(agent)) throw new Error('title, folder and agent are required');
+    if (!title || !folder || !['claude', 'codex', 'antigravity', 'auto'].includes(agent)) throw new Error('title, folder and agent are required');
     const images = agents.checkImages(req.body.images);
-    await guarded(req, res, `start “${title}” (${agents.agentName(agent)})`, `Folder: ${folder}${worktree ? ` · new worktree ${branch || ''}` : ''}\nAccount: ${account && account !== 'auto' ? account : 'automatic'}\nModel: ${model || 'agent default'}\nPrompt: ${desc || title}${images.length ? `\nImages: ${images.length} attached` : ''}`, 'new',
+    await guarded(req, res, `start “${title}” (${agent === 'auto' ? 'Auto' : agents.agentName(agent)})`, `Folder: ${folder}${worktree ? ` · new worktree ${branch || ''}` : ''}\nAccount: ${account && account !== 'auto' ? account : 'automatic'}\nModel: ${model || 'agent default'}\nPrompt: ${desc || title}${images.length ? `\nImages: ${images.length} attached` : ''}`, 'new',
       async () => {
         const t = await agents.startTask({ title, desc: desc || title, agent, folder, worktree, branch, parent, account, model, images });
         if (req.body.group) { const g = groups.all().find(x => x.name === req.body.group || x.id === req.body.group) || groups.create(String(req.body.group)); groups.update(g.id, { tasks: [...g.tasks, t.id] }); }
         return view(t);
-      }, (t: any) => `Started #${t.num} ${t.title} in ${t.cwd}${req.body.group ? ` (group ${req.body.group})` : ''}`);
+      }, (t: any) => `Started #${t.num} ${t.title} with ${t.agent} on ${t.account} in ${t.cwd}${req.body.group ? ` (group ${req.body.group})` : ''}`);
   } catch (e) { fail(res, e); }
 });
 app.post('/api/tasks/:id/status', async (req, res) => {
@@ -620,6 +620,11 @@ app.get('/api/groups', (_req, res) => res.json(groups.all()));
 app.post('/api/groups', (req, res) => {
   const name = String(req.body.name || '').trim(); if (!name) return fail(res, 'name is required');
   res.json(groups.create(name, req.body.tasks || []));
+});
+app.post('/api/groups/move', (req, res) => {
+  const { taskId, fromId, toId } = req.body;
+  if (![taskId, fromId, toId].every(x => typeof x === 'string' && x)) return fail(res, 'taskId, fromId and toId are required');
+  try { res.json(groups.moveTask(taskId, fromId, toId)); } catch (e) { fail(res, e); }
 });
 app.patch('/api/groups/:id', (req, res) => {
   const { name, color, tasks, add, remove } = req.body; const g = groups.get(req.params.id); if (!g) return res.status(404).end();
