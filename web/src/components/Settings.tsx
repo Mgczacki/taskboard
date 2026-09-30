@@ -1,6 +1,6 @@
 // Settings: what the controller and other agents may do without asking, and this machine's controller.
 import { useEffect, useState } from 'react';
-import type { MachineInfo, MessageLevel, Task } from '../api';
+import type { MachineInfo, MessageLevel, PushRecord, Task } from '../api';
 import { api, autoReload, confirmEnd, setAutoReload, setConfirmEnd } from '../api';
 import { ControllerBox, MaxTasksInput, loadAccounts } from './Accounts';
 import { MessageLevels } from './MessageLevels';
@@ -19,8 +19,11 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
   const [applyAll, setApplyAll] = useState(false); // the confirmation for "Apply to all accounts" is open
   const [permitFolders, setPermitFolders] = useState('');
   const [confirmPermits, setConfirmPermits] = useState(false);
-  useEffect(() => { api.info().then(i => { setInfo(i); setRoutingRules(i.settings.routingRules || ''); setPermitFolders((i.settings.permitFolders || []).join('\n')); }).catch(e => setErr(String(e.message || e))); loadAccounts().then(setAccts).catch(() => {}); }, []);
-  const save = async (p: { routingRules?: string; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; permitFolders?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; checkPrivateNotes?: boolean; confirmLowerControl?: boolean; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean }) => {
+  const [pushes, setPushes] = useState<PushRecord[]>([]);
+  const [ownRepositories, setOwnRepositories] = useState('');
+  const [protectedBranches, setProtectedBranches] = useState('');
+  useEffect(() => { api.info().then(i => { setInfo(i); setRoutingRules(i.settings.routingRules || ''); setPermitFolders((i.settings.permitFolders || []).join('\n')); setOwnRepositories((i.settings.pushes?.ownRepositories || []).join('\n')); setProtectedBranches((i.settings.pushes?.protectedBranches || []).join('\n')); }).catch(e => setErr(String(e.message || e))); loadAccounts().then(setAccts).catch(() => {}); api.pushes().then(setPushes).catch(() => {}); }, []);
+  const save = async (p: { routingRules?: string; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; permitFolders?: string[]; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; checkPrivateNotes?: boolean; confirmLowerControl?: boolean; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean }) => {
     setBusy(true); try { setInfo(await api.updateInfo(p)); } catch (e) { setErr(String((e as Error).message || e)); } setBusy(false);
   };
   const ctl = tasks.find(t => t.role === 'controller');
@@ -37,6 +40,8 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
         <div className="sub">A change reaches the controller when it next restarts, which Taskboard does by itself as soon as the controller is between turns (its conversation continues). Releasing or rolling back Taskboard and stopping its server stay blocked for every agent.</div>
       </div>}
       {info && <div className="ctl-box"><label className="opt" htmlFor="permit-folders">Extra folders for permit steps</label><textarea id="permit-folders" rows={3} value={permitFolders} onChange={e => setPermitFolders(e.target.value)} placeholder="One absolute path per line" /><div className="sub">A permit card names the working folder. The command sandbox can read and write in these folders after you approve the card.</div><button className="btn" disabled={busy || permitFolders === (info.settings.permitFolders || []).join('\n')} onClick={() => void save({ permitFolders: permitFolders.split('\n').map(p => p.trim()).filter(Boolean) })}>Save folders</button></div>}
+      <h3 className="set-h">Pushes</h3>
+      {info && <div className="ctl-box"><label className="opt">Pushes of task branches to my own repositories <select disabled={busy} value={info.settings.pushes.taskBranches} onChange={e => void save({ pushTaskBranches: e.target.value as 'run' | 'ask' | 'never' })}><option value="run">Run without asking</option><option value="ask">Ask with a card</option><option value="never">Never</option></select></label><div className="sub">Taskboard checks the signed-in GitHub account. Protected branches and other repositories need a card.</div><label className="opt" htmlFor="own-repos">Other repositories I own, one owner/repository per line</label><textarea id="own-repos" rows={3} value={ownRepositories} onChange={e => setOwnRepositories(e.target.value)} /><button className="btn" disabled={busy} onClick={() => void save({ ownRepositories: ownRepositories.split('\n').map(s => s.trim()).filter(Boolean) })}>Save repositories</button><label className="opt" htmlFor="protected-branches">Extra protected branches, one per line</label><textarea id="protected-branches" rows={3} value={protectedBranches} onChange={e => setProtectedBranches(e.target.value)} /><button className="btn" disabled={busy} onClick={() => void save({ protectedBranches: protectedBranches.split('\n').map(s => s.trim()).filter(Boolean) })}>Save branches</button><div className="sub">Push history</div>{pushes.length ? pushes.map(item => <div key={item.id} className="sub">{new Date(item.at).toLocaleString()} · {tasks.find(t => t.id === item.taskId)?.title || item.taskId} · {item.remote}/{item.branch} · {item.oldHead?.slice(0, 8) || 'new'} → {item.newHead.slice(0, 8)} · {item.state}{item.result ? ` · ${item.result}` : ''}</div>) : <div className="sub">No pushes yet.</div>}</div>}
       {info && <MessageLevels info={info} busy={busy} save={save} />}
       <h3 className="set-h">Agents and accounts</h3>
       {info && <div className="ctl-box">
