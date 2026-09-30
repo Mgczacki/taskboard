@@ -2,17 +2,18 @@
 // The name tells you which machine a controller or a Taskboard server belongs to (for example in the Claude mobile app,
 // where the controller's Remote Control session is called "Taskboard controller · <name>").
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync, statSync, writeFileSync } from 'node:fs';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
-import { TB_DIR } from './config.ts';
+import { TB_DIR, TASKS_DIR } from './config.ts';
 
 export interface MachineSettings {
   name: string;
   routingRules: string;
   controller: { autostart: boolean; remoteControl: boolean; models: Record<'claude' | 'codex' | 'antigravity', string> };
   // actions through `tb` that act on other tasks (new, send, set aside, archive): run at once, or wait for Approve
-  permissions: { controllerNeedsApproval: boolean; agentsNeedApproval: boolean; trustWorkspaces: boolean; autoReview: boolean };
+  permissions: { controllerNeedsApproval: boolean; agentsNeedApproval: boolean; trustWorkspaces: boolean; autoReview: boolean; controllerCanApprovePermits: boolean };
+  permitFolders: string[];
   // questions about a task (server/ask.ts): the separate agent, account, and model
   ask: { agent: 'claude' | 'codex'; account: string; model: string };
   review: { account: string; model: string };
@@ -36,7 +37,7 @@ export const DEFAULT_ROUTING_RULES = `Use Claude Code or Codex for deep planning
 Use Antigravity for routine work. Do not use it for deep planning.
 When Claude's usage is high, use Codex for deep planning.
 Avoid accounts at their limit or running their maximum number of tasks.`;
-let settings: MachineSettings = { name: process.env.TASKBOARD_MACHINE_NAME || defaultName(), routingRules: DEFAULT_ROUTING_RULES, controller: { autostart: true, remoteControl: true, models: { claude: 'claude-sonnet-5-5', codex: '', antigravity: '' } }, permissions: { controllerNeedsApproval: false, agentsNeedApproval: true, trustWorkspaces: true, autoReview: true }, ask: { agent: 'claude', account: 'claude-default', model: 'sonnet' }, review: { account: 'claude-default', model: 'sonnet' }, messages: { incoming: 2, outgoing: 2 }, accounts: { defaultMaxParallel: 4 } };
+let settings: MachineSettings = { name: process.env.TASKBOARD_MACHINE_NAME || defaultName(), routingRules: DEFAULT_ROUTING_RULES, controller: { autostart: true, remoteControl: true, models: { claude: 'claude-sonnet-5-5', codex: '', antigravity: '' } }, permissions: { controllerNeedsApproval: false, agentsNeedApproval: true, trustWorkspaces: true, autoReview: true, controllerCanApprovePermits: false }, permitFolders: [], ask: { agent: 'claude', account: 'claude-default', model: 'sonnet' }, review: { account: 'claude-default', model: 'sonnet' }, messages: { incoming: 2, outgoing: 2 }, accounts: { defaultMaxParallel: 4 } };
 if (existsSync(FILE)) {
   const saved = JSON.parse(readFileSync(FILE, 'utf8'));
   // Before the levels, the Inbox checkbox "Allow my controller to approve ordinary communication" (mail.json
@@ -45,7 +46,7 @@ if (existsSync(FILE)) {
   if (!messages) {
     try { messages = { incoming: 2, outgoing: JSON.parse(readFileSync(join(TB_DIR, 'mail.json'), 'utf8')).controllerApproval === false ? 1 : 2 }; } catch { /* no mailbox yet */ }
   }
-  settings = { ...settings, ...saved, messages: { ...settings.messages, ...messages }, controller: { ...settings.controller, ...saved.controller, models: { ...settings.controller.models, ...saved.controller?.models } }, permissions: { ...settings.permissions, ...saved.permissions }, ask: { ...settings.ask, ...saved.ask }, review: { ...settings.review, ...saved.review }, accounts: { ...settings.accounts, ...saved.accounts } };
+  settings = { ...settings, ...saved, permitFolders: Array.isArray(saved.permitFolders) ? saved.permitFolders : [], messages: { ...settings.messages, ...messages }, controller: { ...settings.controller, ...saved.controller, models: { ...settings.controller.models, ...saved.controller?.models } }, permissions: { ...settings.permissions, ...saved.permissions }, ask: { ...settings.ask, ...saved.ask }, review: { ...settings.review, ...saved.review }, accounts: { ...settings.accounts, ...saved.accounts } };
   if (!saved.messages) writeFileSync(FILE, JSON.stringify(settings, null, 2)); // keep the migrated levels
 } else writeFileSync(FILE, JSON.stringify(settings, null, 2));
 
@@ -56,7 +57,7 @@ export function checkMaxParallel(value: unknown): number {
   return n;
 }
 export const controllerLabel = () => `Taskboard controller · ${settings.name}`;
-export function update(patch: { name?: string; routingRules?: string; autostart?: boolean; remoteControl?: boolean; controllerModels?: Partial<Record<'claude' | 'codex' | 'antigravity', string>>; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: number; messageOutgoing?: number; defaultMaxParallel?: number }) {
+export function update(patch: { name?: string; routingRules?: string; autostart?: boolean; remoteControl?: boolean; controllerModels?: Partial<Record<'claude' | 'codex' | 'antigravity', string>>; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; permitFolders?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: number; messageOutgoing?: number; defaultMaxParallel?: number }) {
   if (patch.routingRules !== undefined) {
     if (typeof patch.routingRules !== 'string') throw new Error('routingRules must be text.');
     settings.routingRules = patch.routingRules.trim().slice(0, 1000);
@@ -65,6 +66,16 @@ export function update(patch: { name?: string; routingRules?: string; autostart?
   if (patch.agentsNeedApproval !== undefined) settings.permissions.agentsNeedApproval = !!patch.agentsNeedApproval;
   if (patch.trustWorkspaces !== undefined) settings.permissions.trustWorkspaces = !!patch.trustWorkspaces;
   if (patch.autoReview !== undefined) settings.permissions.autoReview = !!patch.autoReview;
+  if (patch.controllerCanApprovePermits !== undefined) settings.permissions.controllerCanApprovePermits = !!patch.controllerCanApprovePermits;
+  if (patch.permitFolders !== undefined) {
+    if (!Array.isArray(patch.permitFolders) || patch.permitFolders.length > 8 || patch.permitFolders.some(p => typeof p !== 'string' || !p.startsWith('/') || p.length > 500 || !existsSync(p) || !statSync(p).isDirectory())) throw new Error('Give up to eight existing absolute folder paths.');
+    const roots = patch.permitFolders.map(p => realpathSync(p));
+    if (roots.some(root => [TB_DIR, TASKS_DIR].some(protectedPath => {
+      const protectedRoot = realpathSync(protectedPath);
+      return root === protectedRoot || protectedRoot.startsWith(root + '/') || root.startsWith(protectedRoot + '/');
+    }))) throw new Error('An extra folder cannot include Taskboard files or another task vault.');
+    settings.permitFolders = roots;
+  }
   for (const [key, value] of [['incoming', patch.messageIncoming], ['outgoing', patch.messageOutgoing]] as const) {
     if (value === undefined) continue;
     if (value !== 1 && value !== 2 && value !== 3) throw new Error('A message level must be 1, 2 or 3.');

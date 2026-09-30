@@ -36,6 +36,8 @@ import { attach } from './pty.ts';
 import * as store from './store.ts';
 import * as stats from './stats.ts';
 import * as taskGit from './task-git.ts';
+import * as permits from './permits.ts';
+import { controllerMailToken } from './mail/auth.ts';
 import * as tmux from './tmux.ts';
 
 const execFileP = promisify(execFile);
@@ -54,6 +56,23 @@ await new Promise<void>(resolve => {
 const other = acquire();
 if (other) { console.error(`Taskboard is already running here: process ${other.pid}, ${other.url} (started ${other.started}). Not starting a second server.`); process.exit(1); }
 store.loadAll();
+permits.load();
+const permitNotices = new Set<string>();
+permits.onChange(p => {
+  if (!['succeeded', 'failed', 'denied', 'expired', 'unknown'].includes(p.state) || permitNotices.has(p.id)) return;
+  permitNotices.add(p.id);
+  const task = store.get(p.taskId);
+  if (!task) return;
+  const lines = [`# Permit ${p.id}`, '', `Task: #${p.taskNum}`, `Result: ${p.state}`, `Approved by: ${p.approvedBy || 'Nobody'}`, '', ...p.steps.map((s, i) => `${i + 1}. ${s.state}: ${s.command}${s.error ? ` (${s.error})` : ''}`), '', `Read the full record with \`tb permit result ${p.id}\`.`];
+  try { docs.uploadSystem(task.id, `permit-${p.id}.md`, lines.join('\n') + '\n'); } catch (e) { console.error('could not send permit result', e); }
+  store.update(task.id, { status: 'unread', ask: '', statusSource: `Permit ${p.id} ${p.state}. The result is in the task inbox.` });
+});
+setInterval(() => {
+  for (const p of permits.all()) if (p.state === 'pending' && permits.expire(p)) {
+    const card = p.approvalId ? approvals.get(p.approvalId) : undefined;
+    if (card) approvals.close(card.id, 'expired', 'The permit expired.');
+  }
+}, 5000).unref();
 groups.load();
 // "open in another terminal" used to be a status; it is now only the openElsewhere field, and the status is read from the transcript
 for (const t of store.all()) if (t.openElsewhere && (t.status as string) === 'elsewhere' || t.openElsewhere && t.status === 'suspended')
@@ -93,7 +112,15 @@ app.post('/api/hooks/antigravity', async (req, res) => {
   const result = events.antigravityEvent(taskId, event, input);
   if (event === 'PreToolUse' && machine.get().permissions.autoReview) {
     const t = store.get(taskId);
-    if (t?.agent === 'antigravity') return res.json({ output: await agyReview.review(t, input) });
+    if (t?.agent === 'antigravity') {
+      const verdict = await agyReview.review(t, input);
+      const command = input.toolCall?.name === 'run_command' ? input.toolCall?.args?.CommandLine : null;
+      if (verdict.decision === 'deny' && typeof command === 'string') {
+        const id = String(input.toolCall?.id || createHash('sha256').update(JSON.stringify(input.toolCall)).digest('hex'));
+        events.recordCommandRefusal(t, { id, command, cwd: typeof input.toolCall?.args?.Cwd === 'string' ? input.toolCall.args.Cwd : t.cwd, reason: verdict.reason }, 'Antigravity');
+      }
+      return res.json({ output: verdict });
+    }
   }
   res.json(result);
 });
@@ -152,12 +179,96 @@ app.post('/api/approvals/:id/:decision', async (req, res, next) => {
   if (!['approve', 'deny'].includes(req.params.decision)) return next();
   // only you, from the dashboard, can decide
   if (!req.get('origin')) return res.status(403).json({ error: 'approvals are decided on the dashboard' });
+  const current = approvals.get(req.params.id);
+  if (req.params.decision === 'approve' && ['permit', 'tool-refusal'].includes(current?.action || ''))
+    return res.status(403).json({ error: 'Use the permit decision on the dashboard.' });
   const a = await approvals.decide(req.params.id, req.params.decision === 'approve'); a ? res.json(a) : res.status(404).end();
 });
 // Send a message card back with a comment: to the controller (incoming) or to the agent that wrote the draft (outgoing).
 app.post('/api/approvals/:id/return', async (req, res) => {
   if (!req.get('origin')) return res.status(403).json({ error: 'approvals are decided on the dashboard' });
   try { const a = await approvals.giveBack(req.params.id, String(req.body.comment || '')); a ? res.json(a) : res.status(404).end(); } catch (e) { fail(res, e); }
+});
+function createPermit(task: store.Task, reason: string, steps: permits.StepInput[], refusalId?: string) {
+    const actor = task.id;
+    const p = permits.request(task, reason, steps, refusalId);
+    const card = approvals.request({ actor, action: 'permit', summary: `run ${p.steps.length} approved step${p.steps.length === 1 ? '' : 's'}`,
+      detail: `Task: #${task.num} ${task.title}\nReason: ${p.reason}\n${p.steps.map((s, i) => `${i + 1}. ${s.command}\n   ${s.cwd} · ${s.timeoutSeconds} s · Network: ${s.network ? 'Yes' : 'No'}`).join('\n')}`,
+      payload: { permitId: p.id } }, async () => {
+        const result = await permits.run(p, task, 'user', p.decisionComment || '');
+        if (result.state !== 'succeeded') throw new Error(result.error || result.state);
+        return `Permit ${p.id} succeeded.`;
+      }, { onDeny: () => { permits.deny(p, 'Denied on the dashboard.'); } });
+    permits.attachApproval(p, card.id);
+    store.update(actor, { status: 'needs-you', ask: `Approve permit ${p.id}`, statusSource: 'Waiting for a permit decision on the dashboard.' });
+    return p;
+}
+app.post('/api/permits', (req, res) => {
+  const actor = req.get('x-tb-actor') || '';
+  const task = store.get(actor);
+  if (!task || task.role === 'controller') return res.status(403).json({ error: 'A task must request its own permit.' });
+  try {
+    const p = createPermit(task, req.body.reason, req.body.steps, req.body.refusalId);
+    res.status(202).json({ permit: p });
+  } catch (e) { fail(res, e); }
+});
+app.post('/api/refusals/:id/permit', (req, res) => {
+  if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Use the dashboard.' });
+  const card = approvals.get(req.params.id);
+  if (!card || card.action !== 'tool-refusal' || card.state !== 'pending') return res.status(404).end();
+  const t = store.get(card.actor); const refusal = card.payload as { id: string; command: string; cwd?: string; reason: string; canPermit?: boolean };
+  if (!t) return res.status(404).end();
+  if (!refusal.canPermit) return res.status(400).json({ error: 'This refused command cannot use a permit.' });
+  try {
+    const p = createPermit(t, `Run the command refused by ${t.agent}: ${refusal.reason}`, [{ command: refusal.command, cwd: refusal.cwd || t.cwd }], refusal.id);
+    approvals.close(card.id, 'expired', `Use permit ${p.id} for this command.`);
+    res.status(202).json({ permit: p });
+  } catch (e) { fail(res, e); }
+});
+app.get('/api/permits', (req, res) => {
+  if (!req.get('referer')?.startsWith(URL_BASE + '/') && !tokenOk(req)) return res.status(403).end();
+  const actor = req.get('x-tb-actor');
+  res.json(permits.all().filter(p => !actor || actor === 'controller' || p.taskId === actor));
+});
+app.get('/api/permits/:id', (req, res) => {
+  if (!req.get('referer')?.startsWith(URL_BASE + '/') && !tokenOk(req)) return res.status(403).end();
+  const p = permits.get(req.params.id);
+  if (!p || (req.get('x-tb-actor') && !['controller', p.taskId].includes(req.get('x-tb-actor')!))) return res.status(404).end();
+  permits.expire(p); res.json(p);
+});
+app.post('/api/permits/:id/decide', async (req, res) => {
+  if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Decide on the dashboard.' });
+  const p = permits.get(req.params.id); const task = p && store.get(p.taskId);
+  if (!p || !task) return res.status(404).end();
+  const card = p.approvalId ? approvals.get(p.approvalId) : undefined;
+  if (permits.expire(p)) { if (card) approvals.close(card.id, 'expired', 'The permit expired.'); return res.json(p); }
+  if (p.state !== 'pending') return res.json(p);
+  const comment = String(req.body.comment || '');
+  if (comment.length > 2000) return res.status(400).json({ error: 'Keep the comment under 2000 characters.' });
+  if (!card || card.state !== 'pending') return res.status(409).json({ error: 'The approval card is no longer pending.' });
+  if (req.body.approve !== true) { permits.deny(p, comment); await approvals.decide(card.id, false); return res.json(p); }
+  try {
+    p.decisionComment = comment;
+    await approvals.decide(card.id, true);
+    res.json(p);
+  } catch (e) { fail(res, e); }
+});
+app.post('/api/permits/:id/controller-approve', async (req, res) => {
+  if (req.get('x-tb-actor') !== 'controller' || req.get('x-tb-mail-controller') !== controllerMailToken)
+    return res.status(403).json({ error: 'Only the controller may use this route.' });
+  const p = permits.get(req.params.id); const task = p && store.get(p.taskId);
+  if (!p || !task) return res.status(404).end();
+  if (!permits.controllerAllowed(p, task, machine.get().permissions.controllerCanApprovePermits))
+    return res.status(403).json({ error: 'This permit needs a user decision.' });
+  const requestText = String(req.body.userRequest || '').trim();
+  if (!requestText || requestText.length > 2000) return res.status(400).json({ error: 'Give the user request that asked you to approve this permit.' });
+  const card = p.approvalId ? approvals.get(p.approvalId) : undefined;
+  if (!card || !approvals.startExternal(card.id)) return res.status(409).json({ error: 'The approval card is no longer pending.' });
+  try {
+    const result = await permits.run(p, task, 'controller', '', requestText);
+    approvals.finishExternal(card.id, result.state === 'succeeded' ? 'approved' : 'failed', `Controller decided permit ${p.id}: ${result.state}.`);
+    res.json(result);
+  } catch (e) { approvals.finishExternal(card.id, 'failed', String(e)); fail(res, e); }
 });
 // A release always needs a dashboard decision, even when other task actions run without approval.
 app.post('/api/release/request', (req, res) => {
@@ -241,10 +352,10 @@ app.get('/api/info', (_req, res) => res.json(info()));
 app.patch('/api/info', async (req, res) => {
   if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Machine settings are changed on the dashboard.' });
   try {
-    const { name, routingRules, autostart, remoteControl, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, askAgent, askAccount, askModel, reviewAccount, reviewModel, messageIncoming, messageOutgoing, confirmLowerControl, defaultMaxParallel, applyMaxParallelToAll } = req.body;
+    const { name, routingRules, autostart, remoteControl, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, permitFolders, askAgent, askAccount, askModel, reviewAccount, reviewModel, messageIncoming, messageOutgoing, confirmLowerControl, defaultMaxParallel, applyMaxParallelToAll } = req.body;
     // A higher message level gives the user less control. The page asks first and then sends confirmLowerControl.
     const current = machine.get().messages;
-    if (confirmLowerControl !== true && ((messageIncoming ?? 0) > current.incoming || (messageOutgoing ?? 0) > current.outgoing))
+    if (confirmLowerControl !== true && ((messageIncoming ?? 0) > current.incoming || (messageOutgoing ?? 0) > current.outgoing || (controllerCanApprovePermits === true && !machine.get().permissions.controllerCanApprovePermits)))
       return res.status(400).json({ error: 'Confirm on the Settings page before you give the controller more control over messages.' });
     if (askAgent && !['claude', 'codex'].includes(askAgent)) return res.status(400).json({ error: 'Antigravity does not have verified read-only Ask controls.' });
     const agent = askAgent || machine.get().ask.agent;
@@ -253,7 +364,7 @@ app.patch('/api/info', async (req, res) => {
       return res.status(400).json({ error: 'Pick a valid model for questions.' });
     if (reviewAccount && accounts.get(reviewAccount)?.agent !== 'claude') return res.status(400).json({ error: 'Pick a Claude Code account for auto review.' });
     if (defaultMaxParallel !== undefined) machine.checkMaxParallel(defaultMaxParallel); // refuse before anything is saved
-    machine.update({ name, routingRules, autostart, remoteControl, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, askAgent, askAccount, askModel, reviewAccount, reviewModel, messageIncoming, messageOutgoing, defaultMaxParallel });
+    machine.update({ name, routingRules, autostart, remoteControl, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, permitFolders, askAgent, askAccount, askModel, reviewAccount, reviewModel, messageIncoming, messageOutgoing, defaultMaxParallel });
     // the Settings page confirms first; running tasks keep running, only new starts check the new maximum
     if (applyMaxParallelToAll === true) accounts.setAllMaxParallel(machine.get().accounts.defaultMaxParallel);
     if (messageIncoming !== undefined || messageOutgoing !== undefined) messageLevelsChanged();

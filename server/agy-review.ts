@@ -77,6 +77,8 @@ export async function review(t: Task, input: any): Promise<Verdict> {
       return withTbAccess(command, { decision: 'allow', reason: 'Read-only Taskboard command.' });
     if (tbCommand(command) && (/^tb git (rebase|merge-request)$/.test(taskboardCommand(command)) || /^tb git commit\s+\S/.test(taskboardCommand(command))))
       return withTbAccess(command, { decision: 'allow', reason: 'Taskboard checks this task branch before it changes Git.' });
+    if (tbCommand(command) && /^tb permit (request|result|list)(?:\s|$)/.test(taskboardCommand(command)))
+      return withTbAccess(command, { decision: 'allow', reason: 'Taskboard checks permit requests and results.' });
   }
   if (localRead(t, call)) return { decision: 'allow', reason: 'Read inside the task folder.' };
   const settings = machine.get().review;
