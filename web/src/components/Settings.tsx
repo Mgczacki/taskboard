@@ -20,7 +20,7 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
   const [permitFolders, setPermitFolders] = useState('');
   const [confirmPermits, setConfirmPermits] = useState(false);
   useEffect(() => { api.info().then(i => { setInfo(i); setRoutingRules(i.settings.routingRules || ''); setPermitFolders((i.settings.permitFolders || []).join('\n')); }).catch(e => setErr(String(e.message || e))); loadAccounts().then(setAccts).catch(() => {}); }, []);
-  const save = async (p: { routingRules?: string; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; permitFolders?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; confirmLowerControl?: boolean; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean }) => {
+  const save = async (p: { routingRules?: string; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; permitFolders?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; checkPrivateNotes?: boolean; confirmLowerControl?: boolean; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean }) => {
     setBusy(true); try { setInfo(await api.updateInfo(p)); } catch (e) { setErr(String((e as Error).message || e)); } setBusy(false);
   };
   const ctl = tasks.find(t => t.role === 'controller');

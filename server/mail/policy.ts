@@ -7,7 +7,7 @@ import type { MailData, Message, Verdict } from './store.ts';
 
 export type Level = 1 | 2 | 3;
 export type Approver = 'user' | 'controller' | 'nobody';
-export interface Levels { incoming: Level; outgoing: Level }
+export interface Levels { incoming: Level; outgoing: Level; checkPrivateNotes?: boolean }
 
 const rank: Record<Verdict, number> = { communication: 0, uncertain: 1, 'action-request': 2, quarantine: 3 };
 // the most serious of two verdicts
@@ -44,7 +44,9 @@ export function outgoingApprover(verdict: Verdict | undefined, level: Level, tru
 export function approverFor(m: Message, data: Pick<MailData, 'trustedSenders'>, levels: Levels): Approver {
   if (m.dismissedAt || m.rejectedAt) return 'nobody';
   const verdict = combinedVerdict(m), trusted = isTrusted(m, data);
-  return m.direction === 'inbox' ? incomingApprover(verdict, levels.incoming, trusted) : outgoingApprover(verdict, levels.outgoing, trusted);
+  const answer = m.direction === 'inbox' ? incomingApprover(verdict, levels.incoming, trusted) : outgoingApprover(verdict, levels.outgoing, trusted);
+  if (m.direction === 'outbox' && levels.checkPrivateNotes !== false && answer === 'controller' && (m.quality?.state !== 'done' || m.quality.flags.length)) return 'user';
+  return answer;
 }
 
 // An approval still counts when it matches the current text and the level still permits the one who gave it.

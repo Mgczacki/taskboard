@@ -35,9 +35,9 @@ test('the Inbox checkbox that was off becomes outgoing level 1', () => {
         { env: { ...process.env, TASKBOARD_DIR: dir, TASKBOARD_VAULT: join(dir, 'vault') }, encoding: 'utf8' });
       return { levels: JSON.parse(out), saved: JSON.parse(readFileSync(join(dir, 'machine.json'), 'utf8')).messages };
     };
-    assert.deepEqual(read({ version: 1, messages: [], contacts: [], controllerApproval: false }), { levels: { incoming: 2, outgoing: 1 }, saved: { incoming: 2, outgoing: 1 } });
-    assert.deepEqual(read({ version: 1, messages: [], contacts: [], controllerApproval: true }).levels, { incoming: 2, outgoing: 2 });
-    assert.deepEqual(read(undefined).levels, { incoming: 2, outgoing: 2 });
+    assert.deepEqual(read({ version: 1, messages: [], contacts: [], controllerApproval: false }), { levels: { incoming: 2, outgoing: 1, checkPrivateNotes: true }, saved: { incoming: 2, outgoing: 1, checkPrivateNotes: true } });
+    assert.deepEqual(read({ version: 1, messages: [], contacts: [], controllerApproval: true }).levels, { incoming: 2, outgoing: 2, checkPrivateNotes: true });
+    assert.deepEqual(read(undefined).levels, { incoming: 2, outgoing: 2, checkPrivateNotes: true });
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -63,7 +63,7 @@ test('the server enforces the levels for approval, routing, sending and cards', 
     return {};
   } } as unknown as SlackClient;
   const app = express(); app.use(express.json());
-  const cleanup = mountMail(app, { background: false, slack, levels: () => levels, delivery: { get: () => undefined, track: (task, name) => ({ task, name, queued: '' }),
+  const cleanup = mountMail(app, { background: false, slack, levels: () => levels, qualityReview: async body => ({ state: 'done', flags: [], suggestedBody: body, at: new Date().toISOString() }), delivery: { get: () => undefined, track: (task, name) => ({ task, name, queued: '' }),
     deliver: async (task, name) => { notices.push({ task, text: readFileSync(join(tasks.taskDir(task), 'inbox', name), 'utf8') }); return { task, name, queued: '', deliveredAt: new Date().toISOString() }; } },
     review: async m => { if (verdictFor[m.subject] === undefined) throw new Error('model down'); return { verdict: verdictFor[m.subject], reason: 'Fixture', at: new Date().toISOString() }; } });
   const server = app.listen(0, '127.0.0.1'); await new Promise<void>(r => server.once('listening', r));

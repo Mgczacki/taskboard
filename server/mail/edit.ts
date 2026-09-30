@@ -28,7 +28,7 @@ const remove = (files: MailFile[]) => { for (const f of files) { try { unlinkSyn
 
 // input.files: the ids of the attachments to send, from the current draft or from a stored version (to restore one).
 // Taskboard makes the long body file (message.md) again from the new body.
-export function editDraft(store: MailStore, id: string, input: { subject: unknown; body: unknown; files: unknown; hash: unknown }) {
+export function editDraft(store: MailStore, id: string, input: { subject: unknown; body: unknown; files: unknown; hash: unknown }, by: 'user' | 'proposer' = 'user') {
   const subject = validText(input.subject, 200, 'subject'), body = validText(input.body, 262144, 'message body');
   const current = store.get(id);
   const blocked = editBlocked(current); if (blocked) throw new Error(blocked);
@@ -56,9 +56,9 @@ export function editDraft(store: MailStore, id: string, input: { subject: unknow
         author: userEdited(m) ? 'user' : m.proposedBy?.actor || 'user', replacedAt: at, review: m.review, approval: m.approval };
       const before = [...(m.files || []), ...(m.versions || []).flatMap(v => v.files)];
       m.versions = [...(m.versions || []), previous].slice(-VERSION_LIMIT);
-      m.edits = [...(m.edits || []), { at, by: 'user' as const, hash }].slice(-100);
+      if (by === 'user') m.edits = [...(m.edits || []), { at, by: 'user' as const, hash }].slice(-100);
       m.subject = subject; m.body = body; m.files = files; m.hash = hash;
-      delete m.review; delete m.approval; delete m.error;
+      delete m.review; delete m.quality; delete m.approval; delete m.error;
       // a file stays on disk while the draft or a stored version uses it
       const kept = new Set([...files, ...m.versions.flatMap(v => v.files)].map(f => f.path));
       unused = before.filter((f, i) => !kept.has(f.path) && before.findIndex(x => x.path === f.path) === i);

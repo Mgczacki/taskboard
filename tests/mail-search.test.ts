@@ -41,7 +41,7 @@ test('sandbox mail search uses a fake Slack client and creates no delivery', asy
     sends++; throw new Error('Unexpected Slack call');
   } } as unknown as SlackClient;
   const app = express(); app.use(express.json());
-  const cleanup = mountMail(app, { background: false, slack, review: async () => ({ verdict: 'communication', reason: 'Reviewed', at: new Date().toISOString() }) });
+  const cleanup = mountMail(app, { background: false, slack, qualityReview: async body => ({ state: 'done', flags: [], suggestedBody: body, at: new Date().toISOString() }), review: async () => ({ verdict: 'communication', reason: 'Reviewed', at: new Date().toISOString() }) });
   const server = app.listen(0, '127.0.0.1'); await new Promise<void>(resolve => server.once('listening', resolve));
   const base = `http://127.0.0.1:${(server.address() as { port: number }).port}`;
   const headers = { 'x-taskboard-token': TOKEN, 'x-tb-actor': 'search-task', 'content-type': 'application/json' };

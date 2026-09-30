@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import type { Approver } from './policy.ts';
+import type { QualityResult } from './quality.ts';
 
 export type Verdict = 'communication' | 'uncertain' | 'action-request' | 'quarantine';
 export interface MailFile { id: string; name: string; size: number; hash: string; path: string; slackId?: string; longBody?: boolean; review?: { verdict: Verdict; reason: string; at: string }; routed?: { task: string; path: string; at: string } }
@@ -11,6 +12,7 @@ export interface Message {
   proposedBy?: { actor: 'user' | 'controller' | 'task'; task?: string; agent?: string };
   created: string; updated: string; dismissedAt?: string;
   review?: { verdict: Verdict; reason: string; at: string };
+  quality?: QualityResult;
   approval?: { by: 'user' | 'controller'; at: string; hash: string };
   rejectedAt?: string; sendStartedAt?: string; sentAt?: string; slackTs?: string; slackChannel?: string;
   sending?: boolean; error?: string;

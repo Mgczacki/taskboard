@@ -19,7 +19,7 @@ export interface MachineSettings {
   review: { account: string; model: string };
   // messages between Taskboard users (server/mail/policy.ts): 1 the user approves every message, 2 the controller approves
   // messages that pass the check, 3 the controller also approves messages the check is unsure about
-  messages: { incoming: 1 | 2 | 3; outgoing: 1 | 2 | 3 };
+  messages: { incoming: 1 | 2 | 3; outgoing: 1 | 2 | 3; checkPrivateNotes: boolean };
   // the maximum number of running tasks for an account added later (server/accounts.ts create); the default accounts
   // keep their own maximum until the user applies this value to all accounts
   accounts: { defaultMaxParallel: number };
@@ -37,7 +37,7 @@ export const DEFAULT_ROUTING_RULES = `Use Claude Code or Codex for deep planning
 Use Antigravity for routine work. Do not use it for deep planning.
 When Claude's usage is high, use Codex for deep planning.
 Avoid accounts at their limit or running their maximum number of tasks.`;
-let settings: MachineSettings = { name: process.env.TASKBOARD_MACHINE_NAME || defaultName(), routingRules: DEFAULT_ROUTING_RULES, controller: { autostart: true, remoteControl: true, models: { claude: 'claude-sonnet-5-5', codex: '', antigravity: '' } }, permissions: { controllerNeedsApproval: false, agentsNeedApproval: true, trustWorkspaces: true, autoReview: true, controllerCanApprovePermits: false }, permitFolders: [], ask: { agent: 'claude', account: 'claude-default', model: 'sonnet' }, review: { account: 'claude-default', model: 'sonnet' }, messages: { incoming: 2, outgoing: 2 }, accounts: { defaultMaxParallel: 4 } };
+let settings: MachineSettings = { name: process.env.TASKBOARD_MACHINE_NAME || defaultName(), routingRules: DEFAULT_ROUTING_RULES, controller: { autostart: true, remoteControl: true, models: { claude: 'claude-sonnet-5-5', codex: '', antigravity: '' } }, permissions: { controllerNeedsApproval: false, agentsNeedApproval: true, trustWorkspaces: true, autoReview: true, controllerCanApprovePermits: false }, permitFolders: [], ask: { agent: 'claude', account: 'claude-default', model: 'sonnet' }, review: { account: 'claude-default', model: 'sonnet' }, messages: { incoming: 2, outgoing: 2, checkPrivateNotes: true }, accounts: { defaultMaxParallel: 4 } };
 if (existsSync(FILE)) {
   const saved = JSON.parse(readFileSync(FILE, 'utf8'));
   // Before the levels, the Inbox checkbox "Allow my controller to approve ordinary communication" (mail.json
@@ -57,7 +57,7 @@ export function checkMaxParallel(value: unknown): number {
   return n;
 }
 export const controllerLabel = () => `Taskboard controller · ${settings.name}`;
-export function update(patch: { name?: string; routingRules?: string; autostart?: boolean; remoteControl?: boolean; controllerModels?: Partial<Record<'claude' | 'codex' | 'antigravity', string>>; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; permitFolders?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: number; messageOutgoing?: number; defaultMaxParallel?: number }) {
+export function update(patch: { name?: string; routingRules?: string; autostart?: boolean; remoteControl?: boolean; controllerModels?: Partial<Record<'claude' | 'codex' | 'antigravity', string>>; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; permitFolders?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: number; messageOutgoing?: number; checkPrivateNotes?: boolean; defaultMaxParallel?: number }) {
   if (patch.routingRules !== undefined) {
     if (typeof patch.routingRules !== 'string') throw new Error('routingRules must be text.');
     settings.routingRules = patch.routingRules.trim().slice(0, 1000);
@@ -80,6 +80,10 @@ export function update(patch: { name?: string; routingRules?: string; autostart?
     if (value === undefined) continue;
     if (value !== 1 && value !== 2 && value !== 3) throw new Error('A message level must be 1, 2 or 3.');
     settings.messages[key] = value;
+  }
+  if (patch.checkPrivateNotes !== undefined) {
+    if (typeof patch.checkPrivateNotes !== 'boolean') throw new Error('The message check setting must be on or off.');
+    settings.messages.checkPrivateNotes = patch.checkPrivateNotes;
   }
   if (patch.defaultMaxParallel !== undefined) settings.accounts.defaultMaxParallel = checkMaxParallel(patch.defaultMaxParallel);
   if (patch.name !== undefined && patch.name.trim()) settings.name = patch.name.trim().slice(0, 40);

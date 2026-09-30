@@ -28,7 +28,7 @@ const LEVELS: Record<Direction, { label: string; options: [MessageLevel, string,
 
 export function MessageLevels({ info, busy, save }: {
   info: MachineInfo; busy: boolean;
-  save: (p: { messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; confirmLowerControl?: boolean }) => Promise<void>;
+  save: (p: { messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; checkPrivateNotes?: boolean; confirmLowerControl?: boolean }) => Promise<void>;
 }) {
   const levels = info.settings.messages;
   const [asking, setAsking] = useState<{ direction: Direction; level: MessageLevel } | null>(null);
@@ -69,6 +69,7 @@ export function MessageLevels({ info, busy, save }: {
         <div className="ap-a"><button className="btn primary" disabled={busy} onClick={() => void confirm()}>Change level</button><button className="btn" disabled={busy} onClick={() => setAsking(null)}>Cancel</button></div>
       </div>}
     </div>)}
+    <div className="ctl-box"><label className="opt"><input type="checkbox" disabled={busy} checked={levels.checkPrivateNotes} onChange={e => void save({ checkPrivateNotes: e.target.checked })} /> Check messages for private working notes</label><div className="sub">Taskboard marks text the reader may not need. A draft with flags waits for your approval.</div></div>
     <div className="ctl-box">
       <b>Trusted people</b>
       <div className="sub">A message from or to a person who is not on this list always needs your approval, at every level.</div>
