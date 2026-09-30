@@ -17,8 +17,10 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
   const [accts, setAccts] = useState<Account[]>([]);
   const [routingRules, setRoutingRules] = useState('');
   const [applyAll, setApplyAll] = useState(false); // the confirmation for "Apply to all accounts" is open
-  useEffect(() => { api.info().then(i => { setInfo(i); setRoutingRules(i.settings.routingRules || ''); }).catch(e => setErr(String(e.message || e))); loadAccounts().then(setAccts).catch(() => {}); }, []);
-  const save = async (p: { routingRules?: string; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; confirmLowerControl?: boolean; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean }) => {
+  const [permitFolders, setPermitFolders] = useState('');
+  const [confirmPermits, setConfirmPermits] = useState(false);
+  useEffect(() => { api.info().then(i => { setInfo(i); setRoutingRules(i.settings.routingRules || ''); setPermitFolders((i.settings.permitFolders || []).join('\n')); }).catch(e => setErr(String(e.message || e))); loadAccounts().then(setAccts).catch(() => {}); }, []);
+  const save = async (p: { routingRules?: string; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; permitFolders?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; confirmLowerControl?: boolean; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean }) => {
     setBusy(true); try { setInfo(await api.updateInfo(p)); } catch (e) { setErr(String((e as Error).message || e)); } setBusy(false);
   };
   const ctl = tasks.find(t => t.role === 'controller');
@@ -34,6 +36,7 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
         <label className="opt" title="Agents other than the controller that use tb to start or type into tasks"><input type="checkbox" disabled={busy} checked={!p.agentsNeedApproval} onChange={e => save({ agentsNeedApproval: !e.target.checked })} /> Other agents may start, type into, set aside and archive tasks without asking</label>
         <div className="sub">A change reaches the controller when it next restarts, which Taskboard does by itself as soon as the controller is between turns (its conversation continues). Releasing or rolling back Taskboard and stopping its server stay blocked for every agent.</div>
       </div>}
+      {info && <div className="ctl-box"><label className="opt" htmlFor="permit-folders">Extra folders for permit steps</label><textarea id="permit-folders" rows={3} value={permitFolders} onChange={e => setPermitFolders(e.target.value)} placeholder="One absolute path per line" /><div className="sub">A permit card names the working folder. The command sandbox can read and write in these folders after you approve the card.</div><button className="btn" disabled={busy || permitFolders === (info.settings.permitFolders || []).join('\n')} onClick={() => void save({ permitFolders: permitFolders.split('\n').map(p => p.trim()).filter(Boolean) })}>Save folders</button></div>}
       {info && <MessageLevels info={info} busy={busy} save={save} />}
       <h3 className="set-h">Agents and accounts</h3>
       {info && <div className="ctl-box">
@@ -48,6 +51,12 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
             <button className="btn" onClick={() => setApplyAll(false)}>Cancel</button>
           </div>}
         <div className="sub">Only you can change these maximums, on this page and the Accounts page. <code>tb</code>, agents and the controller cannot.</div>
+      </div>}
+      <h3 className="set-h">Permit requests</h3>
+      {p && <div className="ctl-box">
+        <label className="opt"><input type="checkbox" disabled={busy} checked={p.controllerCanApprovePermits} onChange={e => e.target.checked ? setConfirmPermits(true) : void save({ controllerCanApprovePermits: false })} /> The controller may approve low risk permit requests when you ask it</label>
+        <div className="sub">Taskboard checks every step. The controller cannot approve network use, deletion, Git history changes, or commands with unknown effects.</div>
+        {confirmPermits && <div className="banner" role="alert"><p>The controller can run permitted task commands without a dashboard decision. It must have your request first.</p><div className="ap-a"><button className="btn primary" disabled={busy} onClick={() => { void save({ controllerCanApprovePermits: true, confirmLowerControl: true }); setConfirmPermits(false); }}>Allow controller approval</button><button className="btn" onClick={() => setConfirmPermits(false)}>Cancel</button></div></div>}
       </div>}
       <h3 className="set-h">Task routing</h3>
       <div className="ctl-box">

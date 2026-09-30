@@ -73,6 +73,20 @@ export function upload(toTask: string, name: string, data: Buffer): string {
   return join(inboxDir(toTask), target);
 }
 
+export function uploadSystem(toTask: string, name: string, text: string): string {
+  mkdirSync(inboxDir(toTask), { recursive: true });
+  const target = basename(name).replace(/[^\w.\-]+/g, '_');
+  const path = join(inboxDir(toTask), target);
+  writeFileSync(path, text);
+  const sent = readJson<Record<string, unknown>>(sentFile(toTask), {});
+  sent[target] = { task: 'taskboard', at: new Date().toISOString(), orig: target };
+  writeFileSync(sentFile(toTask), JSON.stringify(sent, null, 2));
+  const pending = readJson<string[]>(pendingFile(toTask), []);
+  if (!pending.includes(target)) pending.push(target);
+  writeFileSync(pendingFile(toTask), JSON.stringify(pending));
+  return path;
+}
+
 export function removeFromInbox(taskId: string, name: string) {
   const f = join(inboxDir(taskId), basename(name)); if (existsSync(f)) unlinkSync(f);
 }

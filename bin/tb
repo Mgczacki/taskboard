@@ -15,6 +15,7 @@ async function call(method, path, body) {
   const r = await fetch(URL_BASE + path, { method, headers: { 'content-type': 'application/json', 'x-taskboard-token': token, 'x-tb-actor': process.env.TASK_ID || '', 'x-tb-mail-controller': process.env.TB_MAIL_CONTROLLER_TOKEN || '' }, body: body ? JSON.stringify(body) : undefined });
   const text = await r.text(); let data; try { data = JSON.parse(text); } catch { data = text; }
   if (!r.ok) { console.error(`tb: ${data && data.error ? data.error : r.statusText}`); if (data?.matches) console.error(JSON.stringify({ matches: data.matches, hasMore: data.hasMore }, null, 2)); process.exit(1); }
+  if (r.status === 202 && data.permit) return data;
   // 202: the action waits for the user's approval on the Taskboard dashboard
   if (r.status === 202 && data.approval) {
     console.log(`Waiting for the user to approve on the Taskboard dashboard: ${data.approval.summary}`);
@@ -63,6 +64,10 @@ const HELP = `tb — Taskboard command line
   tb mail                            account messages: run for command help
   tb review <file>                   ask the user to review a document from your outbox
   tb release-request                 ask the user to allow one Taskboard release on the dashboard
+  tb permit request --reason "text" --command "program args" [--cwd PATH] [--timeout 30] [--network]
+  tb permit request --reason "text" --steps steps.json
+  tb permit result ID [--wait] | tb permit list
+  tb permit approve ID --user-request "the user's exact request"   controller only
   tb git merge-request               ask the user to merge your worktree branch into local master
   tb git commit "<message>"           commit changes in your own worktree
   tb git rebase                       rebase your own branch onto local master
@@ -212,6 +217,42 @@ switch (cmd) {
   case 'release-request': {
     if (!process.env.TASK_ID) { console.error('tb release-request: run this inside a Taskboard task'); process.exit(1); }
     await call('POST', '/api/release/request', {});
+    break;
+  }
+  case 'permit': {
+    const action = rest[0];
+    if (action === 'request') {
+      if (!process.env.TASK_ID || process.env.TASK_ID === 'controller') { console.error('tb permit request: run this inside a task'); process.exit(1); }
+      const reason = flag('--reason');
+      const command = flag('--command');
+      const cwd = flag('--cwd');
+      const timeout = flag('--timeout');
+      const stepsFile = flag('--steps');
+      const network = has('--network');
+      if (!reason || (!!command === !!stepsFile)) { console.error('tb permit request: give --reason and exactly one of --command or --steps'); process.exit(1); }
+      if (stepsFile && (cwd || timeout || network)) { console.error('tb permit request: set the directory, timeout, and network flag in each step'); process.exit(1); }
+      const steps = stepsFile ? JSON.parse(readFileSync(resolve(stepsFile), 'utf8')).steps : [{ command, ...(cwd ? { cwd: resolve(cwd) } : {}), ...(timeout ? { timeoutSeconds: Number(timeout) } : {}), network }];
+      const result = await call('POST', '/api/permits', { reason, steps });
+      console.log(`Permit ${result.permit.id} waits on the dashboard. Read it with tb permit result ${result.permit.id} --wait.`);
+    } else if (action === 'result') {
+      const id = rest[1]; if (!id) { console.error('tb permit result: give an ID'); process.exit(1); }
+      const wait = has('--wait');
+      for (;;) {
+        const p = await call('GET', `/api/permits/${encodeURIComponent(id)}`);
+        if (!wait || !['pending', 'running'].includes(p.state)) {
+          console.log(JSON.stringify(p, null, 2));
+          if (wait && p.state !== 'succeeded') process.exitCode = 3;
+          break;
+        }
+        await sleep(2000);
+      }
+    } else if (action === 'list') console.log(JSON.stringify(await call('GET', '/api/permits'), null, 2));
+    else if (action === 'approve') {
+      if (process.env.TASK_ID !== 'controller') { console.error('tb permit approve: controller only'); process.exit(1); }
+      const userRequest = flag('--user-request');
+      if (!rest[1] || !userRequest) { console.error('tb permit approve ID --user-request "text"'); process.exit(1); }
+      console.log(JSON.stringify(await call('POST', `/api/permits/${encodeURIComponent(rest[1])}/controller-approve`, { userRequest }), null, 2));
+    } else { console.error('tb permit request | result | list | approve'); process.exit(1); }
     break;
   }
   case 'git': {

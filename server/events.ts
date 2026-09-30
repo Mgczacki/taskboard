@@ -1,6 +1,8 @@
 // Turning hook events into task status. Status must be trustworthy, so each rule is tied to a specific event.
 import { statSync } from 'node:fs';
 import { lastRefusal } from './claude-refusal.ts';
+import { lastCodexRefusal, type CommandRefusal } from './command-refusal.ts';
+import * as permits from './permits.ts';
 import * as approvals from './approvals.ts';
 import * as agents from './agents.ts';
 import * as docs from './docs.ts';
@@ -122,23 +124,8 @@ export function claudeEvent(taskId: string, input: any): { output?: unknown } {
       answerBeforeLog.delete(t.id);
       const refusal = t.role !== 'controller' && input.transcript_path ? lastRefusal(input.transcript_path, started) : null;
       if (refusal) {
-        const summary = `review refused command for task #${t.num}`;
-        if (!approvals.pendingFor(t.id).some(a => a.action === 'tool-refusal' && (a.payload as any)?.id === refusal.id)) {
-          approvals.request({ actor: t.id, action: 'tool-refusal', summary,
-            detail: `Command: ${refusal.command}\nReason: ${refusal.reason}`, payload: refusal },
-            async () => {
-              store.update(t.id, { status: 'idle', ask: '', statusSource: 'The user approved the refused command on the dashboard.' });
-              try {
-                await agents.sendTaskText(t, `The user approved retrying this command after reviewing the auto mode refusal: ${refusal.command}. The refusal reason was ${refusal.reason}. Recheck the current state before acting. Do not change the command's scope.`);
-              } catch (error) {
-                store.update(t.id, { status: 'needs-you', ask: `Open the task to answer the refusal: ${refusal.reason}.`, statusSource: 'The approved reply could not reach the task.' });
-                throw error;
-              }
-              return 'The user decision was sent to the task.';
-            });
-        }
-        store.update(t.id, { status: 'needs-you', ask: `Refused: ${refusal.command.slice(0, 140)}. Reason: ${refusal.reason}.`, now: firstPara(msg) || t.now,
-          statusSource: `Claude Code auto mode refused a tool call at ${clock()}. The user can review it on the dashboard.` });
+        recordCommandRefusal(t, refusal, 'Claude Code auto mode');
+        store.update(t.id, { now: firstPara(msg) || t.now });
         break;
       }
       store.update(t.id, { ...finishedStatus(t, msg), now: firstPara(msg) || t.now, statusSource: `Claude Code Stop hook at ${clock()}.` });
@@ -158,6 +145,8 @@ export function codexEvent(taskId: string, p: any) {
   if (p.type !== 'agent-turn-complete') return;
   accounts.clearLimited(t.account);
   const msg: string = p['last-assistant-message'] || '';
+  const codexRefusal = t.role !== 'controller' && t.transcript ? lastCodexRefusal(t.transcript, lastCodexEvent.get(t.id) || store.launchedAt.get(t.id) || 0) : null;
+  if (codexRefusal) { recordCommandRefusal(t, codexRefusal, 'Codex'); lastCodexEvent.set(t.id, Date.now()); return; }
   // Codex also runs a short internal turn to name the conversation; its reply is JSON like {"title": "..."}.
   if (/^\s*\{\s*"title"\s*:/.test(msg)) return;
   // Codex sends no event for /new. A turn that ends in another thread shows it, one turn late. The transcript is the old
@@ -169,6 +158,19 @@ export function codexEvent(taskId: string, p: any) {
   store.update(t.id, { sessionId: p['thread-id'] || t.sessionId, ...status, now: firstPara(msg) || t.now });
   if (msg) store.appendLog(t.id, { did: logDid(msg), wait: endsWithQuestion(msg) ? lastSentence(msg) : 'Nothing.' });
   lastCodexEvent.set(t.id, Date.now());
+}
+
+export function recordCommandRefusal(t: Task, refusal: CommandRefusal, source: string) {
+  if (t.role === 'controller' || !refusal.command || !refusal.id) return;
+  let canPermit = false;
+  try { permits.validate(t, [{ command: refusal.command, cwd: refusal.cwd || t.cwd }]); canPermit = true; } catch { /* show the refusal without a run button */ }
+  if (!approvals.hasRefusal(t.id, refusal.id)) {
+    approvals.request({ actor: t.id, action: 'tool-refusal', summary: `review refused command for task #${t.num}`,
+      detail: `Command: ${refusal.command}\nWorking directory: ${refusal.cwd || t.cwd}\nReason: ${refusal.reason}`, payload: { ...refusal, canPermit } },
+      async () => 'Use Allow this once to request a server run for this exact command.');
+  }
+  store.update(t.id, { status: 'needs-you', ask: `Refused: ${refusal.command.slice(0, 140)}. Reason: ${refusal.reason}.`,
+    statusSource: `${source} refused a command at ${clock()}. The user can review it on the dashboard.` });
 }
 
 export const lastCodexEvent = new Map<string, number>();
