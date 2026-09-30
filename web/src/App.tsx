@@ -243,7 +243,7 @@ export function App() {
         </div>
       </div>
       {selected.size > 0 && <SelectionBar ids={[...selected]} tasks={tasks} groups={groups} clear={() => setSelected(new Set())} newGroup={ids => setGroupPrompt(ids)} toast={toast} />}
-      {open && <TaskPanel key={open.id + (openTab || '')} t={open} tasks={tasks} initialTab={openTab} documentLink={documentLink?.task === open.id && !documentLink.reviewId ? documentLink : null} groups={groups} onClose={() => setOpenId(null)} onCanvas={showOnCanvas} />}
+      {open && <TaskPanel key={open.id + (openTab || '')} t={open} tasks={tasks} initialTab={openTab} documentLink={documentLink?.task === open.id && !documentLink.reviewId ? documentLink : null} groups={groups} onClose={() => setOpenId(null)} onCanvas={showOnCanvas} toast={toast} />}
       {newOpen && <NewTask groups={groups} initialGroup={page === 'canvas' && view.startsWith('g:') && groups.some(g => g.id === view.slice(2)) ? view.slice(2) : undefined} onClose={() => setNewOpen(false)} onStarted={(id, group) => {
         setNewOpen(false);
         if (page === 'canvas') { setView(group ? `g:${group}` : 'ungrouped'); setNewTaskToFocus(id); }

@@ -3,6 +3,8 @@ import { hasFiles, uploadAll } from '../drop';
 import type { Group, Task } from '../api';
 import { ATTN, ORDER, STATUS_LABEL, api, fmtWait, shortPath } from '../api';
 import { AgentChip, ByController, Dot, Kbd, MachineChip, ThreeLines, WhereChip } from './ui';
+import { planGroupDrop, planUngroup, type DropPlan } from '../groupMove';
+import { runGroupChange, type Toast } from '../groupActions';
 
 const sortTasks = (s: string) => (a: Task, b: Task) => ATTN.includes(s as Task['status']) ? b.waitMin - a.waitMin : Date.parse(b.updated) - Date.parse(a.updated);
 const GroupDots = ({ t, groups }: { t: Task; groups: Group[] }) => { const gs = groups.filter(g => g.tasks.includes(t.id)); return gs.length ? <span className="gdots" title={gs.map(g => g.name).join(', ')}>{gs.map(g => <i key={g.id} style={{ background: g.color }} />)}</span> : null; };
@@ -39,16 +41,17 @@ const COLS: [string, string, Task['status'][]][] = [
 ];
 const MANUAL = ['idle', 'parked'];
 
-export function BoardView({ tasks, groups, open, openDocs, selected, toggleSel, newGroup, toast }: { tasks: Task[]; groups: Group[]; open: (id: string) => void; openDocs: (id: string) => void; selected: Set<string>; toggleSel: (id: string) => void; newGroup: () => void; toast: (s: string) => void }) {
+export function BoardView({ tasks, groups, open, openDocs, selected, toggleSel, newGroup, toast }: { tasks: Task[]; groups: Group[]; open: (id: string) => void; openDocs: (id: string) => void; selected: Set<string>; toggleSel: (id: string) => void; newGroup: () => void; toast: Toast }) {
   const [by, setBy] = useState<'status' | 'groups'>(() => (localStorage.getItem('tb-board-by') as 'status' | 'groups') || 'status');
-  const [over, setOver] = useState<string | null>(null);
+  const [over, setOver] = useState<{ key: string; refused?: string } | null>(null); // the column under a dragged card
+  const [dragging, setDragging] = useState<{ id: string; from: string } | null>(null); // dragover events cannot read the dragged data
   const setMode = (m: 'status' | 'groups') => { setBy(m); localStorage.setItem('tb-board-by', m); };
   const live = tasks.filter(t => t.status !== 'archived');
   if (!tasks.length) return <Empty />;
 
   const card = (t: Task, from: string) => (
     <div className={`card ${t.status} ${selected.has(t.id) ? 'selected' : ''}`} key={t.id} draggable
-      onDragStart={e => { e.dataTransfer.setData('text/plain', `${t.id}|${from}`); }}
+      onDragStart={e => { e.dataTransfer.setData('text/plain', `${t.id}|${from}`); setDragging({ id: t.id, from }); }} onDragEnd={() => { setDragging(null); setOver(null); }}
       onDragOver={e => { if (hasFiles(e) && !t.machine) { e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.add('filedrop'); } }}
       onDragLeave={e => e.currentTarget.classList.remove('filedrop')}
       onDrop={e => { if (!hasFiles(e) || t.machine) return; e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.remove('filedrop'); uploadAll(t.id, e.dataTransfer.files, toast); }}
@@ -58,29 +61,44 @@ export function BoardView({ tasks, groups, open, openDocs, selected, toggleSel, 
       {['stopped', 'review'].includes(t.status) && <div className={`st-label ${t.status}`} style={{ marginTop: 6 }}>{STATUS_LABEL[t.status]}</div>}
       <ThreeLines t={t} />
       <div className="foot"><span className="sp" /><span className="io" onClick={e => { e.stopPropagation(); openDocs(t.id); }} title="Inbox and outbox">in {t.docs?.inbox || 0} · out {t.docs?.outbox || 0}</span></div>
-      {from.startsWith('g:') && <button className="rm" onClick={() => api.updateGroup(from.slice(2), { remove: t.id })} title="Remove from this group">remove</button>}
+      {from.startsWith('g:') && <button className="rm" onClick={() => { const p = planUngroup(t.id, t.num, groups, from.slice(2)); if ('change' in p) runGroupChange(p.change, toast); }} title={`Remove from ${groups.find(g => 'g:' + g.id === from)?.name}. The agent keeps running.`}>remove</button>}
     </div>
   );
+  // Groups mode: a group column adds the card's task to that group (⌥ moves it from the card's column). The Ungrouped
+  // column takes it out of the card's group column. groupMove.ts decides, and says why when a column refuses.
+  const plan = (col: string, id: string, from: string, alt: boolean): DropPlan => {
+    const num = tasks.find(t => t.id === id)?.num ?? '?', fromGroup = from.startsWith('g:') ? from.slice(2) : undefined;
+    return col === 'none' ? planUngroup(id, num, groups, fromGroup) : planGroupDrop(id, num, groups, col.slice(2), fromGroup, alt);
+  };
   const drop = (col: string) => async (e: React.DragEvent) => {
-    e.preventDefault(); setOver(null);
+    e.preventDefault(); setOver(null); setDragging(null);
     const [id, from] = e.dataTransfer.getData('text/plain').split('|'); if (!id || col === from) return;
     if (by === 'status') {
       if (!MANUAL.includes(col)) { toast('That column is set by the agents themselves. You can drag cards into Idle or Parked.'); return; }
       await api.setStatus(id, col);
     } else {
-      if (col === 'none') { for (const g of groups.filter(g => g.tasks.includes(id))) await api.updateGroup(g.id, { remove: id }); return; }
-      const g = groups.find(x => 'g:' + x.id === col)!;
-      await api.updateGroup(g.id, { add: id });
-      if (e.altKey && from.startsWith('g:')) await api.updateGroup(from.slice(2), { remove: id });
-      toast(`${e.altKey ? 'Moved' : 'Added'} to ${g.name}`);
+      const p = plan(col, id, from, e.altKey);
+      if ('change' in p) runGroupChange(p.change, toast); else toast(p.refused + '.');
     }
   };
-  const colProps = (k: string) => ({ className: `col ${over === k ? 'drop' : ''}`, onDragOver: (e: React.DragEvent) => { e.preventDefault(); setOver(k); }, onDragLeave: () => setOver(null), onDrop: drop(k) });
+  const dragOver = (k: string) => (e: React.DragEvent) => {
+    if (by === 'groups' && dragging && !hasFiles(e)) {
+      if (k === dragging.from) { setOver(null); return; } // the card's own column: no drop and no warning
+      const p = plan(k, dragging.id, dragging.from, e.altKey);
+      if ('refused' in p) { e.dataTransfer.dropEffect = 'none'; setOver(o => o?.key === k && o.refused === p.refused ? o : { key: k, refused: p.refused }); return; }
+      e.dataTransfer.dropEffect = e.altKey ? 'move' : 'copy';
+    }
+    e.preventDefault(); setOver(o => o?.key === k && !o.refused ? o : { key: k });
+  };
+  const colProps = (k: string) => ({
+    className: `col ${over?.key === k ? (over.refused ? 'nodrop' : 'drop') : ''}`, title: over?.key === k && over.refused ? `Cannot drop here: ${over.refused}.` : undefined,
+    onDragOver: dragOver(k), onDragLeave: (e: React.DragEvent) => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setOver(null); }, onDrop: drop(k),
+  });
 
   return (
     <div className="boardwrap">
       <div className="boardbar"><span className="lbl">Columns</span><div className="seg"><button className={by === 'status' ? 'on' : ''} onClick={() => setMode('status')}>Status</button><button className={by === 'groups' ? 'on' : ''} onClick={() => setMode('groups')}>Groups</button></div>
-        <span className="lbl">{by === 'groups' ? 'Drag a card onto a group to add it; hold ⌥ to move it. ⌘-click to select several.' : 'Agents move cards between Needs you, Working and Done. You can drag into Idle and Parked.'}</span></div>
+        <span className="lbl">{by === 'groups' ? 'Drag a card onto a group to add it; hold ⌥ to move it. Drag it onto Ungrouped to take it out of its group. ⌘-click to select several.' : 'Agents move cards between Needs you, Working and Done. You can drag into Idle and Parked.'}</span></div>
       <div className="cols">
         {by === 'status' ? COLS.map(([k, label, sts]) => {
           const list = tasks.filter(t => sts.includes(t.status)).sort(sortTasks(k));
@@ -90,7 +108,7 @@ export function BoardView({ tasks, groups, open, openDocs, selected, toggleSel, 
             const list = g.tasks.map(id => live.find(t => t.id === id)).filter(Boolean) as Task[];
             return <div key={g.id} {...colProps('g:' + g.id)}><h3 style={{ borderBottom: `2px solid ${g.color}` }}><span className="dot" style={{ background: g.color, borderRadius: 3 }} />{g.name}<span className="c">{list.length}</span></h3><div className="cards">{list.sort(sortTasks('')).map(t => card(t, 'g:' + g.id))}</div></div>;
           })}
-          {(() => { const none = live.filter(t => !groups.some(g => g.tasks.includes(t.id))); return <div {...colProps('none')}><h3><span className="dot idle" />Not in any group<span className="c">{none.length}</span></h3><div className="cards">{none.map(t => card(t, 'none'))}</div></div>; })()}
+          {(() => { const none = live.filter(t => !groups.some(g => g.tasks.includes(t.id))); return <div {...colProps('none')}><h3><span className="dot idle" />Ungrouped<span className="c">{none.length}</span></h3><div className="cards">{none.map(t => card(t, 'none'))}</div></div>; })()}
           <div className="col newcol" onClick={newGroup}>＋ New group</div>
         </>}
       </div>

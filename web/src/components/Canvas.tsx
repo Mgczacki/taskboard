@@ -9,6 +9,8 @@ import { Terminal, terminalDebugRecord } from './Terminal';
 import { hit as key, hitIn, keyLabel, keysText, useKeymap } from '../keys';
 import { AskPanel } from './Ask';
 import { archiveAll, archiveAndDelete, archivePlan, restoreAll, restoreGroupAndTasks, type ArchiveResult, type ArchiveTarget } from '../groupArchive';
+import { dropHint, planGroupDrop, planUngroup, type DropPlan } from '../groupMove';
+import { runGroupChange } from '../groupActions';
 
 type Layout = 'columns' | 'grid' | 'rows';
 const MINW = 640;
@@ -53,7 +55,7 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
   const [frozen, setFrozen] = useState<string[] | null>(null);     // status-based views do not move windows on their own
   const [extra, setExtra] = useState<string[]>([]);
   const [hidden, setHidden] = useState<string[]>([]);              // ungrouped tasks removed from the Ungrouped view with ✕
-  const [dropTab, setDropTab] = useState<string | null>(null);
+  const [dropTab, setDropTab] = useState<{ key: string; refused?: string } | null>(null); // the tab under a dragged window: g:<id> or ungrouped
   const [reveal, setReveal] = useState(false);
   const [ending, setEnding] = useState<string | null>(null); // the window whose header asks "End & archive?"
   const [archiving, setArchiving] = useState<{ group: Group; deleteGroup: boolean } | null>(null);
@@ -107,7 +109,7 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
 
   const addToView = (id: string) => { if (group) api.updateGroup(group.id, { add: id }); else { setExtra(e => [...e, id]); setHidden(h => h.filter(x => x !== id)); } };
   const removeFromView = (id: string) => {
-    if (group) { api.updateGroup(group.id, { remove: id }); toast(`Removed from ${group.name}. The agent keeps running.`); }
+    if (group) { const p = planUngroup(id, tasks.find(t => t.id === id)?.num ?? '?', groups, group.id); if ('change' in p) runGroupChange(p.change, toast); }
     else if (view === 'ungrouped') { setHidden(h => [...h, id]); setExtra(e => e.filter(x => x !== id)); }
     else if (view.startsWith('t:')) setView('t:' + view.slice(2).split(',').filter(x => x !== id).join(','));
     else { setFrozen(f => (f || []).filter(x => x !== id)); setExtra(e => e.filter(x => x !== id)); }
@@ -214,26 +216,46 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
     addEventListener('mousemove', on); return () => removeEventListener('mousemove', on);
   }, [focusMode, menu]);
 
-  // drag a window header onto a tab to add that task to the group
+  // Drag a window header onto a tab. A group tab adds the task to that group. With ⌥ held it moves the task there
+  // from the group of the current tab. The Ungrouped tab takes the task out of the group of the current tab, or out of
+  // every group when the current tab is not a group. A tab that refuses the drop shows why (groupMove.ts).
   const startDrag = (e: React.PointerEvent, id: string) => {
     if ((e.target as HTMLElement).closest('button')) return;
     if (e.metaKey || e.shiftKey) { toggleSel(id); return; }
-    const sx = e.clientX, sy = e.clientY; let moving = false, target: string | null = null;
+    const num = tasks.find(t => t.id === id)?.num ?? '?';
+    const fromGroup = group?.id;
+    const sx = e.clientX, sy = e.clientY; let moving = false, key: string | null = null, plan: DropPlan | null = null, x = sx, y = sy, alt = e.altKey;
     const ghost = document.createElement('div');
+    const idle = `#${num} → drop on a group tab${fromGroup ? ` (⌥ moves it from ${group!.name})` : ''} or on Ungrouped`;
+    const show = () => {
+      const tab = (document.elementFromPoint(x, y) as HTMLElement | null)?.closest('[data-drop]') as HTMLElement | null;
+      key = tab ? tab.dataset.drop! : null;
+      plan = !key ? null : key === 'ungrouped' ? planUngroup(id, num, groups, fromGroup) : planGroupDrop(id, num, groups, key.slice(2), fromGroup, alt);
+      const refused = plan && 'refused' in plan ? plan.refused : undefined;
+      ghost.textContent = !plan ? idle : 'change' in plan ? `#${num} → ${dropHint(plan.change)}` : `⊘ ${refused}`;
+      ghost.classList.toggle('refused', !!refused);
+      setDropTab(key ? { key, refused } : null);
+    };
     const mv = (ev: PointerEvent) => {
       if (!moving && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 8) return;
-      if (!moving) { moving = true; ghost.className = 'drag-ghost'; ghost.textContent = '#' + (tasks.find(t => t.id === id)?.num ?? '') + ' → drop on a group tab'; document.body.appendChild(ghost); }
-      ghost.style.left = ev.clientX + 12 + 'px'; ghost.style.top = ev.clientY + 12 + 'px';
-      const tab = (document.elementFromPoint(ev.clientX, ev.clientY) as HTMLElement | null)?.closest('[data-gtab]') as HTMLElement | null;
-      target = tab ? tab.dataset.gtab! : null; setDropTab(target);
+      if (!moving) { moving = true; ghost.className = 'drag-ghost'; document.body.appendChild(ghost); }
+      x = ev.clientX; y = ev.clientY; alt = ev.altKey;
+      ghost.style.left = x + 12 + 'px'; ghost.style.top = y + 12 + 'px';
+      show();
     };
-    const up = () => {
-      removeEventListener('pointermove', mv); removeEventListener('pointerup', up); ghost.remove(); setDropTab(null);
-      if (moving && target) { const g = groups.find(x => x.id === target)!; if (g.tasks.includes(id)) toast(`Already in ${g.name}`); else { api.updateGroup(g.id, { add: id }); toast(`Added to ${g.name}`); } }
+    const altKey = (ev: KeyboardEvent) => { if (ev.key === 'Alt' && moving) { alt = ev.type === 'keydown'; show(); } };
+    const up = (ev: PointerEvent) => {
+      removeEventListener('pointermove', mv); removeEventListener('pointerup', up); removeEventListener('keydown', altKey, true); removeEventListener('keyup', altKey, true);
+      ghost.remove(); setDropTab(null);
+      if (!moving || !key) return;
+      alt = ev.altKey; show(); setDropTab(null);
+      if (plan && 'change' in plan) runGroupChange(plan.change, toast); else if (plan) toast(plan.refused + '.');
     };
-    addEventListener('pointermove', mv); addEventListener('pointerup', up);
+    addEventListener('pointermove', mv); addEventListener('pointerup', up); addEventListener('keydown', altKey, true); addEventListener('keyup', altKey, true);
   };
 
+  const dropClass = (k: string) => dropTab?.key === k ? (dropTab.refused ? 'nodrop' : 'drop') : '';
+  const dropTitle = (k: string) => dropTab?.key === k && dropTab.refused ? `Cannot drop here: ${dropTab.refused}.` : undefined;
   const off = tasks.filter(t => !ids.includes(t.id) && live(t));
   const focusedTask = tasks.find(t => t.id === focused);
   const waiting = (list: string[]) => list.filter(id => ATTN.includes(tasks.find(t => t.id === id)?.status as Task['status'])).length;
@@ -242,14 +264,14 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
     <div className={`canvas ${focusMode ? 'focus-mode' : ''} ${reveal ? 'reveal' : ''}`}>
       {!solo && <div className="gtabs">
         {groups.map(g => { const l = g.tasks.filter(id => live(tasks.find(t => t.id === id))); const w = waiting(l); return (
-          <div key={g.id} data-gtab={g.id} className={`gtab ${view === 'g:' + g.id ? 'on' : ''} ${dropTab === g.id ? 'drop' : ''}`} style={{ '--gc': g.color } as React.CSSProperties}
-            onClick={e => { if (!(e.target as HTMLElement).closest('button,input')) setView('g:' + g.id); }} onDoubleClick={() => setMenu({ group: g.id })} title={`Drop a window here to add it. Double-click for options. Next / previous tab: ${keysText('nextView')} / ${keysText('prevView')}`}>
+          <div key={g.id} data-drop={'g:' + g.id} className={`gtab ${view === 'g:' + g.id ? 'on' : ''} ${dropClass('g:' + g.id)}`} style={{ '--gc': g.color } as React.CSSProperties}
+            onClick={e => { if (!(e.target as HTMLElement).closest('button,input')) setView('g:' + g.id); }} onDoubleClick={() => setMenu({ group: g.id })} title={dropTitle('g:' + g.id) ?? `Drop a window here to add it. Hold ⌥ to move it from the current group. Double-click for options. Next / previous tab: ${keysText('nextView')} / ${keysText('prevView')}`}>
             <span className="gdot" /><span className="gname">{g.name}</span><span className="gn">{l.length}</span>{w > 0 && <span className="gw">● {w}</span>}
             <span className="gact"><button title="Open in its own window" onClick={() => openInWindow('g:' + g.id)}>↗</button><button title="Rename, colour, delete" onClick={() => setMenu({ group: g.id })}>⋯</button></span>
           </div>); })}
         {(() => { const l = ungrouped.filter(id => live(tasks.find(t => t.id === id))); const w = waiting(l); return (
-          <div className={`gtab ${view === 'ungrouped' ? 'on' : ''}`} style={{ '--gc': UNGROUPED_COLOR } as React.CSSProperties}
-            onClick={e => { if (!(e.target as HTMLElement).closest('button')) setView('ungrouped'); }} title="Every task that is not in a group">
+          <div data-drop="ungrouped" className={`gtab ${view === 'ungrouped' ? 'on' : ''} ${dropClass('ungrouped')}`} style={{ '--gc': UNGROUPED_COLOR } as React.CSSProperties}
+            onClick={e => { if (!(e.target as HTMLElement).closest('button')) setView('ungrouped'); }} title={dropTitle('ungrouped') ?? 'Every task that is not in a group. Drop a window here to take it out of the current group (out of every group from Live or Needs you).'}>
             <span className="gdot" /><span className="gname">Ungrouped</span><span className="gn">{l.length}</span>{w > 0 && <span className="gw">● {w}</span>}
             <span className="gact"><button title="Open in its own window" onClick={() => openInWindow('ungrouped')}>↗</button></span>
           </div>); })()}
@@ -299,7 +321,7 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
               <button className="b" title="Task panel" onClick={() => openPanel(t.id)}>☰</button>
               <button className="b" title="Copy the terminal debug record: recent output sizes and escape sequences, without text. Use it when the terminal stops drawing." onClick={() => copyDebugRecord(t)}>⚙</button>
               {t.role !== 'controller' && <button className="b" title={t.openElsewhere ? 'End & archive: archives the task; the session in the other terminal keeps running' : 'End & archive: ends the tmux session and archives the task'} onClick={() => confirmEnd() ? setEnding(t.id) : endTask(t)}>⏻</button>}
-              <button className="b" title={`Remove from this view (${keysText('removeWindow')}). The agent keeps running.`} onClick={() => removeFromView(t.id)}>✕</button></>}
+              <button className="b" title={`${group ? `Remove from ${group.name}` : 'Remove from this view'} (${keysText('removeWindow')}). The agent keeps running.`} onClick={() => removeFromView(t.id)}>✕</button></>}
             </div>
             <div className="wb">{asking.has(t.id) && <AskPanel task={t} close={() => toggleAsk(t.id)} />}{t.openElsewhere ? <div className="empty" style={{ padding: 16 }}>Running in another terminal ({t.openElsewhere?.tty}). <button className="btn" onClick={() => openPanel(t.id)}>Options…</button></div>
               : t.status === 'suspended' ? <div className="empty" style={{ padding: 16 }}>Suspended. <button className="btn" onClick={() => openPanel(t.id)}>Resume…</button></div>
