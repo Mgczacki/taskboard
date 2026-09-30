@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 // Taskboard server: tasks API, hook endpoints, live terminals and a change stream for the UI.
 // Listens on 127.0.0.1 only. Browser requests must come from the Taskboard UI's own origin;
@@ -36,6 +36,7 @@ import { attach } from './pty.ts';
 import * as store from './store.ts';
 import * as stats from './stats.ts';
 import * as taskGit from './task-git.ts';
+import * as push from './push.ts';
 import * as permits from './permits.ts';
 import { controllerMailToken } from './mail/auth.ts';
 import * as tmux from './tmux.ts';
@@ -57,6 +58,13 @@ const other = acquire();
 if (other) { console.error(`Taskboard is already running here: process ${other.pid}, ${other.url} (started ${other.started}). Not starting a second server.`); process.exit(1); }
 store.loadAll();
 permits.load();
+for (const p of push.allPushes()) if (p.state === 'pending' && p.approvalId) {
+  const card = approvals.get(p.approvalId);
+  if (card?.state !== 'pending') {
+    push.finishPush(p, card?.state === 'unknown' ? 'unknown' : 'expired', card?.result || 'The push card expired after Taskboard restarted.');
+    const task = store.get(p.taskId); if (task) pushNotice(task, p);
+  }
+}
 const permitNotices = new Set<string>();
 permits.onChange(p => {
   if (!['succeeded', 'failed', 'denied', 'expired', 'unknown'].includes(p.state) || permitNotices.has(p.id)) return;
@@ -71,6 +79,14 @@ setInterval(() => {
   for (const p of permits.all()) if (p.state === 'pending' && permits.expire(p)) {
     const card = p.approvalId ? approvals.get(p.approvalId) : undefined;
     if (card) approvals.close(card.id, 'expired', 'The permit expired.');
+  }
+  for (const p of push.allPushes()) if (p.state === 'pending' && p.approvalId) {
+    const card = approvals.get(p.approvalId);
+    if (card?.state === 'pending' && push.pushExpired(card.created)) {
+      push.finishPush(p, 'expired', 'The push request expired.');
+      approvals.close(card.id, 'expired', 'The push request expired.');
+      const task = store.get(p.taskId); if (task) pushNotice(task, p);
+    }
   }
 }, 5000).unref();
 groups.load();
@@ -180,8 +196,8 @@ app.post('/api/approvals/:id/:decision', async (req, res, next) => {
   // only you, from the dashboard, can decide
   if (!req.get('origin')) return res.status(403).json({ error: 'approvals are decided on the dashboard' });
   const current = approvals.get(req.params.id);
-  if (req.params.decision === 'approve' && ['permit', 'tool-refusal'].includes(current?.action || ''))
-    return res.status(403).json({ error: 'Use the permit decision on the dashboard.' });
+  if (current?.action === 'git-push' || (req.params.decision === 'approve' && ['permit', 'tool-refusal'].includes(current?.action || '')))
+    return res.status(403).json({ error: 'Use the dedicated decision on the dashboard.' });
   const a = await approvals.decide(req.params.id, req.params.decision === 'approve'); a ? res.json(a) : res.status(404).end();
 });
 // Send a message card back with a comment: to the controller (incoming) or to the agent that wrote the draft (outgoing).
@@ -207,10 +223,42 @@ app.post('/api/permits', (req, res) => {
   const actor = req.get('x-tb-actor') || '';
   const task = store.get(actor);
   if (!task || task.role === 'controller') return res.status(403).json({ error: 'A task must request its own permit.' });
+  const steps = req.body.steps as permits.StepInput[] | undefined;
+  if (Array.isArray(steps) && steps.length === 1 && typeof steps[0]?.command === 'string') {
+    let argv: string[] = [];
+    try { argv = permits.parseCommand(steps[0].command); } catch { /* the permit parser gives the error below */ }
+    if (argv[0] === 'git' && argv[1] === 'push') {
+      const valid = argv.length === 4 && !argv.slice(2).some(x => x.startsWith('-') || x.startsWith(':') || x.includes(':') || x === '--tags');
+      if (valid) {
+        createPushRequest(task, String(req.body.reason || ''), { remote: argv[2], branch: argv[3] })
+          .then(result => res.status(result.approval ? 202 : 200).json({ ...result, message: 'This needs a push request: run tb git push-request.' }))
+          .catch(e => fail(res, e));
+        return;
+      }
+      const message = 'This push needs a push request: run tb git push-request. Force pushes, deletions, and tags cannot use this command.';
+      const card = approvals.request({ actor, action: 'tool-refusal', summary: 'review a refused push command', detail: `${steps[0].command}\n${message}`, payload: { command: steps[0].command, canPermit: false } }, async () => message);
+      store.update(actor, { status: 'needs-you', ask: `Refused: ${steps[0].command}`, statusSource: message });
+      return res.status(400).json({ error: message, refusal: card.id });
+    }
+    if (/^(pnpm|npm|yarn)$/.test(argv[0] || '') && argv.includes('release')) {
+      const approval = createReleaseApproval(task);
+      return res.status(202).json({ approval, message: 'This needs a release request: run tb release-request.' });
+    }
+  }
   try {
     const p = createPermit(task, req.body.reason, req.body.steps, req.body.refusalId);
     res.status(202).json({ permit: p });
-  } catch (e) { fail(res, e); }
+  } catch (e) {
+    const message = e instanceof Error ? e.message : String(e);
+    if (/task Git commands|release or rollback|GitHub write/.test(message)) {
+      const command = steps?.map(s => s.command).join('\n') || '';
+      const help = /release|rollback/.test(message) ? 'Use tb release-request for a release. Rollback needs a user action.' : 'Use tb git commit, tb git rebase, tb git merge-request, or tb git push-request.';
+      const card = approvals.request({ actor, action: 'tool-refusal', summary: 'review a refused command', detail: `${command}\n${help}`, payload: { command, canPermit: false } }, async () => help);
+      store.update(actor, { status: 'needs-you', ask: `Refused: ${command}`, statusSource: help });
+      return res.status(400).json({ error: `${message} ${help}`, refusal: card.id });
+    }
+    fail(res, e);
+  }
 });
 app.post('/api/refusals/:id/permit', (req, res) => {
   if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Use the dashboard.' });
@@ -276,6 +324,11 @@ app.post('/api/release/request', (req, res) => {
   const task = store.get(actor);
   if (!/^[a-zA-Z0-9_-]+$/.test(actor) || !task || task.role === 'controller')
     return res.status(403).json({ error: 'A Taskboard task must request the release.' });
+  const approval = createReleaseApproval(task);
+  res.status(202).json({ approval });
+});
+function createReleaseApproval(task: store.Task) {
+  const actor = task.id;
   const approval = approvals.request({ actor, action: 'release', summary: 'release Taskboard',
     detail: `Task: #${task.num} ${task.title}\nCommand: pnpm release`, payload: {} }, async () => {
     const dir = join(TB_DIR, 'release-permits');
@@ -284,7 +337,78 @@ app.post('/api/release/request', (req, res) => {
     return `Task #${task.num} may run pnpm release once within two minutes.`;
   });
   store.update(actor, { status: 'needs-you', ask: 'Approve: release Taskboard', statusSource: 'Waiting for your approval on the dashboard.' });
-  res.status(202).json({ approval });
+  return approval;
+}
+function pushNotice(task: store.Task, record: push.PushRecord) {
+  const text = [`# Push ${record.id}`, '', `Time: ${record.at}`, `Task: #${task.num}`, `Remote: ${record.remoteUrl}`, `Branch: ${record.branch}`,
+    `Range: ${record.oldHead || '(new branch)'} -> ${record.newHead}`, `Result: ${record.state}`, '', record.result || 'Waiting for a decision.'].join('\n');
+  try { docs.uploadSystem(task.id, `push-${record.id}.md`, text + '\n'); } catch (e) { console.error('could not send push result', e); }
+  store.update(task.id, { status: record.state === 'pending' ? 'needs-you' : 'unread', ask: record.state === 'pending' ? `Approve push ${record.branch}` : '', statusSource: `Push ${record.id}: ${record.state}.` });
+}
+async function createPushRequest(task: store.Task, reason: string, options: { branch?: string; remote?: string; thenRelease?: boolean }) {
+    const state = await push.inspectPush(task, reason, options);
+    if (!state.fastForward) throw new Error('The remote branch does not allow a fast-forward push.');
+    const id = randomUUID();
+    if (!state.needsCard) {
+      const record = push.recordPush(state, id);
+      try {
+        const output = await push.runPush(task, state);
+        push.finishPush(record, 'succeeded', output); pushNotice(task, record);
+        if (state.thenRelease) createReleaseApproval(task);
+      } catch (e) { push.finishPush(record, 'failed', String(e)); pushNotice(task, record); }
+      return { push: record };
+    }
+    const detail = `Remote: ${state.remoteUrl}\nBranch: ${state.branch}\nRange: ${state.oldHead || '(new branch)'} -> ${state.newHead}\nCommits: ${state.commitCount}\n${state.commits.map(c => `${c.hash} ${c.subject} — ${c.author}`).join('\n')}\nFiles changed: ${state.fileCount}\n${state.topFiles.join('\n')}\nFast-forward now: ${state.fastForward ? 'Yes' : 'No'}\nWarnings:\n${state.warnings.join('\n')}`;
+    const approval = approvals.request({ actor: task.id, action: 'git-push', summary: `push ${state.branch} to ${state.remote}`, detail, payload: { pushId: id, state } }, async () => {
+      try {
+        const output = await push.runPush(task, state);
+        push.finishPush(record, 'succeeded', output); pushNotice(task, record);
+        if (state.thenRelease) createReleaseApproval(task);
+        return output;
+      } catch (e) { push.finishPush(record, 'failed', String(e)); pushNotice(task, record); throw e; }
+    }, { onDeny: () => { push.finishPush(record, 'denied', 'Denied by the user.'); pushNotice(task, record); } });
+    const record = push.recordPush(state, id, approval.id);
+    pushNotice(task, record);
+    return { push: record, approval };
+}
+app.post('/api/git/push-request', async (req, res) => {
+  const task = store.get(req.get('x-tb-actor') || '');
+  if (!task || task.role === 'controller') return res.status(403).json({ error: 'A task must request its own push.' });
+  if (req.body.force || req.body.delete || req.body.tags) return res.status(400).json({ error: 'Force pushes, branch deletions, and tags cannot use this command.' });
+  try {
+    const result = await createPushRequest(task, String(req.body.reason || ''), { branch: req.body.branch, remote: req.body.remote, thenRelease: req.body.thenRelease });
+    res.status(result.approval ? 202 : 200).json(result);
+  } catch (e) { fail(res, e); }
+});
+app.get('/api/git/pushes', (req, res) => {
+  if (!req.get('referer')?.startsWith(URL_BASE + '/') && !tokenOk(req)) return res.status(403).end();
+  const actor = req.get('x-tb-actor');
+  res.json(push.allPushes().filter(p => !actor || actor === 'controller' || p.taskId === actor));
+});
+app.get('/api/git/pushes/:id', (req, res) => {
+  const record = push.allPushes().find(p => p.id === req.params.id);
+  if (!record || (req.get('x-tb-actor') && !['controller', record.taskId].includes(req.get('x-tb-actor')!))) return res.status(404).end();
+  res.json(record);
+});
+app.post('/api/git/pushes/:id/decide', async (req, res) => {
+  if (!req.get('origin') || req.get('x-tb-actor') || req.get('x-taskboard-token')) return res.status(403).json({ error: 'Only the dashboard can decide a push.' });
+  const record = push.allPushes().find(p => p.id === req.params.id);
+  const card = record?.approvalId ? approvals.get(record.approvalId) : undefined;
+  if (!record || !card) return res.status(404).end();
+  if (card.state !== 'pending') return res.json(record);
+  if (push.pushExpired(card.created)) {
+    push.finishPush(record, 'expired', 'The push request expired.');
+    approvals.close(card.id, 'expired', 'The push request expired.'); return res.json(record);
+  }
+  if (req.body.approve !== true) {
+    const comment = String(req.body.comment || '').slice(0, 2000);
+    await approvals.decide(card.id, false);
+    push.finishPush(record, 'denied', `Denied by the user. ${comment}`.trim());
+    const task = store.get(record.taskId); if (task) pushNotice(task, record);
+    return res.json(record);
+  }
+  await approvals.decide(card.id, true);
+  res.json(record);
 });
 app.post('/api/git/merge-request', async (req, res) => {
   const actor = req.get('x-tb-actor') || '';
@@ -352,7 +476,7 @@ app.get('/api/info', (_req, res) => res.json(info()));
 app.patch('/api/info', async (req, res) => {
   if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Machine settings are changed on the dashboard.' });
   try {
-    const { name, routingRules, autostart, remoteControl, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, permitFolders, askAgent, askAccount, askModel, reviewAccount, reviewModel, messageIncoming, messageOutgoing, checkPrivateNotes, confirmLowerControl, defaultMaxParallel, applyMaxParallelToAll } = req.body;
+    const { name, routingRules, autostart, remoteControl, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, messageIncoming, messageOutgoing, checkPrivateNotes, confirmLowerControl, defaultMaxParallel, applyMaxParallelToAll } = req.body;
     // A higher message level gives the user less control. The page asks first and then sends confirmLowerControl.
     const current = machine.get().messages;
     if (confirmLowerControl !== true && ((messageIncoming ?? 0) > current.incoming || (messageOutgoing ?? 0) > current.outgoing || (controllerCanApprovePermits === true && !machine.get().permissions.controllerCanApprovePermits)))
@@ -364,7 +488,7 @@ app.patch('/api/info', async (req, res) => {
       return res.status(400).json({ error: 'Pick a valid model for questions.' });
     if (reviewAccount && accounts.get(reviewAccount)?.agent !== 'claude') return res.status(400).json({ error: 'Pick a Claude Code account for auto review.' });
     if (defaultMaxParallel !== undefined) machine.checkMaxParallel(defaultMaxParallel); // refuse before anything is saved
-    machine.update({ name, routingRules, autostart, remoteControl, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, permitFolders, askAgent, askAccount, askModel, reviewAccount, reviewModel, messageIncoming, messageOutgoing, checkPrivateNotes, defaultMaxParallel });
+    machine.update({ name, routingRules, autostart, remoteControl, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, messageIncoming, messageOutgoing, checkPrivateNotes, defaultMaxParallel });
     // the Settings page confirms first; running tasks keep running, only new starts check the new maximum
     if (applyMaxParallelToAll === true) accounts.setAllMaxParallel(machine.get().accounts.defaultMaxParallel);
     if (messageIncoming !== undefined || messageOutgoing !== undefined || checkPrivateNotes !== undefined) messageLevelsChanged();

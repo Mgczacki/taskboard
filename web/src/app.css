@@ -253,6 +253,7 @@
 .approval .ap-a { flex-wrap: wrap; }
 .ap-h { display: flex; gap: 8px; align-items: center; }
 .ap-d { margin: 0; white-space: pre-wrap; font: 12px/1.5 var(--mono); color: var(--muted); background: var(--bg2); border: 1px solid var(--line); border-radius: 6px; padding: 8px; max-height: 180px; overflow: auto; }
+.approval.push-card .ap-d { max-height: none; overflow-wrap: anywhere; }
 .ap-a { display: flex; gap: 8px; }
 
 /* accounts */
