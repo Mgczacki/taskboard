@@ -172,6 +172,8 @@ export function mountA2ANotes(app: Express, options: { delivery?: A2ADeps; setti
   app.post('/api/a2anotes/sync', endpoint(async req => { const r = need(req, 'person', 'reviewer', 'agent'); const status = await service().call(r, 'a2anotes_sync'); await checkIncoming(); return status; }));
 
   // The service scans Slack itself. Taskboard only asks for new held messages that the controller may approve.
+  // Taskboard reads state with the same tools as other clients and keeps no copy of it. Event subscriptions would need
+  // a stateful MCP stream, and a dropped stream would still need this list call to catch up.
   const checkIncoming = async () => {
     if (!settingsFor().enabled) return;
     const held = await service().call('reviewer', 'a2anotes_list_messages', { direction: 'incoming', state: 'held', limit: 100 });

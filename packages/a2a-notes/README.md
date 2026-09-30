@@ -1,0 +1,94 @@
+# A2A Notes
+
+A2A Notes sends messages between people and their agents over Slack direct messages. One service runs for each person on that person's computer. The service stores messages, runs checks, applies approval rules, and scans Slack. Agents use it through an MCP server. The person approves messages on a local review page.
+
+The wire format is `A2ANotes/1`. The agent file format is `a2anotes.request/1`. The name A2A Notes is provisional. It does not claim compatibility with the A2A protocol.
+
+## What the package contains
+
+- `src/protocol.ts`: the `A2ANotes/1` codec, the `a2anotes.request/1` agent file checks, and a reader for old `[Taskboard message v1]` and `[Taskboard message v2]` text.
+- `src/checks.ts`: the body check for outgoing drafts and the content check for both directions.
+- `src/policy.ts`: approval levels 1, 2, and 3.
+- `src/service.ts`: drafts, files, approvals, sends, the inbox, and the Slack scan.
+- `src/slack.ts`: the Slack transport adapter. It uses a Slack user token and OAuth with PKCE.
+- `src/mcp.ts` and `src/http.ts`: the MCP server on loopback Streamable HTTP, the review page, and the page API.
+- `src/bridge.ts`: a stdio bridge for command-line agents.
+- `src/fake-slack.ts`: a fake Slack Web API for tests and sandboxes.
+
+## Install and start
+
+These steps need a Slack app with user token scopes. The Slack app must list `http://localhost:<port>/slack/callback` as a redirect URL.
+
+1. Install the package: `npm install -g a2a-notes` (or run `pnpm install` and `pnpm build` in this folder).
+2. Write the settings: `a2a-notes init --client-id <Slack client ID> --team-id <Slack team ID> --port 4460`.
+3. Start the service: `a2a-notes serve`. The service prints its address.
+4. Open the review page: `a2a-notes open`. The link works once, within two minutes.
+5. On the review page, select **Connect Slack** and sign in.
+6. Make one client token for each client: `a2a-notes token add <name> --role person|reviewer|agent`. The command prints the token once.
+
+To start the service at sign-in on macOS, run `a2a-notes service-file`. It prints a LaunchAgent file and the `launchctl` command. The command does not install the file.
+
+The data folder is `~/.a2a-notes`, or the folder in `A2A_NOTES_DIR`, or `--dir`. It holds `config.json`, `store.json`, `clients.json`, `slack-credentials.json`, `files/`, and `local-secret`. Each file has mode 0600.
+
+## Connect an agent
+
+A command-line agent starts the stdio bridge as an MCP server:
+
+```json
+{ "mcpServers": { "a2a-notes": { "command": "a2a-notes", "args": ["bridge"], "env": { "A2A_NOTES_TOKEN": "<agent token>" } } } }
+```
+
+A client that supports Streamable HTTP connects to `http://127.0.0.1:<port>/mcp` with the header `Authorization: Bearer <token>`. The service refuses a request without a token, a request with a Host header that is not loopback, and a browser request from another origin.
+
+## Roles
+
+The token decides the role. No tool argument can change it.
+
+- `agent`: finds people, stages files, creates and revises its own drafts, reads approved messages, and checks status. It cannot approve or send.
+- `reviewer`: does what an agent does. It also approves a message when the levels let a review agent approve it, and sends approved drafts.
+- `person`: does everything. Only a person changes trusted senders and levels.
+
+## Approval levels
+
+The person sets one level for incoming and one for outgoing messages. The default for both is 2.
+
+- Level 1: the person approves every message.
+- Level 2: the review agent approves ordinary messages to or from trusted senders after the checks pass.
+- Level 3: the review agent also approves trusted messages that the check is unsure about.
+
+A peer that is not a trusted sender always needs the person. A quarantined or failed message goes to nobody. An outgoing draft with body flags needs the person when the body check is on. An approval records the content hash, the actor, and the policy version. A changed body, file, audience, or level ends the approval.
+
+## Message rules
+
+- Audience `person`: the body is the request. No agent file is allowed. An agent never receives the body.
+- Audience `agent` or `both`: one agent file is required. The draft uses the `message_id` from the agent file. The receiver releases the parsed file to an agent only after approval.
+- The body is text for a person. It must not be empty. A file cannot replace it.
+- A receiver holds an unknown major version with the code `unsupported_version`. It never parses such text as version 1.
+- Text that fails a check stays on the review page with the reason and a copy of at most 4000 bytes. Agents never receive it.
+- Ordinary Slack chat stays outside the inbox.
+
+## MCP tools
+
+`a2anotes_identity`, `a2anotes_find_people`, `a2anotes_list_messages`, `a2anotes_get_message`, `a2anotes_stage_file`, `a2anotes_create_draft`, `a2anotes_revise_draft`, `a2anotes_review_message`, `a2anotes_approve`, `a2anotes_send`, `a2anotes_mark_seen`, `a2anotes_set_trusted_sender`, `a2anotes_set_policy`, `a2anotes_connection_status`, and `a2anotes_sync`. A person session also has `a2anotes_review_page_link`.
+
+The resources are `a2anotes://policy`, `a2anotes://format/1`, `a2anotes://health`, and `a2anotes://messages/{id}`.
+
+Each tool returns `structuredContent` and a short text. An error has `isError` set and `structuredContent.error` with `code`, `reason`, and `next`.
+
+## Sending and delivery
+
+The service uploads files before it posts the message. A failed upload leaves the draft unsent. The service marks the draft `sending` before it calls `chat.postMessage`. When Slack does not confirm, the state is `delivery_uncertain`. The next `a2anotes_send` call looks for the message ID in the conversation before it posts again. After a restart, a draft in `sending` becomes `delivery_uncertain`.
+
+## Scanning and restart
+
+The service scans direct messages every 60 seconds by default. It saves a cursor for each conversation after it stores and checks each message. A failed download stops that conversation without a cursor change, so the next scan reads the message again. A Slack rate limit delays the next scan and shows in `a2anotes_connection_status`.
+
+## Tests
+
+`pnpm test` runs the tests against the fake Slack Web API. No test needs a live Slack account.
+
+## Open items
+
+- The package has no registered Slack app. A live Slack test needs a Slack app client ID with the redirect URL above.
+- The body check uses fixed rules. It flags detail names from the agent file, code names, internal task numbers, local paths, secrets, sender notes, and an ask that differs from the `instruction` input. A command reviewer (`reviewCommand` in `config.json`) can add a model check. It can raise a verdict but never lower a rule result.
+- The first release supports one Slack workspace. It does not send between workspaces.

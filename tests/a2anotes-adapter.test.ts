@@ -147,6 +147,38 @@ test('a person without Taskboard sends to Taskboard, and the controller gives th
   assert.equal((await call('controller', '/page-link', {})).status, 403);
 });
 
+test('Taskboard and a plain MCP client see the same message and approval state at once', async () => {
+  // Taskboard keeps no copy of message state: each read calls the service, so an approval made by one client
+  // shows in the other client on its next read, without events or a refresh step.
+  const plain = await mcp(mario.url, mario.running.clients.add('mario-other-client', 'person'));
+  const fields = (m: any) => ({ state: m.state, hash: m.hash, approver: m.approver, approved_by: m.approved_by, audience: m.audience, subject: m.subject, allowed_actions: m.allowed_actions });
+  const send = async (subject: string) => {
+    const d = await adamAgent('a2anotes_create_draft', { to_address: mario.address, subject, body: `Hi Mario, ${subject.toLowerCase()}.`, audience: 'person', request_id: `r-${randomUUID()}` });
+    await adamPerson('a2anotes_approve', { id: d.id, expected_hash: d.hash, decision: 'approve' });
+    await adamPerson('a2anotes_send', { id: d.id, expected_hash: d.hash, request_id: `r-${randomUUID()}` });
+    await plain('a2anotes_sync');
+    return (await plain('a2anotes_list_messages', { direction: 'incoming' })).messages.find((m: any) => m.message_id === d.id);
+  };
+  const first = await send('First state check');
+  const same = async (id: string) => {
+    const viaTaskboard = (await call('user', `/messages/${id}`)).data, viaClient = await plain('a2anotes_get_message', { id });
+    assert.deepEqual(fields(viaTaskboard), fields(viaClient));
+    const listed = (await call('user', '/messages?direction=incoming')).data.messages.find((m: any) => m.id === id);
+    assert.deepEqual(fields(listed), fields((await plain('a2anotes_list_messages', { direction: 'incoming' })).messages.find((m: any) => m.id === id)));
+    return viaTaskboard;
+  };
+  assert.equal((await same(first.id)).state, 'held');
+  // approved in the other client: Taskboard shows it on its next read
+  await plain('a2anotes_approve', { id: first.id, expected_hash: first.hash, decision: 'approve' });
+  assert.equal((await same(first.id)).state, 'approved');
+  // approved in Taskboard: the other client shows it on its next read
+  const second = await send('Second state check');
+  await call('user', `/messages/${second.id}/approve`, { hash: second.hash, decision: 'approve' });
+  const after = await same(second.id);
+  assert.equal(after.state, 'approved');
+  assert.equal(after.approved_by, 'person');
+});
+
 test('when a2anotes.json is missing, the adapter reports off and changes nothing', async () => {
   const offRoot = mkdtempSync(join(tmpdir(), 'tb-a2anotes-off-'));
   const offApp = express(); offApp.use(express.json());
