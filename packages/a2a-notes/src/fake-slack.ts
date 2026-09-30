@@ -5,7 +5,7 @@ import { randomBytes } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server } from 'node:http';
 
 export interface FakeUser { id: string; name: string; real_name?: string; email?: string; is_bot?: boolean; deleted?: boolean }
-interface Msg { ts: string; user: string; text: string; blocks?: unknown; thread_ts?: string; subtype?: string; files?: { id: string }[]; client_msg_id?: string }
+interface Msg { ts: string; user: string; text: string; bot_id?: string; app_id?: string; blocks?: unknown; thread_ts?: string; subtype?: string; files?: { id: string }[]; client_msg_id?: string }
 interface Channel { id: string; members: [string, string]; messages: Msg[]; replies: Msg[]; updated: number }
 interface File { id: string; user: string; name: string; size: number; bytes?: Buffer; channels: string[] }
 type Failure = { mode: 'error' | 'lost' | 'ratelimit' | 'timeout'; count: number; error?: string; retryAfter?: number };
@@ -86,7 +86,11 @@ export async function startFakeSlack(options: { port?: number; team?: string; us
     },
     'chat.postMessage': (p, user) => {
       const c = channels.get(p.channel); if (!c || !c.members.includes(user!)) throw new Error('channel_not_found');
-      const msg: Msg = { ts: nextTs(), user: user!, text: String(p.text || ''), ...(p.blocks ? { blocks: JSON.parse(p.blocks) } : {}), ...(p.client_msg_id ? { client_msg_id: p.client_msg_id } : {}) };
+      // as in Slack: a user-token post through an app carries the app's bot_id and app_id, and a post with blocks has
+      // each newline in its text replaced by a space (observed in a real workspace on 2026-09-30)
+      const text = String(p.text || '');
+      const msg: Msg = { ts: nextTs(), user: user!, text: p.blocks ? text.replace(/\n/g, ' ') : text, bot_id: 'BFAKEAPP', app_id: 'AFAKEAPP',
+        ...(p.blocks ? { blocks: JSON.parse(p.blocks) } : {}), ...(p.client_msg_id ? { client_msg_id: p.client_msg_id } : {}) };
       if (p.thread_ts) {
         msg.thread_ts = p.thread_ts;
         c.replies.push(msg);
@@ -169,6 +173,7 @@ export async function startFakeSlack(options: { port?: number; team?: string; us
     return msg.ts;
   }
 
+  server.keepAliveTimeout = 65_000;
   await new Promise<void>(resolve => server.listen(options.port || 0, '127.0.0.1', () => resolve()));
   const address = server.address();
   base = `http://127.0.0.1:${typeof address === 'object' && address ? address.port : options.port}`;

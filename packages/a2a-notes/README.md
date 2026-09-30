@@ -79,9 +79,15 @@ Each tool returns `structuredContent` and a short text. An error has `isError` s
 
 The service uploads files before it posts the message. A failed upload leaves the draft unsent. The service marks the draft `sending` before it calls `chat.postMessage`. When Slack does not confirm, the state is `delivery_uncertain`. The next `a2anotes_send` call looks for the message ID in the conversation before it posts again. After a restart, a draft in `sending` becomes `delivery_uncertain`.
 
+## Slack display
+
+The service posts the wire text in `chat.postMessage.text` with no blocks. In a live test on 2026-09-30, Slack replaced each newline in `text` with a space when the message also had blocks. The `A2ANotes/1` lines and `Body-Bytes` need the exact text, so the person sees the header lines above the body in Slack.
+
+A post with a user token through a Slack app has `bot_id` and `app_id` set. The scan accepts it and takes the sender from the event `user`.
+
 ## Scanning and restart
 
-The service scans direct messages every 60 seconds by default. It saves a cursor for each conversation after it stores and checks each message. A failed download stops that conversation without a cursor change, so the next scan reads the message again. A Slack rate limit delays the next scan and shows in `a2anotes_connection_status`.
+The service scans direct messages every 60 seconds by default. Each scan reads at most 40 conversations, oldest cursor first. The first scan of a conversation reads the last 14 days (`slack.firstScanDays`). The service reads history in time windows and cuts a window with more than 2000 messages in half. It saves a cursor after it stores and checks each message and after each window. A conversation that Slack lists but the token cannot read (`channel_not_found`, `not_in_channel`, `access_denied`) gets a cursor at the scan time and no error. A failed download stops that conversation without a cursor change, so the next scan reads the message again. A Slack rate limit delays the next scan and shows in `a2anotes_connection_status`.
 
 ## Tests
 
@@ -89,6 +95,6 @@ The service scans direct messages every 60 seconds by default. It saves a cursor
 
 ## Open items
 
-- The package has no registered Slack app. A live Slack test needs a Slack app client ID with the redirect URL above.
+- The package has no registered Slack app of its own. The live test used the existing Taskboard sign-in with `import-slack --no-refresh`, so the package never renewed that token.
 - The body check uses fixed rules. It flags detail names from the agent file, code names, internal task numbers, local paths, secrets, sender notes, and an ask that differs from the `instruction` input. A command reviewer (`reviewCommand` in `config.json`) can add a model check. It can raise a verdict but never lower a rule result.
 - The first release supports one Slack workspace. It does not send between workspaces.

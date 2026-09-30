@@ -366,14 +366,6 @@ export class NotesService {
       ...(agent ? { agentFile: ref(agent) } : {}), files: files.filter(f => f.kind === 'support').map(ref),
       transportFiles: Object.keys(fileMap).length ? { [this.transport.fileField]: fileMap } : {}, footer: footerFor(senderName) };
   }
-  private blocks(n: Note, data: Data, senderName: string) {
-    const blocks: unknown[] = [{ type: 'header', text: { type: 'plain_text', text: n.subject.slice(0, 150), emoji: false } }];
-    for (let i = 0; i < n.body.length && blocks.length < 40; i += 2900) blocks.push({ type: 'section', text: { type: 'plain_text', text: n.body.slice(i, i + 2900), emoji: false } });
-    const agent = this.files(data, n).find(f => f.kind === 'agent');
-    const context = [agent ? `An agent file is attached: ${agent.name}.` : '', footerFor(senderName)].filter(Boolean).join(' ');
-    blocks.push({ type: 'context', elements: [{ type: 'plain_text', text: context.slice(0, 2000), emoji: false }] });
-    return blocks;
-  }
 
   async send(session: Session, input: { id?: unknown; expected_hash?: unknown; request_id?: unknown }) {
     const requestId = this.requestId(input.request_id);
@@ -415,7 +407,6 @@ export class NotesService {
           to: n.to, messageId: n.messageId, threadTs: n.transport?.threadTs,
           files: files.map((f, i) => ({ id: f.id, name: f.name, bytes: bytes[i] })),
           text: map => escapeMarkup(encode(this.buildWire(n, data, map, senderName))),
-          blocks: () => this.blocks(n, data, senderName),
         });
       } catch (error) {
         const definite = error instanceof TransportError && error.definite;

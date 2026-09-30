@@ -8,6 +8,9 @@ import { unescapeMarkup } from './protocol.ts';
 
 export const REQUIRED_SCOPES = ['chat:write', 'im:write', 'im:read', 'im:history', 'users:read'];
 export const OPTIONAL_SCOPES = ['users:read.email', 'files:read', 'files:write'];
+// Slack allows about 50 conversations.history calls a minute; a scan every 60 seconds reads at most 40 conversations
+const MAX_CONVERSATIONS_PER_SCAN = 40;
+const READS = new Set(['auth.test', 'conversations.history', 'conversations.list', 'files.info', 'users.info', 'users.list', 'users.lookupByEmail']);
 
 export interface SlackConfig {
   clientId: string; teamId: string;
@@ -18,6 +21,8 @@ export interface SlackConfig {
   allowSelf?: boolean;
   // do not renew the access token (for a copied token that another program renews)
   noRefresh?: boolean;
+  // how many days of history the first scan of a conversation reads (default 14)
+  firstScanDays?: number;
 }
 interface Credentials { user: string; team: string; name: string; scopes: string[]; access: string; refresh?: string; expires?: number }
 
@@ -86,11 +91,16 @@ export class SlackTransport implements Transport {
 
   private async request(method: string, params: Record<string, string>, token?: string): Promise<any> {
     if (Date.now() < this.blockedUntil) throw new TransportError('Slack rate limit. Try again later.', true, Math.ceil((this.blockedUntil - Date.now()) / 1000));
-    let res: Response;
-    try {
-      res = await this.fetcher(`${this.apiBase}/${method}`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', ...(token ? { authorization: `Bearer ${token}` } : {}) },
-        body: new URLSearchParams(params), signal: AbortSignal.timeout(20_000) });
-    } catch { throw new TransportError(`Slack did not answer ${method}.`, false); }
+    let res: Response | undefined;
+    // a read can run again after a network error; a post or upload never runs twice
+    for (let attempt = 0; !res; attempt++) {
+      try {
+        res = await this.fetcher(`${this.apiBase}/${method}`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', ...(token ? { authorization: `Bearer ${token}` } : {}) },
+          body: new URLSearchParams(params), signal: AbortSignal.timeout(20_000) });
+      } catch {
+        if (attempt >= 1 || !READS.has(method)) throw new TransportError(`Slack did not answer ${method}.`, false);
+      }
+    }
     if (res.status === 429) {
       const retry = Math.max(1, Number(res.headers.get('retry-after')) || 60);
       this.blockedUntil = Date.now() + retry * 1000;
@@ -198,7 +208,9 @@ export class SlackTransport implements Transport {
       await this.call('files.completeUploadExternal', { files: JSON.stringify([{ id: ticket.file_id, title: f.name }]), channel_id: channel });
       files[f.id] = String(ticket.file_id);
     }
-    const result = await this.call('chat.postMessage', { channel, text: input.text(files), blocks: JSON.stringify(input.blocks(files)), mrkdwn: 'false',
+    // no blocks: Slack replaces each newline in `text` with a space when a message has blocks (observed in the
+    // Sekai workspace on 2026-09-30), and the A2ANotes/1 lines and Body-Bytes need the exact text
+    const result = await this.call('chat.postMessage', { channel, text: input.text(files), mrkdwn: 'false',
       unfurl_links: 'false', unfurl_media: 'false', parse: 'none', client_msg_id: input.messageId,
       ...(input.threadTs ? { thread_ts: input.threadTs, reply_broadcast: 'true' } : {}) });
     if (!result.ts) throw new TransportError('Slack did not confirm delivery.', false);
@@ -230,45 +242,66 @@ export class SlackTransport implements Transport {
     } while (listCursor);
     let messages = 0, scanned = 0;
     let failure: TransportError | undefined;
-    for (const conversation of conversations) {
+    const now = Date.now() / 1000;
+    const key = (conversation: any) => `slack:${c.team}:${conversation.id}`;
+    // Slack's `updated` field does not change when a message arrives, so it cannot skip a conversation.
+    // Each scan reads the conversations with the oldest cursor first: new conversations, then the longest unread.
+    const candidates = conversations.filter(conversation => conversation.id && conversation.user && !conversation.is_user_deleted && (conversation.user !== c.user || this.config.allowSelf))
+      .sort((a, b) => Number(cursors[key(a)] || 0) - Number(cursors[key(b)] || 0)).slice(0, MAX_CONVERSATIONS_PER_SCAN);
+    for (const conversation of candidates) {
       try {
-      if (!conversation.id || !conversation.user || conversation.is_user_deleted) continue;
-      if (conversation.user === c.user && !this.config.allowSelf) continue;
-      const key = `slack:${c.team}:${conversation.id}`;
-      const oldest = cursors[key] || '0';
-      // history pages go from new to old: read all new pages, then handle the messages from old to new
-      const found: any[] = [];
-      let cursor = '';
-      for (let pages = 0; ; pages++) {
-        if (pages >= 20) throw new TransportError('More than 2000 new messages in one conversation. The next scan continues.', false);
-        const page = await this.call('conversations.history', { channel: conversation.id, oldest, inclusive: 'false', limit: '100', ...(cursor ? { cursor } : {}) });
-        found.push(...(page.messages || []));
-        cursor = page.response_metadata?.next_cursor || '';
-        if (page.has_more && !cursor) throw new TransportError('Slack returned incomplete history.', false);
-        if (!cursor) break;
-      }
-      scanned++;
-      found.sort((a, b) => Number(a.ts) - Number(b.ts));
-      for (const event of found) {
-        if (Number(event.ts) <= Number(oldest)) continue;
-        const ordinary = !event.subtype || event.subtype === 'thread_broadcast';
-        // this account's own posts in a conversation with another member are sent messages, not received ones
-        const own = event.user === c.user && conversation.user !== c.user;
-        if (ordinary && !own && !event.bot_id && event.user && typeof event.text === 'string') {
-          await handle({ conversation: key, ref: `slack:${c.team}:${conversation.id}:${event.ts}`, ts: String(event.ts), channel: conversation.id,
-            sender: slackAddress(c.team, String(event.user)), text: unescapeMarkup(event.text), ...(event.thread_ts ? { threadTs: String(event.thread_ts) } : {}) });
-          messages++;
+        const k = key(conversation);
+        // the first scan of a conversation reads only the recent days, not the whole history
+        let from = Number(cursors[k] || now - (this.config.firstScanDays ?? 14) * 86_400);
+        while (from < now) {
+          // read the window (from, to]. A window with more than 2000 messages is cut in half and read again.
+          let to = now, found: any[] | null = null;
+          for (let halvings = 0; !found; halvings++) {
+            found = await this.window(conversation.id, from, to);
+            if (!found) { if (halvings >= 30) throw new TransportError('Slack history is too dense to read.', false); to = from + (to - from) / 2; }
+          }
+          for (const event of found.sort((a, b) => Number(a.ts) - Number(b.ts))) {
+            if (Number(event.ts) <= from) continue;
+            const ordinary = !event.subtype || event.subtype === 'thread_broadcast';
+            // this account's own posts in a conversation with another member are sent messages, not received ones
+            const own = event.user === c.user && conversation.user !== c.user;
+            // a post with a user token through an app has bot_id and app_id; the member in `user` is the sender
+        if (ordinary && !own && event.user && typeof event.text === 'string') {
+              await handle({ conversation: k, ref: `slack:${c.team}:${conversation.id}:${event.ts}`, ts: String(event.ts), channel: conversation.id,
+                sender: slackAddress(c.team, String(event.user)), text: unescapeMarkup(event.text), ...(event.thread_ts ? { threadTs: String(event.thread_ts) } : {}) });
+              messages++;
+              save(k, String(event.ts));
+            }
+          }
+          // the whole window is stored and checked: the next read starts after it
+          save(k, to.toFixed(6));
+          from = to;
         }
-        save(key, String(event.ts));
-      }
+        scanned++;
       } catch (error) {
         // a rate limit stops the scan; another failure skips this conversation until the next scan
         if (error instanceof TransportError && error.retryAfter) throw error;
+        // Slack lists some conversations that this token cannot read: move the cursor past them, as Taskboard does
+        if (error instanceof TransportError && /^Slack: (channel_not_found|not_in_channel|access_denied)$/.test(error.message)) { save(key(conversation), now.toFixed(6)); continue; }
         failure ||= error instanceof TransportError ? error : new TransportError((error as Error).message, false);
       }
     }
     if (failure) throw failure;
     return { conversations: scanned, messages };
+  }
+
+  // All messages with a time in [from, to], or null when there are more than 2000. Slack returns pages from new to old.
+  private async window(channel: string, from: number, to: number): Promise<any[] | null> {
+    const found: any[] = [];
+    let cursor = '';
+    for (let pages = 0; pages < 20; pages++) {
+      const page = await this.call('conversations.history', { channel, oldest: from.toFixed(6), latest: to.toFixed(6), inclusive: 'true', limit: '100', ...(cursor ? { cursor } : {}) });
+      found.push(...(page.messages || []));
+      cursor = page.response_metadata?.next_cursor || '';
+      if (page.has_more && !cursor) throw new TransportError('Slack returned incomplete history.', false);
+      if (!cursor) return found;
+    }
+    return null;
   }
 
   async download(fileRef: string, received: Received, maxBytes: number) {

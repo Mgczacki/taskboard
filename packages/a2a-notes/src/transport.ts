@@ -11,7 +11,6 @@ export interface SendInput {
   to: string; messageId: string;
   // builds the final text after the uploads, from attachment ID -> adapter file ID
   text: (fileMap: Record<string, string>) => string;
-  blocks: (fileMap: Record<string, string>) => unknown[];
   files: { id: string; name: string; bytes: Buffer }[];
   threadTs?: string;
 }

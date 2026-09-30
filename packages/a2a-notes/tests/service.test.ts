@@ -132,7 +132,7 @@ test('version failures, bad counts, identity mismatches, and plain chat stay awa
   const id = randomUUID();
   const bytes = Buffer.from(writeAgentFile(agentRequest(id, 'From Eve')).toString('utf8').replace('a2anotes.request/1', 'a2anotes.request/2'));
   const fileId = randomUUID();
-  await eve.transport.send({ to: adam.address, messageId: id, files: [{ id: fileId, name: agentFileName(id), bytes }], blocks: () => [],
+  await eve.transport.send({ to: adam.address, messageId: id, files: [{ id: fileId, name: agentFileName(id), bytes }],
     text: map => escapeMarkup(encode({ ...wire({ audience: 'both', agentFile: { id: fileId, name: agentFileName(id), size: bytes.length, sha256: sha256(bytes) }, transportFiles: { Slack: map } }), id, threadId: id })) });
 
   await adam.service.scanNow();
@@ -236,4 +236,22 @@ test('a reply keeps the thread, uses the Slack thread, and old Taskboard message
   const legacy = mario.service.list(person, { direction: 'incoming' }).messages.find(m => m.message_id === 'old-1')!;
   assert.equal(legacy.state, 'held');
   assert.equal(mario.service.get(person, legacy.id).body, 'Hi Mario, from the old format.');
+});
+
+test('a first scan of a conversation with more than 2000 new messages finishes and finds the message', async () => {
+  const eve = personService(fake, EVE), adam = personService(fake, ADAM);
+  for (let i = 0; i < 1300; i++) fake.inject(EVE, ADAM, `chat ${i}`);
+  const m = { id: randomUUID(), from: eve.address, to: adam.address, subject: 'In the middle', audience: 'person' as const, replyTo: null, body: 'Hi Adam, this is between many chat lines.', files: [], transportFiles: {} };
+  fake.inject(EVE, ADAM, escapeMarkup(encode({ ...m, threadId: m.id })));
+  for (let i = 0; i < 1300; i++) fake.inject(EVE, ADAM, `more chat ${i}`);
+  // a conversation that Slack lists but the token cannot read is skipped, not a scan error
+  fake.fail('conversations.history', { mode: 'error', count: 1, error: 'channel_not_found' });
+  await adam.service.scanNow();
+  assert.equal(adam.service.connectionStatus().last_error, null);
+  adam.service.store.change(d => { d.cursors = {}; });
+  await adam.service.scanNow();
+  const found = adam.service.list(person, { direction: 'incoming' }).messages.filter(x => x.message_id === m.id);
+  assert.equal(found.length, 1);
+  assert.equal(found[0].state, 'held');
+  void eve;
 });
