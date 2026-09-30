@@ -2,16 +2,18 @@ import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { Task } from './store.ts';
 import * as machine from './machine.ts';
+import { mergeStateForSource } from './task-git.ts';
 import { TB_DIR } from './config.ts';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { realpathSync } from 'node:fs';
 
 const exec = promisify(execFile);
 const git = async (cwd: string, ...args: string[]) => (await exec('git', args, { cwd, maxBuffer: 16 * 1024 * 1024 })).stdout.trim();
 const safe = (s: string) => s.replace(/(https?:\/\/)[^/@\s]+@/g, '$1[redacted]@').replace(/(token|password|secret)=([^\s&]+)/gi, '$1=[redacted]')
   .replace(/\b(?:ghp_|gho_|ghu_|ghs_|github_pat_|glpat-)[A-Za-z0-9_-]{12,}\b/g, '[redacted token]');
-const secretFile = /(^|\/)(\.env(?:\.|$)|[^/]*\.(?:pem|key|p12|pfx)$|[^/]*(?:secret|token|credential)[^/]*)/i;
-const secretLine = /^\+(?!\+\+).*(?:-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----|(?:api[_-]?key|access[_-]?token|secret|password|private[_-]?key)\s*[:=]\s*["']?\S{8,}|(?:ghp_|github_pat_|sk-)[A-Za-z0-9_-]{12,})/im;
+const secretFile = /(^|\/)(\.env(?:\.|$)|id_(?:rsa|dsa|ecdsa|ed25519)$|[^/]*\.(?:pem|key|p8|p12|pfx)$|[^/]*(?:secret|token|credential)[^/]*)/i;
+const secretLine = /^\+(?!\+\+).*(?:-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----|(?:api[_-]?key|access[_-]?token|secret|password|private[_-]?key)\s*[:=]\s*["']?\S{8,}|AKIA[A-Z0-9]{16}|(?:ghp_|github_pat_|sk-)[A-Za-z0-9_-]{12,})/im;
 
 export interface PushState {
   taskId: string; branch: string; remote: string; remoteUrl: string; oldHead: string | null; newHead: string;
@@ -62,6 +64,8 @@ async function isAncestor(cwd: string, oldHead: string, newHead: string) {
 
 export async function inspectPush(task: Task, reason: string, options: { branch?: string; remote?: string; thenRelease?: boolean } = {}): Promise<PushState> {
   if (!task.worktree || !task.branch || task.role === 'controller') throw new Error('A task must use its own Git worktree.');
+  await mergeStateForSource(task);
+  if (realpathSync(await git(task.folder, 'rev-parse', '--show-toplevel')) !== realpathSync(task.folder)) throw new Error('The main checkout changed.');
   const taskBranch = task.branch;
   if (!reason.trim() || reason.length > 1000) throw new Error('Give a reason under 1000 characters.');
   const ownBranch = await git(task.cwd, 'branch', '--show-current');
