@@ -105,7 +105,7 @@ const fs = require('node:fs'), cp = require('node:child_process');
 if (fs.existsSync(${JSON.stringify(join(root, 'fail-launch'))}) && process.argv.includes('new-session')) process.exit(1);
 const r = cp.spawnSync(${JSON.stringify(realTmux)}, process.argv.slice(2), { stdio: 'inherit' }); process.exit(r.status || 0);
 `); chmodSync(wrapper, 0o755);
-  const accounts = ['claude', 'codex', 'antigravity'].map(agent => ({ id: `${agent}-default`, agent, name: agent, dir: join(root, 'accounts', agent), isDefault: false, maxParallel: 8, created: new Date().toISOString(), limited: { at: new Date().toISOString(), note: 'Fixture limit' }, usage: { windows: [{ label: 'weekly', usedPct: 99 }], at: new Date().toISOString(), source: 'test' } }));
+  const accounts = ['claude', 'codex', 'antigravity'].map(agent => ({ id: `${agent}-default`, agent, name: agent, dir: join(root, 'accounts', agent), isDefault: agent === 'antigravity', maxParallel: 8, created: new Date().toISOString(), limited: { at: new Date().toISOString(), note: 'Fixture limit' }, usage: { windows: [{ label: 'weekly', usedPct: 99 }], at: new Date().toISOString(), source: 'test' } }));
   accounts.push({ ...accounts[0], id: 'claude-other', name: 'Claude other', dir: join(root, 'accounts', 'claude-other'), isDefault: false });
   accounts.push({ ...accounts[1], id: 'codex-other', name: 'Codex other', dir: join(root, 'accounts', 'codex-other'), isDefault: false });
   for (const a of accounts) mkdirSync(a.dir, { recursive: true });

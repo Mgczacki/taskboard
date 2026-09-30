@@ -97,10 +97,10 @@ setInterval(() => {
 groups.load();
 // "open in another terminal" used to be a status; it is now only the openElsewhere field, and the status is read from the transcript
 for (const t of store.all()) if (t.openElsewhere && (t.status as string) === 'elsewhere' || t.openElsewhere && t.status === 'suspended')
-  store.update(t.id, { status: 'idle', transcript: t.transcript || importer.transcriptFor(t.agent, t.sessionId || '') });
+  store.update(t.id, { status: 'idle', transcript: t.transcript || importer.transcriptFor(t.agent, t.sessionId || '', (accounts.get(t.account) || accounts.defaultFor(t.agent)).dir) });
 installRuntimeFiles();
 agents.writeClaudeSettings();
-agents.installAgyPlugin();
+await agents.installAgyPlugin();
 await agents.configureIfRunning();
 
 app.use(express.json({ limit: '2mb' }));
@@ -584,7 +584,7 @@ inboxDelivery.start();
 // ---------- accounts ----------
 const acctView = async (a: accounts.Account, fresh = false) => ({ ...a, status: await accounts.status(a, fresh), running: store.all().filter(t => (t.account || accounts.defaultFor(t.agent).id) === a.id && !['archived', 'parked', 'suspended'].includes(t.status)).length });
 app.get('/api/accounts', async (req, res) => res.json(await Promise.all(accounts.all().map(a => acctView(a, req.query.fresh === '1')))));
-app.post('/api/accounts', async (req, res) => { try { const { agent, name } = req.body; if (!['claude', 'codex'].includes(agent) || !name) throw new Error('agent and name are required'); res.json(await acctView(accounts.create(agent, String(name)))); } catch (e) { fail(res, e); } });
+app.post('/api/accounts', async (req, res) => { try { const { agent, name } = req.body; if (!['claude', 'codex', 'antigravity'].includes(agent) || !name) throw new Error('agent and name are required'); const a = await accounts.create(agent, String(name)); if (a.agent === 'antigravity') await agents.installAgyPlugin(a); res.json(await acctView(a)); } catch (e) { fail(res, e); } });
 // The maximum number of tasks protects an account's usage, so only the dashboard changes it (not tb, agents or the controller).
 app.patch('/api/accounts/:id', (req, res) => {
   if (req.body?.maxParallel !== undefined && (!req.get('origin') || req.get('x-tb-actor'))) return res.status(403).json({ error: 'The maximum number of tasks is changed on the Accounts page of the dashboard.' });

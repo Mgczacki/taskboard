@@ -87,7 +87,7 @@ export function AccountsPage({ tasks }: { tasks: Task[] }) {
   const [list, setList] = useState<Account[]>([]);
   const [term, setTerm] = useState<null | { title: string; session: string; note: string }>(null);
   const [confirm, setConfirm] = useState<Account | null>(null);
-  const [adding, setAdding] = useState<{ agent: 'claude' | 'codex'; name: string } | null>(null); // Antigravity has one account only
+  const [adding, setAdding] = useState<{ agent: Agent; name: string } | null>(null);
   const [err, setErr] = useState('');
   const [movingCtl, setMovingCtl] = useState(false);
   const [agentLoad, setAgentLoad] = useState<Load | null>(null);
@@ -96,7 +96,7 @@ export function AccountsPage({ tasks }: { tasks: Task[] }) {
   useEffect(() => { load(); const i = setInterval(() => load(), 15000); return () => clearInterval(i); }, []);
   useEffect(() => { load(); }, [tasks.length]);
 
-  const signIn = async (a: Account) => { try { const r = await post(`/api/accounts/${a.id}/login`); setTerm({ title: `Sign in: ${a.name}`, session: r.session, note: a.agent === 'claude' ? 'Follow the steps in the terminal; the browser opens on this Mac. Close this window when it says you are signed in.' : a.agent === 'antigravity' ? 'agy starts and asks you to sign in with Google in the browser. When it shows its prompt, type /exit and close this window.' : 'Follow the steps in the terminal (it prints a link or a device code). Close this window when it says you are logged in.' }); } catch (e) { setErr(String((e as Error).message)); } };
+  const signIn = async (a: Account) => { try { const r = await post(`/api/accounts/${a.id}/login`); setTerm({ title: `Sign in: ${a.name}`, session: r.session, note: a.agent === 'claude' ? 'Follow the steps in the terminal; the browser opens on this Mac. Close this window when it says you are signed in.' : a.agent === 'antigravity' ? 'Choose this account in Google. If Google shows a code, paste it into the prompt below the link and press Enter. When agy shows its prompt, type /exit.' : 'Follow the steps in the terminal (it prints a link or a device code). Close this window when it says you are logged in.' }); } catch (e) { setErr(String((e as Error).message)); } };
   const reset = async (a: Account) => {
     setConfirm(null);
     try {
@@ -122,7 +122,7 @@ export function AccountsPage({ tasks }: { tasks: Task[] }) {
   return (
     <div className="acc-page">
       <div className="acc-head">
-        <div><h2>Accounts</h2><p>Each account is its own settings folder (<code>CLAUDE_CONFIG_DIR</code> for Claude Code, <code>CODEX_HOME</code> for Codex), so accounts run side by side and each task uses one. Antigravity has one account only, because <code>agy</code> keeps its sign-in in the keychain. New tasks pick the least busy signed-in account that is not at its limit, unless you choose one.</p></div>
+        <div><h2>Accounts</h2><p>Each account keeps its own sign-in. Claude Code uses <code>CLAUDE_CONFIG_DIR</code>, Codex uses <code>CODEX_HOME</code>, and Antigravity uses a separate home and Keychain. New tasks pick the least busy signed-in account that is not at its limit, unless you choose one.</p></div>
         <div style={{ display: 'flex', gap: 8 }}><button className="btn" onClick={() => load(true)}>Check sign-ins</button><button className="btn primary" onClick={() => setAdding({ agent: 'claude', name: '' })}>＋ Add account</button></div>
       </div>
       {err && <div className="banner">{err} <button className="btn ghost" onClick={() => setErr('')}>OK</button></div>}
@@ -166,9 +166,9 @@ export function AccountsPage({ tasks }: { tasks: Task[] }) {
         <div className="modal" style={{ width: 460 }}>
           <header><h2>Add account</h2><button className="btn ghost icon" onClick={() => setAdding(null)}>✕</button></header>
           <div className="body">
-            <div className="field"><label>Agent</label><div className="seg"><button className={adding.agent === 'claude' ? 'on' : ''} onClick={() => setAdding({ ...adding, agent: 'claude' })}>Claude Code</button><button className={adding.agent === 'codex' ? 'on' : ''} onClick={() => setAdding({ ...adding, agent: 'codex' })}>Codex</button></div></div>
+            <div className="field"><label>Agent</label><div className="seg"><button className={adding.agent === 'claude' ? 'on' : ''} onClick={() => setAdding({ ...adding, agent: 'claude' })}>Claude Code</button><button className={adding.agent === 'codex' ? 'on' : ''} onClick={() => setAdding({ ...adding, agent: 'codex' })}>Codex</button><button className={adding.agent === 'antigravity' ? 'on' : ''} onClick={() => setAdding({ ...adding, agent: 'antigravity' })}>Antigravity</button></div></div>
             <div className="field"><label>Name</label><input type="text" autoFocus value={adding.name} onChange={e => setAdding({ ...adding, name: e.target.value })} placeholder="e.g. Work, Personal Max, Client X" /></div>
-            <div className="help" style={{ fontSize: 12, color: 'var(--dim)' }}>Creates a new settings folder like <code>~/.{adding.agent}-{(adding.name || 'name').toLowerCase().replace(/[^a-z0-9]+/g, '-')}</code>. Sign in to it next.</div>
+            <div className="help" style={{ fontSize: 12, color: 'var(--dim)' }}>Creates a new {adding.agent === 'antigravity' ? 'home and Keychain' : 'settings folder'} like <code>~/.{adding.agent === 'antigravity' ? 'agy' : adding.agent}-{(adding.name || 'name').toLowerCase().replace(/[^a-z0-9]+/g, '-')}</code>. Sign in to it next.</div>
           </div>
           <footer><span style={{ flex: 1 }} /><button className="btn" onClick={() => setAdding(null)}>Cancel</button><button className="btn primary" onClick={async () => { if (!adding.name.trim()) return; try { const a = await post('/api/accounts', adding); setAdding(null); await load(); signIn(a); } catch (e) { setErr(String((e as Error).message)); } }}>Add and sign in</button></footer>
         </div>
@@ -192,7 +192,7 @@ export function AccountsPage({ tasks }: { tasks: Task[] }) {
       {term && <div className="scrim open">
         <div className="modal" style={{ width: 900 }}>
           <header><h2>{term.title}</h2><button className="btn ghost icon" onClick={() => { setTerm(null); load(true); }}>✕</button></header>
-          <div className="body"><div className="sub">{term.note}</div><div style={{ height: 420, display: 'flex', border: '1px solid var(--line)', borderRadius: 8, overflow: 'hidden' }}><Terminal taskId="" session={term.session} autoFocus /></div></div>
+          <div className="body"><div className="sub">{term.note}</div><div style={{ height: 'min(70vh, 650px)', display: 'flex', border: '1px solid var(--line)', borderRadius: 8, overflow: 'hidden' }}><Terminal taskId="" session={term.session} autoFocus /></div></div>
           <footer><span style={{ flex: 1 }} /><button className="btn primary" onClick={() => { setTerm(null); load(true); }}>Done</button></footer>
         </div>
       </div>}

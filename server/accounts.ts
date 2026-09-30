@@ -1,13 +1,13 @@
 // Accounts: each account is a settings folder (CLAUDE_CONFIG_DIR for Claude Code, CODEX_HOME for Codex), so several
 // accounts run side by side and each task uses one. The CLIs log in themselves; Taskboard never reads credential files,
-// it only asks `claude auth status` / `codex login status` / `agy models`. Antigravity has only its default account:
-// agy keeps its sign-in in the macOS keychain and has no setting for another settings folder.
+// it only asks `claude auth status` / `codex login status` / `agy models`.
 import { execFile } from 'node:child_process';
 import { closeSync, copyFileSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
 import { promisify } from 'node:util';
 import { AGY_HOME, HOME, TB_DIR, agyBin } from './config.ts';
 import * as machine from './machine.ts';
+import { createProfile, prepareProfile } from './agy-profile.ts';
 
 const exec = promisify(execFile);
 export type AgentKind = 'claude' | 'codex' | 'antigravity';
@@ -43,12 +43,17 @@ export const get = (id?: string) => accounts.find(a => a.id === id);
 export const defaultFor = (agent: AgentKind) => accounts.find(a => a.agent === agent && a.isDefault)!;
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 30) || 'account';
 
-export function create(agent: AgentKind, name: string): Account {
-  if (agent === 'antigravity') throw new Error('Antigravity has one account only: agy keeps its sign-in in the keychain, not in a settings folder.');
+export const agyHome = (a: Account) => a.isDefault ? HOME : a.dir;
+export const agyConfigDir = (a: Account) => a.isDefault ? a.dir : join(a.dir, '.gemini', 'antigravity-cli');
+export async function prepare(a: Account) { if (a.agent === 'antigravity' && !a.isDefault) await prepareProfile(a.dir); }
+
+export async function create(agent: AgentKind, name: string): Promise<Account> {
   const base = `${agent}-${slug(name)}`; let id = base, n = 2;
-  while (accounts.some(a => a.id === id)) id = `${base}-${n++}`;
-  const dir = join(HOME, (agent === 'claude' ? '.claude-' : '.codex-') + id.replace(/^(claude|codex)-/, ''));
-  mkdirSync(dir, { recursive: true });
+  const dirFor = (candidate: string) => join(HOME, (agent === 'claude' ? '.claude-' : agent === 'codex' ? '.codex-' : '.agy-') + candidate.replace(/^(claude|codex|antigravity)-/, ''));
+  while (accounts.some(a => a.id === id) || (agent === 'antigravity' && existsSync(dirFor(id)))) id = `${base}-${n++}`;
+  const dir = dirFor(id);
+  mkdirSync(dir, { recursive: true, mode: agent === 'antigravity' ? 0o700 : undefined });
+  if (agent === 'antigravity') await createProfile(dir);
   const a: Account = { id, agent, name, dir, maxParallel: machine.get().accounts.defaultMaxParallel, created: new Date().toISOString() };
   accounts.push(a); save(); return a;
 }
@@ -67,7 +72,7 @@ export function setAllMaxParallel(n: number) { const max = machine.checkMaxParal
 // Environment that points a CLI at an account's folder (nothing for the default folders).
 export function envFor(a?: Account): Record<string, string> {
   if (!a || a.isDefault) return {};
-  return a.agent === 'claude' ? { CLAUDE_CONFIG_DIR: a.dir } : a.agent === 'codex' ? { CODEX_HOME: a.dir } : {};
+  return a.agent === 'claude' ? { CLAUDE_CONFIG_DIR: a.dir } : a.agent === 'codex' ? { CODEX_HOME: a.dir } : { HOME: a.dir };
 }
 
 const statusCache = new Map<string, AccountStatus>();
@@ -80,6 +85,7 @@ export async function status(a: Account, fresh = false): Promise<AccountStatus> 
       const { stdout } = await exec('claude', ['auth', 'status'], { env, timeout: 15000 });
       const j = JSON.parse(stdout); s = { signedIn: !!j.loggedIn, who: j.email || j.orgName || j.authMethod, checkedAt: Date.now() };
     } else if (a.agent === 'antigravity') {
+      await prepare(a);
       // `agy models` lists the models when signed in; otherwise it prints "Please sign in to view available models."
       const { stdout, stderr } = await exec(agyBin(), ['models'], { env, timeout: 20000 }).catch(e => ({ stdout: String(e.stdout || ''), stderr: String(e.stderr || '') }));
       const out = stdout + stderr; const n = out.split('\n').filter(l => l.includes('\t')).length;
@@ -89,7 +95,7 @@ export async function status(a: Account, fresh = false): Promise<AccountStatus> 
       const { stdout, stderr } = await exec('codex', ['login', 'status'], { env, timeout: 15000 }).catch(e => ({ stdout: String(e.stdout || ''), stderr: String(e.stderr || '') }));
       const out = (stdout + stderr).trim(); s = { signedIn: /logged in/i.test(out) && !/not logged in/i.test(out), who: out.split('\n')[0], checkedAt: Date.now() };
     }
-  } catch { /* CLI missing or failed: not signed in */ }
+  } catch (e) { if (a.agent === 'antigravity' && !a.isDefault) s.who = (e as Error).message; }
   statusCache.set(a.id, s); return s;
 }
 
