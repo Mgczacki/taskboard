@@ -34,7 +34,7 @@ const STVAR: Record<Status, string> = {
 };
 
 interface PersonStats { sent: number; unsent: number; received: number; unrouted: number; last: string }
-interface GNode { id: string; kind: 'task' | 'doc' | 'person' | 'source'; lane: string; w: number; h: number; x: number; y: number; row: number; col: number; t?: Task; owner?: string; doc?: OutDoc; person?: MailPerson; stats?: PersonStats; src?: string }
+interface GNode { id: string; kind: 'task' | 'doc' | 'person' | 'source' | 'more'; lane: string; w: number; h: number; x: number; y: number; row: number; col: number; t?: Task; owner?: string; doc?: OutDoc; docOrder?: number; extraDocs?: number; expanded?: boolean; person?: MailPerson; stats?: PersonStats; src?: string }
 // message edges: ids of the messages on the edge, dashed (pending) while none of them is sent
 interface GEdge { a: string; b: string; kind: 'wrote' | 'handoff' | 'message'; ids?: string[]; pending?: boolean; last?: string }
 interface Lane { key: string; name: string; color: string; nodes: GNode[]; rows: number; y: number; h: number; alt: boolean; members: number }
@@ -47,7 +47,7 @@ export function folderOf(t: Task): string {
   return p.split('/').pop() || '—';
 }
 
-function build(tasksAll: Task[], groups: Group[], docsByTask: Record<string, OutDoc[]>, edgesAll: Edge[], mode: LaneMode, showDocs: boolean, showArch: boolean, mail: MailGraph, showPeople: boolean) {
+function build(tasksAll: Task[], groups: Group[], docsByTask: Record<string, OutDoc[]>, edgesAll: Edge[], mode: LaneMode, showDocs: boolean, showArch: boolean, mail: MailGraph, showPeople: boolean, expandedDocs: Set<string>) {
   const tasks = tasksAll.filter(t => showArch || t.status !== 'archived');
   const tset = new Set(tasks.map(t => t.id));
   const laneOfTask = (t: Task) => {
@@ -80,6 +80,28 @@ function build(tasksAll: Task[], groups: Group[], docsByTask: Record<string, Out
     }
   } else {
     for (const e of handoffs) if (!edges.some(x => x.a === 't:' + e.from && x.b === 't:' + e.to)) edges.push({ a: 't:' + e.from, b: 't:' + e.to, kind: 'handoff' });
+  }
+  // Collapse after adding sent files, so handoffs cannot bypass the three-file limit.
+  if (showDocs) {
+    for (const t of tasks) {
+      const docs = [...nodes.values()].filter(n => n.kind === 'doc' && n.owner === t.id)
+        .sort((a, b) => Date.parse(b.doc!.mtime) - Date.parse(a.doc!.mtime) || a.id.localeCompare(b.id));
+      docs.forEach((n, i) => { n.docOrder = i < 3 ? i : i + 1; });
+      if (docs.length <= 3) continue;
+      const id = 'more:' + t.id, expanded = expandedDocs.has(t.id);
+      nodes.set(id, { id, kind: 'more', owner: t.id, extraDocs: docs.length - 3, expanded, docOrder: 3,
+        lane: laneOfTask(t), w: DOC_W, h: DOC_H, x: 0, y: 0, row: 0, col: 0 });
+      edges.push({ a: 't:' + t.id, b: id, kind: 'wrote' });
+      if (!expanded) {
+        const hidden = new Set(docs.slice(3).map(n => n.id));
+        hidden.forEach(key => nodes.delete(key));
+        for (let i = edges.length - 1; i >= 0; i--) {
+          const e = edges[i];
+          if (hidden.has(e.b)) edges.splice(i, 1);
+          else if (hidden.has(e.a)) e.a = id;
+        }
+      }
+    }
   }
   if (showPeople) {
     // One edge for each sender and receiver pair. A message proposed by a hidden (archived) task is left out.
@@ -165,7 +187,7 @@ function build(tasksAll: Task[], groups: Group[], docsByTask: Record<string, Out
     const flow = l.nodes.filter(n => linked.has(n.id));
     for (let c = 0; c <= R; c++) {
       const col = flow.filter(n => rank.get(n.id) === c);
-      col.sort((a, b) => avgPredRow(a) - avgPredRow(b) || a.id.localeCompare(b.id));
+      col.sort((a, b) => avgPredRow(a) - avgPredRow(b) || (a.owner && b.owner ? a.owner.localeCompare(b.owner) || (a.docOrder ?? 0) - (b.docOrder ?? 0) : 0) || a.id.localeCompare(b.id));
       col.forEach((n, i) => occupy(i, c, n));
     }
     const loose = l.nodes.filter(n => !linked.has(n.id)).sort((a, b) =>
@@ -226,6 +248,7 @@ function clampView(t: View, el: HTMLElement | null, w: number, h: number): View 
 export function GraphView({ tasks, groups, open }: Props) {
   const [mode, setMode] = useState<LaneMode>(() => (localStorage.getItem('tb-graph-lanes') as LaneMode) || 'group');
   const [showDocs, setShowDocs] = useState(() => localStorage.getItem('tb-graph-docs') !== '0');
+  const [expandedDocs, setExpandedDocs] = useState<Set<string>>(() => new Set());
   const [showArch, setShowArch] = useState(false);
   const [showPeople, setShowPeople] = useState(() => localStorage.getItem('tb-graph-people') !== '0');
   const [mail, setMail] = useState<MailGraph>({ people: [], messages: [] });
@@ -263,7 +286,7 @@ export function GraphView({ tasks, groups, open }: Props) {
     return () => { dead = true; clearTimeout(h); clearInterval(iv); };
   }, [taskKey, showPeople]);
 
-  const L = useMemo(() => build(tasks, groups, docsByTask, edgesAll, mode, showDocs, showArch, mail, showPeople), [tasks, groups, docsByTask, edgesAll, mode, showDocs, showArch, mail, showPeople]);
+  const L = useMemo(() => build(tasks, groups, docsByTask, edgesAll, mode, showDocs, showArch, mail, showPeople, expandedDocs), [tasks, groups, docsByTask, edgesAll, mode, showDocs, showArch, mail, showPeople, expandedDocs]);
   // every view change goes through clampView, so the content cannot leave the screen
   const size = useRef({ w: L.width, h: L.height }); size.current = { w: L.width, h: L.height };
   const setTf = useCallback((v: View | ((t: View) => View)) => setTfRaw(t => clampView(typeof v === 'function' ? v(t) : v, stage.current, size.current.w, size.current.h)), []);
@@ -299,6 +322,14 @@ export function GraphView({ tasks, groups, open }: Props) {
 
   const openNode = useCallback((id: string) => {
     const n = L.nodes.get(id); if (!n) return;
+    if (n.kind === 'more') {
+      setExpandedDocs(previous => {
+        const next = new Set(previous);
+        if (next.has(n.owner!)) next.delete(n.owner!); else next.add(n.owner!);
+        return next;
+      });
+      return;
+    }
     if (n.kind === 'task') open(n.t!.id); else if (n.kind === 'doc') open(n.owner!, 'docs'); else setPanel({ node: id });
   }, [L, open]);
 
@@ -321,7 +352,7 @@ export function GraphView({ tasks, groups, open }: Props) {
       if (tgt?.closest?.('input,textarea,select,[contenteditable=true],.xterm,.modal')) return;
       if (document.querySelector('.drawer.open, .scrim.open, .triage.open')) return;
       if (e.key === 'Escape' && panel) { e.preventDefault(); setPanel(null); return; }
-      if (tgt?.closest?.('.gpanel')) return;
+      if (tgt?.closest?.('.gpanel, button')) return;
       if (hit(e, 'graphFit')) { e.preventDefault(); fit(); return; }
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (e.key === 'Enter' && sel) { e.preventDefault(); openNode(sel); return; }
@@ -364,7 +395,7 @@ export function GraphView({ tasks, groups, open }: Props) {
   }, [setTf]);
 
   const nodes = [...L.nodes.values()];
-  const nTasks = nodes.filter(n => n.kind === 'task').length, nDocs = nodes.filter(n => n.kind === 'doc').length, nHand = L.edges.filter(e => e.kind === 'handoff').length;
+  const nTasks = nodes.filter(n => n.kind === 'task').length, nDocs = nodes.reduce((sum, n) => sum + (n.kind === 'doc' ? 1 : n.kind === 'more' && !n.expanded ? n.extraDocs! : 0), 0), nHand = L.edges.filter(e => e.kind === 'handoff').length;
   const nPeople = nodes.filter(n => n.kind === 'person').length, nMsg = nodes.reduce((s, n) => s + (n.kind === 'person' ? n.stats!.sent + n.stats!.unsent + n.stats!.received : 0), 0);
 
   // what the message panel shows, from the current layout so that it follows live updates
@@ -455,6 +486,14 @@ export function GraphView({ tasks, groups, open }: Props) {
 function NodeCard({ n, groups, mode, sel, hl, onEnter, onLeave, onClick }: { n: GNode; groups: Group[]; mode: LaneMode; sel: boolean; hl: boolean; onEnter: () => void; onLeave: () => void; onClick: () => void }) {
   const style = { left: n.x, top: n.y, width: n.w, height: n.h } as React.CSSProperties;
   const cls = `${sel ? 'sel' : ''} ${hl ? 'hl' : ''}`;
+  if (n.kind === 'more') {
+    return <button type="button" className={`gnode more ${cls}`} style={style} aria-expanded={n.expanded}
+      aria-label={`${n.expanded ? 'Collapse' : 'Expand'} ${n.extraDocs} older files for task ${n.owner}`}
+      onPointerEnter={onEnter} onPointerLeave={onLeave} onClick={onClick}>
+      <strong>{n.expanded ? 'Show latest 3' : `+${n.extraDocs} more files`}</strong>
+      <span>{n.expanded ? 'Collapse older files' : 'Expand all files'}</span>
+    </button>;
+  }
   if (n.kind === 'person' || n.kind === 'source') {
     const p = n.person, st = n.stats;
     const name = p ? p.name : SOURCES[n.src!];
