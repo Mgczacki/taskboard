@@ -26,7 +26,7 @@ test('mail routes restrict readers and require separate approval and routing', a
     if (method === 'chat.postMessage') { posted = args; return { ts: '1' }; }
     return {};
   } } as unknown as SlackClient;
-  const cleanup = mountMail(app, { background: false, slack, review: async () => ({ verdict: 'action-request', reason: 'Permission change', at: new Date().toISOString() }) });
+  const cleanup = mountMail(app, { background: false, slack, qualityReview: async body => ({ state: 'done', flags: [], suggestedBody: body, at: new Date().toISOString() }), review: async () => ({ verdict: 'action-request', reason: 'Permission change', at: new Date().toISOString() }) });
   const server = app.listen(0, '127.0.0.1'); await new Promise<void>(r => server.once('listening', r));
   const base = `http://127.0.0.1:${(server.address() as {port:number}).port}/api/mail`;
   const call = async (path: string, actor: 'user' | 'controller' | 'agent' | 'task' | 'stranger', body?: unknown) => {

@@ -38,6 +38,19 @@ const writingRules = (text: string) => [
   `Before you write a document or an artifact, read ${WRITING_RULES}. After you write it, run: python3 ${WORDING_SCRIPT} <file>. Fix each warning, or keep the word when it is part of an identifier or a quotation.`,
 ].join('\n');
 
+const mailWritingRules = () => [
+  'When you propose a message to another person, write for that reader. The reader has none of your task context.',
+  'State why the reader gets the message, the facts they need, what you ask them to do, and a date if one applies.',
+  'Keep the message short. Ask for one action when possible.',
+  'Do not include your next steps, task number, plan, tool names, local file paths, worktree names, other tasks, unrelated people, secrets, or internal process notes.',
+  'Give a link only when the reader needs it and can likely open it. Say when access may be limited.',
+  'Use `tb mail draft <to> --subject <text> --context <why> --ask <request> [--found <facts>] [--by <date>] [--links <URLs>]`.',
+  'The older `tb mail draft <to> <subject> <body>` form still works for free text.',
+  'Read the message check in the draft result. If it flags text, revise your draft with `tb mail revise <id> --hash <hash> --subject <text> --body <body>`.',
+  'Good example: "Hi Jason, the MCP publish guide points authors to a bridge in an internal repository. Could you provide the supported bridge through MCP and check its version before publish? The guide and publisher links are below. Please tell me if you cannot open them."',
+  'Bad example: "Hi Jason, please fix the MCP bridge. The next check is one MCP-built game with an event call on Android and a matching BigQuery row." The last sentence is the sender\'s task step.',
+].join('\n');
+
 // The hook events Taskboard listens to. One script handles all of them; it reads hook_event_name from stdin.
 const HOOK_EVENTS = ['SessionStart', 'UserPromptSubmit', 'Notification', 'PermissionRequest', 'PostToolUse', 'Stop', 'StopFailure'];
 
@@ -139,7 +152,7 @@ function messageRules() {
     outgoing === 1
       ? '- Outgoing level 1: do not approve drafts. The user approves each draft on the dashboard, and that approval sends it.'
       : `- Outgoing level ${outgoing}: you may approve a draft with approver controller (\`tb mail approve <id> <hash>\`) and send it with \`tb mail send <id>\`.\n  Send only drafts that the user or a task asked for. Other drafts wait for the user.`,
-    '- Use `tb mail draft <Slack ID> <subject> <body>` to prepare an outgoing message.',
+    mailWritingRules(),
     '- Use `tb mail dismiss <id>` to hide an item without feedback. Use `tb mail restore <id>` to show it again.',
   ].join('\n');
 }
@@ -250,6 +263,7 @@ function taskInstructions(t: Task) {
     `Documents meant for the user or for other agents (handoffs, designs, reviews, diagrams, HTML pages) go in ${dir}/outbox/ as Markdown or HTML files. Files others send you arrive in ${dir}/inbox/.`,
     `To wait for a file another agent or the user will send you, run: tb inbox wait [--timeout seconds]. It prints the path and sender of each new file (exit 0), or exits 2 on timeout.`,
     `Use tb mail submit <subject> <body> to send a message to your own user's Inbox.`,
+    mailWritingRules(),
     `If your own permission check refuses a command, use tb permit request --reason "<reason>" --command "<command>". Use --steps <file> for an ordered sequence. The server runs approved steps and stops after the first failure. Read the result with tb permit result <id> --wait. Do not rerun an approved command yourself.`,
     `When a document in your outbox needs the user's review or approval, run: tb review <path>. Their comments arrive in your inbox.`,
     ...(t.agent === 'claude' ? [`Writing the log entry is always allowed, even if the user asked you not to use tools. Do it quietly: do not mention the log to the user.`] : []),

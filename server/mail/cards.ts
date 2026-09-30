@@ -41,7 +41,7 @@ export function mailCards(store: MailStore, deps: CardDeps) {
     if (m.dismissedAt || m.rejectedAt || m.sentAt || approvalValid(m, data, deps.levels())) return null;
     if (approverFor(m, data, deps.levels()) !== 'user') return null;
     if (m.direction === 'inbox') return m.source === 'slack' && m.proposedRoute?.task ? `${m.hash}:${m.proposedRoute.task}` : null;
-    return m.proposedBy?.actor === 'task' || m.proposedBy?.actor === 'controller' ? m.hash : null;
+    return m.proposedBy?.actor === 'task' || m.proposedBy?.actor === 'controller' ? `${m.hash}:${m.quality?.at || ''}:${m.quality?.state || ''}` : null;
   }
 
   function detail(m: Message) {
@@ -50,7 +50,10 @@ export function mailCards(store: MailStore, deps: CardDeps) {
     return [
       `Subject: ${m.subject}`,
       `${m.direction === 'inbox' ? 'Sender' : 'Recipient'}: ${name(m.direction === 'inbox' ? m.from : m.to)}${trusted ? '' : ' — not a trusted sender'}`,
-      `Check: ${combinedVerdict(m)}. ${m.review?.reason || ''}`,
+      `Safety check: ${combinedVerdict(m)}. ${m.review?.reason || ''}`,
+      ...(m.direction === 'outbox' && m.quality?.flags.length ? [`Message check: ${m.quality.flags.length} sentence(s) may contain private working notes. The user must decide whether to send them.`] : []),
+      ...(m.direction === 'outbox' && m.quality?.state === 'failed' ? ['Message check failed. The user must review this draft.'] : []),
+      ...(m.direction === 'outbox' && !m.quality ? ['Message check has not run. The user must review this draft.'] : []),
       ...(m.files?.length ? [`Files: ${m.files.map(f => `${f.name} (${f.review?.verdict || 'no check'})`).join(', ')}`] : []),
       ...(m.returns?.length ? [`Your earlier comment: ${m.returns[m.returns.length - 1].comment}`] : []),
       ...(m.edits?.length ? [`Edited by you at ${new Date(m.edits[m.edits.length - 1].at).toLocaleString()}. Inbox shows the earlier text.`] : []),
@@ -68,7 +71,8 @@ export function mailCards(store: MailStore, deps: CardDeps) {
       : `send a message to ${name(m.to)}${trusted ? '' : ' (not a trusted sender)'}: ${m.subject}`;
     const hash = m.hash;
     const current = () => { const x = store.get(m.id); if (x.hash !== hash) throw new Error('The message changed. Read it again in Inbox.'); return x; };
-    const card = approvals.request({ actor: who, action: m.direction === 'inbox' ? 'mail-in' : 'mail-out', summary, detail: detail(m), payload: { message: m.id, hash, task } }, async () => {
+    const card = approvals.request({ actor: who, action: m.direction === 'inbox' ? 'mail-in' : 'mail-out', summary, detail: detail(m), payload: { message: m.id, hash, task,
+      ...(m.direction === 'outbox' ? { body: m.body, quality: m.quality, files: m.files?.filter(f => !f.longBody).map(f => f.id) || [] } : {}) } }, async () => {
       let x = current();
       const approver = approverFor(x, store.read(), deps.levels());
       if (!approvalValid(x, store.read(), deps.levels())) x = store.approve(x.id, 'user', hash, approver);

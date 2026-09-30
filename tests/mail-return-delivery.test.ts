@@ -80,7 +80,7 @@ const slack = { identity: () => ({ user: 'U1', team: 'T1' }), call: async (metho
   return {};
 } } as unknown as SlackClient;
 const app = express(); app.use(express.json());
-const cleanup = mountMail(app, { background: false, slack, levels: () => levels, delivery: inboxDelivery,
+const cleanup = mountMail(app, { background: false, slack, levels: () => levels, qualityReview: async body => ({ state: 'done', flags: [], suggestedBody: body, at: new Date().toISOString() }), delivery: inboxDelivery,
   review: async () => ({ verdict: 'communication', reason: 'Fixture', at: new Date().toISOString() }) });
 const server = app.listen(0, '127.0.0.1'); await new Promise<void>(r => server.once('listening', r));
 const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/mail`;

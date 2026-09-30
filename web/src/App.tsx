@@ -11,7 +11,7 @@ import { Terminal } from './components/Terminal';
 import { AgentChip, Dot, StatusLabel, ThreeLines } from './components/ui';
 import { BoardView, ListView } from './components/Views';
 import { GraphView } from './components/Graph';
-import { InboxPage } from './components/Mail';
+import { InboxPage, FlaggedBody, request as mailRequest } from './components/Mail';
 import { AccountsPage } from './components/Accounts';
 import { SettingsPage } from './components/Settings';
 import { PermitDetails, PermitsPage } from './components/Permits';
@@ -262,9 +262,16 @@ export function App() {
         <div key={a.id} className="approval">
           {a.action === 'permit' && a.payload?.permitId ? <PermitDetails id={a.payload.permitId} decision openTask={setOpenId} /> : a.action === 'tool-refusal' ? <><div className="ap-h"><span className="dot needs-you" /><b>Task #{allTasks.find(t => t.id === a.actor)?.num || a.actor} had a command refused</b></div><pre className="ap-d">{a.detail}</pre><div className="ap-a">{a.payload?.canPermit && <button className="btn primary" onClick={() => void api.permitRefusal(a.id).catch(e => toast(String(e.message || e)))}>Allow this once</button>}<button className="btn" onClick={() => void api.decide(a.id, false)}>Deny</button><button className="btn ghost" onClick={() => setOpenId(a.actor)}>Open task</button></div></> : <>
           <div className="ap-h"><span className="dot needs-you" /><b>{a.actor === 'controller' ? 'The controller' : `Task #${allTasks.find(t => t.id === a.actor)?.num || a.actor}`} wants to {a.summary}</b></div>
-          {a.detail && <pre className="ap-d">{a.detail}</pre>}
+          {a.detail && (a.action === 'mail-out' && a.payload?.body
+            ? <><pre className="ap-d">{a.detail.slice(0, a.detail.lastIndexOf(a.payload.body))}</pre><FlaggedBody body={a.payload.body} quality={a.payload.quality} /></>
+            : <pre className="ap-d">{a.detail}</pre>)}
           {a.returnable && <textarea className="routing-rule" rows={2} aria-label="Comment for Send back" placeholder={a.action === 'mail-in' ? 'What is wrong with the message or the task? The controller receives this comment.' : 'What should change in the draft? The agent that wrote it receives this comment.'} value={cardComments[a.id] || ''} onChange={e => setCardComments(c => ({ ...c, [a.id]: e.target.value }))} />}
           <div className="ap-a"><button className="btn primary" onClick={() => void api.decide(a.id, true).then(r => { if (a.returnable && r.result) toast(r.result); }).catch(e => toast((e as Error).message))}>Approve</button>
+            {a.action === 'mail-out' && a.payload?.quality?.flags.length && <button className="btn" onClick={() => void (async () => {
+              const m = await mailRequest(`/${a.payload!.message}`);
+              await mailRequest(`/${m.id}/edit`, { subject: m.subject, body: a.payload!.quality!.suggestedBody, files: a.payload!.files || [], hash: a.payload!.hash });
+              toast('Flagged text was removed. Taskboard checks the edited draft again.');
+            })().catch(e => toast((e as Error).message))}>Remove flagged text</button>}
             {/* the result says whether the agent received the comment (server/mail/cards.ts giveBack) */}
             {a.returnable && <button className="btn" disabled={!cardComments[a.id]?.trim()} onClick={() => void api.giveBack(a.id, cardComments[a.id]).then(r => { if (r.result) toast(r.result); }).catch(e => toast((e as Error).message))}>Send back</button>}
             <button className="btn" onClick={() => api.decide(a.id, false)}>Deny</button><button className="btn ghost" onClick={() => a.actor === 'controller' ? openController() : setOpenId(a.actor)}>{a.actor === 'controller' ? 'Open controller' : 'Open task'}</button></div></>}

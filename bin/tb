@@ -85,11 +85,22 @@ switch (cmd) {
     else if (action === 'people') result = await call('GET', '/api/mail/people?q=' + encodeURIComponent(rest.slice(1).join(' ')));
     else if (action === 'search') result = await call('GET', '/api/mail/search?q=' + encodeURIComponent(rest.slice(1).join(' ')));
     else if (action === 'submit') result = await call('POST', '/api/mail/submit', { subject: id, body: value });
-    else if (action === 'draft') result = await call('POST', process.env.TASK_ID && process.env.TASK_ID !== 'controller' ? '/api/mail/propose' : '/api/mail/draft', { to: id, subject: value, body: rest[3] });
+    else if (action === 'draft') {
+      const structured = rest.includes('--subject');
+      const field = name => { const i = rest.indexOf(name); return i < 0 ? undefined : rest[i + 1]; };
+      const payload = structured ? { to: id, subject: field('--subject'), context: field('--context'), found: field('--found'), ask: field('--ask'), by: field('--by'), links: field('--links') } : { to: id, subject: value, body: rest[3] };
+      result = await call('POST', process.env.TASK_ID && process.env.TASK_ID !== 'controller' ? '/api/mail/propose' : '/api/mail/draft', payload);
+      if (result.quality?.flags?.length) console.error(`Message check found ${result.quality.flags.length} sentence(s) for you to review. The user must approve this draft.`, ...result.quality.flags.map(f => `\n- ${f.reason}: ${f.text}`));
+    }
+    else if (action === 'revise') {
+      const field = name => { const i = rest.indexOf(name); return i < 0 ? undefined : rest[i + 1]; };
+      result = await call('POST', `/api/mail/${encodeURIComponent(id)}/revise`, { hash: field('--hash'), subject: field('--subject'), context: field('--context'), found: field('--found'), ask: field('--ask'), by: field('--by'), links: field('--links'), ...(rest.includes('--body') ? { body: field('--body') } : {}) });
+      if (result.quality?.flags?.length) console.error(...result.quality.flags.map(f => `${f.reason}: ${f.text}`));
+    }
     else if (action === 'sync') result = await call('POST', '/api/mail/sync', {});
     else if (action === 'propose-route') result = await call('POST', `/api/mail/${encodeURIComponent(id)}/propose-route`, { task: value === 'none' ? null : (await task(value)).id });
     else if (['review', 'approve', 'send', 'dismiss', 'restore', 'route'].includes(action)) result = await call('POST', `/api/mail/${encodeURIComponent(id)}/${action}`, action === 'route' ? { task: (await task(value)).id } : action === 'approve' ? { hash: value } : {});
-    else { console.error('tb mail list [--dismissed] | people <text> | search <text> | submit <subject> <body> | draft <name|email|Slack ID> <subject> <body> | sync | review <id> | approve <id> <hash> | send <id> | dismiss <id> | restore <id> | route <id> <task> | propose-route <id> <task|none>'); process.exit(1); }
+    else { console.error('tb mail list [--dismissed] | people <text> | search <text> | submit <subject> <body> | draft <to> --subject <text> --context <why> --ask <request> [--found <facts>] [--by <date>] [--links <URLs>] | draft <to> <subject> <body> | revise <id> --hash <hash> --subject <text> --body <body> | sync | review <id> | approve <id> <hash> | send <id> | dismiss <id> | restore <id> | route <id> <task> | propose-route <id> <task|none>'); process.exit(1); }
     console.log(JSON.stringify(result, null, 2)); break;
   }
 

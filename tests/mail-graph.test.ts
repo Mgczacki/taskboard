@@ -22,7 +22,7 @@ test('Graph mail routes give the dashboard a short record of each message and no
   store.change(d => { d.contacts.push({ user: 'U2', name: 'Ana', channel: 'D2', oldest: '0' }); });
   const app = express(); app.use(express.json());
   const slack = { identity: () => null, call: async () => { throw new Error('no Slack in this test'); } } as unknown as SlackClient;
-  const cleanup = mountMail(app, { background: false, slack, review: async () => ({ verdict: 'communication', reason: 'ok', at: new Date().toISOString() }) });
+  const cleanup = mountMail(app, { background: false, slack, qualityReview: async body => ({ state: 'done', flags: [], suggestedBody: body, at: new Date().toISOString() }), review: async () => ({ verdict: 'communication', reason: 'ok', at: new Date().toISOString() }) });
   const server = app.listen(0, '127.0.0.1'); await new Promise<void>(r => server.once('listening', r));
   const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/mail`;
   const get = (path: string, headers: Record<string, string>) => fetch(base + path, { headers });

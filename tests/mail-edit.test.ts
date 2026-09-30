@@ -32,7 +32,7 @@ test('the user edits an outgoing draft before it is sent', async () => {
   let gate: Promise<void> | undefined;
   const verdict = (text: string): Verdict => /HOSTILE/.test(text) ? 'quarantine' : /UNSURE/.test(text) ? 'uncertain' : 'communication';
   const app = express(); app.use(express.json());
-  const cleanup = mountMail(app, { background: false, slack, levels: () => levels,
+  const cleanup = mountMail(app, { background: false, slack, levels: () => levels, qualityReview: async body => ({ state: 'done', flags: [], suggestedBody: body, at: new Date().toISOString() }),
     review: async m => { const held = gate; if (held) await held; reviewed.push(m.body); return { verdict: verdict(m.subject + m.body), reason: 'Fixture', at: new Date().toISOString() }; } });
   const server = app.listen(0, '127.0.0.1'); await new Promise<void>(r => server.once('listening', r));
   const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/mail`;

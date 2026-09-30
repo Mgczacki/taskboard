@@ -8,11 +8,25 @@ import '../mail.css';
 function MailBody({ body }: { body: string }) {
   return <div className="md mail-body" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(marked.parse(body, { async: false }) as string) }} />;
 }
+export interface QualityView { state: string; flags: { text: string; start: number; end: number; reason: string }[]; suggestedBody: string }
+export function FlaggedBody({ body, quality }: { body: string; quality?: QualityView }) {
+  if (!quality?.flags.length) return <MailBody body={body} />;
+  const parts: React.ReactNode[] = [];
+  let offset = 0;
+  for (const flag of quality.flags) {
+    parts.push(body.slice(offset, flag.start));
+    parts.push(<mark className="mail-flag" key={flag.start} title={flag.reason}>{body.slice(flag.start, flag.end)}<small>{flag.reason}</small></mark>);
+    offset = flag.end;
+  }
+  parts.push(body.slice(offset));
+  return <pre className="mail-flagged-body">{parts}</pre>;
+}
 export interface Message {
   id: string; direction: 'inbox' | 'outbox'; from: string; to: string; subject: string; body: string; hash: string;
   created: string; dismissedAt?: string; sendStartedAt?: string; sentAt?: string; sending?: boolean; error?: string;
   proposedBy?: { actor: 'user' | 'controller' | 'task'; task?: string; agent?: string };
   review?: { verdict: string; reason: string; at: string }; approval?: { by: string; at: string }; routes: { task: string; delivery?: Delivery }[];
+  quality?: QualityView;
   files?: (FileInfo & { routed?: { task: string; delivery?: Delivery } })[];
   source?: string; rejectedAt?: string; unseen?: boolean; proposedRoute?: { task: string | null };
   // comments from Send back on the approval card, and whether the agent was told (server/inbox-delivery.ts)
@@ -177,11 +191,12 @@ function SentHistory({ messages, contacts, tasks, busy, act }: {
         {!!selected.edits?.length && <p>Edited by you at {date(selected.edits[selected.edits.length - 1].at)}.</p>}
         <p>Approved by: {selected.approval?.by || 'No approval recorded'}</p>
         <p>State: {sentState(selected)}{selected.dismissedAt ? ' · Dismissed' : ''}</p><p>Sent: {date(selected.sentAt)}</p>
-        <p>Check: {selected.review ? `${selected.review.verdict}. ${selected.review.reason}` : selected.error ? 'Failed.' : 'The controller checks this text now.'}</p>
+        <p>Safety check: {selected.review ? `${selected.review.verdict}. ${selected.review.reason}` : selected.error ? 'Failed.' : 'The controller checks this text now.'}</p>
+        {selected.quality?.flags.length ? <p role="alert">Message check: {selected.quality.flags.length} sentence(s) may contain private working notes. The user must decide whether to send the original.</p> : selected.quality?.state === 'failed' ? <p role="alert">The message check failed. The user must review this draft.</p> : null}
         {selected.editBlocked && selected.direction === 'outbox' && !selected.dismissedAt && <p>{selected.editBlocked}</p>}
         {editing?.id === selected.id
           ? <DraftEditor key={editing.key} m={selected} start={editing} busy={busy} act={act} close={() => setEditing(null)} />
-          : <><h3>Full message</h3><MailBody body={selected.body} /></>}
+          : <><h3>Full message</h3><FlaggedBody body={selected.body} quality={selected.quality} /></>}
         {!!selected.files?.length && <><h3>Files</h3><ul>{selected.files.map(f => <li key={f.id}>{f.name} ({Math.ceil(f.size / 1024)} KiB). {f.review?.verdict || 'Waiting for controller review'}.</li>)}</ul></>}
         <Comments m={selected} tasks={tasks} />
         <h3>Recorded steps</h3><ol>{steps.map((step, i) => <li key={i}>{step.label}: {date(step.at)}</li>)}</ol>
@@ -199,6 +214,7 @@ function SentHistory({ messages, contacts, tasks, busy, act }: {
           <button className="btn ghost" disabled={busy} onClick={() => void act(() => request(`/${selected.id}/${selected.dismissedAt ? 'restore' : 'dismiss'}`, {}))}>{selected.dismissedAt ? 'Restore' : 'Dismiss'}</button>
           {!selected.dismissedAt && !selected.review && <button className="btn" disabled={busy} onClick={() => void act(() => request(`/${selected.id}/review`, {}))}>Retry controller review</button>}
           {!selected.editBlocked && editing?.id !== selected.id && <button className="btn" disabled={busy} onClick={() => edit(selected, { subject: selected.subject, body: selected.body, files: selected.files || [] })}>Edit</button>}
+          {!selected.editBlocked && selected.quality?.flags.length && editing?.id !== selected.id && <button className="btn" disabled={busy || !selected.quality.suggestedBody} onClick={() => void act(() => request(`/${selected.id}/edit`, { subject: selected.subject, body: selected.quality!.suggestedBody, files: (selected.files || []).filter(f => !f.longBody).map(f => f.id), hash: selected.hash }))}>Remove flagged text</button>}
           {!selected.editBlocked && selected.review && selected.approver !== 'nobody' && !selected.approval && <button className="btn" disabled={busy} onClick={() => void act(() => request(`/${selected.id}/approve`, { hash: selected.hash }))}>Approve</button>}
           {!selected.editBlocked && selected.review && selected.approver !== 'nobody' && editing?.id !== selected.id && <button className="btn" disabled={busy} onClick={() => void act(() => request(`/${selected.id}/approve-send`, { hash: selected.hash }))}>Approve and send</button>}
           {!selected.trusted && <button className="btn ghost" disabled={busy} onClick={() => void act(() => request('/trusted', { user: selected.to, name: contactName(selected.to), trusted: true }))}>Trust this person</button>}
