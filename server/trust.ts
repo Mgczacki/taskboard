@@ -1,7 +1,7 @@
 // Trust only folders Taskboard launches. Keep the earlier value so Settings can undo Taskboard's edit.
 import { existsSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { AGY_HOME, HOME, TB_DIR } from './config.ts';
+import { HOME, TB_DIR } from './config.ts';
 import * as accounts from './accounts.ts';
 import type { Task } from './store.ts';
 
@@ -52,7 +52,7 @@ export function trustCodexHook(t: Task, key: string, hash: string) {
 export function trust(t: Task) {
   const path = real(t.cwd);
   const acct = accounts.get(t.account) || accounts.defaultFor(t.agent);
-  const file = t.agent === 'antigravity' ? join(AGY_HOME, 'settings.json')
+  const file = t.agent === 'antigravity' ? join(accounts.agyConfigDir(acct), 'settings.json')
     : t.agent === 'codex' ? join(acct.isDefault ? join(HOME, '.codex') : acct.dir, 'config.toml')
     : acct.isDefault ? join(HOME, '.claude.json') : join(acct.dir, '.claude.json');
   const recorded = changes();

@@ -7,7 +7,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeF
 import { basename, join } from 'node:path';
 import { hostname } from 'node:os';
 import { promisify } from 'node:util';
-import { GUARD_SCRIPT, STATUSLINE_SCRIPT, ROOT, TB_DIR, CLAUDE_SETTINGS_FILE, CODEX_NOTIFY_SCRIPT, HOME, HOOK_SCRIPT, TOKEN_FILE, URL_BASE, VAULT, DOCS_DIR, AGY_HOME, AGY_PLUGIN_DIR, agyBin } from './config.ts';
+import { GUARD_SCRIPT, STATUSLINE_SCRIPT, ROOT, TB_DIR, CLAUDE_SETTINGS_FILE, CODEX_NOTIFY_SCRIPT, HOME, HOOK_SCRIPT, TOKEN_FILE, URL_BASE, VAULT, DOCS_DIR, AGY_PLUGIN_DIR, agyBin } from './config.ts';
 import * as store from './store.ts';
 import type { Agent, Task } from './store.ts';
 import * as tmux from './tmux.ts';
@@ -82,9 +82,9 @@ export function writeClaudeSettings() {
 // agy passes no event name to a hook, so it is the script's first argument. PreInvocation starts a model call,
 // Stop ends a run (fullyIdle: the turn is over), PreToolUse / PostToolUse surround a tool call.
 const agyCmd = (script: string, args = '') => `[ -n "$TB_HOOKS_DIR" ] && node "$TB_HOOKS_DIR/${script}"${args ? ' ' + args : ''} || true`;
-export function installAgyPlugin() {
+export async function installAgyPlugin(account?: accounts.Account) {
   const bin = agyBin();
-  if (bin === 'agy' && !existsSync(AGY_HOME)) return; // Antigravity is not installed
+  if (bin === 'agy') return; // Antigravity is not installed
   const h = (e: string) => ({ type: 'command', command: agyCmd('agy-hook.mjs', e), timeout: 10 });
   const hooks = { taskboard: {
     PreInvocation: [h('PreInvocation')], Stop: [h('Stop')],
@@ -95,34 +95,38 @@ export function installAgyPlugin() {
   mkdirSync(AGY_PLUGIN_DIR, { recursive: true });
   writeFileSync(join(AGY_PLUGIN_DIR, 'plugin.json'), JSON.stringify(plugin, null, 2));
   writeFileSync(join(AGY_PLUGIN_DIR, 'hooks.json'), JSON.stringify(hooks, null, 2));
-  const installed = join(HOME, '.gemini', 'config', 'plugins', 'taskboard', 'hooks.json');
-  let same = false; try { same = readFileSync(installed, 'utf8') === readFileSync(join(AGY_PLUGIN_DIR, 'hooks.json'), 'utf8'); } catch { /* not installed */ }
-  if (!same) {
-    try {
-      if (existsSync(installed)) execFileSync(bin, ['plugin', 'uninstall', 'taskboard'], { stdio: 'ignore', timeout: 30000 });
-      execFileSync(bin, ['plugin', 'install', AGY_PLUGIN_DIR], { stdio: 'ignore', timeout: 30000 });
-    } catch (e) { console.error('agy plugin install failed', e); }
-  }
-  // The status line command sends the account's quota to Taskboard. It prints nothing, and stack_with_default keeps
-  // agy's own status line. A status line command that you set yourself is kept.
-  const f = join(AGY_HOME, 'settings.json');
-  try {
-    const cfg = existsSync(f) ? JSON.parse(readFileSync(f, 'utf8')) : {};
-    const want = { type: 'command', command: agyCmd('agy-statusline.mjs'), stack_with_default: true };
-    if (!cfg.statusLine || String(cfg.statusLine.command || '').includes('agy-statusline.mjs')) {
-      if (JSON.stringify(cfg.statusLine) !== JSON.stringify(want)) { cfg.statusLine = want; writeFileSync(f, JSON.stringify(cfg, null, 2)); }
+  for (const a of account ? [account] : accounts.all().filter(a => a.agent === 'antigravity')) {
+    try { await accounts.prepare(a); } catch (e) { console.error('agy profile unavailable', a.id, e); continue; }
+    const installed = join(accounts.agyHome(a), '.gemini', 'config', 'plugins', 'taskboard', 'hooks.json');
+    let same = false; try { same = readFileSync(installed, 'utf8') === readFileSync(join(AGY_PLUGIN_DIR, 'hooks.json'), 'utf8'); } catch { /* not installed */ }
+    if (!same) {
+      try {
+        const env = { ...process.env, ...accounts.envFor(a) };
+        if (existsSync(installed)) execFileSync(bin, ['plugin', 'uninstall', 'taskboard'], { env, stdio: 'ignore', timeout: 30000 });
+        execFileSync(bin, ['plugin', 'install', AGY_PLUGIN_DIR], { env, stdio: 'ignore', timeout: 30000 });
+      } catch (e) { console.error('agy plugin install failed', a.id, e); }
     }
-  } catch (e) { console.error('agy settings.json not updated', e); }
+    const f = join(accounts.agyConfigDir(a), 'settings.json');
+    try {
+      mkdirSync(accounts.agyConfigDir(a), { recursive: true });
+      const cfg = existsSync(f) ? JSON.parse(readFileSync(f, 'utf8')) : {};
+      const want = { type: 'command', command: agyCmd('agy-statusline.mjs'), stack_with_default: true };
+      if (!cfg.statusLine || String(cfg.statusLine.command || '').includes('agy-statusline.mjs')) {
+        if (JSON.stringify(cfg.statusLine) !== JSON.stringify(want)) { cfg.statusLine = want; writeFileSync(f, JSON.stringify(cfg, null, 2)); }
+      }
+    } catch (e) { console.error('agy settings.json not updated', a.id, e); }
+  }
 }
 
 // agy asks "Do you trust the contents of this project?" once for each folder, and a prompt given with -i runs before
 // the answer, without the folder as its workspace (observed with agy 1.2.12). For a folder that is not trusted yet,
 // the prompt is kept here and typed in once the question is answered (see typePendingPrompt).
-function agyTrusted(cwd: string) {
+function agyTrusted(t: Task) {
   try {
-    const list: string[] = JSON.parse(readFileSync(join(AGY_HOME, 'settings.json'), 'utf8')).trustedWorkspaces || [];
+    const a = accounts.get(t.account) || accounts.defaultFor('antigravity');
+    const list: string[] = JSON.parse(readFileSync(join(accounts.agyConfigDir(a), 'settings.json'), 'utf8')).trustedWorkspaces || [];
     const real = (p: string) => { try { return realpathSync(p); } catch { return p; } };
-    return list.some(p => real(p) === real(cwd));
+    return list.some(p => real(p) === real(t.cwd));
   } catch { return false; }
 }
 export const pendingPrompt = new Map<string, string>();
@@ -222,6 +226,7 @@ export async function startController(): Promise<Task> {
   // never closed on that basis (a listing problem once closed a running controller)
   if ((await tmux.hasSession(t.session)) !== false) { const s = (await tmux.listSessions())?.find(x => x.name === t!.session); if (!s || !s.dead) return t; await tmux.killSession(t.session); }
   const resume = t.agent === 'claude' ? !!t.transcript : !!t.sessionId;
+  if (t.agent === 'antigravity') await accounts.prepare(accounts.get(t.account) || accounts.defaultFor('antigravity'));
   if (machine.get().permissions.trustWorkspaces) workspaceTrust.trust(t);
   launching.add(t.id); store.launchedAt.set(t.id, Date.now());
   try {
@@ -385,7 +390,7 @@ function command(t: Task, prompt: string | null, resume: boolean, codexTrust: st
     if (resume && t.sessionId) return [...c, '--conversation', t.sessionId];
     if (prompt) {
       const text = t.role === 'controller' ? prompt : `${taskInstructions(t)}\n\n---\n\n${prompt}`;
-      if (agyTrusted(t.cwd)) c.push('-i', text); else pendingPrompt.set(t.id, text);
+      if (agyTrusted(t)) c.push('-i', text); else pendingPrompt.set(t.id, text);
     }
     return c;
   }
@@ -527,6 +532,11 @@ async function launch(t: Task, prompt: string | null, resume: boolean) {
   try { await launchInner(t, prompt, resume); } finally { launching.delete(t.id); }
 }
 async function launchInner(t: Task, prompt: string | null, resume: boolean) {
+  if (t.agent === 'antigravity') {
+    const a = accounts.get(t.account) || accounts.defaultFor('antigravity');
+    await accounts.prepare(a);
+    await installAgyPlugin(a);
+  }
   if (machine.get().permissions.trustWorkspaces) workspaceTrust.trust(t);
   const codexTrust = await codexHookTrust(t);
   await tmux.newSession(t.session, t.cwd, baseEnv(t), command(t, prompt, resume, codexTrust), async () => { await ensureTmuxConfigured(); });
@@ -535,12 +545,13 @@ async function launchInner(t: Task, prompt: string | null, resume: boolean) {
 }
 
 // Turn a session started outside Taskboard into a task. It starts Suspended; opening it resumes the conversation here.
-export function importSession(c: { agent: Agent; sessionId: string; title: string; cwd: string; branch?: string; firstPrompt?: string; lastMessage?: string; updated: string; transcript?: string; running?: { pid: number; tty: string } }): Task {
+export function importSession(c: { agent: Agent; account?: string; sessionId: string; title: string; cwd: string; branch?: string; firstPrompt?: string; lastMessage?: string; updated: string; transcript?: string; running?: { pid: number; tty: string } }): Task {
   if (store.all().some(t => t.sessionId === c.sessionId || t.pastSessions?.includes(c.sessionId))) throw new Error(`Session ${c.sessionId} is already a task.`);
+  if (c.account && accounts.get(c.account)?.agent !== c.agent) throw new Error('The import account does not match its agent.');
   const num = store.nextNum();
   const when = new Date(c.updated).toLocaleString('en-GB', { day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
   return store.create({
-    id: `${slug(c.title)}-${num}`, num, title: c.title || `Imported ${c.agent} session`, agent: c.agent, status: c.running ? 'idle' : 'suspended', transcript: c.transcript,
+    id: `${slug(c.title)}-${num}`, num, title: c.title || `Imported ${c.agent} session`, agent: c.agent, account: c.account, status: c.running ? 'idle' : 'suspended', transcript: c.transcript,
     cwd: c.cwd, folder: c.cwd, branch: c.branch, worktree: false, session: `task-${num}`, sessionId: c.sessionId,
     statusSource: c.running
       ? `Running in another terminal (${c.running.tty}, process ${c.running.pid}). Taskboard follows its activity; exit it there, or take it over here.`
@@ -675,6 +686,7 @@ export async function moveAccount(task: Task, toId: string, instruction = ''): P
 export async function utilSession(kind: 'login' | 'reset', a: accounts.Account): Promise<string> {
   const name = `util-${kind}-${a.id}`;
   await tmux.killSession(name);
+  if (a.agent === 'antigravity') { await accounts.prepare(a); await installAgyPlugin(a); }
   const env = { ...accounts.envFor(a), PATH: process.env.PATH || '' };
   const cwd = join(TB_DIR); mkdirSync(cwd, { recursive: true });
   // agy signs in when it starts without a session; the user exits it with /exit afterwards

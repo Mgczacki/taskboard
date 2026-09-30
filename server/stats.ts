@@ -37,8 +37,9 @@ function files(): { path: string; agent: Agent; account: string; session: string
     if (a.agent === 'claude') walk(join(a.dir, 'projects'), 1, p => out.push({ path: p, agent: a.agent, account: a.id, session: basename(p, '.jsonl') }));
     if (a.agent === 'codex') walk(join(a.dir, 'sessions'), 3, p => out.push({ path: p, agent: a.agent, account: a.id, session: basename(p, '.jsonl').match(/[0-9a-f]{8}(-[0-9a-f]{4}){3}-[0-9a-f]{12}$/)?.[0] || '' }));
     if (a.agent === 'antigravity') {
-      let ids: string[] = []; try { ids = readdirSync(join(a.dir, 'brain')); } catch { /* not installed */ }
-      for (const id of ids) { const p = join(a.dir, 'brain', id, '.system_generated', 'logs', 'transcript_full.jsonl'); if (existsSync(p)) out.push({ path: p, agent: a.agent, account: a.id, session: id }); }
+      const dir = accounts.agyConfigDir(a);
+      let ids: string[] = []; try { ids = readdirSync(join(dir, 'brain')); } catch { /* not installed */ }
+      for (const id of ids) { const p = join(dir, 'brain', id, '.system_generated', 'logs', 'transcript_full.jsonl'); if (existsSync(p)) out.push({ path: p, agent: a.agent, account: a.id, session: id }); }
     }
   }
   return out;

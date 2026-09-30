@@ -7,6 +7,7 @@ import { closeSync, existsSync, openSync, readSync, readdirSync, statSync } from
 import { basename, join } from 'node:path';
 import { promisify } from 'node:util';
 import { AGY_HOME, HOME, TB_DIR } from './config.ts';
+import * as accounts from './accounts.ts';
 import * as tmux from './tmux.ts';
 
 const exec = promisify(execFile);
@@ -15,6 +16,7 @@ type Agent = 'claude' | 'codex' | 'antigravity';
 
 export interface Candidate {
   agent: Agent;
+  account?: string;
   sessionId: string;
   title: string;
   cwd: string;
@@ -105,8 +107,8 @@ async function codexCandidates(): Promise<Candidate[]> {
 // The database uses a write-ahead log. While agy runs, the -wal file holds the newest rows and a plain read-only open
 // works. When no agy runs there is no -wal file and a read-only open fails (SQLite cannot create the -shm file), but
 // then every row is in the main file, so it is opened as immutable.
-async function antigravityCandidates(): Promise<Candidate[]> {
-  const db = join(AGY_HOME, 'conversation_summaries.db');
+async function antigravityCandidates(a: accounts.Account): Promise<Candidate[]> {
+  const db = join(accounts.agyConfigDir(a), 'conversation_summaries.db');
   if (!existsSync(db)) return [];
   const target = existsSync(db + '-wal') ? ['-readonly', db] : [`file:${db}?immutable=1`];
   const since = new Date(Date.now() - DAYS * 86400000).toISOString().replace('T', ' ');
@@ -119,9 +121,9 @@ async function antigravityCandidates(): Promise<Candidate[]> {
     return rows.map((r: any) => {
       let cwd = ''; try { cwd = decodeURIComponent(new URL(JSON.parse(r.workspace_uris)[0]).pathname); } catch { /* no workspace */ }
       return {
-        agent: 'antigravity' as const, sessionId: r.conversation_id, title: clip(r.title || r.preview, 90), cwd,
+        agent: 'antigravity' as const, account: a.id, sessionId: r.conversation_id, title: clip(r.title || r.preview, 90), cwd,
         firstPrompt: clip(r.preview, 400), updated: new Date(Date.parse(String(r.last_modified_time).replace(' ', 'T'))).toISOString(),
-        transcript: transcriptFor('antigravity', r.conversation_id),
+        transcript: transcriptFor('antigravity', r.conversation_id, a.dir),
       };
     });
   } catch (e) { console.error('antigravity import', e); return []; }
@@ -158,7 +160,7 @@ const argAfter = (args: string[], flag: string) => { const i = args.indexOf(flag
 
 export async function candidates(knownSessionIds: Set<string>): Promise<Candidate[]> {
   const [cc, cx, ag, procs, panes] = await Promise.all([
-    Promise.resolve(claudeCandidates()), codexCandidates(), antigravityCandidates(), runningAgents(),
+    Promise.resolve(claudeCandidates()), codexCandidates(), Promise.all(accounts.all().filter(a => a.agent === 'antigravity').map(antigravityCandidates)).then(x => x.flat()), runningAgents(),
     tmux.tmux('list-panes', '-a', '-F', '#{pane_tty}').catch(() => ''),
   ]);
   const ownTtys = new Set(panes.split('\n').filter(Boolean).map(tty => basename(tty.trim())));
@@ -180,7 +182,7 @@ export async function candidates(knownSessionIds: Set<string>): Promise<Candidat
 // Where a session's transcript lives, for tasks imported before the path was recorded. accountDir is the task's
 // account folder (CLAUDE_CONFIG_DIR / CODEX_HOME); without it, the default folder is searched.
 export function transcriptFor(agent: Agent, sessionId: string, accountDir?: string): string | undefined {
-  if (agent === 'antigravity') { const f = join(AGY_HOME, 'brain', sessionId, '.system_generated', 'logs', 'transcript_full.jsonl'); return existsSync(f) ? f : undefined; }
+  if (agent === 'antigravity') { const base = !accountDir || accountDir === AGY_HOME ? AGY_HOME : join(accountDir, '.gemini', 'antigravity-cli'); const f = join(base, 'brain', sessionId, '.system_generated', 'logs', 'transcript_full.jsonl'); return existsSync(f) ? f : undefined; }
   const base = accountDir || (agent === 'claude' ? process.env.CLAUDE_CONFIG_DIR || join(HOME, '.claude') : process.env.CODEX_HOME || join(HOME, '.codex'));
   const root = join(base, agent === 'claude' ? 'projects' : 'sessions');
   const walk = (d: string, depth: number): string | undefined => {
