@@ -18,6 +18,7 @@ import { PermitDetails, PermitsPage } from './components/Permits';
 import { StatsPage } from './components/Stats';
 import type { DocumentLink } from './documentLinks';
 import { previewHtml, readMarkdown } from './components/Docs';
+import { archiveTriageTask, confirmTriageArchive } from './triageArchive';
 
 type Page = 'list' | 'board' | 'canvas' | 'graph' | 'inbox' | 'permits' | 'accounts' | 'stats' | 'settings';
 // #list · #board · #canvas · #canvas:<view>  (view = g:<group> | needs | live | t:<id,id>)
@@ -376,26 +377,51 @@ function GroupPrompt({ ids, close, done }: { ids: string[]; close: () => void; d
 
 function Triage({ queue, close, open }: { queue: Task[]; close: () => void; open: (id: string) => void }) {
   const [i, setI] = useState(0);
+  const [hidden, setHidden] = useState<Set<string>>(new Set());
+  const [ending, setEnding] = useState<string | null>(null);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [error, setError] = useState<{ id: string; text: string } | null>(null);
   useKeymap();
-  const t = queue[Math.min(i, queue.length - 1)];
+  useEffect(() => {
+    setHidden(ids => {
+      const current = [...ids].filter(id => queue.some(t => t.id === id));
+      return current.length === ids.size ? ids : new Set(current);
+    });
+  }, [queue, hidden]);
+  const visible = queue.filter(t => !hidden.has(t.id));
+  const t = visible[Math.min(i, visible.length - 1)];
+  const endAndArchive = async (task: Task) => {
+    setEnding(null);
+    setError(null);
+    setBusy(task.id);
+    try {
+      await archiveTriageTask(task, api.kill, api.setStatus);
+      setHidden(ids => new Set(ids).add(task.id));
+    } catch (e) {
+      setError({ id: task.id, text: `Could not end and archive #${task.num}: ${e instanceof Error ? e.message : String(e)}` });
+    } finally {
+      setBusy(null);
+    }
+  };
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
-      const d = hit(e, 'triageNext') ? 1 : hit(e, 'triagePrev') ? queue.length - 1 : 0;
-      if (d && queue.length) { e.preventDefault(); e.stopImmediatePropagation(); setI(x => (x + d) % queue.length); }
+      const d = hit(e, 'triageNext') ? 1 : hit(e, 'triagePrev') ? visible.length - 1 : 0;
+      if (d && visible.length) { e.preventDefault(); e.stopImmediatePropagation(); setI(x => (x + d) % visible.length); }
     };
     addEventListener('keydown', on, true); return () => removeEventListener('keydown', on, true);
-  }, [queue.length]);
+  }, [visible.length]);
   return (
     <div className="triage open" onMouseDown={e => { if (e.target === e.currentTarget) close(); }}>
       <div className="tr-box">
-        <div className="tr-head"><h2>Triage</h2><span className="sub">{queue.length ? `${Math.min(i, queue.length - 1) + 1} of ${queue.length} waiting · longest first` : 'Nothing is waiting for you'}</span><span style={{ flex: 1 }} /><span className="sub">{keyLabel('triageNext') && <><kbd>{keyLabel('triageNext')}</kbd> next </>}{keyLabel('triage') && <><kbd>{keyLabel('triage')}</kbd> close</>}</span><button className="btn ghost icon" onClick={close}>✕</button></div>
+        <div className="tr-head"><h2>Triage</h2><span className="sub">{visible.length ? `${Math.min(i, visible.length - 1) + 1} of ${visible.length} waiting · longest first` : 'Nothing is waiting for you'}</span><span style={{ flex: 1 }} /><span className="sub">{keyLabel('triageNext') && <><kbd>{keyLabel('triageNext')}</kbd> next </>}{keyLabel('triage') && <><kbd>{keyLabel('triage')}</kbd> close</>}</span><button className="btn ghost icon" onClick={close}>✕</button></div>
         {t ? <div className="tr-main">
-          <div className="tr-list">{queue.map((x, k) => <div key={x.id} className={`tq ${x.id === t.id ? 'on' : ''}`} onClick={() => setI(k)}><Dot s={x.status} /><span className="t">#{x.num} {x.title}</span><span className="m">{fmtWait(x.waitMin)}</span></div>)}</div>
+          <div className="tr-list">{visible.map((x, k) => <div key={x.id} className={`tq ${x.id === t.id ? 'on' : ''}`} onClick={() => { setI(k); setEnding(null); }}><Dot s={x.status} /><span className="t">#{x.num} {x.title}</span><span className="m">{fmtWait(x.waitMin)}</span></div>)}</div>
           <div className="tr-item">
             <div className="tr-title"><Dot s={t.status} /><span className="num">#{t.num}</span><h3>{t.title}</h3><StatusLabel s={t.status} /><span className="waitchip">waiting {fmtWait(t.waitMin)}</span><AgentChip a={t.agent} /></div>
             <ThreeLines t={t} />
             <div className="tr-term"><Terminal key={t.id} taskId={t.id} autoFocus /></div>
-            <div className="tr-actions"><button className="btn" onClick={() => open(t.id)} title="Terminal, log and documents of this task">Open task panel</button><button className="btn" onClick={() => api.setStatus(t.id, 'parked')} title="Take it off Needs you, Unread and triage. The agent is not stopped; the task comes back by itself the next time the agent works or finishes a turn.">Set aside</button><span style={{ flex: 1 }} /><button className="btn" onClick={() => setI(x => (x + 1) % queue.length)}>Skip to next {keyLabel('triageNext')}</button></div>
+            {error?.id === t.id && <div className="banner stopped" role="alert">{error.text}</div>}
+            <div className="tr-actions"><button className="btn" onClick={() => open(t.id)} title="Terminal, log and documents of this task">Open task panel</button><button className="btn" onClick={() => api.setStatus(t.id, 'parked')} title="Take it off Needs you, Unread and triage. The agent is not stopped; the task comes back by itself the next time the agent works or finishes a turn.">Set aside</button>{ending === t.id ? <><span className="sel-warn">End this task and archive it? Ending it stops the agent.</span><button className="btn danger" disabled={busy !== null} onClick={() => void endAndArchive(t)}>Yes, end and archive</button><button className="btn ghost" onClick={() => setEnding(null)}>Cancel</button></> : <button className="btn" disabled={busy !== null} onClick={() => confirmTriageArchive(t) ? setEnding(t.id) : void endAndArchive(t)} title="Ends the task, then archives it">{busy === t.id ? 'Ending…' : 'End and archive'}</button>}<span style={{ flex: 1 }} /><button className="btn" onClick={() => setI(x => (x + 1) % visible.length)}>Skip to next {keyLabel('triageNext')}</button></div>
           </div>
         </div> : <div className="tr-empty">Every agent is either working or done. ✓</div>}
       </div>
