@@ -37,7 +37,7 @@ export async function commitTask(t: Task, message: string): Promise<string> {
   return `Committed ${await git(t.cwd, 'rev-parse', '--short', 'HEAD')} on ${t.branch}.`;
 }
 
-async function mergeStateForSource(t: Task) {
+export async function mergeStateForSource(t: Task) {
   if (!t.worktree || !t.branch || t.role === 'controller') throw new Error('This task has no branch in its own worktree.');
   if (realpathSync(await git(t.cwd, 'rev-parse', '--show-toplevel')) !== realpathSync(t.cwd)) throw new Error('The task worktree changed.');
   if (await git(t.cwd, 'branch', '--show-current') !== t.branch) throw new Error('The task branch changed.');
