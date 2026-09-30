@@ -118,6 +118,7 @@ export class NotesService {
       check: n.review ? { verdict: n.review.verdict, reviewer: n.review.reviewer } : null, body_flags: n.bodyCheck?.flags.length ?? null,
       approver: this.approverFor(n, data), approved_by: n.approval && n.approval.hash === n.hash ? n.approval.by : null,
       thread_id: n.threadId, created: n.created, updated: n.updated, seen: !!n.seen, ...(n.failure ? { failure_code: n.failure.code } : {}),
+      hash: n.hash, allowed_actions: this.allowed(n, data, session),
     };
   }
   detail(n: Note, data: Data, session: Session) {
@@ -127,7 +128,7 @@ export class NotesService {
     // the parsed agent file goes to an agent only after a valid approval (or before send, to the agent that wrote it)
     const release = session.role === 'person' || n.direction === 'out' || (open && n.state === 'approved');
     return {
-      ...this.summary(n, data, session), body: open ? n.body : '', reply_to: n.replyTo, hash: n.hash,
+      ...this.summary(n, data, session), body: open ? n.body : '', reply_to: n.replyTo,
       body_check: open ? n.bodyCheck ?? null : null,
       review: n.review ? { verdict: n.review.verdict, reason: open ? n.review.reason : '(visible to the person only)', reviewer: n.review.reviewer, at: n.review.at } : null,
       approval: n.approval ? { ...n.approval, current: n.approval.hash === n.hash } : null,
@@ -137,7 +138,6 @@ export class NotesService {
       transport: n.transport ? { name: n.transport.name, channel: n.transport.channel, ts: n.transport.ts } : null,
       error: n.error ?? null,
       ...(n.failure ? { failure: session.role === 'person' ? n.failure : { code: n.failure.code, reason: n.failure.reason } } : {}),
-      allowed_actions: this.allowed(n, data, session),
     };
   }
 

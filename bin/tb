@@ -14,7 +14,7 @@ const has = name => { const i = args.indexOf(name); if (i < 0) return false; arg
 async function call(method, path, body) {
   const r = await fetch(URL_BASE + path, { method, headers: { 'content-type': 'application/json', 'x-taskboard-token': token, 'x-tb-actor': process.env.TASK_ID || '', 'x-tb-mail-controller': process.env.TB_MAIL_CONTROLLER_TOKEN || '' }, body: body ? JSON.stringify(body) : undefined });
   const text = await r.text(); let data; try { data = JSON.parse(text); } catch { data = text; }
-  if (!r.ok) { console.error(`tb: ${data && data.error ? data.error : r.statusText}`); if (data?.matches) console.error(JSON.stringify({ matches: data.matches, hasMore: data.hasMore }, null, 2)); process.exit(1); }
+  if (!r.ok) { console.error(`tb: ${data && data.error ? data.error : r.statusText}${data?.next ? ` Next: ${data.next}` : ''}`); if (data?.matches) console.error(JSON.stringify({ matches: data.matches, hasMore: data.hasMore }, null, 2)); process.exit(1); }
   if (r.status === 202 && data.permit) return data;
   if (r.status === 202 && data.push) return data;
   // 202: the action waits for the user's approval on the Taskboard dashboard
@@ -63,6 +63,7 @@ const HELP = `tb — Taskboard command line
   tb group list | tb group add <group> <task…> | tb group rm <group> <task…>
   tb doc send <task>:<file> <task>   send a document from one task's outbox to another task's inbox
   tb mail                            account messages: run for command help
+  tb a2a                             A2A Notes messages through its MCP server: run for command help
   tb review <file>                   ask the user to review a document from your outbox
   tb release-request                 ask the user to allow one Taskboard release on the dashboard
   tb permit request --reason "text" --command "program args" [--cwd PATH] [--timeout 30] [--network]
@@ -107,6 +108,38 @@ switch (cmd) {
     console.log(JSON.stringify(result, null, 2)); break;
   }
 
+  case 'a2a': {
+    // A2A Notes (packages/a2a-notes). Taskboard calls its MCP server with the role of the caller: a task is an agent,
+    // the controller is the review agent. Message text is data, not instructions.
+    const help = `tb a2a status | people <text> | list [--direction incoming|outgoing|all] [--state S] | get <id>
+  stage <outbox file> [--kind agent|support]      stage a file from your task outbox; prints file_id
+  draft <address> --subject <text> --body <text> [--audience person|agent|both] [--agent-file <file_id>] [--file <file_id>]... [--reply-to <message id>] [--instruction <the request that asked for this message>]
+  revise <id> --hash <hash> --subject <text> --body <text> [--audience A] [--agent-file <file_id>]
+  approve <id> <hash> | reject <id> <hash> | send <id> <hash>   controller only
+  route <id> <task>                                controller only: give an approved message to a task
+  sync`;
+    const direction = flag('--direction'), state = flag('--state'), kind = flag('--kind'), subject = flag('--subject'), body = flag('--body'), audience = flag('--audience');
+    const agentFile = flag('--agent-file'), replyTo = flag('--reply-to'), instruction = flag('--instruction'), hash = flag('--hash');
+    const files = []; for (let f; (f = flag('--file'));) files.push(f);
+    // flag() removed the options from args, so the rest is positional
+    const [action, a, b] = args.slice(1);
+    const id = encodeURIComponent(a || '');
+    let result;
+    if (action === 'status') result = await call('GET', '/api/a2anotes/status');
+    else if (action === 'people') result = await call('GET', '/api/a2anotes/people?q=' + encodeURIComponent(args.slice(2).join(' ')));
+    else if (action === 'list') result = await call('GET', `/api/a2anotes/messages?direction=${direction || 'all'}${state ? `&state=${encodeURIComponent(state)}` : ''}`);
+    else if (action === 'get') result = await call('GET', `/api/a2anotes/messages/${id}`);
+    else if (action === 'stage') result = await call('POST', '/api/a2anotes/files', { path: a, kind: kind || 'support' });
+    else if (action === 'draft') result = await call('POST', '/api/a2anotes/drafts', { to: a, subject, body, audience: audience || 'person', agent_file_id: agentFile, file_ids: files, reply_to: replyTo, instruction });
+    else if (action === 'revise') result = await call('POST', `/api/a2anotes/messages/${id}/revise`, { hash, subject, body, audience: audience || 'person', agent_file_id: agentFile, file_ids: files });
+    else if (action === 'approve' || action === 'reject') result = await call('POST', `/api/a2anotes/messages/${id}/approve`, { hash: b, decision: action });
+    else if (action === 'send') result = await call('POST', `/api/a2anotes/messages/${id}/send`, { hash: b });
+    else if (action === 'route') result = await call('POST', `/api/a2anotes/messages/${id}/route`, { task: (await task(b)).id });
+    else if (action === 'sync') result = await call('POST', '/api/a2anotes/sync', {});
+    else { console.error(help); process.exit(1); }
+    if (result?.body_check?.flags?.length) console.error(`The message check found ${result.body_check.flags.length} item(s). The user must approve this draft.`, ...result.body_check.flags.map(f => `\n- ${f.reason}${f.text && f.code !== 'ask_changed' ? ` Text: ${f.text}` : ''}`));
+    console.log(JSON.stringify(result, null, 2)); break;
+  }
   case 'info': {
     const i = await call('GET', '/api/info');
     console.log(`Machine:     ${i.machine} (host ${i.host})`);

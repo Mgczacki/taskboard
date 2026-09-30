@@ -30,6 +30,7 @@ import { ROLE, installRuntimeFiles, refuseReason } from './instance.ts';
 import { hostname } from 'node:os';
 import WebSocket from 'ws';
 import { messageLevelsChanged, mountMail } from './mail/routes.ts';
+import { mountA2ANotes } from './a2anotes/routes.ts';
 import * as inboxDelivery from './inbox-delivery.ts';
 import { mountReview, pendingFor, pendingForPath } from './review.ts';
 import { attach, terminalViewerCount } from './pty.ts';
@@ -582,6 +583,8 @@ mountReview(app);
 // A file from the mail module (a comment from an approval card, a routed message or file, a notice for the controller)
 // goes into the task's Taskboard inbox, and server/inbox-delivery.ts tells the agent, for every agent and status.
 mountMail(app, { delivery: inboxDelivery });
+// A2A Notes (packages/a2a-notes) through its MCP server. It is off until ~/.taskboard/a2anotes.json enables it.
+mountA2ANotes(app, { delivery: inboxDelivery });
 inboxDelivery.start();
 
 // ---------- accounts ----------

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import type { Task } from '../api';
 import { InboxPage as Documents } from './Review';
+import { A2ANotesPanel } from './A2ANotes';
 import type { DocumentLink } from '../documentLinks';
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
@@ -290,7 +291,7 @@ export function MemberPicker({ value, onChange, disabled, onSelect, exclude = []
   </div>;
 }
 export function InboxPage(props: { tasks: Task[]; open: (id: string, tab?: 'terminal' | 'log' | 'docs') => void; documentLink?: DocumentLink | null }) {
-  const [tab, setTab] = useState<'inbox' | 'sent' | 'documents'>(props.documentLink ? 'documents' : 'inbox');
+  const [tab, setTab] = useState<'inbox' | 'sent' | 'documents' | 'a2anotes'>(props.documentLink ? 'documents' : 'inbox');
   useEffect(() => { if (props.documentLink) setTab('documents'); }, [props.documentLink]);
   const [dismissed, setDismissed] = useState(false);
   const [data, setData] = useState<Mailbox | null>(null);
@@ -312,10 +313,11 @@ export function InboxPage(props: { tasks: Task[]; open: (id: string, tab?: 'term
       <button className="btn" onClick={() => setTab('inbox')} aria-pressed={tab === 'inbox'}>Messages</button>
       <button className="btn" onClick={() => setTab('documents')} aria-pressed={tab === 'documents'}>Documents to review</button>
       <button className="btn" onClick={() => setTab('sent')} aria-pressed={tab === 'sent'}>Sent</button>
+      <button className="btn" onClick={() => setTab('a2anotes')} aria-pressed={tab === 'a2anotes'}>A2A Notes</button>
 
     </nav>
     {(error || loadError) && <p role="alert">{error || loadError}</p>}
-    {tab === 'documents' ? <Documents {...props} /> : <>
+    {tab === 'a2anotes' ? <A2ANotesPanel tasks={props.tasks} /> : tab === 'documents' ? <Documents {...props} /> : <>
       <details className="mail-settings"><summary>Slack connection and approval settings</summary>
         <p>{data?.identity ? `Connected as ${data.identity.name || data.identity.user}` : 'Connect your Slack account to exchange private messages.'}</p>
         {data?.identity?.needsReconnect && <p role="alert">Reconnect Slack to grant the current permissions. Disconnect Slack, then connect it again.</p>}
