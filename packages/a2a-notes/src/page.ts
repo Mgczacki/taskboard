@@ -18,7 +18,7 @@ main { padding:20px 16px 50px; display:grid; gap:18px; }
 .row { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
 .status { display:inline-block; padding:3px 9px; border-radius:99px; font-size:12px; font-weight:700; }
 .ok { background:var(--green-pale); color:var(--green); } .wait { background:var(--amber-pale); color:var(--amber); } .info { background:var(--blue-pale); color:var(--blue); } .bad { background:var(--red-pale); color:var(--red); }
-.card { padding:14px; border:1px solid var(--line); border-radius:10px; background:var(--card); display:grid; gap:9px; }
+.card { padding:14px; border:1px solid var(--line); border-radius:10px; background:var(--card); display:grid; gap:9px; overflow-wrap:anywhere; }
 .meta { display:grid; grid-template-columns:110px 1fr; gap:4px 10px; font-size:13px; margin:0; } .meta dt { color:var(--muted); } .meta dd { margin:0; overflow-wrap:anywhere; }
 .body { white-space:pre-wrap; padding:10px 12px; border-left:3px solid #9dc5b1; background:var(--paper); border-radius:4px; overflow-wrap:anywhere; }
 .flags { margin:0; padding-left:18px; color:var(--amber); font-size:13px; }
@@ -28,7 +28,7 @@ button, select { padding:7px 11px; border:1px solid #9aaca3; border-radius:7px; 
 button.primary { background:var(--green); color:#fff; border-color:var(--green); }
 button:disabled { opacity:.55; cursor:default; }
 button:focus-visible, select:focus-visible { outline:3px solid #72a8d3; outline-offset:2px; }
-#messages { display:grid; gap:10px; } #error { color:var(--red); min-height:1em; }
+#messages { display:grid; gap:10px; } #messages > *, .card > *, .meta > *, .panel > * { min-width:0; } #error { color:var(--red); min-height:1em; }
 @media (max-width:600px) { .meta { grid-template-columns:1fr; } }
 </style></head>
 <body>
@@ -85,12 +85,12 @@ async function load() {
   const trusted = new Set(s.policy.trusted.map(t => t.address));
   $('#who').textContent = s.identity.address ? 'Signed in as ' + s.identity.name + ' (' + s.identity.address + ')' : 'Slack is not connected.';
   const c = s.status;
-  $('#connection').replaceChildren(
+  $('#connection').replaceChildren(...[
     el('span', { class: 'status ' + (c.signed_in ? 'ok' : 'wait') }, c.signed_in ? 'connected' : 'not connected'),
     el('span', { class: 'small' }, 'Last scan: ' + (c.last_scan_at || 'never') + (c.stale ? ' (the inbox may be out of date)' : '')),
     c.last_error ? el('span', { class: 'status bad' }, c.last_error) : null,
     c.missing_scopes.length ? el('span', { class: 'status bad' }, 'Missing Slack scopes: ' + c.missing_scopes.join(', ')) : null,
-    c.signed_in ? el('button', { onclick: act(() => api('/api/slack/disconnect', {})) }, 'Disconnect Slack') : el('button', { class: 'primary', onclick: act(async () => { location.href = (await api('/api/slack/connect', {})).url; }) }, 'Connect Slack'));
+    c.signed_in ? el('button', { onclick: act(() => api('/api/slack/disconnect', {})) }, 'Disconnect Slack') : el('button', { class: 'primary', onclick: act(async () => { location.href = (await api('/api/slack/connect', {})).url; }) }, 'Connect Slack')].filter(Boolean));
   const level = (name, value) => el('label', {}, name + ' ', el('select', { 'aria-label': name, onchange: undefined }, [1, 2, 3].map(n => el('option', { value: n, selected: n === value }, 'Level ' + n))));
   const inLevel = level('Incoming', s.policy.incoming), outLevel = level('Outgoing', s.policy.outgoing);
   inLevel.querySelector('select').onchange = act(() => api('/api/policy', { incoming: Number(inLevel.querySelector('select').value) }));

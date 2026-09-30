@@ -252,7 +252,9 @@ export class SlackTransport implements Transport {
       for (const event of found) {
         if (Number(event.ts) <= Number(oldest)) continue;
         const ordinary = !event.subtype || event.subtype === 'thread_broadcast';
-        if (ordinary && !event.bot_id && event.user && typeof event.text === 'string') {
+        // this account's own posts in a conversation with another member are sent messages, not received ones
+        const own = event.user === c.user && conversation.user !== c.user;
+        if (ordinary && !own && !event.bot_id && event.user && typeof event.text === 'string') {
           await handle({ conversation: key, ref: `slack:${c.team}:${conversation.id}:${event.ts}`, ts: String(event.ts), channel: conversation.id,
             sender: slackAddress(c.team, String(event.user)), text: unescapeMarkup(event.text), ...(event.thread_ts ? { threadTs: String(event.thread_ts) } : {}) });
           messages++;

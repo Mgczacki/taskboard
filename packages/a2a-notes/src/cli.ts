@@ -19,6 +19,7 @@ const usage = `a2a-notes <command>
   token list | token remove <name>
   open                                    print a one-time link to the review page
   status                                  print the connection and scan status
+  stop                                    stop the running service
   bridge [--url URL]                      stdio MCP bridge; reads the token from A2A_NOTES_TOKEN
   import-slack <credentials.json> [--no-refresh]   use existing Slack user credentials
   service-file                            print a macOS LaunchAgent file that starts the service at sign-in
@@ -46,9 +47,10 @@ switch (cmd) {
     break;
   }
   case 'serve': {
-    const running = await startService(dir);
+    let stop = () => {};
+    const running = await startService(dir, {}, undefined, () => stop());
+    stop = () => { void running.close().then(() => process.exit(0)); };
     console.log(`A2A Notes is running at ${running.server.url}. MCP endpoint: ${running.server.url}/mcp`);
-    const stop = () => { void running.close().then(() => process.exit(0)); };
     process.on('SIGTERM', stop); process.on('SIGINT', stop);
     break;
   }
@@ -65,6 +67,7 @@ switch (cmd) {
   }
   case 'open': console.log((await local('/local/login-code')).url); break;
   case 'status': console.log(JSON.stringify((await local('/local/login-code')).status, null, 2)); break;
+  case 'stop': await local('/local/stop'); console.log('The service is stopping.'); break;
   case 'bridge': {
     const token = process.env.A2A_NOTES_TOKEN;
     if (!token) { console.error('Set A2A_NOTES_TOKEN to a client token from a2a-notes token add.'); process.exit(1); }

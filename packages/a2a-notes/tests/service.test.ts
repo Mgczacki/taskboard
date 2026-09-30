@@ -229,6 +229,7 @@ test('a reply keeps the thread, uses the Slack thread, and old Taskboard message
   await mario.service.scanNow();
   const back = mario.service.list(person, { direction: 'incoming' }).messages.find(m => m.message_id === reply.id)!;
   assert.equal(back.thread_id, d.id);
+  assert.equal(mario.service.list(person, { direction: 'incoming' }).messages.filter(m => m.from === mario.address).length, 0, 'own posts are not received messages');
 
   fake.inject(ADAM, MARIO, 'Taskboard message: Old. Sent automatically by Taskboard from Adam. Open Taskboard Inbox to read.\n[Taskboard message v1]\n' + JSON.stringify({ id: 'old-1', subject: 'Old', body: 'Hi Mario, from the old format.' }));
   await mario.service.scanNow();

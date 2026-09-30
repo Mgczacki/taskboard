@@ -32,7 +32,7 @@ export function readConfig(dir: string): Config {
 
 export interface Running { service: NotesService; server: Server & { url: string }; clients: Clients; slack: SlackTransport; close(): Promise<void> }
 
-export async function startService(dir: string, overrides: Partial<Config> = {}, fetcher?: typeof fetch): Promise<Running> {
+export async function startService(dir: string, overrides: Partial<Config> = {}, fetcher?: typeof fetch, onStop?: () => void): Promise<Running> {
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const config = { ...readConfig(dir), ...overrides };
   const store = new Store(dir);
@@ -44,7 +44,7 @@ export async function startService(dir: string, overrides: Partial<Config> = {},
   const secretFile = join(dir, 'local-secret');
   const secret = randomBytes(32).toString('base64url');
   savePrivate(secretFile, secret);
-  const server = await startHttp({ service, clients, port: config.port, host: config.host, slack,
+  const server = await startHttp({ service, clients, port: config.port, host: config.host, slack, onStop,
     local: given => { const a = Buffer.from(given), b = Buffer.from(secret); return a.length === b.length && timingSafeEqual(a, b); } });
   service.start();
   savePrivate(join(dir, 'service.json'), { url: server.url, pid: process.pid, started: new Date().toISOString() });

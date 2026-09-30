@@ -9,7 +9,7 @@ import type { NotesService, Session } from './service.ts';
 import type { Clients } from './clients.ts';
 import type { SlackTransport } from './slack.ts';
 
-export interface HttpOptions { service: NotesService; clients: Clients; port: number; host?: string; slack?: SlackTransport; local?: (secret: string) => boolean }
+export interface HttpOptions { service: NotesService; clients: Clients; port: number; host?: string; slack?: SlackTransport; local?: (secret: string) => boolean; onStop?: () => void }
 const MAX_BODY = 16 * 1024 * 1024;
 
 function readBody(req: IncomingMessage): Promise<unknown> {
@@ -57,17 +57,24 @@ export function startHttp(options: HttpOptions): Promise<Server & { url: string 
       if (!options.local?.(String(req.headers['x-a2a-local'] || ''))) return send(res, 403, { error: { code: 'forbidden', reason: 'The local secret does not match.' } });
       return send(res, 200, { url: pageLink(), status: service.connectionStatus() });
     }
+    if (url.pathname === '/local/stop' && req.method === 'POST') {
+      if (!options.local?.(String(req.headers['x-a2a-local'] || '')) || !options.onStop) return send(res, 403, { error: { code: 'forbidden', reason: 'The local secret does not match.' } });
+      send(res, 200, { stopping: true });
+      setImmediate(options.onStop);
+      return;
+    }
     if (url.pathname === '/login') {
       const value = clients.redeem(url.searchParams.get('code') || '');
       if (!value) return res.writeHead(403, { 'content-type': 'text/plain' }).end('This sign-in link expired or was used. Run a2a-notes open to get a new link.');
-      return res.writeHead(303, { location: '/', 'set-cookie': `a2an_page=${value}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200`, 'cache-control': 'no-store' }).end();
+      return res.writeHead(303, { location: '/', 'set-cookie': `a2an_page=${value}; HttpOnly; SameSite=Lax; Path=/; Max-Age=43200`, 'cache-control': 'no-store' }).end();
     }
     if (url.pathname === '/slack/callback') {
       if (!options.slack) return send(res, 404, { error: { code: 'not_found', reason: 'Slack is not configured.' } });
       try { await options.slack.finishSignIn(url.searchParams.get('state') || '', url.searchParams.get('code') || ''); }
       catch (error) { return res.writeHead(400, { 'content-type': 'text/plain' }).end(`Slack sign-in failed: ${(error as Error).message}`); }
       void service.scanNow().catch(() => {});
-      return res.writeHead(303, { location: '/' }).end();
+      // Slack returns to the redirect host (localhost). The page cookie belongs to the host of the sign-in link.
+      return res.writeHead(303, { location: `${base}/` }).end();
     }
     const page = clients.page(cookie(req, 'a2an_page'));
     if (url.pathname === '/') {
@@ -76,7 +83,8 @@ export function startHttp(options: HttpOptions): Promise<Server & { url: string 
     }
     if (url.pathname.startsWith('/api/')) {
       if (!page) return send(res, 401, { error: { code: 'signed_out', reason: 'Open the review page with a new link from a2a-notes open.' } });
-      // a form or image on another site cannot set this header, and SameSite=Strict keeps the cookie off other sites
+      // a form or image on another site cannot set this header. SameSite=Lax sends the cookie on a top-level
+      // navigation, which the return from Slack sign-in needs, and never on a cross-site POST.
       if (req.method !== 'GET' && req.headers['x-a2a-page'] !== '1') return send(res, 403, { error: { code: 'bad_request', reason: 'Missing page header.' } });
       return pageApi(req, res, url, page);
     }

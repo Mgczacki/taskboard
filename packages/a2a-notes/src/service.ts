@@ -23,7 +23,7 @@ export interface ServiceOptions {
   scanIntervalMs?: number;
 }
 
-const HELD = '(held for review)';
+const HELD = '(held for review)', PERSON_ONLY = '(for the person only)';
 const page = <T>(items: T[], limit: unknown, cursor: unknown) => {
   const size = Math.min(100, Math.max(1, Number(limit) || 20));
   const start = typeof cursor === 'string' && /^\d{1,6}$/.test(cursor) ? Number(cursor) : 0;
@@ -113,7 +113,8 @@ export class NotesService {
   summary(n: Note, data: Data, session: Session) {
     const open = this.released(n, data, session);
     return {
-      id: n.id, message_id: n.messageId, direction: n.direction, state: n.state, audience: n.audience, subject: open ? n.subject : HELD,
+      id: n.id, message_id: n.messageId, direction: n.direction, state: n.state, audience: n.audience,
+      subject: open ? n.subject : n.state === 'approved' && n.audience === 'person' ? PERSON_ONLY : HELD,
       from: n.from, to: n.to, peer_name: n.peerName, trusted: this.trusted(data, n.direction === 'in' ? n.from : n.to),
       check: n.review ? { verdict: n.review.verdict, reviewer: n.review.reviewer } : null, body_flags: n.bodyCheck?.flags.length ?? null,
       approver: this.approverFor(n, data), approved_by: n.approval && n.approval.hash === n.hash ? n.approval.by : null,
