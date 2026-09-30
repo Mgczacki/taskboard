@@ -81,13 +81,18 @@ The service uploads files before it posts the message. A failed upload leaves th
 
 ## Slack display
 
-The service posts the wire text in `chat.postMessage.text` with no blocks. In a live test on 2026-09-30, Slack replaced each newline in `text` with a space when the message also had blocks. The `A2ANotes/1` lines and `Body-Bytes` need the exact text, so the person sees the header lines above the body in Slack.
+Each transport adapter formats messages for its own service. `src/slack-format.ts` does this for Slack.
+
+- People read the blocks: the subject as a header, a line of small text with the reader and the sender, the body, the agent file and other files, and a small footer about replies. The body is in a `plain_text` section, so no text becomes a mention or a link.
+- The `text` field holds a one-line summary for notifications, then `A2A Notes data: ` and the exact `A2ANotes/1` text as one JSON string. Slack shows `text` only in notifications and search when a message has blocks.
+- Slack replaces each newline in `text` with a space when a message has blocks. This was observed in a live test on 2026-09-30. A JSON string has no raw newline, so the exact text survives. The receiver parses the JSON string, then the `A2ANotes/1` text.
+- Text without the data marker goes to the decoder as it is, so an `A2ANotes/1` post without blocks and an old Taskboard message still arrive.
 
 A post with a user token through a Slack app has `bot_id` and `app_id` set. The scan accepts it and takes the sender from the event `user`.
 
 ## Scanning and restart
 
-The service scans direct messages every 60 seconds by default. Each scan reads at most 40 conversations, oldest cursor first. The first scan of a conversation reads the last 14 days (`slack.firstScanDays`). The service reads history in time windows and cuts a window with more than 2000 messages in half. It saves a cursor after it stores and checks each message and after each window. A conversation that Slack lists but the token cannot read (`channel_not_found`, `not_in_channel`, `access_denied`) gets a cursor at the scan time and no error. A failed download stops that conversation without a cursor change, so the next scan reads the message again. A Slack rate limit delays the next scan and shows in `a2anotes_connection_status`.
+The service scans direct messages every 60 seconds by default. Each scan reads at most 40 conversations, oldest cursor first. With more than 40 conversations, a new message can wait more than one scan. The first scan of a conversation reads the last 14 days (`slack.firstScanDays`). The service reads history in time windows and cuts a window with more than 2000 messages in half. It saves a cursor after it stores and checks each message and after each window. A conversation that Slack lists but the token cannot read (`channel_not_found`, `not_in_channel`, `access_denied`) gets a cursor at the scan time and no error. A failed download stops that conversation without a cursor change, so the next scan reads the message again. A Slack rate limit delays the next scan and shows in `a2anotes_connection_status`.
 
 ## Tests
 

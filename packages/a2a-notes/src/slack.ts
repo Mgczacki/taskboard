@@ -4,7 +4,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, readFileSync, unlinkSync } from 'node:fs';
 import { savePrivate } from './store.ts';
 import { TransportError, type Identity, type Person, type Received, type SendInput, type Transport } from './transport.ts';
-import { unescapeMarkup } from './protocol.ts';
+import { slackBlocks, slackText, readSlackText, MAX_SLACK_TEXT } from './slack-format.ts';
 
 export const REQUIRED_SCOPES = ['chat:write', 'im:write', 'im:read', 'im:history', 'users:read'];
 export const OPTIONAL_SCOPES = ['users:read.email', 'files:read', 'files:write'];
@@ -196,6 +196,8 @@ export class SlackTransport implements Transport {
     const channel = await this.openConversation(input.to);
     const files: Record<string, string> = {};
     if (input.files.length && (!c.scopes.includes('files:write'))) throw new TransportError('Sending files needs the optional Slack scope files:write.', true);
+    // check the size before any upload; a Slack file ID adds at most about 20 characters for each file
+    if (slackText(input.wire({}), input.display).length + input.files.length * 60 > MAX_SLACK_TEXT) throw new TransportError('The message is too long for Slack. Move detail to the agent file.', true);
     for (const f of input.files) {
       // upload before the message: a failed upload leaves the message unsent
       const ticket = await this.call('files.getUploadURLExternal', { filename: f.name, length: String(f.bytes.length) });
@@ -208,9 +210,8 @@ export class SlackTransport implements Transport {
       await this.call('files.completeUploadExternal', { files: JSON.stringify([{ id: ticket.file_id, title: f.name }]), channel_id: channel });
       files[f.id] = String(ticket.file_id);
     }
-    // no blocks: Slack replaces each newline in `text` with a space when a message has blocks (observed in the
-    // Sekai workspace on 2026-09-30), and the A2ANotes/1 lines and Body-Bytes need the exact text
-    const result = await this.call('chat.postMessage', { channel, text: input.text(files), mrkdwn: 'false',
+    // people read the blocks; `text` carries the exact A2ANotes/1 text as a JSON string (src/slack-format.ts)
+    const result = await this.call('chat.postMessage', { channel, text: slackText(input.wire(files), input.display), blocks: JSON.stringify(slackBlocks(input.display)), mrkdwn: 'false',
       unfurl_links: 'false', unfurl_media: 'false', parse: 'none', client_msg_id: input.messageId,
       ...(input.threadTs ? { thread_ts: input.threadTs, reply_broadcast: 'true' } : {}) });
     if (!result.ts) throw new TransportError('Slack did not confirm delivery.', false);
@@ -223,7 +224,11 @@ export class SlackTransport implements Transport {
     let cursor = '';
     for (let pages = 0; pages < 5; pages++) {
       const page = await this.call('conversations.history', { channel, limit: '100', ...(cursor ? { cursor } : {}) });
-      const hit = (page.messages || []).find((m: any) => m.user === c.user && typeof m.text === 'string' && unescapeMarkup(m.text).split('\n', 2)[1] === `ID: ${messageId}`);
+      const hit = (page.messages || []).find((m: any) => {
+        if (m.user !== c.user || typeof m.text !== 'string') return false;
+        const read = readSlackText(m.text);
+        return 'text' in read && read.text.split('\n', 2)[1] === `ID: ${messageId}`;
+      });
       if (hit) return { channel, ts: String(hit.ts) };
       cursor = page.response_metadata?.next_cursor || '';
       if (!cursor) break;
@@ -267,8 +272,10 @@ export class SlackTransport implements Transport {
             const own = event.user === c.user && conversation.user !== c.user;
             // a post with a user token through an app has bot_id and app_id; the member in `user` is the sender
         if (ordinary && !own && event.user && typeof event.text === 'string') {
+              const read = readSlackText(event.text);
               await handle({ conversation: k, ref: `slack:${c.team}:${conversation.id}:${event.ts}`, ts: String(event.ts), channel: conversation.id,
-                sender: slackAddress(c.team, String(event.user)), text: unescapeMarkup(event.text), ...(event.thread_ts ? { threadTs: String(event.thread_ts) } : {}) });
+                sender: slackAddress(c.team, String(event.user)), text: 'text' in read ? read.text : event.text, ...('error' in read ? { error: read.error } : {}),
+                ...(event.thread_ts ? { threadTs: String(event.thread_ts) } : {}) });
               messages++;
               save(k, String(event.ts));
             }

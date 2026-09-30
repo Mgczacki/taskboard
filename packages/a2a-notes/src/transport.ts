@@ -6,11 +6,20 @@ export interface Identity { transport: string; address: string; name: string; sc
 // One message that the adapter read from the service. text is the message text after markup escapes are reversed.
 export interface Received {
   conversation: string; ref: string; ts: string; channel: string; sender: string; text: string; threadTs?: string;
+  // the adapter found A2A Notes data that it could not read; the core keeps the message for the person with this reason
+  error?: string;
+}
+// What a person reads. Each adapter formats it for its own service (src/slack-format.ts for Slack).
+export interface Display {
+  subject: string; body: string; audience: 'person' | 'agent' | 'both'; senderName: string;
+  agentFile?: { name: string; size: number }; files: { name: string; size: number }[];
 }
 export interface SendInput {
   to: string; messageId: string;
-  // builds the final text after the uploads, from attachment ID -> adapter file ID
-  text: (fileMap: Record<string, string>) => string;
+  // builds the exact A2ANotes/1 text after the uploads, from attachment ID -> adapter file ID
+  wire: (fileMap: Record<string, string>) => string;
+  // what the adapter shows to a person; each adapter formats it for its own service
+  display: Display;
   files: { id: string; name: string; bytes: Buffer }[];
   threadTs?: string;
 }

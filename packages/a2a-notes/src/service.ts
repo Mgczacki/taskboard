@@ -5,7 +5,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { closeSync, constants, fstatSync, lstatSync, openSync, readFileSync, realpathSync, unlinkSync } from 'node:fs';
 import { sep } from 'node:path';
 import {
-  agentFileName, checkBody, checkFileName, checkSubject, decode, decodeLegacyTaskboard, encode, escapeMarkup, footerFor, isAddress, isUuid,
+  agentFileName, checkBody, checkFileName, checkSubject, decode, decodeLegacyTaskboard, encode, footerFor, isAddress, isUuid,
   parseAgentFile, ProtocolError, rawCopy, readAgentFile, sha256, type Audience, type FileRef, type WireMessage, AUDIENCES, MAX_SUPPORT_FILES,
 } from './protocol.ts';
 import { checkPolicy, incomingApprover, outgoingApprover, type Approver, type Policy } from './policy.ts';
@@ -393,6 +393,7 @@ export class NotesService {
       if (!n.review || n.review.verdict === 'quarantine') throw new ServiceError('not_approved', 'The message has not passed the checks.');
       const files = this.files(data, n);
       const bytes = files.map(f => this.store.readFileBytes(f));
+      const agentFile = files.find(f => f.kind === 'agent');
       const senderName = identity.name;
       this.store.update(id, (x, d) => {
         if (x.hash !== n.hash || x.approval?.hash !== n.hash) throw new ServiceError('hash_changed', 'The message changed. Approve it again.');
@@ -406,7 +407,10 @@ export class NotesService {
         result = await this.transport.send({
           to: n.to, messageId: n.messageId, threadTs: n.transport?.threadTs,
           files: files.map((f, i) => ({ id: f.id, name: f.name, bytes: bytes[i] })),
-          text: map => escapeMarkup(encode(this.buildWire(n, data, map, senderName))),
+          wire: map => encode(this.buildWire(n, data, map, senderName)),
+          display: { subject: n.subject, body: n.body, audience: n.audience, senderName,
+            ...(agentFile ? { agentFile: { name: agentFile.name, size: agentFile.size } } : {}),
+            files: files.filter(f => f.kind === 'support').map(f => ({ name: f.name, size: f.size })) },
         });
       } catch (error) {
         const definite = error instanceof TransportError && error.definite;
@@ -503,6 +507,7 @@ export class NotesService {
         threadId: extra.threadId || randomUUID(), replyTo: null, hash: '', failure: { code, reason, raw: rawCopy(m.text) } });
       this.store.audit(d, 'service', 'parse_failure', id, `${code}: ${reason}`);
     });
+    if (m.error) return fail('malformed', m.error);
     const legacy = decodeLegacyTaskboard(m.text);
     if (legacy) return this.receiveLegacy(m, legacy, base);
     const decoded = decode(m.text);

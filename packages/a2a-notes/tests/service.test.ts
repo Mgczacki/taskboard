@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { encode, escapeMarkup, sha256, writeAgentFile, agentFileName } from '../src/protocol.ts';
 import { ServiceError } from '../src/store.ts';
+import { readSlackText, slackText } from '../src/slack-format.ts';
 import { ADAM, EVE, MARIO, agent, agentRequest, fakeWorkspace, person, personService, reviewer, rid, stageAgentFile } from './helpers.ts';
 
 const fake = await fakeWorkspace();
@@ -65,9 +66,20 @@ test('a both message carries a verified agent file, and the agent gets the file 
   mario.service.approve(reviewer, { id, expected_hash: revised.hash, decision: 'approve' });
   await mario.service.send(reviewer, { id, expected_hash: revised.hash, request_id: rid() });
   const posted = [...fake.channels.values()].flatMap(c => c.messages).find(m => m.text.includes(`ID: ${id}`))!;
-  assert.match(posted.text, /^A2ANotes\/1\n/);
-  assert.match(posted.text, /\nTransport-File-Slack: [0-9a-f-]{36} \| F[0-9A-F]+\n/);
-  assert.match(posted.text, /\nSent by Mario G with A2A Notes\.$/);
+  // people read the blocks: subject, sender, body, the agent file, and no wire lines
+  const shown = JSON.stringify(posted.blocks);
+  assert.match(shown, /"type":"header","text":\{"type":"plain_text","text":"Please confirm the Stage hosting settings"/);
+  assert.match(shown, /For you and your agent · Sent by Mario G with A2A Notes/);
+  assert.match(shown, /Hi Adam, thanks for confirming/);
+  assert.match(shown, new RegExp(`Agent request for the reader's agent: a2anotes-request-${id}\\.json`));
+  assert.ok(!shown.includes('A2ANotes/1') && !shown.includes('Body-Bytes'), 'no wire lines in the blocks');
+  // Slack flattened the newlines in text (the fake does what Slack does), and the JSON string still holds the exact wire text
+  assert.ok(!posted.text.includes('\n'));
+  const read = readSlackText(posted.text);
+  assert.ok('text' in read);
+  assert.match(read.text, /^A2ANotes\/1\n/);
+  assert.match(read.text, /\nTransport-File-Slack: [0-9a-f-]{36} \| F[0-9A-F]+\n/);
+  assert.match(read.text, /\nSent by Mario G with A2A Notes\.$/);
 
   await adam.service.scanNow();
   const note = adam.service.list(person, { direction: 'incoming' }).messages.find(m => m.message_id === id)!;
@@ -133,7 +145,8 @@ test('version failures, bad counts, identity mismatches, and plain chat stay awa
   const bytes = Buffer.from(writeAgentFile(agentRequest(id, 'From Eve')).toString('utf8').replace('a2anotes.request/1', 'a2anotes.request/2'));
   const fileId = randomUUID();
   await eve.transport.send({ to: adam.address, messageId: id, files: [{ id: fileId, name: agentFileName(id), bytes }],
-    text: map => escapeMarkup(encode({ ...wire({ audience: 'both', agentFile: { id: fileId, name: agentFileName(id), size: bytes.length, sha256: sha256(bytes) }, transportFiles: { Slack: map } }), id, threadId: id })) });
+    display: { subject: 'From Eve', body: 'Hi Adam, a note from Eve.', audience: 'both', senderName: 'Eve', files: [] },
+    wire: map => encode({ ...wire({ audience: 'both', agentFile: { id: fileId, name: agentFileName(id), size: bytes.length, sha256: sha256(bytes) }, transportFiles: { Slack: map } }), id, threadId: id }) });
 
   await adam.service.scanNow();
   const all = adam.service.list(person, { direction: 'incoming' }).messages.filter(m => m.from === eve.address);
@@ -254,4 +267,21 @@ test('a first scan of a conversation with more than 2000 new messages finishes a
   assert.equal(found.length, 1);
   assert.equal(found[0].state, 'held');
   void eve;
+});
+
+test('the Slack text reader finds the data after a subject that contains the marker, and reports broken data', () => {
+  const wire = 'A2ANotes/1\nID: x';
+  const text = slackText(wire, { subject: 'About A2A Notes data: "quoted"', body: 'b', audience: 'person', senderName: 'Mario <@U1>', files: [] });
+  assert.ok(!text.includes('<@U1>'), 'markup in the summary is escaped');
+  assert.deepEqual(readSlackText(text.replace(/\n/g, ' ')), { text: wire });
+  assert.ok('error' in readSlackText('Subject · from x with A2A Notes A2A Notes data: "A2ANotes/1 cut'));
+  assert.deepEqual(readSlackText('hello'), { text: 'hello' });
+});
+
+test('a Slack message with broken A2A Notes data stays with the person as malformed', async () => {
+  const adam = personService(fake, ADAM);
+  fake.inject(EVE, ADAM, 'Hi · from Eve with A2A Notes A2A Notes data: "A2ANotes/1 cut off');
+  await adam.service.scanNow();
+  const m = adam.service.list(person, { direction: 'incoming' }).messages.find(x => x.from === `slack:${fake.team}:${EVE}` && x.failure_code === 'malformed' && adam.service.get(person, x.id).failure?.reason.includes('JSON'));
+  assert.ok(m);
 });
