@@ -31,6 +31,22 @@ test('a sequence runs each step once in order', async () => {
   assert.deepEqual(seen, ['echo A', 'echo B', 'echo C', 'echo D']);
 });
 
+test('a refused MCP tool cannot create a shell permit', () => {
+  const task = freshTask('mcp');
+  const refusal = { command: 'mcp__claude-in-chrome__browser_batch', toolName: 'mcp__claude-in-chrome__browser_batch' };
+  assert.equal(permits.canPermitRefusal(task, refusal), false);
+  assert.throws(() => permits.request(task, 'Run the refused tool', [{ command: refusal.command }]), /MCP tool call cannot run from a shell permit/);
+  assert.equal(permits.canPermitRefusal(task, { command: 'echo allowed', toolName: 'Bash' }), true);
+});
+
+test('a signal failure names the signal and cancels later steps', async () => {
+  const task = freshTask('abort');
+  const p = permits.request(task, 'Check a child process signal', [{ command: 'echo first' }, { command: 'echo later' }]);
+  await permits.run(p, task, 'user', '', '', async () => ({ code: null, signal: 'SIGABRT', output: '' }));
+  assert.equal(p.error, 'Step 1 failed: signal SIGABRT');
+  assert.deepEqual(p.steps.map(s => s.state), ['failed', 'cancelled']);
+});
+
 test('step 2 failure cancels steps 3 and 4', async () => {
   const task = freshTask('failure');
   const p = permits.request(task, 'Check failure', ['echo 1', 'echo 2', 'echo 3', 'echo 4'].map(command => ({ command })));

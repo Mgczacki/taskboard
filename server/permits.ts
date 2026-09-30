@@ -80,6 +80,7 @@ export function parseCommand(command: string): string[] {
 function hardRule(argv: string[]) {
   const bin = argv[0].split('/').pop() || '';
   const text = argv.join(' ');
+  if (/^mcp__[^\s/]+$/.test(argv[0])) throw new Error('An MCP tool call cannot run from a shell permit. Do not retry this command. Use an allowed path or ask the user to do this step.');
   if (/^(sudo|su|ssh|scp|sftp|vi|vim|nano|less|more|top|htop)$/.test(bin) || (/^(bash|sh|zsh|python|python3|node)$/.test(bin) && argv.includes('-i'))) throw new Error('Interactive commands cannot run from a permit.');
   if (bin === 'tb' || bin === 'taskboard') throw new Error('A permit cannot run another Taskboard command.');
   if (bin === 'git' && argv.slice(1).some(x => /^(add|commit|rebase|merge|reset|checkout|switch|push|pull|cherry-pick|revert|worktree|update-ref|stash|branch|tag)$/.test(x))) throw new Error('Use the task Git commands for changes to Git refs.');
@@ -134,6 +135,11 @@ export function validate(task: Task, inputs: StepInput[]): { steps: PermitStep[]
   });
   if (steps.reduce((sum, s) => sum + s.timeoutSeconds, 0) > 300) throw new Error('The sequence exceeds five minutes.');
   return { steps, riskFlags: [...new Set(steps.flatMap(s => risk(s.argv, s.cwd, task, s.network)))] };
+}
+export function canPermitRefusal(task: Task, refusal: { command: string; cwd?: string; toolName?: string }): boolean {
+  if (refusal.toolName && refusal.toolName !== 'Bash') return false;
+  try { validate(task, [{ command: refusal.command, cwd: refusal.cwd || task.cwd }]); return true; }
+  catch { return false; }
 }
 export function request(task: Task, reason: string, inputs: StepInput[], refusalId?: string): Permit {
   if (typeof reason !== 'string' || !reason.trim() || reason.length > 1000) throw new Error('Give a reason under 1000 characters.');
@@ -211,7 +217,7 @@ export async function run(p: Permit, task: Task, by: 'user' | 'controller', comm
     } catch (e) { step.state = 'failed'; step.error = e instanceof Error ? e.message : String(e); }
     step.finishedAt = now(); save(p);
     if (step.state === 'failed') {
-      p.state = 'failed'; p.error = `Step ${i + 1} failed: ${step.error || `exit ${step.exitCode}`}`;
+      p.state = 'failed'; p.error = `Step ${i + 1} failed: ${step.error || (step.signal ? `signal ${step.signal}` : `exit ${step.exitCode}`)}`;
       p.steps.slice(i + 1).forEach(s => s.state = 'cancelled'); break;
     }
   }

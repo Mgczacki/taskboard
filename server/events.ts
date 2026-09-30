@@ -162,15 +162,21 @@ export function codexEvent(taskId: string, p: any) {
 
 export function recordCommandRefusal(t: Task, refusal: CommandRefusal, source: string) {
   if (t.role === 'controller' || !refusal.command || !refusal.id) return;
-  let canPermit = false;
-  try { permits.validate(t, [{ command: refusal.command, cwd: refusal.cwd || t.cwd }]); canPermit = true; } catch { /* show the refusal without a run button */ }
+  const canPermit = permits.canPermitRefusal(t, refusal);
+  const next = refusal.toolName && refusal.toolName !== 'Bash'
+    ? `Taskboard cannot run ${refusal.toolName} with a shell permit. Do not retry this tool call. Use an allowed path or ask the user to do this step.`
+    : 'Use the dashboard to review the refused command. If no permit is available, use an allowed path or ask the user to do this step.';
   if (!approvals.hasRefusal(t.id, refusal.id)) {
     approvals.request({ actor: t.id, action: 'tool-refusal', summary: `review refused command for task #${t.num}`,
-      detail: `Command: ${refusal.command}\nWorking directory: ${refusal.cwd || t.cwd}\nReason: ${refusal.reason}`, payload: { ...refusal, canPermit } },
-      async () => 'Use Allow this once to request a server run for this exact command.');
+      detail: `Tool: ${refusal.toolName || 'shell command'}\nCommand: ${refusal.command}\nWorking directory: ${refusal.cwd || t.cwd}\nReason: ${refusal.reason}\n${next}`, payload: { ...refusal, canPermit } },
+      async () => next);
+    if (refusal.toolName && refusal.toolName !== 'Bash') {
+      try { docs.uploadSystem(t.id, `refusal-${refusal.id}.md`, `# Refused tool call\n\n${next}\n`); }
+      catch (e) { console.error('could not send refusal guidance', e); }
+    }
   }
   store.update(t.id, { status: 'needs-you', ask: `Refused: ${refusal.command.slice(0, 140)}. Reason: ${refusal.reason}.`,
-    statusSource: `${source} refused a command at ${clock()}. The user can review it on the dashboard.` });
+    statusSource: `${source} refused a tool call at ${clock()}. ${next}` });
 }
 
 export const lastCodexEvent = new Map<string, number>();

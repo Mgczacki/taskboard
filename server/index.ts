@@ -264,9 +264,9 @@ app.post('/api/refusals/:id/permit', (req, res) => {
   if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Use the dashboard.' });
   const card = approvals.get(req.params.id);
   if (!card || card.action !== 'tool-refusal' || card.state !== 'pending') return res.status(404).end();
-  const t = store.get(card.actor); const refusal = card.payload as { id: string; command: string; cwd?: string; reason: string; canPermit?: boolean };
+  const t = store.get(card.actor); const refusal = card.payload as { id: string; command: string; cwd?: string; reason: string; toolName?: string; canPermit?: boolean };
   if (!t) return res.status(404).end();
-  if (!refusal.canPermit) return res.status(400).json({ error: 'This refused command cannot use a permit.' });
+  if (!refusal.canPermit || !permits.canPermitRefusal(t, refusal)) return res.status(400).json({ error: 'This refused tool call cannot use a shell permit. Do not retry it. Use an allowed path or ask the user to do this step.' });
   try {
     const p = createPermit(t, `Run the command refused by ${t.agent}: ${refusal.reason}`, [{ command: refusal.command, cwd: refusal.cwd || t.cwd }], refusal.id);
     approvals.close(card.id, 'expired', `Use permit ${p.id} for this command.`);

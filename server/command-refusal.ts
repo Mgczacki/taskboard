@@ -1,6 +1,6 @@
 import { closeSync, openSync, readSync, statSync } from 'node:fs';
 
-export interface CommandRefusal { id: string; command: string; reason: string; cwd?: string }
+export interface CommandRefusal { id: string; command: string; reason: string; cwd?: string; toolName?: string }
 
 export function lastCodexRefusal(path: string, since: number): CommandRefusal | null {
   let lines: string[];
