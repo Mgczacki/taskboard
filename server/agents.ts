@@ -416,7 +416,28 @@ export async function configureIfRunning() { if ((await tmux.listSessions())?.le
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'task';
 
-export interface NewTask { title: string; desc: string; agent: Agent; folder: string; worktree?: boolean; branch?: string; parent?: string; account?: string; model?: string }
+export interface NewTask { title: string; desc: string; agent: Agent; folder: string; worktree?: boolean; branch?: string; parent?: string; account?: string; model?: string; images?: NewTaskImage[] }
+// An image pasted into the New task form: its media type and its bytes as base64.
+export interface NewTaskImage { type: string; data: string }
+const IMAGE_EXT: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' };
+export const MAX_IMAGES = 10, MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+export function checkImages(images: unknown): NewTaskImage[] {
+  if (images === undefined) return [];
+  if (!Array.isArray(images) || images.length > MAX_IMAGES) throw new Error(`Attach at most ${MAX_IMAGES} images.`);
+  return images.map(i => {
+    if (!i || !IMAGE_EXT[i.type] || typeof i.data !== 'string' || !/^[A-Za-z0-9+/]*={0,2}$/.test(i.data)) throw new Error('Images must be PNG, JPEG, GIF or WebP, sent as base64.');
+    if (i.data.length * 3 / 4 > MAX_IMAGE_BYTES) throw new Error(`Each image must be ${MAX_IMAGE_BYTES / 1024 / 1024} MB or smaller.`);
+    return { type: i.type, data: i.data };
+  });
+}
+// Save the images in the task folder (the agents can read the vault) and list their paths under the prompt.
+// The paths are plain text, so Claude Code, Codex and Antigravity all open them with their own file tools.
+function attachImages(t: Task, prompt: string, images: NewTaskImage[]) {
+  if (!images.length) return prompt;
+  const dir = join(store.taskDir(t.id), 'attachments'); mkdirSync(dir, { recursive: true });
+  const paths = images.map((i, n) => { const f = join(dir, `image-${n + 1}.${IMAGE_EXT[i.type]}`); writeFileSync(f, Buffer.from(i.data, 'base64')); return f; });
+  return `${prompt}\n\nAttached ${paths.length === 1 ? 'image' : 'images'} (open ${paths.length === 1 ? 'it' : 'each file'} to view):\n${paths.map(f => `- ${f}`).join('\n')}`;
+}
 export const runningOn = (accountId: string) => store.all().filter(t => (t.account || accounts.defaultFor(t.agent).id) === accountId && ['working', 'needs-you', 'unread', 'idle', 'review', 'stopped'].includes(t.status)).length;
 
 export async function startTask(n: NewTask): Promise<Task> {
@@ -427,6 +448,7 @@ export async function startTask(n: NewTask): Promise<Task> {
   if (!acct || acct.agent !== n.agent) throw new Error('That account is for the other agent.');
   const why = accounts.unavailable(acct, runningOn(acct.id)); if (why) throw new Error(why);
   if (!(await accounts.status(acct)).signedIn) throw new Error(`Account ${acct.id} is not signed in.`);
+  const images = checkImages(n.images);
   const num = store.nextNum();
   const id = `${slug(n.title)}-${num}`;
   let cwd = folder, branch: string | undefined;
@@ -442,7 +464,7 @@ export async function startTask(n: NewTask): Promise<Task> {
     session: `task-${num}`, sessionId: n.agent === 'claude' ? randomUUID() : undefined,
     statusSource: n.parent === 'controller' ? 'Started by the controller (tb new) just now.' : 'Started just now.', goal: n.title, desc: n.desc, parent: n.parent, account: acct.id, model: n.model,
   });
-  await launch(t, n.desc, false);
+  await launch(t, attachImages(t, n.desc, images), false);
   const f = store.state.folders[n.folder] || { uses: 0, last: '' };
   store.state.folders[n.folder] = { ...f, uses: f.uses + 1, last: new Date().toISOString() };
   store.saveState();

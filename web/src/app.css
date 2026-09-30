@@ -409,3 +409,8 @@ table.keyset .keycell { text-align: right; white-space: normal; }
 .approval.permit-failed, .approval.permit-denied { border-color: var(--st-stopped); }
 .approval.permit-running { border-color: var(--st-working); }
 .approval.permit-expired, .approval.permit-unknown { border-color: var(--line); }
+/* images pasted into the New task description */
+.nt-images { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
+.nt-image { position: relative; width: 96px; height: 72px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: var(--bg2); }
+.nt-image img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.nt-image .btn { position: absolute; top: 2px; right: 2px; padding: 0 5px; line-height: 18px; background: rgba(0,0,0,.55); color: #fff; }

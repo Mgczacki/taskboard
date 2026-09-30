@@ -103,6 +103,8 @@ agents.writeClaudeSettings();
 await agents.installAgyPlugin();
 await agents.configureIfRunning();
 
+// A new task can carry pasted images (agents.MAX_IMAGES of at most agents.MAX_IMAGE_BYTES each, as base64).
+app.use('/api/tasks', express.json({ limit: '150mb' }));
 app.use(express.json({ limit: '2mb' }));
 
 const ALLOWED_ORIGINS = new Set([URL_BASE, `http://localhost:${PORT}`, 'http://localhost:5173', 'http://127.0.0.1:5173']);
@@ -529,9 +531,10 @@ app.post('/api/tasks', async (req, res) => {
   try {
     const { title, desc, agent, folder, worktree, branch, parent, account, model } = req.body;
     if (!title || !folder || !['claude', 'codex', 'antigravity'].includes(agent)) throw new Error('title, folder and agent are required');
-    await guarded(req, res, `start “${title}” (${agents.agentName(agent)})`, `Folder: ${folder}${worktree ? ` · new worktree ${branch || ''}` : ''}\nAccount: ${account && account !== 'auto' ? account : 'automatic'}\nModel: ${model || 'agent default'}\nPrompt: ${desc || title}`, 'new',
+    const images = agents.checkImages(req.body.images);
+    await guarded(req, res, `start “${title}” (${agents.agentName(agent)})`, `Folder: ${folder}${worktree ? ` · new worktree ${branch || ''}` : ''}\nAccount: ${account && account !== 'auto' ? account : 'automatic'}\nModel: ${model || 'agent default'}\nPrompt: ${desc || title}${images.length ? `\nImages: ${images.length} attached` : ''}`, 'new',
       async () => {
-        const t = await agents.startTask({ title, desc: desc || title, agent, folder, worktree, branch, parent, account, model });
+        const t = await agents.startTask({ title, desc: desc || title, agent, folder, worktree, branch, parent, account, model, images });
         if (req.body.group) { const g = groups.all().find(x => x.name === req.body.group || x.id === req.body.group) || groups.create(String(req.body.group)); groups.update(g.id, { tasks: [...g.tasks, t.id] }); }
         return view(t);
       }, (t: any) => `Started #${t.num} ${t.title} in ${t.cwd}${req.body.group ? ` (group ${req.body.group})` : ''}`);

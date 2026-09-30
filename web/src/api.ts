@@ -101,7 +101,7 @@ async function call<T = unknown>(method: string, path: string, body?: unknown): 
   return data as T;
 }
 export const api = {
-  create: (b: { title: string; desc: string; agent: string; folder: string; worktree?: boolean; branch?: string; account?: string; model?: string; machine?: string; group?: string }) => call<Task>('POST', '/api/tasks', b),
+  create: (b: { title: string; desc: string; agent: string; folder: string; worktree?: boolean; branch?: string; account?: string; model?: string; machine?: string; group?: string; images?: { type: string; data: string }[] }) => call<Task>('POST', '/api/tasks', b),
   setStatus: (id: string, status: string) => call('POST', `/api/tasks/${id}/status`, { status }),
   seen: (id: string) => call('POST', `/api/tasks/${id}/seen`, {}),
   resume: (id: string, force = false) => call<Task>('POST', `/api/tasks/${id}/resume`, { force }),

@@ -1,5 +1,5 @@
 // New task: title, first prompt, folder (used before or found), agent, optional worktree.
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type ClipboardEvent } from 'react';
 import { AGENTS, AGENT_NAME, api } from '../api';
 import type { Agent, Group } from '../api';
 import { loadAccounts, usageText, type Account } from './Accounts';
@@ -7,6 +7,8 @@ import { loadAccounts, usageText, type Account } from './Accounts';
 export function NewTask({ onClose, onStarted, initialFolder, groups = [], initialGroup }: { onClose: () => void; onStarted: (id: string, group: string) => void; initialFolder?: string; groups?: Group[]; initialGroup?: string }) {
   const [title, setTitle] = useState('');
   const [desc, setDesc] = useState('');
+  // Images pasted into the description (⌘V / Ctrl+V). The server saves them in the task folder and lists their paths in the first prompt.
+  const [images, setImages] = useState<{ type: string; data: string; url: string }[]>([]);
   const [agent, setAgent] = useState<Agent>(() => (localStorage.getItem('tb-agent') as Agent) || 'claude');
   const [folder, setFolder] = useState(initialFolder || '');
   const [group, setGroup] = useState(initialGroup || '');
@@ -57,12 +59,24 @@ export function NewTask({ onClose, onStarted, initialFolder, groups = [], initia
       `tmux -L taskboard new-session -d -s task-N -c ${cwd} \\\n  -e TASK_ID=… -e TASK_DIR=~/AgentVault/tasks/… \\\n  ${agent === 'claude' ? 'claude --settings ~/.taskboard/claude-settings.json --session-id <uuid> …' : agent === 'codex' ? 'codex -c notify=[…] …' : 'agy --add-dir ~/AgentVault -i'} "<your prompt>"`;
   }, [folder, worktree, branch, slug, agent]);
 
+  const onPaste = (e: ClipboardEvent) => {
+    const files = [...e.clipboardData.files].filter(f => ['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(f.type));
+    if (!files.length) return;
+    e.preventDefault();
+    for (const f of files) {
+      if (f.size > 10 * 1024 * 1024) { setErr(`${f.name || 'The image'} is larger than 10 MB.`); continue; }
+      const r = new FileReader();
+      r.onload = () => { const url = String(r.result); setImages(x => x.length >= 10 ? x : [...x, { type: f.type, data: url.slice(url.indexOf(',') + 1), url }]); };
+      r.readAsDataURL(f);
+    }
+  };
+
   const go = async () => {
     if (!title.trim() || !folder) { setErr('A title and a folder are needed.'); return; }
     setBusy(true); setErr('');
     try {
       localStorage.setItem('tb-agent', agent);
-      const t = await api.create({ title: title.trim(), desc: desc.trim() || title.trim(), agent, folder, worktree, branch: worktree ? (branch || `task/${slug}`) : undefined, account: machine === 'local' ? account : 'auto', machine, group: group || undefined });
+      const t = await api.create({ title: title.trim(), desc: desc.trim() || title.trim(), agent, folder, worktree, branch: worktree ? (branch || `task/${slug}`) : undefined, account: machine === 'local' ? account : 'auto', machine, group: group || undefined, images: images.length ? images.map(({ type, data }) => ({ type, data })) : undefined });
       onStarted(t.id, group);
     } catch (e) { setErr(String((e as Error).message || e)); setBusy(false); }
   };
@@ -79,7 +93,8 @@ export function NewTask({ onClose, onStarted, initialFolder, groups = [], initia
         <header><h2>New task</h2><button className="btn ghost icon" onClick={onClose}>✕</button></header>
         <div className="body">
           <div className="field"><label>Title</label><input ref={titleRef} type="text" value={title} onChange={e => setTitle(e.target.value)} placeholder="Short name shown on the board" /></div>
-          <div className="field"><label>Task description · sent to the agent as its first prompt</label><textarea value={desc} onChange={e => setDesc(e.target.value)} placeholder="What should the agent do?" /></div>
+          <div className="field"><label>Task description · sent to the agent as its first prompt</label><textarea value={desc} onChange={e => setDesc(e.target.value)} onPaste={onPaste} placeholder="What should the agent do? Paste images with ⌘V." />
+            {images.length > 0 && <div className="nt-images">{images.map((im, i) => <div key={i} className="nt-image"><img src={im.url} alt={`Pasted image ${i + 1}`} /><button className="btn ghost icon" title="Remove this image" onClick={() => setImages(x => x.filter((_, j) => j !== i))}>✕</button></div>)}</div>}</div>
           <div className="field"><label>Machine</label><div className="seg mseg">{machineList.map(m => <button key={m.id} disabled={!m.online} className={machine === m.id ? 'on' : ''} onClick={() => setMachine(m.id)}><span className={`mdot ${m.online ? '' : 'off'}`} />{m.name}{m.local ? ' (this Mac)' : m.online ? ` · ${m.latency ?? '?'} ms` : ' · offline'}</button>)}</div>
             {machineList.length <= 1 && <div className="help">Only this Mac is connected. Add another machine with ＋ next to “Machines” in the sidebar.</div>}</div>
           <div className="field"><label htmlFor="new-task-group">Group</label><select id="new-task-group" className="acct-sel" value={group} onChange={e => setGroup(e.target.value)}>
