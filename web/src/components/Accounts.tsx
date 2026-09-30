@@ -64,7 +64,7 @@ export function ControllerBox({ ctl, setErr }: { ctl?: Task; setErr: (s: string)
   const [busy, setBusy] = useState(false);
   useEffect(() => { api.info().then(i => { setInfo(i); setName(i.machine); }); }, [ctl?.remoteUrl, ctl?.agent]);
   if (!info) return null;
-  const save = async (p: { name?: string; autostart?: boolean; remoteControl?: boolean; controllerModels?: Partial<Record<Agent, string>> }) => {
+  const save = async (p: { name?: string; autostart?: boolean; remoteControl?: boolean; dangerouslySkipPermissions?: boolean; controllerModels?: Partial<Record<Agent, string>> }) => {
     setBusy(true); try { const i = await api.updateInfo(p); setInfo(i); setName(i.machine); } catch (e) { setErr(String((e as Error).message || e)); } setBusy(false);
   };
   const s = info.settings.controller, agent = ctl?.agent || 'claude', isClaude = agent === 'claude';
@@ -74,6 +74,8 @@ export function ControllerBox({ ctl, setErr }: { ctl?: Task; setErr: (s: string)
         <input type="text" value={name} onChange={e => setName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }} onBlur={() => { if (name.trim() && name.trim() !== info.machine) save({ name }); }} title="The name the controller uses for itself, and its session name in the Claude app" />
         <span className="sub">host {info.host} · one Taskboard server per machine</span></div>
       <label className="opt" title="When the Taskboard server starts, it starts the controller; if the controller exits, Taskboard starts it again within a minute"><input type="checkbox" checked={s.autostart} disabled={busy} onChange={e => save({ autostart: e.target.checked })} /> Start the controller with Taskboard and keep it running</label>
+      <label className="opt"><input type="checkbox" checked={s.dangerouslySkipPermissions} disabled={busy || !isClaude} onChange={e => save({ dangerouslySkipPermissions: e.target.checked })} /> Run the Claude controller with <code>--dangerously-skip-permissions</code>{!isClaude && ' (Claude Code only)'}</label>
+      {isClaude && <div className="sub">Claude skips its permission prompts when this is on. Taskboard still checks <code>tb</code> commands and permit requests. A change restarts the controller between turns.</div>}
       <div className="ctl-row"><label htmlFor="controller-model">Controller model for {AGENT_NAME[agent]}</label>
         <input id="controller-model" type="text" maxLength={80} key={`${agent}:${s.models[agent]}`} defaultValue={s.models[agent]} disabled={busy} placeholder="Use the agent default" onBlur={e => { const model = e.target.value.trim(); if (model !== s.models[agent]) save({ controllerModels: { [agent]: model } }); }} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} />
         <span className="sub">A change restarts the controller between turns.</span></div>

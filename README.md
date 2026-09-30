@@ -186,6 +186,9 @@ A sideways swipe (or Shift + wheel) over a terminal scrolls the canvas, or turns
 - **Controller (⌘K):** an agent session in `~/AgentVault/controller` that manages agents with the `tb` command.
   Choose its account on the Accounts page. The account sets the controller's agent.
   The Settings page controls whether its actions need an approval card.
+  A Claude Code controller starts with `--dangerously-skip-permissions` by default. Turn this off in the Controller section
+  of Settings. Taskboard still checks `tb` actions and permit requests. The change takes effect after the controller's
+  current turn ends and Taskboard restarts its session.
 - **Task routing:** the Settings page stores machine rules in `~/.taskboard/machine.json`.
   The Accounts page stores each account's rules in `~/.taskboard/accounts.json`.
   The controller reads `tb accounts` before it starts work. A Claude Code controller also gets current usage in its prompt hook.

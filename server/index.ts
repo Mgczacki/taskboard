@@ -481,7 +481,7 @@ app.get('/api/info', (_req, res) => res.json(info()));
 app.patch('/api/info', async (req, res) => {
   if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Machine settings are changed on the dashboard.' });
   try {
-    const { name, routingRules, autostart, remoteControl, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, messageIncoming, messageOutgoing, checkPrivateNotes, confirmLowerControl, defaultMaxParallel, applyMaxParallelToAll } = req.body;
+    const { name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, messageIncoming, messageOutgoing, checkPrivateNotes, confirmLowerControl, defaultMaxParallel, applyMaxParallelToAll } = req.body;
     // A higher message level gives the user less control. The page asks first and then sends confirmLowerControl.
     const current = machine.get().messages;
     if (confirmLowerControl !== true && ((messageIncoming ?? 0) > current.incoming || (messageOutgoing ?? 0) > current.outgoing || (controllerCanApprovePermits === true && !machine.get().permissions.controllerCanApprovePermits)))
@@ -493,7 +493,7 @@ app.patch('/api/info', async (req, res) => {
       return res.status(400).json({ error: 'Pick a valid model for questions.' });
     if (reviewAccount && accounts.get(reviewAccount)?.agent !== 'claude') return res.status(400).json({ error: 'Pick a Claude Code account for auto review.' });
     if (defaultMaxParallel !== undefined) machine.checkMaxParallel(defaultMaxParallel); // refuse before anything is saved
-    machine.update({ name, routingRules, autostart, remoteControl, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, messageIncoming, messageOutgoing, checkPrivateNotes, defaultMaxParallel });
+    machine.update({ name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, messageIncoming, messageOutgoing, checkPrivateNotes, defaultMaxParallel });
     // the Settings page confirms first; running tasks keep running, only new starts check the new maximum
     if (applyMaxParallelToAll === true) accounts.setAllMaxParallel(machine.get().accounts.defaultMaxParallel);
     if (messageIncoming !== undefined || messageOutgoing !== undefined || checkPrivateNotes !== undefined) messageLevelsChanged();
