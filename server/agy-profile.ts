@@ -43,12 +43,12 @@ export async function createProfile(home: string) {
   await security(home, ['set-keychain-settings', path]);
 }
 
-export async function prepareProfile(home: string) {
+export async function prepareProfile(home: string, runSecurity = security) {
   const path = keychain(home);
   if (!existsSync(path) || !existsSync(passwordFile(home))) throw new Error('The Antigravity account Keychain is missing.');
-  const listed = paths(await security(home, ['list-keychains', '-d', 'user']));
-  const selected = paths(await security(home, ['default-keychain', '-d', 'user']));
+  await runSecurity(home, ['unlock-keychain', path], `${readFileSync(passwordFile(home), 'utf8')}\n`);
+  const listed = paths(await runSecurity(home, ['list-keychains', '-d', 'user']));
+  const selected = paths(await runSecurity(home, ['default-keychain', '-d', 'user']));
   if (listed.length !== 1 || listed[0] !== path || selected.length !== 1 || selected[0] !== path)
     throw new Error('The Antigravity account Keychain is not isolated.');
-  await security(home, ['unlock-keychain', path], `${readFileSync(passwordFile(home), 'utf8')}\n`);
 }

@@ -18,6 +18,7 @@ import * as groups from './groups.ts';
 import * as importer from './importer.ts';
 import * as approvals from './approvals.ts';
 import * as ask from './ask.ts';
+import { spinOffPrompt } from './ask-spin-off.ts';
 import * as accounts from './accounts.ts';
 import * as load from './load.ts';
 import * as external from './external.ts';
@@ -425,7 +426,16 @@ app.post('/api/git/merge-request', async (req, res) => {
     const expected = await taskGit.mergeState(task);
     const approval = approvals.request({ actor, action: 'git-merge', summary: `merge ${expected.branch} into local master`,
       detail: `Task: #${task.num} ${task.title}\nBranch head: ${expected.source}\nMaster head: ${expected.target}\nRepository: ${task.folder}`, payload: expected },
-      () => taskGit.mergeTask(task, expected));
+      async () => {
+        try {
+          const result = await taskGit.mergeTask(task, expected);
+          store.update(actor, { status: 'unread', ask: '', statusSource: result });
+          return result;
+        } catch (e) {
+          store.update(actor, { status: 'unread', ask: '', statusSource: e instanceof Error ? e.message : String(e) });
+          throw e;
+        }
+      });
     store.update(actor, { status: 'needs-you', ask: `Approve: merge ${expected.branch} into local master`, statusSource: 'Waiting for your approval on the dashboard.' });
     res.status(202).json({ approval });
   } catch (e) { fail(res, e); }
@@ -437,8 +447,10 @@ app.post('/api/git/commit', async (req, res) => {
 });
 app.post('/api/git/rebase', async (req, res) => {
   const task = store.get(req.get('x-tb-actor') || '');
-  if (!task || task.role === 'controller') return res.status(403).json({ error: 'A Taskboard task must rebase its own branch.' });
-  try { res.json({ result: await taskGit.rebaseTask(task) }); } catch (e) { fail(res, e); }
+  if (!task || task.role === 'controller') return res.status(403).json({ error: 'A Taskboard task must run tb git rebase on its own branch.' });
+  const action = req.body.action || 'start';
+  if (!['start', 'continue', 'abort'].includes(action)) return res.status(400).json({ error: 'Run tb git rebase, tb git rebase --continue, or tb git rebase --abort.' });
+  try { res.json({ result: await taskGit.rebaseTask(task, action) }); } catch (e) { fail(res, e); }
 });
 
 // ---------- other machines ----------
@@ -531,10 +543,11 @@ app.post('/api/tasks', async (req, res) => {
   try {
     const { title, desc, agent, folder, worktree, branch, parent, account, model } = req.body;
     if (!title || !folder || !['claude', 'codex', 'antigravity', 'auto'].includes(agent)) throw new Error('title, folder and agent are required');
+    const prompt = req.body.spinOff ? spinOffPrompt(req.body.spinOff) : (desc || title);
     const images = agents.checkImages(req.body.images);
-    await guarded(req, res, `start “${title}” (${agent === 'auto' ? 'Auto' : agents.agentName(agent)})`, `Folder: ${folder}${worktree ? ` · new worktree ${branch || ''}` : ''}\nAccount: ${account && account !== 'auto' ? account : 'automatic'}\nModel: ${model || 'agent default'}\nPrompt: ${desc || title}${images.length ? `\nImages: ${images.length} attached` : ''}`, 'new',
+    await guarded(req, res, `start “${title}” (${agent === 'auto' ? 'Auto' : agents.agentName(agent)})`, `Folder: ${folder} · worktree: ${worktree === false ? 'no' : worktree === true ? 'yes' : 'automatic'}${branch ? ` · branch ${branch}` : ''}\nAccount: ${account && account !== 'auto' ? account : 'automatic'}\nModel: ${model || 'agent default'}\nPrompt: ${prompt}${images.length ? `\nImages: ${images.length} attached` : ''}`, 'new',
       async () => {
-        const t = await agents.startTask({ title, desc: desc || title, agent, folder, worktree, branch, parent, account, model, images });
+        const t = await agents.startTask({ title, desc: prompt, agent, folder, worktree, branch, parent, account, model, images });
         if (req.body.group) { const g = groups.all().find(x => x.name === req.body.group || x.id === req.body.group) || groups.create(String(req.body.group)); groups.update(g.id, { tasks: [...g.tasks, t.id] }); }
         return view(t);
       }, (t: any) => `Started #${t.num} ${t.title} with ${t.agent} on ${t.account} in ${t.cwd}${req.body.group ? ` (group ${req.body.group})` : ''}`);

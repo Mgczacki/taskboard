@@ -62,15 +62,15 @@ test('a remote commit that is not an ancestor blocks the push', async () => {
   await assert.rejects(push.runPush(task, state), /fast-forward/);
 });
 
-test('only an own unprotected task branch on origin can run without a card', () => {
+test('every push needs a card and the never setting still blocks own task branches', () => {
   const settings = { taskBranches: 'run' as const, ownRepositories: [] as string[], protectedBranches: [] as string[] };
   const needs = (branch: string, remote: string, url: string, login = 'owner', policy = settings) =>
     push.pushNeedsCard('task-push', branch, remote, url, 'master', login, policy);
-  assert.equal(needs('task-push', 'origin', 'git@github.com:owner/repo.git'), false);
+  assert.equal(needs('task-push', 'origin', 'git@github.com:owner/repo.git'), true);
   assert.equal(needs('task-push', 'origin', 'git@github.com:company/repo.git'), true);
   assert.equal(needs('master', 'origin', 'git@github.com:owner/repo.git'), true);
   assert.equal(needs('task-push', 'backup', 'git@github.com:owner/repo.git'), true);
-  assert.equal(needs('task-push', 'origin', 'git@github.com:company/repo.git', 'owner', { ...settings, ownRepositories: ['company/repo'] }), false);
+  assert.equal(needs('task-push', 'origin', 'git@github.com:company/repo.git', 'owner', { ...settings, ownRepositories: ['company/repo'] }), true);
   assert.equal(needs('task-push', 'origin', 'git@github.com:owner/repo.git', 'owner', { ...settings, protectedBranches: ['task-push'] }), true);
   assert.equal(needs('task-push', 'origin', 'git@github.com:owner/repo.git', 'owner', { ...settings, taskBranches: 'ask' as const }), true);
   assert.throws(() => needs('task-push', 'origin', 'git@github.com:owner/repo.git', 'owner', { ...settings, taskBranches: 'never' as const }), /Settings block/);

@@ -1,25 +1,25 @@
-// New task: title, first prompt, folder (used before or found), agent, optional worktree.
+// New task: title, first prompt, folder, agent, and working copy.
 import { useEffect, useMemo, useRef, useState, type ClipboardEvent } from 'react';
 import { AGENTS, AGENT_NAME, api } from '../api';
-import type { Agent, Group } from '../api';
+import type { Agent, Group, SpinOffExchange } from '../api';
 import { loadAccounts, usageText, type Account } from './Accounts';
 
-export function NewTask({ onClose, onStarted, initialFolder, groups = [], initialGroup }: { onClose: () => void; onStarted: (id: string, group: string, choice?: string) => void; initialFolder?: string; groups?: Group[]; initialGroup?: string }) {
-  const [title, setTitle] = useState('');
-  const [desc, setDesc] = useState('');
+export function NewTask({ onClose, onStarted, initialFolder, initialMachine = 'local', groups = [], initialGroup, spinOff }: { onClose: () => void; onStarted: (id: string, group: string, choice?: string) => void; initialFolder?: string; initialMachine?: string; groups?: Group[]; initialGroup?: string; spinOff?: SpinOffExchange }) {
+  const [title, setTitle] = useState(spinOff?.question.slice(0, 80) || '');
+  const [desc, setDesc] = useState(spinOff ? `Start a new task from this Ask exchange about task #${spinOff.sourceNum}. Read task #${spinOff.sourceNum}'s log if you need more context. Do not send a message to the source task.\n\nQuestion:\n${spinOff.question}\n\nAnswer:\n${spinOff.answer}` : '');
   // Images pasted into the description (⌘V / Ctrl+V). The server saves them in the task folder and lists their paths in the first prompt.
   const [images, setImages] = useState<{ type: string; data: string; url: string }[]>([]);
   const [agent, setAgent] = useState<Agent | 'auto'>('claude');
   const [folder, setFolder] = useState(initialFolder || '');
   const [group, setGroup] = useState(initialGroup || '');
   const [q, setQ] = useState('');
-  const [worktree, setWorktree] = useState(false);
+  const [workingCopy, setWorkingCopy] = useState<'auto' | 'folder' | 'worktree'>('auto');
   const [branch, setBranch] = useState('');
   const [folders, setFolders] = useState<{ used: { path: string; uses: number; last: string; pinned?: boolean }[]; found: string[] }>({ used: [], found: [] });
   const [busy, setBusy] = useState(false);
   const [accts, setAccts] = useState<Account[]>([]);
   const [account, setAccount] = useState('auto');
-  const [machine, setMachine] = useState('local');
+  const [machine, setMachine] = useState(initialMachine);
   const [machineList, setMachineList] = useState<{ id: string; name: string; online: boolean; latency?: number; local?: boolean }[]>([]);
   useEffect(() => { fetch('/api/machines').then(r => r.json()).then(setMachineList).catch(() => {}); }, []);
   useEffect(() => { loadAccounts().then(setAccts).catch(() => {}); api.info().then(i => setAgent(i.settings.newTaskDefaultAgent || 'claude')).catch(() => {}); }, []);
@@ -42,7 +42,7 @@ export function NewTask({ onClose, onStarted, initialFolder, groups = [], initia
   };
   const titleRef = useRef<HTMLInputElement>(null);
 
-  const load = () => api.foldersOn(machine).then(f => { setFolders(f); setFolder(x => x && machine === 'local' ? x : (f.used[0]?.path || f.found[0] || '')); });
+  const load = () => api.foldersOn(machine).then(f => { setFolders(f); setFolder(x => x && machine === initialMachine ? x : (f.used[0]?.path || f.found[0] || '')); });
   useEffect(() => { load(); }, [machine]);
   useEffect(() => { titleRef.current?.focus(); }, []);
 
@@ -55,10 +55,10 @@ export function NewTask({ onClose, onStarted, initialFolder, groups = [], initia
 
   const cmd = useMemo(() => {
     if (agent === 'auto' && account === 'auto') return 'Taskboard chooses an agent and account when the task starts.';
-    const cwd = worktree ? `${folder}-wt/${slug}` : folder;
-    return (worktree ? `git -C ${folder} worktree add ${cwd} -b ${branch || 'task/' + slug}\n` : '') +
+    const cwd = workingCopy === 'folder' ? folder : `${folder}-wt/${slug}-N`;
+    return (workingCopy === 'folder' ? '' : workingCopy === 'auto' ? `For a Git repository, create a worktree at ${cwd}; otherwise use ${folder}.\n` : `git -C ${folder} worktree add ${cwd} -b ${branch || 'task/' + slug + '-N'}\n`) +
       `tmux -L taskboard new-session -d -s task-N -c ${cwd} \\\n  -e TASK_ID=… -e TASK_DIR=~/AgentVault/tasks/… \\\n  ${agent === 'auto' ? (accts.find(a => a.id === account)?.agent === 'claude' ? 'claude …' : accts.find(a => a.id === account)?.agent === 'codex' ? 'codex …' : 'agy …') : agent === 'claude' ? 'claude --settings ~/.taskboard/claude-settings.json --session-id <uuid> …' : agent === 'codex' ? 'codex -c notify=[…] …' : 'agy --add-dir ~/AgentVault -i'} "<your prompt>"`;
-  }, [folder, worktree, branch, slug, agent, account, accts]);
+  }, [folder, workingCopy, branch, slug, agent, account, accts]);
 
   const onPaste = (e: ClipboardEvent) => {
     const files = [...e.clipboardData.files].filter(f => ['image/png', 'image/jpeg', 'image/gif', 'image/webp'].includes(f.type));
@@ -76,7 +76,7 @@ export function NewTask({ onClose, onStarted, initialFolder, groups = [], initia
     if (!title.trim() || !folder) { setErr('A title and a folder are needed.'); return; }
     setBusy(true); setErr('');
     try {
-      const t = await api.create({ title: title.trim(), desc: desc.trim() || title.trim(), agent, folder, worktree, branch: worktree ? (branch || `task/${slug}`) : undefined, account: machine === 'local' ? account : 'auto', machine, group: group || undefined, images: images.length ? images.map(({ type, data }) => ({ type, data })) : undefined });
+      const t = await api.create({ title: title.trim(), desc: desc.trim() || title.trim(), agent, folder, worktree: workingCopy === 'auto' ? undefined : workingCopy === 'worktree', branch: workingCopy === 'worktree' ? (branch || undefined) : undefined, account: machine === 'local' ? account : 'auto', machine, group: group || undefined, images: images.length ? images.map(({ type, data }) => ({ type, data })) : undefined, spinOff });
       onStarted(t.id, group, agent === 'auto' ? `${AGENT_NAME[t.agent]} on ${accts.find(a => a.id === t.account)?.name || t.account}` : undefined);
     } catch (e) { setErr(String((e as Error).message || e)); setBusy(false); }
   };
@@ -90,10 +90,10 @@ export function NewTask({ onClose, onStarted, initialFolder, groups = [], initia
   return (
     <div className="scrim open" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }} onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) go(); if (e.key === 'Escape') onClose(); }}>
       <div className="modal">
-        <header><h2>New task</h2><button className="btn ghost icon" onClick={onClose}>✕</button></header>
+        <header><h2>{spinOff ? `New task from Ask #${spinOff.sourceNum}` : 'New task'}</h2><button className="btn ghost icon" onClick={onClose}>✕</button></header>
         <div className="body">
           <div className="field"><label>Title</label><input ref={titleRef} type="text" value={title} onChange={e => setTitle(e.target.value)} placeholder="Short name shown on the board" /></div>
-          <div className="field"><label>Task description · sent to the agent as its first prompt</label><textarea value={desc} onChange={e => setDesc(e.target.value)} onPaste={onPaste} placeholder="What should the agent do? Paste images with ⌘V." />
+          <div className="field"><label>Task description · sent to the agent as its first prompt</label><textarea value={desc} readOnly={!!spinOff} onChange={e => setDesc(e.target.value)} onPaste={spinOff ? undefined : onPaste} placeholder="What should the agent do? Paste images with ⌘V." />
             {images.length > 0 && <div className="nt-images">{images.map((im, i) => <div key={i} className="nt-image"><img src={im.url} alt={`Pasted image ${i + 1}`} /><button className="btn ghost icon" title="Remove this image" onClick={() => setImages(x => x.filter((_, j) => j !== i))}>✕</button></div>)}</div>}</div>
           <div className="field"><label>Machine</label><div className="seg mseg">{machineList.map(m => <button key={m.id} disabled={!m.online} className={machine === m.id ? 'on' : ''} onClick={() => setMachine(m.id)}><span className={`mdot ${m.online ? '' : 'off'}`} />{m.name}{m.local ? ' (this Mac)' : m.online ? ` · ${m.latency ?? '?'} ms` : ' · offline'}</button>)}</div>
             {machineList.length <= 1 && <div className="help">Only this Mac is connected. Add another machine with ＋ next to “Machines” in the sidebar.</div>}</div>
@@ -134,8 +134,9 @@ export function NewTask({ onClose, onStarted, initialFolder, groups = [], initia
           <div className="row2">
             <div className="field"><label>Agent</label><div className="seg"><button className={agent === 'auto' ? 'on' : ''} onClick={() => setAgent('auto')}>Auto</button>{AGENTS.map(a => <button key={a} className={agent === a ? 'on' : ''} onClick={() => setAgent(a)}>{AGENT_NAME[a]}</button>)}</div></div>
             <div className="field"><label>Working copy</label>
-              <label className="opt"><input type="radio" checked={!worktree} onChange={() => setWorktree(false)} /> Use the folder as is</label>
-              <label className="opt"><input type="radio" checked={worktree} onChange={() => setWorktree(true)} /> New git worktree on branch <input type="text" value={branch} placeholder={`task/${slug}`} onChange={e => setBranch(e.target.value)} style={{ width: 160, padding: '3px 6px', font: '11.5px var(--mono)' }} /></label>
+              <label className="opt"><input type="radio" checked={workingCopy === 'auto'} onChange={() => setWorkingCopy('auto')} /> New worktree for a Git repository</label>
+              <label className="opt"><input type="radio" checked={workingCopy === 'folder'} onChange={() => setWorkingCopy('folder')} /> Use the folder as is</label>
+              <label className="opt"><input type="radio" checked={workingCopy === 'worktree'} onChange={() => setWorkingCopy('worktree')} /> New git worktree on branch <input type="text" value={branch} placeholder={`task/${slug}-N`} onChange={e => { setBranch(e.target.value); setWorkingCopy('worktree'); }} style={{ width: 160, padding: '3px 6px', font: '11.5px var(--mono)' }} /></label>
             </div>
           </div>
           <div className="field"><label>Account</label>

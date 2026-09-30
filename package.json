@@ -10,6 +10,7 @@
     "check:ui-controls": "node scripts/check-ui-controls.mjs",
     "start": "NODE_ENV=production tsx server/index.ts",
     "typecheck": "tsc --noEmit -p .",
+    "test": "node --import tsx --test --test-reporter spec tests/*.test.ts tests/*.test.mjs",
     "postinstall": "node scripts/fix-node-pty.mjs",
     "stop": "node scripts/stop.mjs",
     "sandbox": "node scripts/sandbox.mjs",

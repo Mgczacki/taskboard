@@ -3,13 +3,13 @@
 import { useEffect, useRef, useState } from 'react';
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
-import type { AskThread, Task } from '../api';
+import type { AskThread, SpinOffExchange, Task } from '../api';
 import { api } from '../api';
 
 const md = (s: string) => DOMPurify.sanitize(marked.parse(s, { async: false }) as string);
 const secs = (ms?: number) => ms === undefined ? '' : `${(ms / 1000).toFixed(1)} s`;
 
-export function AskPanel({ task, close }: { task: Task; close: () => void }) {
+export function AskPanel({ task, close, onSpinOff }: { task: Task; close: () => void; onSpinOff: (exchange: SpinOffExchange, task: Task) => void }) {
   const [thread, setThread] = useState<AskThread>({ items: [] });
   const [q, setQ] = useState('');
   const [err, setErr] = useState('');
@@ -49,6 +49,7 @@ export function AskPanel({ task, close }: { task: Task; close: () => void }) {
             {i.state === 'running' ? <div className="ask-wait">Working… <button className="btn" onClick={() => api.askStop(task.id)}>Stop</button></div>
               : <div className={`ask-a md ${i.state}`} dangerouslySetInnerHTML={{ __html: md(i.a || '') }} />}
             {i.state !== 'running' && <div className="ask-meta">{[i.costUsd !== undefined ? `$${i.costUsd.toFixed(3)}` : '', secs(i.ms), i.agent === 'codex' ? 'Codex' : 'Claude Code', i.model, i.account].filter(Boolean).join(' · ')}</div>}
+            {i.state === 'done' && i.a && <button className="btn" onClick={() => onSpinOff({ sourceNum: task.num, question: i.q, answer: i.a! }, task)}>Start task</button>}
           </div>
         ))}
       </div>

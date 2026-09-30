@@ -2,6 +2,7 @@
 // Taskboard records folder trust in each CLI's account settings. Codex also needs the exact guard hook hash in its
 // account config, because its hook trust check does not read -c overrides. Antigravity (agy) uses a Taskboard plugin.
 import { execFile, execFileSync, spawn } from 'node:child_process';
+import { prepareWorktreeDependencies, useTaskWorktree } from './task-worktree.ts';
 import { randomUUID } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
@@ -261,7 +262,7 @@ function taskInstructions(t: Task) {
   return [
     `You are running as task #${t.num} ("${t.title}") in Taskboard, which shows the user many agents at once.`,
     ...(t.worktree ? [
-      `Your Git branch is ${t.branch} in ${t.cwd}. Use \`${gitCli} git commit "<message>"\` to commit and \`${gitCli} git rebase\` to rebase it.`,
+      `Your Git branch is ${t.branch} in ${t.cwd}. Use \`${gitCli} git commit "<message>"\` to commit and \`${gitCli} git rebase\` to rebase it. Resolve rebase conflicts there, then run \`${gitCli} git rebase --continue\` or \`${gitCli} git rebase --abort\`.`,
       `To merge your branch into local master, run \`${gitCli} git merge-request\`. The user approves that merge on the dashboard.`,
       `When the user asks for a push, run \`${gitCli} git push-request --reason "<reason>"\`. Read the result with \`${gitCli} git push-result ID\`.`,
       'Do not run raw git commands that change refs. Do not change another task branch. Do not push unless the user asks for that push.',
@@ -288,7 +289,7 @@ function claudeTaskSettings(t: Task): string {
     allow: ['$defaults', `Taskboard checks tb git commit and tb git rebase against this task's branch ${t.branch}. A merge into local master requires the Taskboard dashboard card. Other worktrees and branches are outside this task's scope.`],
   };
   const gitCli = join(TB_DIR, 'bin', 'tb');
-  settings.permissions.allow.push(`Bash(${gitCli} git commit:*)`, `Bash(${gitCli} git rebase)`, `Bash(${gitCli} git merge-request)`, `Bash(${gitCli} git push-request:*)`, `Bash(${gitCli} git push-result:*)`, `Bash(${gitCli} permit request:*)`, `Bash(${gitCli} permit result:*)`);
+  settings.permissions.allow.push(`Bash(${gitCli} git commit:*)`, `Bash(${gitCli} git rebase)`, `Bash(${gitCli} git rebase --continue)`, `Bash(${gitCli} git rebase --abort)`, `Bash(${gitCli} git merge-request)`, `Bash(${gitCli} git push-request:*)`, `Bash(${gitCli} git push-result:*)`, `Bash(${gitCli} permit request:*)`, `Bash(${gitCli} permit result:*)`);
   writeFileSync(file, JSON.stringify(settings, null, 2), { mode: 0o600 });
   return file;
 }
@@ -461,16 +462,18 @@ export async function startTask(n: NewTask): Promise<Task> {
   const images = checkImages(n.images);
   const num = store.nextNum();
   const id = `${slug(n.title)}-${num}`;
+  const worktree = await useTaskWorktree(folder, n.worktree);
   let cwd = folder, branch: string | undefined;
-  if (n.worktree) {
-    branch = n.branch || `task/${slug(n.title)}`;
-    cwd = join(folder + '-wt', slug(n.title));
+  if (worktree) {
+    branch = n.branch || `task/${id}`;
+    cwd = join(folder + '-wt', id);
     await exec('git', ['-C', folder, 'worktree', 'add', cwd, '-b', branch]);
+    await prepareWorktreeDependencies(folder, cwd);
   } else {
     try { branch = (await exec('git', ['-C', folder, 'rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim(); } catch { /* not a git repo */ }
   }
   const t = store.create({
-    id, num, title: n.title, agent, status: 'working', cwd, folder, branch, worktree: !!n.worktree,
+    id, num, title: n.title, agent, status: 'working', cwd, folder, branch, worktree,
     session: `task-${num}`, sessionId: agent === 'claude' ? randomUUID() : undefined,
     statusSource: n.parent === 'controller' ? 'Started by the controller (tb new) just now.' : 'Started just now.', goal: n.title, desc: n.desc, parent: n.parent, account: acct.id, model: n.model,
   });

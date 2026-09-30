@@ -27,8 +27,8 @@ const socket = process.env.TASKBOARD_TMUX_SOCKET || 'taskboard';
 const parts = cmd.split(/;|&&|\|\||\||\n/);
 const reasons = [];
 for (const p of parts) {
-  if (process.env.TASK_WORKTREE && /^\s*git\s+(?:(?:-C|--git-dir|--work-tree)\s+\S+\s+)*(?:add|commit|rebase|merge|reset|checkout|switch|push|pull|cherry-pick|revert|worktree|update-ref|stash|branch|tag)\b/.test(p))
-    reasons.push('use `tb git commit`, `tb git rebase`, `tb git merge-request`, or `tb git push-request` for Git changes in a Taskboard worktree');
+  if (process.env.TASK_ID && process.env.TASK_ID !== 'controller' && /^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:\S*\/)?git\s+(?:(?:-C|--git-dir|--work-tree)\s+\S+\s+)*(?:add|commit|rebase|merge|reset|checkout|switch|push|pull|cherry-pick|revert|worktree|update-ref|stash|branch|tag)\b/.test(p))
+    reasons.push('run `tb git commit`, `tb git rebase`, or `tb git merge-request` for Git writes in a Taskboard task');
   if (/\b(pkill|killall)\b/.test(p) && /server\/index|taskboard|\btsx\b|\bnode\b|\bnpx\b/i.test(p))
     reasons.push('pkill/killall by name can match the real Taskboard server, not only a test server');
   if (serverPid && /\bkill\b/.test(p) && new RegExp(`(^|[^0-9])${serverPid}([^0-9]|$)`).test(p))
@@ -72,7 +72,8 @@ if (/\b(rm|mv|rsync\s+--delete)\b[^\n]*(~|\$HOME|\/Users\/[^/\s]+)\/\.taskboard(
 const port = process.env.TASKBOARD_PORT || '4317';
 if (/\bkill\b|fuser\s+-k/.test(cmd) && new RegExp(`[:=\\s]${port}\\b`).test(cmd)) reasons.push(`port ${port} is the real Taskboard server`);
 if (reasons.length) {
-  const reason = `Blocked by Taskboard: ${[...new Set(reasons)].join('; ')}. You are running inside Taskboard, so stopping it would cut off you and every other agent. ` +
+  const gitOnly = reasons.length === 1 && reasons[0].startsWith('run `tb git');
+  const reason = gitOnly ? `Blocked by Taskboard: ${reasons[0]}.` : `Blocked by Taskboard: ${[...new Set(reasons)].join('; ')}. You are running inside Taskboard, so stopping it would cut off you and every other agent. ` +
       'To stop a test server, kill it by the process id you started it with (for example `... & PID=$!` and later `kill $PID`), or run `pnpm stop` with that server\'s TASKBOARD_DIR set. ' +
       'Test servers must use their own TASKBOARD_PORT, TASKBOARD_DIR, TASKBOARD_VAULT and TASKBOARD_TMUX_SOCKET (see CLAUDE.md in the Taskboard repository).';
   // agy: no output means "no decision" (the normal approval question follows); so we print only a denial
