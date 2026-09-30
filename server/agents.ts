@@ -20,6 +20,7 @@ import { buildHandoff } from './handoff.ts';
 import { transcriptFor } from './importer.ts';
 import { movingTasks, resetSessionEvents } from './events.ts';
 import * as workspaceTrust from './trust.ts';
+import { credentialGuidance } from './credential-guidance.ts';
 
 const exec = promisify(execFile);
 
@@ -223,9 +224,11 @@ ${messageRules()}
 
 ## How you write
 ${writingRules('your reports to the user, the messages that you send to tasks, and the prompts for new agents')}
+
+${credentialGuidance(HOME)}
 `;
 // what the controller's command line depends on; when it changes, the running controller is restarted between turns
-export const controllerLaunchKey = (agent: string) => JSON.stringify({ mail: 1, agent, model: machine.get().controller.models[agent as 'claude' | 'codex' | 'antigravity'] || '', label: machine.controllerLabel(), remote: agent === 'claude' && machine.get().controller.remoteControl, skipPermissions: agent === 'claude' && machine.get().controller.dangerouslySkipPermissions, approval: machine.get().permissions.controllerNeedsApproval, messages: machine.get().messages });
+export const controllerLaunchKey = (agent: string) => JSON.stringify({ mail: 1, credentialGuidance: 1, agent, model: machine.get().controller.models[agent as 'claude' | 'codex' | 'antigravity'] || '', label: machine.controllerLabel(), remote: agent === 'claude' && machine.get().controller.remoteControl, skipPermissions: agent === 'claude' && machine.get().controller.dangerouslySkipPermissions, approval: machine.get().permissions.controllerNeedsApproval, messages: machine.get().messages });
 
 export async function startController(): Promise<Task> {
   mkdirSync(join(CONTROLLER_DIR, 'plans'), { recursive: true });
@@ -284,6 +287,7 @@ function taskInstructions(t: Task) {
     mailWritingRules(),
     `If your own permission check refuses a command, use tb permit request --reason "<reason>" --command "<command>". Use --steps <file> for an ordered sequence. The server runs approved steps and stops after the first failure. Read the result with tb permit result <id> --wait. Do not rerun an approved command yourself.`,
     `When a document in your outbox needs the user's review or approval, run: tb review <path>. Their comments arrive in your inbox.`,
+    credentialGuidance(HOME),
     ...(t.agent === 'claude' ? [`Writing the log entry is always allowed, even if the user asked you not to use tools. Do it quietly: do not mention the log to the user.`] : []),
     writingRules('the log entries, the documents and artifacts in your outbox, and all other text for the user or for other agents'),
   ].join('\n');
