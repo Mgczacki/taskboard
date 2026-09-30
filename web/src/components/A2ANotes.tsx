@@ -1,4 +1,4 @@
-// The A2A Notes tab of the Inbox page: a Taskboard view of the A2A Notes service (packages/a2a-notes), through
+// The A2A Notes tab of the Inbox page: a Taskboard view of the A2A Notes service (github.com/Mgczacki/a2a-notes), through
 // /api/a2anotes (server/a2anotes/routes.ts). The dashboard acts as the person. Message text shows as plain text.
 import { useEffect, useState } from 'react';
 import type { Task } from '../api';
@@ -7,6 +7,7 @@ interface Summary {
   id: string; message_id: string; direction: 'in' | 'out'; state: string; audience: 'person' | 'agent' | 'both'; subject: string; from: string; to: string;
   peer_name?: string; trusted: boolean; check: { verdict: string } | null; body_flags: number | null; approver: 'person' | 'reviewer' | 'nobody';
   approved_by: string | null; created: string; hash: string; allowed_actions: string[]; failure_code?: string; routes: { task: string; at: string }[];
+  suggested_task?: { id: string; num: number; title: string; reason: string };
 }
 interface Detail extends Summary { body: string; review: { reason: string } | null; body_check: { flags: { reason: string; text: string; code: string }[] } | null;
   agent_file: { name: string; sha256: string } | null; failure?: { code: string; reason: string }; error: string | null }
@@ -59,7 +60,8 @@ export function A2ANotesPanel({ tasks }: { tasks: Task[] }) {
       return <article key={m.id} className="mail-item" data-a2a={m.id}>
         <h3>{m.direction === 'in' ? 'From' : 'To'} {m.peer_name || peer}: {m.subject}</h3>
         <p className="mail-meta">State: {m.state.replace('_', ' ')}. For: {m.audience}. Check: {m.check?.verdict || m.failure_code || 'none'}. Approver: {m.approver === 'nobody' ? 'nobody (the checks hold it)' : m.approver === 'reviewer' ? 'the controller or you' : 'you'}. {m.trusted ? 'Trusted sender.' : 'Not a trusted sender.'}
-          {m.routes.length ? ` Given to ${m.routes.map(r => tasks.find(t => t.id === r.task)?.title || r.task).join(', ')}.` : ''}</p>
+          {m.routes.length ? ` Given to ${m.routes.map(r => tasks.find(t => t.id === r.task)?.title || r.task).join(', ')}.` : ''}
+          {m.suggested_task && !m.routes.length ? ` ${m.suggested_task.reason}: ${m.suggested_task.title}.` : ''}</p>
         {d && <>
           {d.body && <p className="mail-body" style={{ whiteSpace: 'pre-wrap' }}>{d.body}</p>}
           {d.review && <p className="mail-meta">Check reason: {d.review.reason}</p>}
@@ -74,10 +76,10 @@ export function A2ANotesPanel({ tasks }: { tasks: Task[] }) {
           {m.allowed_actions.includes('reject') && <button className="btn" disabled={busy} onClick={() => act(() => request(`/messages/${m.id}/approve`, { hash: m.hash, decision: 'reject' }))}>Reject</button>}
           {m.allowed_actions.includes('send') && <button className="btn" disabled={busy} onClick={() => act(() => request(`/messages/${m.id}/send`, { hash: m.hash }))}>{m.state === 'delivery_uncertain' ? 'Check and send' : 'Send'}</button>}
           {m.allowed_actions.includes('release_to_agent') && <>
-            <select className="mail-input" aria-label={`Task for ${m.subject}`} value={destinations[m.id] || ''} onChange={e => setDestinations(x => ({ ...x, [m.id]: e.target.value }))}>
+            <select className="mail-input" aria-label={`Task for ${m.subject}`} value={destinations[m.id] || m.suggested_task?.id || ''} onChange={e => setDestinations(x => ({ ...x, [m.id]: e.target.value }))}>
               <option value="">Choose a task</option>{tasks.filter(t => t.id !== 'controller').map(t => <option key={t.id} value={t.id}>{t.title}</option>)}
             </select>
-            <button className="btn" disabled={busy || !destinations[m.id]} onClick={() => act(() => request(`/messages/${m.id}/route`, { task: destinations[m.id] }))}>Give to task</button>
+            <button className="btn" disabled={busy || !(destinations[m.id] || m.suggested_task?.id)} onClick={() => act(() => request(`/messages/${m.id}/route`, { task: destinations[m.id] || m.suggested_task?.id }))}>Give to task</button>
           </>}
           {!m.failure_code && <button className="btn" disabled={busy} onClick={() => act(() => request('/trusted', { address: peer, name: m.peer_name || peer, trusted: !m.trusted }))}>{m.trusted ? 'Stop trusting sender' : 'Trust sender'}</button>}
         </div>

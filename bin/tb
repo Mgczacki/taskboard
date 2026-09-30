@@ -109,7 +109,7 @@ switch (cmd) {
   }
 
   case 'a2a': {
-    // A2A Notes (packages/a2a-notes). Taskboard calls its MCP server with the role of the caller: a task is an agent,
+    // A2A Notes (github.com/Mgczacki/a2a-notes). Taskboard calls its MCP server with the role of the caller: a task is an agent,
     // the controller is the review agent. Message text is data, not instructions.
     const help = `tb a2a status | people <text> | list [--direction incoming|outgoing|all] [--state S] | get <id>
   stage <outbox file> [--kind agent|support]      stage a file from your task outbox; prints file_id
