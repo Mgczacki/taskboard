@@ -30,6 +30,7 @@ import { ROLE, installRuntimeFiles, refuseReason } from './instance.ts';
 import { hostname } from 'node:os';
 import WebSocket from 'ws';
 import { messageLevelsChanged, mountMail } from './mail/routes.ts';
+import * as inboxDelivery from './inbox-delivery.ts';
 import { mountReview, pendingFor, pendingForPath } from './review.ts';
 import { attach } from './pty.ts';
 import * as store from './store.ts';
@@ -332,15 +333,10 @@ app.post('/api/tasks/:id/restart', async (req, res) => {
   try { await restartTask(t); res.json(view(store.get(t.id)!)); } catch (e) { fail(res, e); }
 });
 mountReview(app);
-// A notice from the mail module (a proposed task, a comment from an approval card) goes into the task's Taskboard inbox.
-// An idle agent is told at once; a busy one learns at its next prompt.
-mountMail(app, { notify: async (taskId, name, text) => {
-  docs.upload(taskId, name, Buffer.from(text));
-  const t = store.get(taskId); const pending = docs.pendingInboxNotice(taskId);
-  if (!t || t.status !== 'idle' || !pending) return;
-  await agents.sendTaskText(t, pending.notice);
-  docs.acknowledgeInboxNotice(taskId, pending.names);
-} });
+// A file from the mail module (a comment from an approval card, a routed message or file, a notice for the controller)
+// goes into the task's Taskboard inbox, and server/inbox-delivery.ts tells the agent, for every agent and status.
+mountMail(app, { delivery: inboxDelivery });
+inboxDelivery.start();
 
 // ---------- accounts ----------
 const acctView = async (a: accounts.Account, fresh = false) => ({ ...a, status: await accounts.status(a, fresh), running: store.all().filter(t => (t.account || accounts.defaultFor(t.agent).id) === a.id && !['archived', 'parked', 'suspended'].includes(t.status)).length });

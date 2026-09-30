@@ -11,7 +11,7 @@ import { api, fmtWait } from '../api';
 import type { DocumentLink } from '../documentLinks';
 import { decorateDocument } from '../documentContent';
 
-export interface DocInfo { name: string; path: string; kind: 'md' | 'html' | 'other'; size: number; mtime: string; from?: { task: string; num: number; title: string; at: string }; sentTo?: { task: string; num: number; at: string }[] }
+export interface DocInfo { name: string; path: string; kind: 'md' | 'html' | 'other'; size: number; mtime: string; from?: { task: string; num: number; title: string; at: string }; sentTo?: { task: string; num: number; at: string }[]; pending?: boolean }
 // files of tasks on another machine are fetched through this server (?machine=)
 let currentMachine = '';
 // A local file's path goes in the URL path (/api/files/…), so relative links in an HTML page find the files next to it.
@@ -50,6 +50,7 @@ export function DocsTab({ t, tasks, documentLink }: { t: Task; tasks: Task[]; do
         <div className="t" onClick={() => openDoc(x)}>{x.name}</div>
         <div className="s">{box === 'inbox' && x.from ? (x.from.num ? `from #${x.from.num} ${x.from.title} · ` : `from ${x.from.title} · `) : ''}{kb(x.size)} · {ago(x.mtime)}</div>
         {box === 'outbox' && x.sentTo && x.sentTo.length > 0 && <div className="s">sent to {x.sentTo.map(s => '#' + s.num).join(', ')}</div>}
+        {box === 'inbox' && x.pending && <div className="s">Not delivered yet: the agent was not told about this file.</div>}
       </div>
       <button className="btn" onClick={() => openDoc(x)} title={x.kind === 'html' ? 'Preview in a floating window (Space)' : 'Read (Space)'}>{x.kind === 'html' ? 'Preview' : 'Read'}</button>
       <button className="btn" onClick={() => openInBrowser(x.path)} title="Open at full size in its own browser tab (Enter)">Open in new tab ↗</button>

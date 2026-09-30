@@ -18,8 +18,9 @@ export interface Message {
   files?: MailFile[];
   // incoming: the task the controller proposes (null: no task needs it); the user approves it on the approval card
   proposedRoute?: { task: string | null; at: string };
-  // comments from the user when they sent the approval card back
-  returns?: { comment: string; at: string }[];
+  // comments from the user when they sent the approval card back; task and file: where the comment file went
+  // (older entries have neither, see returnTarget in server/mail/cards.ts)
+  returns?: { comment: string; at: string; task?: string; file?: string }[];
   // routed by the controller without the user's approval, and the user has not opened it yet
   unseen?: boolean;
   // outgoing drafts that the user changed in Inbox (server/mail/edit.ts): one entry for each saved edit, and the text
