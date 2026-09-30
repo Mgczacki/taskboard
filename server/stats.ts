@@ -15,6 +15,7 @@ let cache: Cache = { schema: 2, files: {} };
 try { const saved = JSON.parse(readFileSync(cachePath, 'utf8')); if (saved.schema === 2) cache = saved; } catch { /* first scan */ }
 let scanning = false, scanned = 0, total = 0, version = 0;
 const grouped = new Map<string, { version: number; at: number; data: unknown }>();
+export const cacheCounts = () => ({ statsFiles: Object.keys(cache.files).length, statsEvents: Object.values(cache.files).reduce((sum, file) => sum + file.events.length, 0), statsViews: grouped.size });
 
 function fingerprint(path: string, start = 0, length = 4096): string {
   const fd = openSync(path, 'r'), buf = Buffer.alloc(4096);
@@ -114,14 +115,14 @@ async function refresh() {
   } finally { scanning = false; }
 }
 
-function maybeRefresh() {
-  if (!scanning && (!cache.scannedAt || Date.now() - Date.parse(cache.scannedAt) > 60000))
+function maybeRefresh(intervalMs: number) {
+  if (!scanning && (!cache.scannedAt || Date.now() - Date.parse(cache.scannedAt) > intervalMs))
     void refresh().catch(e => console.error('daily stats scan failed', e));
 }
 
 export function taskEstimate(t: store.Task): number | null {
   if (t.agent !== 'antigravity') return null;
-  maybeRefresh();
+  maybeRefresh(600000);
   const sessions = new Set([t.sessionId, ...(t.pastSessions || [])].filter((s): s is string => !!s));
   const files = Object.values(cache.files).filter(f => f.agent === 'antigravity' && sessions.has(f.session));
   if (!files.length) return null;
@@ -130,7 +131,7 @@ export function taskEstimate(t: store.Task): number | null {
 
 export function get(timeZone: string) {
   new Intl.DateTimeFormat('en-US', { timeZone });
-  maybeRefresh();
+  maybeRefresh(60000);
   const saved = grouped.get(timeZone);
   if (saved?.version === version && Date.now() - saved.at < 15000) return { ...saved.data as object, scanning, scanned, total };
   const fmt = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: '2-digit', day: '2-digit' });
@@ -179,5 +180,6 @@ export function get(timeZone: string) {
   if ([...claudeAccounts.values()].includes('claude-unknown')) accountList.push({ id: 'claude-unknown', name: 'Unknown account', agent: 'claude' });
   const data = { days: Object.values(days).sort((a, b) => a.date.localeCompare(b.date)), accounts: accountList, scannedAt: cache.scannedAt, timeZone };
   grouped.set(timeZone, { version, at: Date.now(), data });
+  if (grouped.size > 8) grouped.delete(grouped.keys().next().value!);
   return { ...data, scanning, scanned, total };
 }

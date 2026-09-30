@@ -9,7 +9,7 @@
 import { execFileSync, spawn } from 'node:child_process';
 import { existsSync, readdirSync, readFileSync, rmSync } from 'node:fs';
 import { basename, join } from 'node:path';
-import { SANDBOXES, alive, ensureDir, freePort, log, readJson, startServer, waitForInfo, writeJson } from './lib.mjs';
+import { SANDBOXES, ensureDir, freePort, log, readJson, startServer, waitForInfo, writeJson } from './lib.mjs';
 
 const args = process.argv.slice(2);
 const cmd = ['start', 'stop', 'list', 'dev'].includes(args[0]) ? args.shift() : 'start';
@@ -27,7 +27,12 @@ function prepare() {
   const mf = join(base, 'tbdir', 'machine.json');
   if (!existsSync(mf)) writeJson(mf, { name: `sandbox-${name}`, controller: { autostart: false, remoteControl: false } });
 }
-const running = () => { const m = readJson(meta, null); return m && alive(m.pid) ? m : null; };
+const running = async (m, folder = base) => {
+  if (!m?.url || !m?.root) return false;
+  const info = await waitForInfo(m.url, join(folder, 'tbdir', 'token'), 2000);
+  const recorded = readJson(join(folder, 'tbdir', 'server.pid'), null);
+  return info?.role === 'sandbox' && info.root === m.root && info.url === m.url && info.pid === recorded?.pid;
+};
 function show(m) {
   log(`Sandbox "${name}": ${m.url}  (process ${m.pid}, code ${m.root})`);
   log(`  folders ${base}  ·  tmux -L ${m.socket}  ·  log ${join(base, 'server.log')}`);
@@ -37,19 +42,24 @@ function show(m) {
 
 if (cmd === 'list') {
   if (!existsSync(SANDBOXES)) { log('No sandboxes.'); process.exit(0); }
-  for (const n of readdirSync(SANDBOXES)) { const m = readJson(join(SANDBOXES, n, 'sandbox.json'), null); if (m) log(`${n.padEnd(24)} ${alive(m.pid) ? 'running' : 'stopped'}  ${m.url}  ${m.root}`); }
+  for (const n of readdirSync(SANDBOXES)) { const folder = join(SANDBOXES, n); const m = readJson(join(folder, 'sandbox.json'), null); if (m) log(`${n.padEnd(24)} ${await running(m, folder) ? 'running' : 'stopped'}  ${m.url}  ${m.root}`); }
 } else if (cmd === 'stop') {
   const m = readJson(meta, null);
-  if (m && alive(m.pid)) { process.kill(m.pid, 'SIGTERM'); log(`Stopped sandbox "${name}" (process ${m.pid}).`); } else log(`Sandbox "${name}" is not running.`);
+  if (await running(m)) {
+    for (const pid of m.devPids || [m.pid]) { try { process.kill(-pid, 'SIGTERM'); } catch { try { process.kill(pid, 'SIGTERM'); } catch { /* gone */ } } }
+    await new Promise(resolve => setTimeout(resolve, 400));
+    if (await running(m)) { log(`Could not stop sandbox "${name}" (process ${m.pid}).`); process.exit(1); }
+    log(`Stopped sandbox "${name}" (process ${m.pid}).`);
+  } else log(`Sandbox "${name}" is not running.`);
   try { execFileSync('tmux', ['-L', `tbsb-${name}`, 'kill-server'], { stdio: 'ignore' }); } catch { /* no agents */ }
   if (args.includes('--clean')) { rmSync(base, { recursive: true, force: true }); log(`Deleted ${base}.`); }
 } else if (cmd === 'start') {
-  const m = running();
+  const m = await running(readJson(meta, null)) ? readJson(meta, null) : null;
   if (m) { show(m); process.exit(0); }
   prepare();
   const port = await freePort(4400);
   const pid = startServer(root, envFor(port), join(base, 'server.log'));
-  const m2 = { pid, port, url: `http://127.0.0.1:${port}`, root, socket: `tbsb-${name}`, started: new Date().toISOString() };
+  const m2 = { pid, port, url: `http://127.0.0.1:${port}`, root, socket: `tbsb-${name}`, started: new Date().toISOString(), ownerTask: process.env.TASK_ID || undefined };
   writeJson(meta, m2);
   const info = await waitForInfo(m2.url, join(base, 'tbdir', 'token'), 20000);
   if (!info) { log(`The sandbox did not come up. Its log (${join(base, 'server.log')}):`); log(readFileSync(join(base, 'server.log'), 'utf8').split('\n').slice(-20).join('\n')); process.exit(1); }
@@ -61,9 +71,10 @@ if (cmd === 'list') {
   const env = { ...process.env, ...envFor(port) };
   log(`Sandbox "${name}" in development mode: interface http://localhost:${webPort}  ·  server http://127.0.0.1:${port}  ·  Ctrl-C stops both`);
   const kids = [
-    spawn(join(root, 'node_modules', '.bin', 'tsx'), ['watch', 'server/index.ts'], { cwd: root, env, stdio: 'inherit' }),
-    spawn(join(root, 'node_modules', '.bin', 'vite'), ['--port', String(webPort)], { cwd: root, env, stdio: 'inherit' }),
+    spawn(join(root, 'node_modules', '.bin', 'tsx'), ['watch', 'server/index.ts'], { cwd: root, env, stdio: 'inherit', detached: true }),
+    spawn(join(root, 'node_modules', '.bin', 'vite'), ['--port', String(webPort)], { cwd: root, env, stdio: 'inherit', detached: true }),
   ];
-  const stop = () => { kids.forEach(k => { try { k.kill('SIGTERM'); } catch { /* gone */ } }); process.exit(0); };
+  writeJson(meta, { pid: kids[0].pid, devPids: kids.map(k => k.pid), port, url: `http://127.0.0.1:${port}`, root, socket: `tbsb-${name}`, started: new Date().toISOString(), ownerTask: process.env.TASK_ID || undefined });
+  const stop = () => { kids.forEach(k => { try { process.kill(-k.pid, 'SIGTERM'); } catch { /* gone */ } }); process.exit(0); };
   process.on('SIGINT', stop); process.on('SIGTERM', stop);
 }

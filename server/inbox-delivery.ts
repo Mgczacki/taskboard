@@ -28,6 +28,7 @@ try { for (const d of JSON.parse(readFileSync(FILE, 'utf8')) as Delivery[]) item
 // keeps the undelivered entries and the last 500 delivered ones
 function save() {
   const all = [...items.values()], open = all.filter(d => !d.deliveredAt), done = all.filter(d => d.deliveredAt).slice(-500);
+  for (const d of all) if (d.deliveredAt && !done.includes(d)) items.delete(key(d.task, d.name));
   try { writeFileSync(FILE, JSON.stringify([...open, ...done], null, 2)); } catch { /* disk full: the entries stay in memory */ }
 }
 const now = () => new Date().toISOString();
@@ -94,6 +95,7 @@ export async function deliver(task: string, name: string): Promise<Delivery> {
 const retryStatuses = new Set(['idle', 'unread', 'review']);
 const lastStatus = new Map<string, string>();
 export function start() {
+  store.onTaskRemoved(id => lastStatus.delete(id));
   store.onTaskChange(t => {
     const before = lastStatus.get(t.id); lastStatus.set(t.id, t.status);
     if (before === t.status || !retryStatuses.has(t.status)) return;

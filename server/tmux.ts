@@ -80,7 +80,7 @@ export async function loadCopyBindings() {
 export async function configureServer(bellHookCommand: string) {
   const opts: string[][] = [
     ['set-option', '-g', 'escape-time', '0'],
-    ['set-option', '-g', 'history-limit', '50000'],
+    ['set-option', '-g', 'history-limit', '5000'],
     ['set-option', '-g', 'status', 'off'],
     ['set-option', '-g', 'window-size', 'latest'],
     ['set-option', '-g', 'extended-keys', 'on'],

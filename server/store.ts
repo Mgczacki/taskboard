@@ -114,6 +114,7 @@ export function remove(id: string) {
   mkdirSync(dest, { recursive: true });
   for (const p of [join(TASKS_DIR, id + '.md'), taskDir(id)]) if (existsSync(p)) renameSync(p, join(dest, basename(p)));
   tasks.delete(id);
+  launchedAt.delete(id);
   for (const fn of removeListeners) fn(id);
 }
 const removeListeners = new Set<(id: string) => void>();

@@ -23,7 +23,11 @@ const returners = new Map<string, (comment: string) => Promise<string>>();
 const deniers = new Map<string, () => void>();
 const listeners = new Set<() => void>();
 export const onApprovalsChange = (fn: () => void) => { listeners.add(fn); };
-const save = () => { try { writeFileSync(FILE, JSON.stringify([...items.values()].slice(-100), null, 2)); } catch { /* disk full */ } };
+const prune = () => {
+  const closed = [...items.values()].filter(x => x.state !== 'pending' && x.state !== 'running');
+  for (const x of closed.slice(0, Math.max(0, closed.length - 100))) items.delete(x.id);
+};
+const save = () => { prune(); try { writeFileSync(FILE, JSON.stringify([...items.values()], null, 2)); } catch { /* disk full */ } };
 const emit = () => { save(); listeners.forEach(f => f()); };
 
 // load the saved approvals; their actions (closures) did not survive the restart
@@ -37,6 +41,7 @@ try {
 
 export function request(a: Omit<Approval, 'id' | 'created' | 'state' | 'returnable'>, run: () => Promise<string>,
   more: { giveBack?: (comment: string) => Promise<string>; onDeny?: () => void } = {}): Approval {
+  if ([...items.values()].filter(x => x.state === 'pending' || x.state === 'running').length >= 100) throw new Error('Too many open approval cards. Decide older cards first.');
   const x: Approval = { ...a, id: randomUUID().slice(0, 8), created: new Date().toISOString(), state: 'pending', ...(more.giveBack ? { returnable: true } : {}) };
   items.set(x.id, x); runners.set(x.id, run);
   if (more.giveBack) returners.set(x.id, more.giveBack);
@@ -75,6 +80,7 @@ export async function decide(id: string, approve: boolean): Promise<Approval | u
   emit(); return x;
 }
 export const get = (id: string) => items.get(id);
+export const count = () => items.size;
 // pending first, then the last decided
 export const all = () => [...items.values()].sort((a, b) => Number(b.state === 'pending') - Number(a.state === 'pending') || b.created.localeCompare(a.created)).slice(0, 30);
 export const pendingFor = (actor: string) => [...items.values()].filter(x => x.actor === actor && x.state === 'pending');

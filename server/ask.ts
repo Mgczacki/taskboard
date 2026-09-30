@@ -131,27 +131,28 @@ export async function ask(t: Task, question: string): Promise<AskThread> {
   running.set(t.id, p);
   let buf = '', err = '', result: { text?: string; cost?: number; isError?: boolean } = {};
   p.stdout!.on('data', d => {
-    buf += d; const lines = buf.split('\n'); buf = lines.pop()!;
+    buf += d; if (buf.length > 2_000_000) buf = buf.slice(-2_000_000);
+    const lines = buf.split('\n'); buf = lines.pop()!;
     for (const l of lines) {
       let m: any; try { m = JSON.parse(l); } catch { continue; }
       if (agent === 'claude') {
         if (m.session_id && !thread.sessionId) thread.sessionId = m.session_id;
         if (m.type === 'assistant') {
           if (m.message?.model) item.model = m.message.model;
-          for (const c of m.message?.content || []) if (c.type === 'tool_use') { item.steps.push(step(c.name, c.input || {})); save(t.id, thread); }
+          for (const c of m.message?.content || []) if (c.type === 'tool_use') { item.steps.push(step(c.name, c.input || {})); item.steps = item.steps.slice(-200); save(t.id, thread); }
         }
         if (m.type === 'result') result = { text: m.result, cost: m.total_cost_usd, isError: m.is_error };
       } else {
         if (m.type === 'thread.started' && m.thread_id) thread.sessionId = m.thread_id;
         if (m.type === 'item.started' && m.item?.type === 'command_execution') {
-          item.steps.push(String(m.item.command || 'Read files').slice(0, 160)); save(t.id, thread);
+          item.steps.push(String(m.item.command || 'Read files').slice(0, 160)); item.steps = item.steps.slice(-200); save(t.id, thread);
         }
         if (m.type === 'item.completed' && m.item?.type === 'agent_message') result.text = m.item.text;
         if (m.type === 'turn.failed') { result.isError = true; result.text = m.error?.message; }
       }
     }
   });
-  p.stderr!.on('data', d => { err += d; });
+  p.stderr!.on('data', d => { err = (err + d).slice(-16_384); });
   p.on('close', (code, signal) => {
     running.delete(t.id);
     item.ms = Date.now() - started; item.costUsd = result.cost;

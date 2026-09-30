@@ -124,7 +124,7 @@ test('Codex receives text while running and questions block terminal input', asy
     store.update(t.id, { status: 'working' });
     assert.equal((await agents.sendTaskText(t, 'Queued Codex message')).resumed, false);
     const input = join(store.taskDir(t.id), 'input.txt');
-    for (let i = 0; i < 20 && !existsSync(input); i++) await pause(50);
+    for (let i = 0; i < 60 && (!existsSync(input) || !readFileSync(input, 'utf8').includes('Queued Codex message')); i++) await pause(50);
     assert.match(readFileSync(input, 'utf8'), /Queued Codex message/);
     store.update(t.id, { status: 'needs-you', ask: 'Approve a tool call' });
     await assert.rejects(agents.sendTaskText(t, 'Do not type this'), /asks a question/);

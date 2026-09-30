@@ -36,6 +36,8 @@ const webPreferences = { contextIsolation: true, nodeIntegration: false, sandbox
 // every window: no title bar; the traffic-light buttons sit inside the page and are shown only near the top edge
 const chrome = { titleBarStyle: 'hidden', trafficLightPosition: { x: 14, y: 14 }, backgroundColor: '#0d1117', webPreferences };
 let groups = [];
+let lastDockMenuKey = '';
+let lastTrayMenuKey = '';
 
 function guard(contents) {
   // pop-out windows of the dashboard stay in the app; everything else opens in the default browser
@@ -184,15 +186,17 @@ async function poll() {
     if (JSON.stringify(next) !== JSON.stringify(groups)) { groups = next; Menu.setApplicationMenu(appMenu()); }
   } catch { /* keep the old list */ }
   // Dock menu (right-click the Dock icon): new windows and what is waiting
-  app.dock?.setMenu(Menu.buildFromTemplate([
+  const dockMenuKey = JSON.stringify([groups, waiting.map(t => [t.id, t.status, t.waitMin])]);
+  if (dockMenuKey !== lastDockMenuKey) { lastDockMenuKey = dockMenuKey; app.dock?.setMenu(Menu.buildFromTemplate([
     { label: 'New Window', click: () => newWindow() },
     ...(groups.length ? [{ label: 'New Window for Group', submenu: groupItems() }] : []),
     ...(waiting.length ? [{ type: 'separator' }, ...waiting.slice(0, 8).map(t => ({ label: `#${t.num} ${t.title.slice(0, 40)} — ${STATUS_WORDS[t.status] || t.status}`, click: () => openInPage({ task: t.id }) }))] : []),
-  ]));
+  ])); }
   if (tray) {
     tray.setTitle(!serverUp ? ' off' : waiting.length ? ` ${waiting.length}` : '');
     tray.setToolTip(!serverUp ? 'Taskboard: server not answering' : `Taskboard: ${waiting.length} waiting on you · ${unread} done, unread`);
-    tray.setContextMenu(trayMenu(unread));
+    const trayMenuKey = JSON.stringify([serverUp, waiting.map(t => [t.id, t.status, t.waitMin]), unread, groups]);
+    if (trayMenuKey !== lastTrayMenuKey) { lastTrayMenuKey = trayMenuKey; tray.setContextMenu(trayMenu(unread)); }
   }
 }
 

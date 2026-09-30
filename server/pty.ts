@@ -21,6 +21,7 @@ const tmuxSync = (...args: string[]) => { try { return execFileSync(TMUX_BIN, ['
 // goes back to tmux's own sizing (window-size latest), so terminals attached from iTerm behave as before.
 interface Viewer { cols: number; rows: number; usedAt: number; ws: WebSocket; pid: number; lastOut: number; healedAt: number; sent?: string }
 const viewers = new Map<string, Set<Viewer>>();
+export const terminalViewerCount = () => [...viewers.values()].reduce((sum, list) => sum + list.size, 0);
 const sizedBy = new Map<string, Viewer>();
 const clamp = (v: Viewer) => [String(Math.max(20, v.cols)), String(Math.max(5, v.rows))];
 function sizeWindow(session: string) {
@@ -111,7 +112,10 @@ export function attach(ws: WebSocket, session: string, cols: number, rows: numbe
   const w = watch;
   // coalesce output: one WebSocket message per 8 ms instead of one per read from the pseudo-terminal
   let buf = '', timer: NodeJS.Timeout | null = null;
-  const flush = () => { timer = null; if (buf && ws.readyState === ws.OPEN) ws.send(buf); buf = ''; };
+  const flush = () => { timer = null; if (buf && ws.readyState === ws.OPEN) {
+    if (ws.bufferedAmount > 1_048_576) ws.close(1013, 'terminal client is too slow');
+    else ws.send(buf);
+  } buf = ''; };
   p.onData(d => { me.lastOut = Date.now(); buf += d; if (buf.length > 65536) { if (timer) clearTimeout(timer); flush(); } else if (!timer) timer = setTimeout(flush, 8); });
   p.onExit(() => { if (ws.readyState === ws.OPEN) ws.close(4000, 'detached'); });
   ws.on('message', (raw, isBinary) => {
@@ -138,7 +142,7 @@ export function attach(ws: WebSocket, session: string, cols: number, rows: numbe
   ws.on('close', () => {
     try { p.kill(); } catch { /* already gone */ }
     viewers.get(session)?.delete(me);
-    if (!viewers.get(session)?.size) { clearInterval(w.timer); watches.delete(session); }
+    if (!viewers.get(session)?.size) { clearInterval(w.timer); watches.delete(session); viewers.delete(session); quietUntil.delete(session); }
     if (sizedBy.get(session) === me) sizedBy.delete(session);
     sizeWindow(session);
   });

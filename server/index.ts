@@ -32,7 +32,7 @@ import WebSocket from 'ws';
 import { messageLevelsChanged, mountMail } from './mail/routes.ts';
 import * as inboxDelivery from './inbox-delivery.ts';
 import { mountReview, pendingFor, pendingForPath } from './review.ts';
-import { attach } from './pty.ts';
+import { attach, terminalViewerCount } from './pty.ts';
 import * as store from './store.ts';
 import * as stats from './stats.ts';
 import * as taskGit from './task-git.ts';
@@ -40,6 +40,10 @@ import * as push from './push.ts';
 import * as permits from './permits.ts';
 import { controllerMailToken } from './mail/auth.ts';
 import * as tmux from './tmux.ts';
+import { sampleResources } from './resource-log.ts';
+import { stopTaskSandboxes } from './sandbox-cleanup.ts';
+import { trimTerminalLog } from './terminal-log.ts';
+import { idleSuspendMinutes, maySuspendIdleTask } from './idle-suspend.ts';
 
 const execFileP = promisify(execFile);
 // a development checkout never runs as the real Taskboard, and a sandbox never uses the real one's port, folders or tmux
@@ -69,6 +73,7 @@ const permitNotices = new Set<string>();
 permits.onChange(p => {
   if (!['succeeded', 'failed', 'denied', 'expired', 'unknown'].includes(p.state) || permitNotices.has(p.id)) return;
   permitNotices.add(p.id);
+  if (permitNotices.size > 1000) permitNotices.delete(permitNotices.values().next().value!);
   const task = store.get(p.taskId);
   if (!task) return;
   const lines = [`# Permit ${p.id}`, '', `Task: #${p.taskNum}`, `Result: ${p.state}`, `Approved by: ${p.approvedBy || 'Nobody'}`, '', ...p.steps.map((s, i) => `${i + 1}. ${s.state}: ${s.command}${s.error ? ` (${s.error})` : ''}`), '', `Read the full record with \`tb permit result ${p.id}\`.`];
@@ -537,7 +542,10 @@ app.post('/api/tasks/:id/status', async (req, res) => {
   if (!['idle', 'parked', 'archived'].includes(s)) return fail(res, 'status must be idle, parked or archived');
   const t0 = store.get(req.params.id); if (!t0) return res.status(404).end();
   await guarded(req, res, `${s === 'archived' ? 'archive' : s === 'parked' ? 'park' : 'unpark'} #${t0.num} ${t0.title}`, '', 'status',
-    async () => view(store.update(t0.id, { status: s, statusSource: `Set at ${new Date().toTimeString().slice(0, 5)}.` })!), () => `#${t0.num} is now ${s}.`);
+    async () => {
+      if (s === 'archived') { await tmux.killSession(t0.session); await stopTaskSandboxes(t0.id); trimTerminalLog(store.terminalLog(t0.id)); }
+      return view(store.update(t0.id, { status: s, statusSource: `Set at ${new Date().toTimeString().slice(0, 5)}.` })!);
+    }, () => `#${t0.num} is now ${s}.`);
 });
 app.post('/api/tasks/:id/seen', (req, res) => {
   const t = store.get(req.params.id); if (!t) return res.status(404).end();
@@ -649,7 +657,7 @@ app.post('/api/tasks/:id/send', async (req, res) => {
 app.post('/api/tasks/:id/kill', async (req, res) => {
   const t = store.get(req.params.id); if (!t) return res.status(404).end();
   await guarded(req, res, `end and archive #${t.num} ${t.title}`, '', 'kill',
-    async () => { await tmux.killSession(t.session); return view(store.update(t.id, { status: 'archived', statusSource: 'Session ended and archived.' })!); }, () => `#${t.num} ended and archived.`);
+    async () => { await tmux.killSession(t.session); await stopTaskSandboxes(t.id); trimTerminalLog(store.terminalLog(t.id)); return view(store.update(t.id, { status: 'archived', statusSource: 'Session ended and archived.' })!); }, () => `#${t.num} ended and archived.`);
 });
 // Remove a task from Taskboard (dashboard only). Ends its tmux session unless it runs in another terminal; the note
 // and folder go to ~/.taskboard/trash, and the conversation files of Claude Code / Codex stay where they are.
@@ -828,20 +836,36 @@ if (existsSync(dist)) {
 // Identifies the interface build this server serves (a hash of web/dist/index.html, which names the bundle files). A page
 // that connected to an older build reloads itself after a release (see web/src/api.ts).
 const BUILD_ID = (() => { try { return createHash('sha1').update(readFileSync(join(ROOT, 'web', 'dist', 'index.html'))).digest('hex').slice(0, 12); } catch { return 'none'; } })();
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({ noServer: true, maxPayload: 1_048_576 });
 const eventClients = new Set<import('ws').WebSocket>();
+const responsive = new WeakSet<import('ws').WebSocket>();
+const sendEvent = (client: import('ws').WebSocket, message: string) => {
+  if (client.readyState !== client.OPEN) return;
+  if (client.bufferedAmount > 1_048_576) client.close(1013, 'event client is too slow');
+  else client.send(message);
+};
+setInterval(() => {
+  for (const client of wss.clients) {
+    if (!responsive.has(client)) { client.terminate(); continue; }
+    responsive.delete(client);
+    client.ping();
+  }
+}, 30000).unref();
 
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url || '', URL_BASE);
   // the dashboard is identified by its origin; anything else (another Taskboard server) must present the token
   if (req.headers.origin ? !originOk(req.headers.origin) : (url.searchParams.get('token') !== TOKEN && req.headers['x-taskboard-token'] !== TOKEN)) return socket.destroy();
   wss.handleUpgrade(req, socket, head, ws => {
+    responsive.add(ws);
+    ws.on('pong', () => responsive.add(ws));
     if (url.pathname === '/ws/events') {
+      if (eventClients.size >= 64) return ws.close(1013, 'too many dashboard windows');
       eventClients.add(ws);
-      ws.send(JSON.stringify({ type: 'hello', build: BUILD_ID }));
-      ws.send(JSON.stringify({ type: 'tasks', tasks: [...store.all().map(view), ...machines.remoteTasks()] }));
-      ws.send(JSON.stringify({ type: 'groups', groups: groups.all() }));
-      ws.send(JSON.stringify({ type: 'approvals', approvals: approvals.all() }));
+      sendEvent(ws, JSON.stringify({ type: 'hello', build: BUILD_ID }));
+      sendEvent(ws, JSON.stringify({ type: 'tasks', tasks: [...store.all().map(view), ...machines.remoteTasks()] }));
+      sendEvent(ws, JSON.stringify({ type: 'groups', groups: groups.all() }));
+      sendEvent(ws, JSON.stringify({ type: 'approvals', approvals: approvals.all() }));
       const opened = new Set<string>();
       ws.on('message', m => {
         // the UI reports which tasks are open, so a finished turn in an open task goes straight to "idle"
@@ -856,9 +880,9 @@ server.on('upgrade', (req, socket, head) => {
         const up = new WebSocket(`${mc.url.replace(/^http/, 'ws')}/ws/term?task=${encodeURIComponent(remote.id)}&cols=${url.searchParams.get('cols') || 120}&rows=${url.searchParams.get('rows') || 40}&token=${encodeURIComponent(mc.token)}`);
         const queue: string[] = [];
         up.on('open', () => { queue.forEach(q => up.send(q)); queue.length = 0; });
-        up.on('message', d => { if (ws.readyState === ws.OPEN) ws.send(d.toString()); });
+        up.on('message', d => { if (ws.readyState === ws.OPEN) { if (ws.bufferedAmount > 1_048_576) ws.close(1013, 'terminal client is too slow'); else ws.send(d.toString()); } });
         up.on('close', () => ws.close()); up.on('error', () => ws.close(4502, 'machine unreachable'));
-        ws.on('message', d => { const s = d.toString(); if (up.readyState === up.OPEN) up.send(s); else queue.push(s); });
+        ws.on('message', d => { const s = d.toString(); if (up.readyState === up.OPEN) up.send(s); else if (queue.length < 64 && s.length <= 65536) queue.push(s); else ws.close(1009, 'terminal queue full'); });
         ws.on('close', () => up.close());
         return;
       }
@@ -876,7 +900,7 @@ const pendingTouch = new Map<string, NodeJS.Timeout>();
 try {
   const watcher = (await import('node:fs')).watch(store.taskDir(''), { recursive: true }, (_ev, file) => {
     const m = String(file || '').match(/^([^/]+)\/(inbox|outbox)\//); if (!m) return;
-    clearTimeout(pendingTouch.get(m[1])); pendingTouch.set(m[1], setTimeout(() => store.touch(m[1]), 300));
+    clearTimeout(pendingTouch.get(m[1])); pendingTouch.set(m[1], setTimeout(() => { pendingTouch.delete(m[1]); store.touch(m[1]); }, 300));
   });
   watcher.on('error', e => console.error('watch', e));
 } catch (e) { console.error('watch', e); }
@@ -889,25 +913,27 @@ approvals.onApprovalsChange(() => {
       store.update(t.id, { status: 'unread', ask: '', statusSource: 'The user denied the refused command.' });
   }
   const msg = JSON.stringify({ type: 'approvals', approvals: approvals.all() });
-  for (const c of eventClients) if (c.readyState === c.OPEN) c.send(msg);
+  for (const c of eventClients) sendEvent(c, msg);
 });
-accounts.onAccountsChange(() => { for (const c of eventClients) if (c.readyState === c.OPEN) c.send(JSON.stringify({ type: 'accounts' })); });
+accounts.onAccountsChange(() => { for (const c of eventClients) sendEvent(c, JSON.stringify({ type: 'accounts' })); });
 machines.onRemoteChange(changed => {
   const msgs = changed.map(t => JSON.stringify({ type: 'task', task: t }));
   msgs.push(JSON.stringify({ type: 'machines' }));
-  for (const c of eventClients) if (c.readyState === c.OPEN) msgs.forEach(m => c.send(m));
+  for (const c of eventClients) msgs.forEach(m => sendEvent(c, m));
 });
 groups.onGroupsChange(() => {
   const msg = JSON.stringify({ type: 'groups', groups: groups.all() });
-  for (const c of eventClients) if (c.readyState === c.OPEN) c.send(msg);
+  for (const c of eventClients) sendEvent(c, msg);
 });
 store.onTaskRemoved(id => {
+  events.forgetTask(id);
   const msg = JSON.stringify({ type: 'removed', id });
-  for (const c of eventClients) if (c.readyState === c.OPEN) c.send(msg);
+  for (const c of eventClients) sendEvent(c, msg);
 });
 store.onTaskChange(t => {
+  if (t.status === 'archived') { events.forgetTask(t.id); store.launchedAt.delete(t.id); }
   const msg = JSON.stringify({ type: 'task', task: view(t) });
-  for (const c of eventClients) if (c.readyState === c.OPEN) c.send(msg);
+  for (const c of eventClients) sendEvent(c, msg);
 });
 
 // ---------- watch tmux: sessions that ended, Codex output after a finished turn ----------
@@ -1007,6 +1033,7 @@ async function restartTask(t: store.Task) {
 // 15 s. A prompt typed in the last moment can still race with this (the CLIs give no way to hold input); 15 s makes it
 // unlikely instead of likely.
 const QUIET_MS = 15000;
+const IDLE_SUSPEND_MINUTES = idleSuspendMinutes(process.env.TASKBOARD_IDLE_SUSPEND_MINUTES);
 function betweenTurns(t: store.Task) {
   if (!['idle', 'unread'].includes(t.status)) return false;
   let last = Date.parse(t.statusAt) || 0;
@@ -1064,6 +1091,14 @@ async function reconcile(first = false) {
     // after the activity checks above, so a new Codex turn is seen first
     const cur = store.get(t.id)!;
     if (cur.restartWhenDone && betweenTurns(cur)) { await restartTask(cur); continue; }
+    if (IDLE_SUSPEND_MINUTES && betweenTurns(cur)) {
+      let transcriptTime = 0;
+      try { if (cur.transcript) transcriptTime = statSync(cur.transcript).mtimeMs; } catch { /* transcript moved */ }
+      if (maySuspendIdleTask(cur, Date.now(), IDLE_SUSPEND_MINUTES, transcriptTime, store.launchedAt.get(cur.id) || 0, events.viewing.has(cur.id))) {
+        await tmux.killSession(cur.session);
+        store.update(cur.id, { status: 'suspended', statusSource: `Idle for ${IDLE_SUSPEND_MINUTES} minutes. Open this task to resume it.` });
+      }
+    }
   }
 }
 await reconcile(true);
@@ -1087,8 +1122,21 @@ if (machine.get().controller.autostart && store.get('controller')?.status !== 'a
 // Codex usage: read from each Codex account's newest session file every minute
 accounts.refreshCodexUsage();
 setInterval(() => accounts.refreshCodexUsage(), 60000);
-setInterval(() => reconcile().catch(e => console.error('reconcile', e)), 2000);
+let reconciling = false;
+setInterval(() => {
+  if (reconciling) return;
+  reconciling = true;
+  reconcile().catch(e => console.error('reconcile', e)).finally(() => { reconciling = false; });
+}, 2000);
 // "waiting N min" changes over time; push a refresh every minute
-setInterval(() => { const msg = JSON.stringify({ type: 'tasks', tasks: [...store.all().map(view), ...machines.remoteTasks()] }); for (const c of eventClients) if (c.readyState === c.OPEN) c.send(msg); }, 60000);
+setInterval(() => { const msg = JSON.stringify({ type: 'tasks', tasks: [...store.all().map(view), ...machines.remoteTasks()] }); for (const c of eventClients) sendEvent(c, msg); }, 60000);
+const resourceCounts = () => ({ tasks: store.all().length, eventClients: eventClients.size, terminalViewers: terminalViewerCount(), approvals: approvals.count(), pendingTouches: pendingTouch.size, ...stats.cacheCounts() });
+sampleResources(resourceCounts);
+setInterval(() => {
+  sampleResources(resourceCounts);
+  for (const task of store.all().filter(task => task.status !== 'archived')) {
+    try { trimTerminalLog(store.terminalLog(task.id)); } catch (error) { console.error('terminal log trim', task.id, error); }
+  }
+}, 60000).unref();
 
 console.log(`Taskboard on ${URL_BASE}  (vault ${store.taskDir('').replace(/\/$/, '')})`);

@@ -134,6 +134,7 @@ test('give back to a busy Codex task types the notice, which Codex queues', asyn
   const t = task('codex', 2, 'working', 'thread-2'); await live(t);
   const { result, shown } = await sendBack(t, 'Wait for the test build.');
   assert.match(result.result!, /^Sent back to task #2/);
+  await waitFor(() => input(t.id).includes(shown.returns[0].file), 'the queued notice');
   assert.match(input(t.id), new RegExp(shown.returns[0].file));
 });
 

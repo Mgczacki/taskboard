@@ -24,6 +24,11 @@ export function resetSessionEvents(id: string) {
   turnStart.delete(id); blockedOnce.delete(id); answerBeforeLog.delete(id);
   lastCodexEvent.delete(id); agyPendingTool.delete(id); sessionStarted.delete(id);
 }
+export function forgetTask(id: string) {
+  resetSessionEvents(id);
+  viewing.delete(id);
+  movingTasks.delete(id);
+}
 function acceptsEvent(t: Task, agent: store.Agent, session?: string) {
   return t.agent === agent && !movingTasks.has(t.id) && !(session && session !== t.sessionId && t.pastSessions?.includes(session));
 }
