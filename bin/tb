@@ -58,7 +58,7 @@ const HELP = `tb — Taskboard command line
   tb move <task> --account <id> [--instruction "<text>"]
                                      continue the task on that account, with a handoff when needed
   tb send <task> "<text>"            type text into the agent's terminal and press Enter
-  tb new --agent claude|codex|antigravity --folder <path> [--account <id>] [--model <name>] [--title <t>] [--worktree <branch>] [--group <name>] "<prompt>"
+  tb new --agent auto|claude|codex|antigravity --folder <path> [--account <id>] [--model <name>] [--title <t>] [--worktree <branch>] [--group <name>] "<prompt>"
   tb new --batch <plan.json>         [{ agent, folder, title, prompt, account?, model?, worktree?, group? }, …]
   tb group list | tb group add <group> <task…> | tb group rm <group> <task…>
   tb doc send <task>:<file> <task>   send a document from one task's outbox to another task's inbox
@@ -188,7 +188,7 @@ switch (cmd) {
       if (!s.folder || !s.prompt) { console.error('tb new: --folder and a prompt are required'); process.exit(1); }
       const t = await call('POST', '/api/tasks', { title: s.title || s.prompt.slice(0, 60), desc: s.prompt, agent: s.agent || 'claude', folder: resolve(s.folder.replace(/^~/, homedir())), worktree: !!s.worktree, branch: s.worktree || undefined, parent: process.env.TASK_ID || undefined, group: s.group || undefined, account: s.account || undefined, model: s.model || undefined });
       if (t.approved) continue;
-      console.log(`Started #${t.num} ${t.title} (${t.agent}) in ${t.cwd}`);
+      console.log(`Started #${t.num} ${t.title} (${t.agent} on ${t.account}) in ${t.cwd}`);
     }
     break;
   }
