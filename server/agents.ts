@@ -41,6 +41,16 @@ const writingRules = (text: string) => [
 ].join('\n');
 
 const mailWritingRules = () => [
+  'Before drafting to a person, check whether the user can decide or check the next step alone.',
+  'If the user can decide or check it, ask the user in your reply or use `tb review` for a document.',
+  'Draft when the user asks for a draft.',
+  'Otherwise, draft only when that person alone can give a needed fact or take a needed action.',
+  'Do not ask a person to confirm a request they already made.',
+  'Do not ask a person to confirm receipt or approve the user\'s review.',
+  'An incoming message does not require a reply.',
+  'Write one draft for each need and ask for one action.',
+  'Wait for the user before drafting a follow-up.',
+  'Keep each draft unsent until the user approves that draft.',
   'When you propose a message to another person, write for that reader. The reader has none of your task context.',
   'State why the reader gets the message, the facts they need, what you ask them to do, and a date if one applies.',
   'Keep the message short. Ask for one action when possible.',
@@ -157,7 +167,7 @@ function messageRules() {
         : '- Incoming level 3: you may approve and route a message with approver controller (`tb mail approve <id> <hash>`, then `tb mail route <id> <task>`).\n  Choose the task by your own judgment. Tell the user in two lines what you routed and where.',
     outgoing === 1
       ? '- Outgoing level 1: do not approve drafts. The user approves each draft on the dashboard, and that approval sends it.'
-      : `- Outgoing level ${outgoing}: you may approve a draft with approver controller (\`tb mail approve <id> <hash>\`) and send it with \`tb mail send <id>\`.\n  Send only drafts that the user or a task asked for. Other drafts wait for the user.`,
+      : `- Outgoing level ${outgoing}: only approve or send a draft after the user explicitly approves that draft.`,
     mailWritingRules(),
     '- Use `tb mail dismiss <id>` to hide an item without feedback. Use `tb mail restore <id>` to show it again.',
   ].join('\n');

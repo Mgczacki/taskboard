@@ -12,6 +12,18 @@ const rules: { pattern: RegExp; reason: string }[] = [
   { pattern: /(?:\/Users\/[^\s`]+|\/home\/[^\s`]+|AgentVault\/tasks\/[^\s`]+|taskboard-wt\/[^\s`]+)/i, reason: 'Contains a path on the sender\'s machine' },
   { pattern: /\b(?:sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{16,}|AKIA[A-Z0-9]{16})\b|(?:api[_ -]?key|secret|token)\s*[:=]\s*[A-Za-z0-9_./+-]{12,}/i, reason: 'Looks like a secret or key' },
 ];
+const userDecisionReason = 'The user can decide this. Ask the user instead.';
+const requestPattern = /\b(?:please|could you|can you|would you|will you|do you|let me know)\b/i;
+const confirmationPattern = /\b(?:confirm|acknowledge)\b/i;
+const userReviewPattern = /\b(?:ask|tell|allow|authorize|want|let|have)\b.*\b(?:Mario|the user|the owner|the account owner)\b.*\breview\b/i;
+const otherActionPattern = /\b(?:and|then)\s+(?:send|provide|share|update|fix|grant|change|create|run|check|review|approve)\b/i;
+
+function userDecisionFlags(body: string): QualityFlag[] {
+  const requests = sentenceSpans(body).filter(span => requestPattern.test(span.text));
+  if (!requests.length || requests.some(span =>
+    (!confirmationPattern.test(span.text) && !userReviewPattern.test(span.text)) || otherActionPattern.test(span.text))) return [];
+  return requests.map(span => ({ ...span, reason: userDecisionReason }));
+}
 
 export function sentenceSpans(body: string): { text: string; start: number; end: number }[] {
   const spans: { text: string; start: number; end: number }[] = [];
@@ -39,6 +51,7 @@ export function deterministicQuality(body: string): QualityResult {
     const rule = rules.find(rule => rule.pattern.test(span.text));
     return rule ? [{ ...span, reason: rule.reason }] : [];
   });
+  for (const flag of userDecisionFlags(body)) if (!flags.some(existing => existing.start === flag.start)) flags.push(flag);
   const accessNote = /\b(?:for internal reference|you (?:can|should be able to) (?:open|access)|access (?:may be|is) limited|internal links?)\b/i.test(body);
   for (const match of body.matchAll(/^.*https?:\/\/(?:github\.com\/sekai-app\/|(?:localhost|127\.0\.0\.1)(?::\d+)?\/).*$/gm)) {
     if (accessNote) continue;
@@ -46,7 +59,7 @@ export function deterministicQuality(body: string): QualityResult {
     if (!flags.some(flag => flag.start <= start && flag.end >= start)) flags.push({ text, start, end: start + text.length, reason: 'Internal link has no note about reader access' });
   }
   flags.sort((a, b) => a.start - b.start);
-  return { state: 'checking', flags, suggestedBody: removeFlags(body, flags), at: new Date().toISOString() };
+  return { state: 'checking', flags, suggestedBody: flags.some(flag => flag.reason === userDecisionReason) ? '' : removeFlags(body, flags), at: new Date().toISOString() };
 }
 
 const schema = { type: 'object', additionalProperties: false, properties: {
@@ -81,5 +94,5 @@ export async function reviewQuality(body: string, configDir?: string): Promise<Q
     const span = rest.find(s => s.text === f.text);
     return span ? [{ ...span, reason: f.reason }] : [];
   })].sort((a, b) => a.start - b.start);
-  return { state: 'done', flags, suggestedBody: removeFlags(body, flags), at: new Date().toISOString() };
+  return { state: 'done', flags, suggestedBody: flags.some(flag => flag.reason === userDecisionReason) ? '' : removeFlags(body, flags), at: new Date().toISOString() };
 }
