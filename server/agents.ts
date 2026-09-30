@@ -2,6 +2,7 @@
 // Taskboard records folder trust in each CLI's account settings. Codex also needs the exact guard hook hash in its
 // account config, because its hook trust check does not read -c overrides. Antigravity (agy) uses a Taskboard plugin.
 import { execFile, execFileSync, spawn } from 'node:child_process';
+import { prepareWorktreeDependencies, useTaskWorktree } from './task-worktree.ts';
 import { randomUUID } from 'node:crypto';
 import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
@@ -40,6 +41,16 @@ const writingRules = (text: string) => [
 ].join('\n');
 
 const mailWritingRules = () => [
+  'Before drafting to a person, check whether the user can decide or check the next step alone.',
+  'If the user can decide or check it, ask the user in your reply or use `tb review` for a document.',
+  'Draft when the user asks for a draft.',
+  'Otherwise, draft only when that person alone can give a needed fact or take a needed action.',
+  'Do not ask a person to confirm a request they already made.',
+  'Do not ask a person to confirm receipt or approve the user\'s review.',
+  'An incoming message does not require a reply.',
+  'Write one draft for each need and ask for one action.',
+  'Wait for the user before drafting a follow-up.',
+  'Keep each draft unsent until the user approves that draft.',
   'When you propose a message to another person, write for that reader. The reader has none of your task context.',
   'State why the reader gets the message, the facts they need, what you ask them to do, and a date if one applies.',
   'Keep the message short. Ask for one action when possible.',
@@ -156,7 +167,7 @@ function messageRules() {
         : '- Incoming level 3: you may approve and route a message with approver controller (`tb mail approve <id> <hash>`, then `tb mail route <id> <task>`).\n  Choose the task by your own judgment. Tell the user in two lines what you routed and where.',
     outgoing === 1
       ? '- Outgoing level 1: do not approve drafts. The user approves each draft on the dashboard, and that approval sends it.'
-      : `- Outgoing level ${outgoing}: you may approve a draft with approver controller (\`tb mail approve <id> <hash>\`) and send it with \`tb mail send <id>\`.\n  Send only drafts that the user or a task asked for. Other drafts wait for the user.`,
+      : `- Outgoing level ${outgoing}: only approve or send a draft after the user explicitly approves that draft.`,
     mailWritingRules(),
     '- Use `tb mail dismiss <id>` to hide an item without feedback. Use `tb mail restore <id>` to show it again.',
   ].join('\n');
@@ -261,7 +272,7 @@ function taskInstructions(t: Task) {
   return [
     `You are running as task #${t.num} ("${t.title}") in Taskboard, which shows the user many agents at once.`,
     ...(t.worktree ? [
-      `Your Git branch is ${t.branch} in ${t.cwd}. Use \`${gitCli} git commit "<message>"\` to commit and \`${gitCli} git rebase\` to rebase it.`,
+      `Your Git branch is ${t.branch} in ${t.cwd}. Use \`${gitCli} git commit "<message>"\` to commit and \`${gitCli} git rebase\` to rebase it. Resolve rebase conflicts there, then run \`${gitCli} git rebase --continue\` or \`${gitCli} git rebase --abort\`.`,
       `To merge your branch into local master, run \`${gitCli} git merge-request\`. The user approves that merge on the dashboard.`,
       `When the user asks for a push, run \`${gitCli} git push-request --reason "<reason>"\`. Read the result with \`${gitCli} git push-result ID\`.`,
       'Do not run raw git commands that change refs. Do not change another task branch. Do not push unless the user asks for that push.',
@@ -288,7 +299,7 @@ function claudeTaskSettings(t: Task): string {
     allow: ['$defaults', `Taskboard checks tb git commit and tb git rebase against this task's branch ${t.branch}. A merge into local master requires the Taskboard dashboard card. Other worktrees and branches are outside this task's scope.`],
   };
   const gitCli = join(TB_DIR, 'bin', 'tb');
-  settings.permissions.allow.push(`Bash(${gitCli} git commit:*)`, `Bash(${gitCli} git rebase)`, `Bash(${gitCli} git merge-request)`, `Bash(${gitCli} git push-request:*)`, `Bash(${gitCli} git push-result:*)`, `Bash(${gitCli} permit request:*)`, `Bash(${gitCli} permit result:*)`);
+  settings.permissions.allow.push(`Bash(${gitCli} git commit:*)`, `Bash(${gitCli} git rebase)`, `Bash(${gitCli} git rebase --continue)`, `Bash(${gitCli} git rebase --abort)`, `Bash(${gitCli} git merge-request)`, `Bash(${gitCli} git push-request:*)`, `Bash(${gitCli} git push-result:*)`, `Bash(${gitCli} permit request:*)`, `Bash(${gitCli} permit result:*)`);
   writeFileSync(file, JSON.stringify(settings, null, 2), { mode: 0o600 });
   return file;
 }
@@ -461,16 +472,18 @@ export async function startTask(n: NewTask): Promise<Task> {
   const images = checkImages(n.images);
   const num = store.nextNum();
   const id = `${slug(n.title)}-${num}`;
+  const worktree = await useTaskWorktree(folder, n.worktree);
   let cwd = folder, branch: string | undefined;
-  if (n.worktree) {
-    branch = n.branch || `task/${slug(n.title)}`;
-    cwd = join(folder + '-wt', slug(n.title));
+  if (worktree) {
+    branch = n.branch || `task/${id}`;
+    cwd = join(folder + '-wt', id);
     await exec('git', ['-C', folder, 'worktree', 'add', cwd, '-b', branch]);
+    await prepareWorktreeDependencies(folder, cwd);
   } else {
     try { branch = (await exec('git', ['-C', folder, 'rev-parse', '--abbrev-ref', 'HEAD'])).stdout.trim(); } catch { /* not a git repo */ }
   }
   const t = store.create({
-    id, num, title: n.title, agent, status: 'working', cwd, folder, branch, worktree: !!n.worktree,
+    id, num, title: n.title, agent, status: 'working', cwd, folder, branch, worktree,
     session: `task-${num}`, sessionId: agent === 'claude' ? randomUUID() : undefined,
     statusSource: n.parent === 'controller' ? 'Started by the controller (tb new) just now.' : 'Started just now.', goal: n.title, desc: n.desc, parent: n.parent, account: acct.id, model: n.model,
   });

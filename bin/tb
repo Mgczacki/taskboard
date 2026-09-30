@@ -58,8 +58,10 @@ const HELP = `tb — Taskboard command line
   tb move <task> --account <id> [--instruction "<text>"]
                                      continue the task on that account, with a handoff when needed
   tb send <task> "<text>"            type text into the agent's terminal and press Enter
-  tb new --agent auto|claude|codex|antigravity --folder <path> [--account <id>] [--model <name>] [--title <t>] [--worktree <branch>] [--group <name>] "<prompt>"
+  tb new --agent auto|claude|codex|antigravity --folder <path> [--account <id>] [--model <name>] [--title <t>] [--worktree <branch>|--no-worktree] [--group <name>] "<prompt>"
   tb new --batch <plan.json>         [{ agent, folder, title, prompt, account?, model?, worktree?, group? }, …]
+  tb ask spin-off <task> [--answer n] [--title <t>] [--agent claude|codex|antigravity] [--account <id>] [--folder <path>] [--worktree <branch>]
+                                     start from a completed Ask answer; n is its 1-based position
   tb group list | tb group add <group> <task…> | tb group rm <group> <task…>
   tb doc send <task>:<file> <task>   send a document from one task's outbox to another task's inbox
   tb mail                            account messages: run for command help
@@ -72,6 +74,8 @@ const HELP = `tb — Taskboard command line
   tb git merge-request               ask the user to merge your worktree branch into local master
   tb git commit "<message>"           commit changes in your own worktree
   tb git rebase                       rebase your own branch onto local master
+  tb git rebase --continue            stage resolved conflicts and finish the approved merge
+  tb git rebase --abort               stop a rebase in your own worktree
   tb git push-request --reason "text" [--branch BRANCH] [--remote REMOTE] [--then-release]
   tb git push-result ID [--wait]      read the push result
   tb inbox wait [--timeout seconds]  wait until a file arrives in your inbox (uses TASK_ID; default 3600 s);
@@ -183,13 +187,30 @@ switch (cmd) {
   case 'send': { const t = await task(rest[0]); await call('POST', `/api/tasks/${t.id}/send`, { text: rest.slice(1).join(' ') }); console.log(`Sent to #${t.num}.`); break; }
   case 'new': {
     const batch = flag('--batch');
-    const specs = batch ? JSON.parse(readFileSync(batch, 'utf8')) : [{ agent: flag('--agent', 'claude'), account: flag('--account'), model: flag('--model'), folder: flag('--folder'), title: flag('--title'), worktree: flag('--worktree'), group: flag('--group'), prompt: args.slice(1).join(' ') }];
+    const specs = batch ? JSON.parse(readFileSync(batch, 'utf8')) : [{ agent: flag('--agent', 'claude'), account: flag('--account'), model: flag('--model'), folder: flag('--folder'), title: flag('--title'), worktree: has('--no-worktree') ? false : flag('--worktree'), group: flag('--group'), prompt: args.slice(1).join(' ') }];
     for (const s of specs) {
       if (!s.folder || !s.prompt) { console.error('tb new: --folder and a prompt are required'); process.exit(1); }
-      const t = await call('POST', '/api/tasks', { title: s.title || s.prompt.slice(0, 60), desc: s.prompt, agent: s.agent || 'claude', folder: resolve(s.folder.replace(/^~/, homedir())), worktree: !!s.worktree, branch: s.worktree || undefined, parent: process.env.TASK_ID || undefined, group: s.group || undefined, account: s.account || undefined, model: s.model || undefined });
+      const t = await call('POST', '/api/tasks', { title: s.title || s.prompt.slice(0, 60), desc: s.prompt, agent: s.agent || 'claude', folder: resolve(s.folder.replace(/^~/, homedir())), worktree: s.worktree === false ? false : s.worktree ? true : undefined, branch: typeof s.worktree === 'string' ? s.worktree : undefined, parent: process.env.TASK_ID || undefined, group: s.group || undefined, account: s.account || undefined, model: s.model || undefined });
       if (t.approved) continue;
       console.log(`Started #${t.num} ${t.title} (${t.agent} on ${t.account}) in ${t.cwd}`);
     }
+    break;
+  }
+  case 'ask': {
+    if (rest[0] !== 'spin-off' || !rest[1]) { console.error('Usage: tb ask spin-off <task> [--answer n] [--title <t>] [--agent <name>] [--account <id>] [--folder <path>] [--worktree <branch>]'); process.exit(1); }
+    const source = await task(rest[1]);
+    const thread = await call('GET', `/api/tasks/${encodeURIComponent(source.id)}/ask`);
+    const answer = flag('--answer');
+    const index = answer === undefined ? thread.items.findLastIndex(x => x.state === 'done') : Number(answer) - 1;
+    const item = thread.items[index];
+    if (!item || item.state !== 'done' || !item.a) { console.error('tb ask spin-off: select a completed answer'); process.exit(1); }
+    const title = flag('--title', item.q.slice(0, 80));
+    const agent = flag('--agent', source.agent);
+    const account = flag('--account', 'auto');
+    const folder = flag('--folder', source.folder);
+    const worktree = flag('--worktree');
+    const created = await call('POST', '/api/tasks', { title, agent, account, folder: resolve(folder.replace(/^~/, homedir())), worktree: worktree ? true : undefined, branch: worktree, spinOff: { sourceNum: source.num, question: item.q, answer: item.a } });
+    if (!created.approved) console.log(`Started #${created.num} ${created.title} (${created.agent}) in ${created.cwd}`);
     break;
   }
   case 'group': {
@@ -275,7 +296,10 @@ switch (cmd) {
     if (!process.env.TASK_ID) { console.error('tb git: run this inside a Taskboard task'); process.exit(1); }
     if (rest[0] === 'merge-request') await call('POST', '/api/git/merge-request', {});
     else if (rest[0] === 'commit') console.log((await call('POST', '/api/git/commit', { message: rest.slice(1).join(' ') })).result);
-    else if (rest[0] === 'rebase') console.log((await call('POST', '/api/git/rebase', {})).result);
+    else if (rest[0] === 'rebase') {
+      if (rest.length > 2 || (rest[1] && !['--continue', '--abort'].includes(rest[1]))) { console.error('tb git rebase: run tb git rebase, tb git rebase --continue, or tb git rebase --abort.'); process.exit(1); }
+      console.log((await call('POST', '/api/git/rebase', { action: rest[1] === '--continue' ? 'continue' : rest[1] === '--abort' ? 'abort' : 'start' })).result);
+    }
     else if (rest[0] === 'push-request') {
       if (rest.some(x => /^(--force|--delete|--tags|--mirror|--all)(?:$|[=-])/.test(x))) { console.error('tb git push-request: force pushes, deletions, and tags are not allowed'); process.exit(1); }
       const reason = flag('--reason', ''); const branch = flag('--branch', undefined); const remote = flag('--remote', 'origin'); const thenRelease = has('--then-release');
@@ -290,7 +314,7 @@ switch (cmd) {
         if (result.state !== 'pending' || !wait) { console.log(JSON.stringify(result, null, 2)); break; }
         await new Promise(resolve => setTimeout(resolve, 2000));
       }
-    } else { console.error('tb git commit | rebase | merge-request | push-request | push-result'); process.exit(1); }
+    } else { console.error('Run tb git commit, tb git rebase, tb git merge-request, tb git push-request, or tb git push-result.'); process.exit(1); }
     break;
   }
   case 'park': { const t = await task(rest[0]); await call('POST', `/api/tasks/${t.id}/status`, { status: 'parked' }); console.log(`#${t.num} set aside.`); break; }

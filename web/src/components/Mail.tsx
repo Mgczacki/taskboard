@@ -192,7 +192,7 @@ function SentHistory({ messages, contacts, tasks, busy, act }: {
         <p>Approved by: {selected.approval?.by || 'No approval recorded'}</p>
         <p>State: {sentState(selected)}{selected.dismissedAt ? ' · Dismissed' : ''}</p><p>Sent: {date(selected.sentAt)}</p>
         <p>Safety check: {selected.review ? `${selected.review.verdict}. ${selected.review.reason}` : selected.error ? 'Failed.' : 'The controller checks this text now.'}</p>
-        {selected.quality?.flags.length ? <p role="alert">Message check: {selected.quality.flags.length} sentence(s) may contain private working notes. The user must decide whether to send the original.</p> : selected.quality?.state === 'failed' ? <p role="alert">The message check failed. The user must review this draft.</p> : null}
+        {selected.quality?.flags.length ? <p role="alert">Message check: review the flagged text before you send this draft.</p> : selected.quality?.state === 'failed' ? <p role="alert">The message check failed. The user must review this draft.</p> : null}
         {selected.editBlocked && selected.direction === 'outbox' && !selected.dismissedAt && <p>{selected.editBlocked}</p>}
         {editing?.id === selected.id
           ? <DraftEditor key={editing.key} m={selected} start={editing} busy={busy} act={act} close={() => setEditing(null)} />

@@ -75,7 +75,7 @@ export async function review(t: Task, input: any): Promise<Verdict> {
       return { decision: 'allow', reason: 'Read-only repository command.' };
     if (tbCommand(command) && /^tb (info|list|show|log|tail|result|wait)(?:\s|$)/.test(command.trim()))
       return withTbAccess(command, { decision: 'allow', reason: 'Read-only Taskboard command.' });
-    if (tbCommand(command) && (/^tb git (rebase|merge-request)$/.test(taskboardCommand(command)) || /^tb git commit\s+\S/.test(taskboardCommand(command))))
+    if (tbCommand(command) && (/^tb git (rebase(?: --continue| --abort)?|merge-request)$/.test(taskboardCommand(command)) || /^tb git commit\s+\S/.test(taskboardCommand(command))))
       return withTbAccess(command, { decision: 'allow', reason: 'Taskboard checks this task branch before it changes Git.' });
     if (tbCommand(command) && /^tb permit (request|result|list)(?:\s|$)/.test(taskboardCommand(command)))
       return withTbAccess(command, { decision: 'allow', reason: 'Taskboard checks permit requests and results.' });

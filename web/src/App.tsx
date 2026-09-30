@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import type { Group, Task } from './api';
+import type { Group, SpinOffExchange, Task } from './api';
 import { ATTN, api, fmtWait, setViewing, useStore } from './api';
 import { ACTIONS, CTX_NAME, fmtCombo, hit, hitIn, keyLabel, keysOf, keysText, useKeymap } from './keys';
 import { Canvas, openInWindow, viewName } from './components/Canvas';
@@ -100,6 +100,7 @@ export function App() {
     if (u.href !== location.href) history.replaceState(null, '', u);
   }, [openId, openTab]);
   const [newOpen, setNewOpen] = useState(false);
+  const [spinOff, setSpinOff] = useState<{ exchange: SpinOffExchange; task: Task } | null>(null);
   const [newTaskToFocus, setNewTaskToFocus] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(() => location.hash === '#import');
   const [triage, setTriage] = useState(false);
@@ -241,14 +242,14 @@ export function App() {
           {page === 'permits' && <PermitsPage openTask={setOpenId} />}
           {page === 'inbox' && <InboxPage tasks={tasks} open={(id, tab) => setOpenId(id, tab)} documentLink={documentLink?.reviewId ? documentLink : null} />}
           {page === 'graph' && <GraphView tasks={tasks} groups={groups} open={(id, tab) => setOpenId(id, tab)} />}
-          {page === 'canvas' && <Canvas tasks={tasks} groups={groups} view={view} setView={setView} openPanel={id => setOpenId(id)} panelTaskId={openId} selected={selected} toggleSel={toggleSel} clearSel={() => setSelected(new Set())} solo={SOLO} focusMode={focusMode} setFocusMode={setFocusMode} toast={toast} newTask={() => setNewOpen(true)} newTaskToFocus={newTaskToFocus} onNewTaskFocused={() => setNewTaskToFocus(null)} />}
+          {page === 'canvas' && <Canvas tasks={tasks} groups={groups} view={view} setView={setView} openPanel={id => setOpenId(id)} panelTaskId={openId} selected={selected} toggleSel={toggleSel} clearSel={() => setSelected(new Set())} solo={SOLO} focusMode={focusMode} setFocusMode={setFocusMode} toast={toast} newTask={() => setNewOpen(true)} newTaskToFocus={newTaskToFocus} onNewTaskFocused={() => setNewTaskToFocus(null)} onSpinOff={(exchange, task) => { setSpinOff({ exchange, task }); setNewOpen(true); }} />}
         </div>
       </div>
       {selected.size > 0 && <SelectionBar ids={[...selected]} tasks={tasks} groups={groups} clear={() => setSelected(new Set())} newGroup={ids => setGroupPrompt(ids)} toast={toast} />}
       {open && <TaskPanel key={open.id + (openTab || '')} t={open} tasks={tasks} initialTab={openTab} documentLink={documentLink?.task === open.id && !documentLink.reviewId ? documentLink : null} groups={groups} onClose={() => setOpenId(null)} onCanvas={showOnCanvas} toast={toast} />}
-      {newOpen && <NewTask groups={groups} initialGroup={page === 'canvas' && view.startsWith('g:') && groups.some(g => g.id === view.slice(2)) ? view.slice(2) : undefined} onClose={() => setNewOpen(false)} onStarted={(id, group, choice) => {
+      {newOpen && <NewTask groups={groups} initialGroup={page === 'canvas' && view.startsWith('g:') && groups.some(g => g.id === view.slice(2)) ? view.slice(2) : undefined} initialFolder={spinOff?.task.folder} initialMachine={spinOff?.task.machine?.id} spinOff={spinOff?.exchange} onClose={() => { setNewOpen(false); setSpinOff(null); }} onStarted={(id, group, choice) => {
         if (choice) toast(`Auto chose ${choice}.`);
-        setNewOpen(false);
+        setNewOpen(false); setSpinOff(null);
         if (page === 'canvas') { setView(group ? `g:${group}` : 'ungrouped'); setNewTaskToFocus(id); }
         else setOpenId(id);
       }} />}

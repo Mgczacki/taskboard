@@ -50,6 +50,25 @@ test('a worktree task uses Taskboard for Git writes', () => {
     assert.match(run('git -C other merge master'), /permissionDecision.*deny/);
     assert.equal(run('tb git commit "test"'), '');
     assert.equal(run('tb git merge-request'), '');
+    assert.equal(run('tb git rebase --continue'), '');
+    assert.equal(run('tb git rebase --abort'), '');
     assert.equal(run('git status --short'), '');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a task in master cannot run raw Git writes', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tb-master-guard-'));
+  try {
+    const result = spawnSync(process.execPath, [guard], {
+      input: JSON.stringify({ tool_input: { command: 'git merge --continue' } }), encoding: 'utf8',
+      env: { ...process.env, TASKBOARD_DIR: dir, TASK_ID: 'task-42', TASK_WORKTREE: '' },
+    });
+    assert.match(result.stdout, /permissionDecision.*deny/);
+    assert.match(result.stdout, /tb git merge-request/);
+    const withEditor = spawnSync(process.execPath, [guard], {
+      input: JSON.stringify({ tool_input: { command: 'GIT_EDITOR=true git merge --continue' } }), encoding: 'utf8',
+      env: { ...process.env, TASKBOARD_DIR: dir, TASK_ID: 'task-42', TASK_WORKTREE: '' },
+    });
+    assert.match(withEditor.stdout, /permissionDecision.*deny/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });

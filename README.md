@@ -107,7 +107,7 @@ Agents that work on Taskboard itself run inside the real one, so the setup keeps
 | List | Every task grouped by status, with Goal / Now / Waiting. Tick tasks to group them or open them together. |
 | Board | Columns by status, or by group (drag a card onto a group to add it. Hold ⌥ to move it). |
 | Graph | Tasks in lanes (group, folder or status). Arrows show documents sent from one task to another. |
-| Canvas | Live terminals. Tabs across the top are your groups. Drag a tile from one group tab to another to move it. Columns / Grid / Rows. |
+| Canvas | Live terminals. Tabs across the top are your groups. Columns / Grid / Rows. |
 | Inbox | Account messages and documents to review. The Sent tab shows outgoing drafts, send attempts, and sent messages. Filter by recipient, proposer, or state. |
 | Accounts | Settings folders per account, sign-in, limit marks, and limit resets (only you can use them). |
 
@@ -195,6 +195,10 @@ A sideways swipe (or Shift + wheel) over a terminal scrolls the canvas, or turns
   The user can choose an agent, account, or model in a request. `tb new` accepts `--account` and `--model`.
 - **`tb`** (linked into `~/.local/bin/tb`): `tb list`, `tb show`, `tb log`, `tb tail`, `tb result`, `tb wait`, `tb send`,
   `tb accounts`, `tb new` (also `--batch plan.json`), `tb group`, `tb doc send`, `tb review`, `tb park|archive`. Run `tb` for help.
+- **New task files:** Taskboard creates a separate worktree and task branch when the chosen folder is a Git repository root.
+  Use `tb new --no-worktree` or "Use the folder as is" in the new task form when you need the original folder.
+  A new worktree uses the source folder's `node_modules` when present. Otherwise Taskboard installs dependencies from a supported lockfile.
+  Run `pnpm test` to see every test name and the name of any failed test.
 - **Usage limits:** the Accounts page shows each account's windows (5-hour, weekly) with % used and reset time.
   Claude Code: reported by the status line Taskboard gives its sessions (sessions started before this was added show it
   after they are resumed). Codex: read from the newest session file of that account every minute. Automatic account

@@ -27,6 +27,7 @@ export interface PushRecord { id: string; at: string; taskId: string; branch: st
 // questions about a task, answered by a separate read-only agent (server/ask.ts)
 export interface AskItem { q: string; a?: string; state: 'running' | 'done' | 'failed' | 'stopped'; steps: string[]; costUsd?: number; ms?: number; agent?: 'claude' | 'codex'; model: string; account: string; at: string }
 export interface AskThread { sessionId?: string; items: AskItem[] }
+export interface SpinOffExchange { sourceNum: number; question: string; answer: string }
 export interface Group { id: string; name: string; color: string; tasks: string[]; created: string }
 
 export const STATUS_LABEL: Record<Status, string> = {
@@ -101,7 +102,7 @@ async function call<T = unknown>(method: string, path: string, body?: unknown): 
   return data as T;
 }
 export const api = {
-  create: (b: { title: string; desc: string; agent: string; folder: string; worktree?: boolean; branch?: string; account?: string; model?: string; machine?: string; group?: string; images?: { type: string; data: string }[] }) => call<Task>('POST', '/api/tasks', b),
+  create: (b: { title: string; desc: string; agent: string; folder: string; worktree?: boolean; branch?: string; account?: string; model?: string; machine?: string; group?: string; images?: { type: string; data: string }[]; spinOff?: SpinOffExchange }) => call<Task>('POST', '/api/tasks', b),
   setStatus: (id: string, status: string) => call('POST', `/api/tasks/${id}/status`, { status }),
   seen: (id: string) => call('POST', `/api/tasks/${id}/seen`, {}),
   resume: (id: string, force = false) => call<Task>('POST', `/api/tasks/${id}/resume`, { force }),

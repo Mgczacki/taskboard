@@ -48,9 +48,9 @@ export function pushNeedsCard(taskBranch: string, branch: string, remote: string
   const owner = repository?.split('/')[0];
   const ownRepository = !!repository && (owner?.toLowerCase() === login.toLowerCase() || settings.ownRepositories.some(r => r.toLowerCase() === repository.toLowerCase()));
   const protectedBranch = /^(master|main|prod)$/i.test(branch) || /^release\//i.test(branch) || branch === defaultBranch || settings.protectedBranches.includes(branch);
-  const needsCard = branch !== taskBranch || protectedBranch || !ownRepository || remote !== 'origin' || settings.taskBranches === 'ask';
-  if (!needsCard && settings.taskBranches === 'never') throw new Error('Settings block pushes of task branches to your own repositories.');
-  return needsCard;
+  if (branch === taskBranch && !protectedBranch && ownRepository && remote === 'origin' && settings.taskBranches === 'never')
+    throw new Error('Settings block pushes of task branches to your own repositories.');
+  return true;
 }
 
 async function remoteHead(cwd: string, remote: string, branch: string) {
