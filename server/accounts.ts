@@ -76,8 +76,23 @@ export function envFor(a?: Account): Record<string, string> {
 }
 
 const statusCache = new Map<string, AccountStatus>();
+const statusChecks = new Map<string, Promise<AccountStatus>>();
+const statusVersion = new Map<string, number>();
 export async function status(a: Account, fresh = false): Promise<AccountStatus> {
+  if (fresh) statusCache.delete(a.id);
   const c = statusCache.get(a.id); if (c && !fresh && Date.now() - c.checkedAt < 60000) return c;
+  const running = statusChecks.get(a.id); if (running && !fresh) return running;
+  const version = (statusVersion.get(a.id) || 0) + 1;
+  statusVersion.set(a.id, version);
+  const check = checkStatus(a).then(s => {
+    if (statusVersion.get(a.id) === version) statusCache.set(a.id, s);
+    return s;
+  });
+  statusChecks.set(a.id, check);
+  try { return await check; } finally { if (statusChecks.get(a.id) === check) statusChecks.delete(a.id); }
+}
+
+async function checkStatus(a: Account): Promise<AccountStatus> {
   let s: AccountStatus = { signedIn: false, checkedAt: Date.now() };
   try {
     const env = { ...process.env, ...envFor(a) };
@@ -96,7 +111,7 @@ export async function status(a: Account, fresh = false): Promise<AccountStatus> 
       const out = (stdout + stderr).trim(); s = { signedIn: /logged in/i.test(out) && !/not logged in/i.test(out), who: out.split('\n')[0], checkedAt: Date.now() };
     }
   } catch (e) { if (a.agent === 'antigravity' && !a.isDefault) s.who = (e as Error).message; }
-  statusCache.set(a.id, s); return s;
+  return s;
 }
 
 export function markLimited(id: string | undefined, note: string) { const a = get(id); if (a && !a.limited) { a.limited = { at: new Date().toISOString(), note }; save(); } }

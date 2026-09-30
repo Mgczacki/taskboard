@@ -1,6 +1,6 @@
 // Accounts: each account is a settings folder, so several run side by side. Sign in through a terminal here;
 // limit resets are used only by you, from this page.
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import type { Agent, MachineInfo, Task } from '../api';
 import { AGENTS, AGENT_NAME, fmtWait } from '../api';
@@ -93,8 +93,9 @@ export function AccountsPage({ tasks }: { tasks: Task[] }) {
   const [err, setErr] = useState('');
   const [movingCtl, setMovingCtl] = useState(false);
   const [agentLoad, setAgentLoad] = useState<Load | null>(null);
+  const accountRequest = useRef(0);
   const ctl = tasks.find(t => t.role === 'controller');
-  const load = (fresh = false) => { api.agentLoad().then(setAgentLoad).catch(() => setAgentLoad(null)); return loadAccounts(fresh).then(setList).catch(e => setErr(String(e.message || e))); };
+  const load = (fresh = false) => { const request = ++accountRequest.current; api.agentLoad().then(setAgentLoad).catch(() => setAgentLoad(null)); return loadAccounts(fresh).then(list => { if (request === accountRequest.current) setList(list); }).catch(e => { if (request === accountRequest.current) setErr(String(e.message || e)); }); };
   useEffect(() => { load(); const i = setInterval(() => load(), 15000); return () => clearInterval(i); }, []);
   useEffect(() => { load(); }, [tasks.length]);
 
