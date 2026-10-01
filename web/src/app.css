@@ -172,6 +172,11 @@
 /* a tab or Board column that refuses the dragged task; the reason is in the drag label and the title */
 .gtab.nodrop, .col.nodrop { cursor: not-allowed; color: var(--dim); background: color-mix(in srgb, var(--st-stopped) 10%, var(--panel)); outline: 2px dashed var(--st-stopped); outline-offset: -2px; }
 .gtab.newg { color: var(--accent); }
+/* dragging a group tab to a new position: the dragged tab is faded and a bar marks the drop slot */
+.gtab.dragging { opacity: .45; cursor: grabbing; }
+.gtab.slot-before::after, .gtab.slot-after::after { content: ""; position: absolute; top: 2px; bottom: 0; width: 4px; border-radius: 2px; background: var(--accent); box-shadow: 0 0 0 1px var(--bg2); z-index: 2; pointer-events: none; }
+.gtab.slot-before::after { left: -4px; }
+.gtab.slot-after::after { right: -4px; }
 .gtabs .gsep { width: 1px; height: 18px; background: var(--line2); margin: 0 6px 7px; flex: none; }
 .gmenu { position: absolute; z-index: 60; background: var(--panel); border: 1px solid var(--line2); border-radius: 10px; box-shadow: 0 18px 44px rgba(0,0,0,.5); padding: 12px; width: 340px; font-size: 12.5px; }
 .gmenu h4 { margin: 0 0 8px; font-size: 13px; }

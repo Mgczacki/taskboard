@@ -5,7 +5,9 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, unlinkSync, writeFile
 import { join } from 'node:path';
 import { VAULT } from './config.ts';
 
-export interface Group { id: string; name: string; color: string; tasks: string[]; created: string }
+// order: the position of the tab on the Canvas page and of the column on the Board, set by reorder().
+// A group without order (written before reorder() existed) comes after the groups with one, oldest first.
+export interface Group { id: string; name: string; color: string; tasks: string[]; created: string; order?: number }
 
 const DIR = join(VAULT, 'groups');
 mkdirSync(DIR, { recursive: true });
@@ -17,7 +19,8 @@ const emit = () => listeners.forEach(f => f());
 
 function write(g: Group) {
   const body = `# ${g.name}\n\n${g.tasks.map(t => `- [[${t}]]`).join('\n')}\n`;
-  writeFileSync(join(DIR, g.id + '.md'), matter.stringify(body, { id: g.id, name: g.name, color: g.color, tasks: g.tasks, created: g.created }));
+  const data = { id: g.id, name: g.name, color: g.color, tasks: g.tasks, created: g.created, ...(typeof g.order === 'number' ? { order: g.order } : {}) };
+  writeFileSync(join(DIR, g.id + '.md'), matter.stringify(body, data));
 }
 
 export function load() {
@@ -26,8 +29,9 @@ export function load() {
     try { const { data } = matter(readFileSync(join(DIR, f), 'utf8')); groups.set(data.id, { tasks: [], ...data } as unknown as Group); } catch { /* skip */ }
   }
 }
-// oldest first, so tabs keep their order
-export const all = () => [...groups.values()].sort((a, b) => a.created.localeCompare(b.created));
+// by order, then oldest first
+const rank = (g: Group) => typeof g.order === 'number' ? g.order : Infinity;
+export const all = () => [...groups.values()].sort((a, b) => rank(a) - rank(b) || a.created.localeCompare(b.created));
 export const get = (id: string) => groups.get(id);
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'group';
@@ -36,6 +40,9 @@ export function create(name: string, tasks: string[] = []): Group {
   let id = slug(name), n = 2;
   while (groups.has(id)) id = `${slug(name)}-${n++}`;
   const g: Group = { id, name, color: COLORS[groups.size % COLORS.length], tasks: [...new Set(tasks)], created: new Date().toISOString() };
+  // after a reorder every group has an order, so a new group goes at the end
+  const orders = [...groups.values()].map(rank).filter(Number.isFinite);
+  if (orders.length) g.order = Math.max(...orders) + 1;
   groups.set(id, g); write(g); emit(); return g;
 }
 export function update(id: string, patch: Partial<Pick<Group, 'name' | 'color' | 'tasks'>>): Group | undefined {
@@ -59,6 +66,24 @@ export function moveTask(taskId: string, fromId: string, toId: string): Group[] 
   }
   emit();
   return [from, to];
+}
+// Puts the groups in the order of `ids`. An id that no group has is ignored (another browser deleted that group).
+// A group that `ids` leaves out (another browser created it) goes after the listed groups, in its old order.
+// Only the order field changes. Only the files whose order changed are written.
+export function reorder(ids: string[]): Group[] {
+  const listed = [...new Set(ids)].map(id => groups.get(id)).filter((g): g is Group => !!g);
+  const next = [...listed, ...all().filter(g => !listed.includes(g))];
+  const changed = next.filter((g, i) => g.order !== i);
+  if (!changed.length) return all();
+  const before = new Map(changed.map(g => [g, g.order]));
+  next.forEach((g, i) => { g.order = i; });
+  try { for (const g of changed) write(g); }
+  catch (e) {
+    for (const [g, o] of before) { g.order = o; try { write(g); } catch { /* the next write tries again */ } }
+    throw e;
+  }
+  emit();
+  return all();
 }
 export function remove(id: string): Group | undefined {
   const g = groups.get(id); if (!g) return;

@@ -11,6 +11,7 @@ import { AskPanel } from './Ask';
 import { archiveAll, archiveAndDelete, archivePlan, restoreAll, restoreGroupAndTasks, type ArchiveResult, type ArchiveTarget } from '../groupArchive';
 import { dropHint, planCanvasTabDrop, planUngroup, type DropPlan } from '../groupMove';
 import { runGroupChange } from '../groupActions';
+import { inOrder, moveBy, moveToSlot, slotAt, slotHint } from '../groupOrder';
 
 type Layout = 'columns' | 'grid' | 'rows';
 const MINW = 640;
@@ -43,7 +44,7 @@ interface Props {
   onSpinOff: (exchange: SpinOffExchange, task: Task) => void;
 }
 
-export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, selected, toggleSel, clearSel, solo, focusMode, setFocusMode, toast, newTask, newTaskToFocus, onNewTaskFocused, onSpinOff }: Props) {
+export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTaskId, selected, toggleSel, clearSel, solo, focusMode, setFocusMode, toast, newTask, newTaskToFocus, onNewTaskFocused, onSpinOff }: Props) {
   const lk = (k: string) => `tb-cv-${view}-${k}`;
   const [layout, setLayout] = useState<Layout>(() => (localStorage.getItem(lk('layout')) as Layout) || 'columns');
   const [visible, setVisible] = useState<number | 'auto'>(() => { const v = localStorage.getItem(lk('visible')); return v && v !== 'auto' ? Number(v) : 'auto'; });
@@ -58,6 +59,13 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
   const [hidden, setHidden] = useState<string[]>([]);              // ungrouped tasks removed from the Ungrouped view with ✕
   const [dropTab, setDropTab] = useState<{ key: string; refused?: string } | null>(null); // the tab under a dragged window: g:<id> or ungrouped
   const [reveal, setReveal] = useState(false);
+  // Dragging a group tab: the dragged group and the slot (gap between two tabs) under the pointer (groupOrder.ts).
+  const [tabDrag, setTabDrag] = useState<{ id: string; slot: number | null } | null>(null);
+  // The new tab order until the server sends the saved groups back, so the tabs do not jump back for a moment.
+  const [pendingOrder, setPendingOrder] = useState<string[] | null>(null);
+  useEffect(() => setPendingOrder(null), [saved]);
+  const groups = useMemo(() => inOrder(saved, pendingOrder), [saved, pendingOrder]);
+  const draggedTab = useRef(false); // true from the end of a tab drag until its click event, so the drop does not open the tab
   const [ending, setEnding] = useState<string | null>(null); // the window whose header asks "End & archive?"
   const [archiving, setArchiving] = useState<{ group: Group; deleteGroup: boolean } | null>(null);
   const [asking, setAsking] = useState<Set<string>>(new Set()); // tiles with the Ask panel open
@@ -193,6 +201,7 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
       else if (key(e, 'prevWindow')) move(-1);
       else if (key(e, 'layout')) setLayout(l => l === 'columns' ? 'grid' : l === 'grid' ? 'rows' : 'columns');
       else if (key(e, 'focusMode')) setFocusMode(!focusMode);
+      else if (key(e, 'groupLeft') || key(e, 'groupRight')) { if (group && !solo) reorderTabs(group.id, moveBy(groups.map(g => g.id), group.id, key(e, 'groupLeft') ? -1 : 1)); }
       else if (key(e, 'newGroup')) setMenu('new');
       else if (key(e, 'canvasNewTask')) newTask();
       else if (key(e, 'nextView')) { if (!solo) turnView(1); }
@@ -254,6 +263,53 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
     addEventListener('pointermove', mv); addEventListener('pointerup', up);
   };
 
+  // Saves a new tab order. Undo puts back the order from before the change.
+  const reorderTabs = (moved: string, next: string[] | null) => {
+    if (!next) return;
+    const before = groups.map(g => g.id);
+    const name = groups.find(g => g.id === moved)?.name || 'the group';
+    setPendingOrder(next);
+    api.reorderGroups(next).then(
+      () => toast(`Moved ${name} to position ${next.indexOf(moved) + 1} of ${next.length}.`, { label: 'Undo', fn: () => { setPendingOrder(before); api.reorderGroups(before).catch(e => { setPendingOrder(null); toast(`Could not undo the move: ${e instanceof Error ? e.message : String(e)}`); }); } }),
+      e => { setPendingOrder(null); toast(`Could not save the tab order: ${e instanceof Error ? e.message : String(e)}`); });
+  };
+
+  // Drag a group tab sideways to put it in a new position. A bar shows the slot where it goes. Esc cancels the drag.
+  const startTabDrag = (e: React.PointerEvent, id: string) => {
+    if (e.button !== 0 || (e.target as HTMLElement).closest('button,input')) return;
+    const g = groups.find(x => x.id === id); if (!g) return;
+    const ids = groups.map(x => x.id);
+    const sx = e.clientX, sy = e.clientY; let moving = false, slot: number | null = null;
+    const ghost = document.createElement('div');
+    const rects = () => [...document.querySelectorAll<HTMLElement>('.gtabs [data-group-tab]')].map(el => el.getBoundingClientRect());
+    const mv = (ev: PointerEvent) => {
+      if (!moving && Math.hypot(ev.clientX - sx, ev.clientY - sy) < 8) return;
+      if (!moving) { moving = true; ghost.className = 'drag-ghost'; document.body.appendChild(ghost); }
+      const r = rects();
+      // over the tab row (with some room above and below it), the slot under the pointer; elsewhere no slot
+      const row = r.length ? { top: Math.min(...r.map(x => x.top)) - 24, bottom: Math.max(...r.map(x => x.bottom)) + 24 } : null;
+      slot = row && ev.clientY >= row.top && ev.clientY <= row.bottom ? slotAt(r, ev.clientX) : null;
+      if (slot !== null && !moveToSlot(ids, id, slot)) slot = null;
+      ghost.textContent = slotHint(ids, id, g.name, slot);
+      ghost.style.left = ev.clientX + 12 + 'px'; ghost.style.top = ev.clientY + 12 + 'px';
+      setTabDrag({ id, slot });
+    };
+    const end = () => {
+      removeEventListener('pointermove', mv); removeEventListener('pointerup', up); removeEventListener('keydown', esc, true);
+      ghost.remove(); setTabDrag(null);
+    };
+    const up = () => {
+      end();
+      if (!moving) return;
+      draggedTab.current = true; setTimeout(() => { draggedTab.current = false; }, 0);
+      if (slot !== null) reorderTabs(id, moveToSlot(ids, id, slot));
+    };
+    const esc = (ev: KeyboardEvent) => { if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); end(); if (moving) { draggedTab.current = true; setTimeout(() => { draggedTab.current = false; }, 0); } } };
+    addEventListener('pointermove', mv); addEventListener('pointerup', up); addEventListener('keydown', esc, true);
+  };
+  // the bar for the drop slot: before the tab at the slot, or after the last tab for the slot at the end
+  const slotClass = (i: number) => tabDrag?.slot === i ? 'slot-before' : tabDrag?.slot === groups.length && i === groups.length - 1 ? 'slot-after' : '';
+
   const dropClass = (k: string) => dropTab?.key === k ? (dropTab.refused ? 'nodrop' : 'drop') : '';
   const dropTitle = (k: string) => dropTab?.key === k && dropTab.refused ? `Cannot drop here: ${dropTab.refused}.` : undefined;
   const off = tasks.filter(t => !ids.includes(t.id) && live(t));
@@ -263,9 +319,10 @@ export function Canvas({ tasks, groups, view, setView, openPanel, panelTaskId, s
   return (
     <div className={`canvas ${focusMode ? 'focus-mode' : ''} ${reveal ? 'reveal' : ''}`}>
       {!solo && <div className="gtabs">
-        {groups.map(g => { const l = g.tasks.filter(id => live(tasks.find(t => t.id === id))); const w = waiting(l); return (
-          <div key={g.id} data-drop={'g:' + g.id} className={`gtab ${view === 'g:' + g.id ? 'on' : ''} ${dropClass('g:' + g.id)}`} style={{ '--gc': g.color } as React.CSSProperties}
-            onClick={e => { if (!(e.target as HTMLElement).closest('button,input')) setView('g:' + g.id); }} onDoubleClick={() => setMenu({ group: g.id })} title={dropTitle('g:' + g.id) ?? `Drop a window here to move it from the current group, or add it from another view. Double-click for options. Next / previous tab: ${keysText('nextView')} / ${keysText('prevView')}`}>
+        {groups.map((g, i) => { const l = g.tasks.filter(id => live(tasks.find(t => t.id === id))); const w = waiting(l); return (
+          <div key={g.id} data-drop={'g:' + g.id} data-group-tab={g.id} className={`gtab ${view === 'g:' + g.id ? 'on' : ''} ${dropClass('g:' + g.id)} ${tabDrag?.id === g.id ? 'dragging' : ''} ${slotClass(i)}`} style={{ '--gc': g.color } as React.CSSProperties}
+            onPointerDown={e => startTabDrag(e, g.id)}
+            onClick={e => { if (!draggedTab.current && !(e.target as HTMLElement).closest('button,input')) setView('g:' + g.id); }} onDoubleClick={() => setMenu({ group: g.id })} title={dropTitle('g:' + g.id) ?? `Drag sideways to move this tab. Drop a window here to move it from the current group, or add it from another view. Double-click for options. Next / previous tab: ${keysText('nextView')} / ${keysText('prevView')}. Move this tab left / right: ${keysText('groupLeft')} / ${keysText('groupRight')}`}>
             <span className="gdot" /><span className="gname">{g.name}</span><span className="gn">{l.length}</span>{w > 0 && <span className="gw">● {w}</span>}
             <span className="gact"><button title="Open in its own window" onClick={() => openInWindow('g:' + g.id)}>↗</button><button title="Rename, colour, delete" onClick={() => setMenu({ group: g.id })}>⋯</button></span>
           </div>); })}
