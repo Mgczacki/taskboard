@@ -1,7 +1,8 @@
 // One headless Chrome for each task (and one for the template profile that new task browsers copy).
 // Each browser has its own profile folder, ~/.taskboard/browsers/<task id>/profile, and a debugging port that Chrome
 // picks (--remote-debugging-port=0) and writes to DevToolsActivePort in that folder. browser.json next to it records
-// the process id, the port and, after a stop, the open tab addresses (so a resume opens the same pages).
+// the process id, the port and, after a stop, the open tab addresses (so a resume opens the same pages). It also
+// records sound: a browser starts with --mute-audio until the user turns its sound on (setSound).
 // Agents reach their task's browser through the Taskboard server: /ws/cdp/<task id>?key=<key> forwards the DevTools
 // connection to the browser and starts the browser first when it is not running. The key is derived from the
 // Taskboard token, so another local user cannot guess it. The dashboard shows the browser with a screencast
@@ -18,7 +19,7 @@ export const DIR = join(TB_DIR, 'browsers');
 export const TEMPLATE = 'template';
 const ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,120}$/;
 
-export interface Meta { pid?: number; port?: number; started?: string; tabs?: string[]; suspended?: boolean; stoppedAt?: string; error?: string; copiedFromTemplate?: string }
+export interface Meta { pid?: number; port?: number; started?: string; tabs?: string[]; suspended?: boolean; stoppedAt?: string; error?: string; copiedFromTemplate?: string; sound?: boolean; muted?: boolean }
 export interface Tab { id: string; title: string; url: string }
 
 const folder = (id: string) => { if (!ID.test(id)) throw new Error('Invalid browser id.'); return join(DIR, id); };
@@ -97,6 +98,7 @@ export function ensure(id: string): Promise<Meta & { ws: string }> {
     const urls = (meta.tabs || []).filter(u => /^(https?|file):/.test(u)).slice(0, 20);
     const args = ['--headless=new', `--user-data-dir=${profileDir(id)}`, '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1',
       '--no-first-run', '--no-default-browser-check', '--hide-crash-restore-bubble', '--window-size=1280,800', '--disable-features=Translate,MediaRouter',
+      ...(meta.sound ? [] : ['--mute-audio']), // headless Chrome plays on the Mac's speakers, so sound is off until the user turns it on
       'about:blank']; // headless Chrome takes one start page; the saved pages open below
     const log = openSync(join(folder(id), 'chrome.log'), 'a');
     const child = spawn(bin, args, { detached: true, stdio: ['ignore', log, log] });
@@ -113,7 +115,7 @@ export function ensure(id: string): Promise<Meta & { ws: string }> {
       writeMeta(id, { ...meta, pid: undefined, port: undefined, error: 'Chrome did not start. See chrome.log in the browser folder.' });
       throw new Error(`Chrome did not start for ${id}. See ${join(folder(id), 'chrome.log')}.`);
     }
-    const next = { ...meta, pid: child.pid, port, started: new Date().toISOString(), suspended: undefined, error: undefined, stoppedAt: undefined };
+    const next = { ...meta, pid: child.pid, port, started: new Date().toISOString(), muted: !meta.sound, suspended: undefined, error: undefined, stoppedAt: undefined };
     writeMeta(id, next);
     if (urls.length) {
       const blank = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json() as { id: string; type: string }[]).filter(t => t.type === 'page');
@@ -154,6 +156,20 @@ export async function stop(id: string, opts: { suspended?: boolean } = {}): Prom
   return !!running;
 }
 
+// Turn the sound of one browser on or off. Chrome reads --mute-audio only at start, and the DevTools protocol has no
+// command that mutes or unmutes, so a running browser restarts (stop keeps its tabs, the start opens them again).
+// The restart ends the agents' DevTools connections, so it needs force while an agent is connected.
+export class AgentConnected extends Error {}
+export async function setSound(id: string, on: boolean, opts: { force?: boolean } = {}): Promise<{ restarted: boolean }> {
+  folder(id);
+  const running = await live(id);
+  const restart = !!running && !!running.muted === on;
+  if (restart && agentCount(id) && !opts.force) throw new AgentConnected('An agent is connected to this browser. The restart ends its connection.');
+  writeMeta(id, { ...readMeta(id), sound: on || undefined });
+  if (restart) { await stop(id); await ensure(id); } else changed(id);
+  return { restarted: restart };
+}
+
 // Copy the template again: the task browser loses its own sign-ins and gets the template's.
 export async function resetFromTemplate(id: string) {
   if (id === TEMPLATE) throw new Error('The template cannot be reset from itself.');
@@ -177,12 +193,15 @@ function rssMb(pid?: number): number | null {
   } catch { return null; }
 }
 
-export interface Status { id: string; running: boolean; port?: number; tabs: Tab[]; profile: boolean; copiedFromTemplate?: string; suspended?: boolean; stoppedAt?: string; error?: string; rssMb?: number | null; agents: number; chrome: string | null }
+export interface Status { id: string; running: boolean; port?: number; tabs: Tab[]; profile: boolean; copiedFromTemplate?: string; suspended?: boolean; stoppedAt?: string; error?: string; rssMb?: number | null; agents: number; chrome: string | null; sound: boolean; muted: boolean }
+// a running browser has the mute flag it started with (none for a browser started before this setting existed); a
+// stopped browser gets the saved choice at its next start
+const mutedNow = (m: Meta, running: boolean) => running ? !!m.muted : !m.sound;
 export async function status(id: string): Promise<Status> {
   const m = readMeta(id), running = await live(id);
   return { id, running: !!running, port: running?.port, tabs: running ? await tabs(id) : (m.tabs || []).map((url, i) => ({ id: `saved-${i}`, title: url, url })),
     profile: existsSync(profileDir(id)), copiedFromTemplate: m.copiedFromTemplate, suspended: m.suspended, stoppedAt: m.stoppedAt, error: m.error,
-    rssMb: running ? rssMb(m.pid) : null, agents: agentConnections.get(id) || 0, chrome: chromePath() };
+    rssMb: running ? rssMb(m.pid) : null, agents: agentConnections.get(id) || 0, chrome: chromePath(), sound: !!m.sound, muted: mutedNow(m, !!running) };
 }
 
 export async function openTab(id: string, url: string): Promise<Tab> {
@@ -281,7 +300,7 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     const fresh = list.filter(t => !known.has(t.id));
     const first = !known.size;
     known = new Set(list.map(t => t.id));
-    send({ type: 'tabs', tabs: list, active, agents: agentConnections.get(id) || 0 });
+    send({ type: 'tabs', tabs: list, active, agents: agentConnections.get(id) || 0, muted: mutedNow(readMeta(id), true) });
     // follow the agent: a tab that opens later becomes the shown tab, unless the user picked a tab in the last minute
     let target = active;
     if (!list.some(t => t.id === active)) target = list[0]?.id || '';
