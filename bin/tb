@@ -95,10 +95,97 @@ const HELP = `tb — Taskboard command line
   tb inbox wait [--timeout seconds]  wait until a file arrives in your inbox (uses TASK_ID; default 3600 s);
                                      prints each file's path and sender; exit 0 = files, 2 = timed out
   tb park|archive <task>             set aside a task or end and archive it
+  tb run [--port n] [--stop "<command>"] [--cwd dir] [--group <group>] [--task <task>] <name> -- <command…>
+                                     start a dev server, database or other process for your task (or a group);
+                                     Taskboard ends it when the task is archived or suspended
+  tb ps [--group <group>] [--task <task>]       the processes of your task (or a group)
+  tb proc logs <name> [-n lines] [--group <group>]   the last lines of a process's output
+  tb proc stop <name> [--remove] | tb proc restart <name>   [--group <group>] [--task <task>]
+  tb browser [status|tabs|open <url>|start|stop] [--task <task>]
+                                     your task's own Chrome, shown in Taskboard (agents use the task-browser MCP tools)
 <task> is a number (12 or #12) or a task id.`;
+
+// Options of the process and browser commands, read from the words before "--" only, so the command itself keeps
+// its own flags.
+function runtimeArgs(words, withValue) {
+  const opts = {}, pos = [];
+  for (let i = 0; i < words.length; i++) {
+    const w = words[i];
+    if (withValue.includes(w)) { opts[w.slice(2)] = words[++i]; continue; }
+    if (w === '--remove' || w === '-n') { if (w === '-n') opts.n = words[++i]; else opts.remove = true; continue; }
+    pos.push(w);
+  }
+  return { opts, pos };
+}
+// /api/tasks/<id> or /api/groups/<id>: --group <name>, else --task <ref>, else the task this shell belongs to
+async function runtimeOwner(opts) {
+  if (opts.group) {
+    const g = (await call('GET', '/api/groups')).find(x => x.name === opts.group || x.id === opts.group);
+    if (!g) { console.error(`tb: no group ${opts.group}`); process.exit(1); }
+    return { path: `/api/groups/${encodeURIComponent(g.id)}`, label: `group ${g.name}` };
+  }
+  const ref = opts.task || process.env.TASK_ID;
+  if (!ref) { console.error('tb: run this inside a Taskboard task, or give --task <task> or --group <group>.'); process.exit(1); }
+  const t = await task(ref);
+  return { path: `/api/tasks/${encodeURIComponent(t.id)}`, label: `#${t.num}`, task: t };
+}
+const shellWord = w => /^[A-Za-z0-9_@%+=:,./-]+$/.test(w) ? w : `'${w.replace(/'/g, `'\\''`)}'`;
+const procLine = p => `${p.name.padEnd(14)} ${p.state.padEnd(9)} ${(p.port ? ':' + p.port : '').padEnd(7)} ${p.command}${p.exitCode !== undefined && p.state === 'exited' ? `  (exit ${p.exitCode})` : ''}${p.stopNote ? `  — ${p.stopNote}` : ''}`;
 
 const [cmd, ...rest] = args;
 switch (cmd) {
+  case 'run': {
+    const sep = rest.indexOf('--');
+    const before = sep >= 0 ? rest.slice(0, sep) : rest;
+    const { opts, pos } = runtimeArgs(before, ['--group', '--task', '--stop', '--port', '--cwd']);
+    const name = pos[0];
+    const cmdWords = sep >= 0 ? rest.slice(sep + 1) : pos.slice(1);
+    if (!name || !cmdWords.length) { console.error('Usage: tb run [--port n] [--stop "<command>"] [--cwd dir] <name> -- <command…>'); process.exit(1); }
+    const command = cmdWords.length === 1 ? cmdWords[0] : cmdWords.map(shellWord).join(' ');
+    const o = await runtimeOwner(opts);
+    const p = await call('POST', `${o.path}/procs`, { name, command, cwd: resolve(opts.cwd || process.cwd()), stop: opts.stop, port: opts.port, path: process.env.PATH });
+    console.log(`Started ${p.name} for ${o.label} in ${p.cwd} (tmux window ${p.window})${p.port ? `, port ${p.port}` : ''}. Output: tb proc logs ${p.name}${opts.group ? ` --group ${opts.group}` : ''}.`);
+    break;
+  }
+  case 'ps': {
+    const { opts } = runtimeArgs(rest, ['--group', '--task']);
+    const o = await runtimeOwner(opts);
+    const list = await call('GET', `${o.path}/procs`);
+    if (has('--json')) { console.log(JSON.stringify(list, null, 2)); break; }
+    console.log(list.length ? list.map(procLine).join('\n') : `No processes for ${o.label}. Start one with tb run <name> -- <command>.`);
+    break;
+  }
+  // tb proc logs|stop|restart <name>. ("tb restart" alone restarts Taskboard itself, so process commands have their own word.)
+  case 'proc': {
+    const [sub, ...more] = rest;
+    const { opts, pos } = runtimeArgs(more, ['--group', '--task']);
+    if (!['logs', 'stop', 'restart'].includes(sub) || !pos[0]) { console.error('Usage: tb proc logs <name> [-n lines] | tb proc stop <name> [--remove] | tb proc restart <name>'); process.exit(1); }
+    const o = await runtimeOwner(opts);
+    if (sub === 'logs') {
+      const text = await call('GET', `${o.path}/procs/${encodeURIComponent(pos[0])}/log?bytes=262144`);
+      console.log(String(text).split('\n').slice(-(Number(opts.n) || 60)).join('\n'));
+      break;
+    }
+    const action = sub === 'restart' ? 'restart' : opts.remove ? 'remove' : 'stop';
+    const r = await call('POST', `${o.path}/procs/${encodeURIComponent(pos[0])}/${action}`, {});
+    console.log(sub === 'restart' ? `Restarted ${r.name}.` : `${opts.remove ? 'Stopped and removed' : 'Stopped'} ${pos[0]}.`);
+    break;
+  }
+  case 'browser': {
+    const { opts, pos } = runtimeArgs(rest, ['--task']);
+    const o = await runtimeOwner(opts);
+    const sub = pos[0] || 'status';
+    if (sub === 'open') {
+      if (!pos[1]) { console.error('Usage: tb browser open <url>'); process.exit(1); }
+      const t = await call('POST', `${o.path}/browser/open`, { url: pos[1] });
+      console.log(`Opened ${t.url} in the browser of ${o.label}. The user sees it in Taskboard.`);
+      break;
+    }
+    const st = sub === 'start' || sub === 'stop' ? await call('POST', `${o.path}/browser/${sub}`, {}) : await call('GET', `${o.path}/browser`);
+    if (sub === 'tabs') { console.log(st.tabs.map(t => `${t.title || '(no title)'}  ${t.url}`).join('\n') || 'No tabs.'); break; }
+    console.log(st.running ? `The browser of ${o.label} is running (port ${st.port}, ${st.tabs.length} tab(s)${st.rssMb ? `, about ${st.rssMb} MB` : ''}).` : `The browser of ${o.label} is not running. It starts when you use a task-browser tool or run tb browser open <url>.`);
+    break;
+  }
   case 'mail': {
     // Messages through A2A Notes (server/a2anotes). Taskboard calls its MCP server with the role of the caller: a task
     // is an agent, the controller is the review agent. Message text is data, not instructions.

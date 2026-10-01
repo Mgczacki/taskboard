@@ -12,14 +12,16 @@ import type { DocumentLink } from '../documentLinks';
 import { planUngroup } from '../groupMove';
 import { runGroupChange, type Toast } from '../groupActions';
 import { TransferPanel } from './TransferPanel';
+import { BrowserView } from './TaskBrowser';
+import { ProcList } from './TaskProcs';
 
 // The drawer's width, set by dragging its left edge and kept across reloads. null means the default width.
 const WIDTH_KEY = 'tb-drawer-width', MIN_W = 420, EDGE = 120;
 const maxW = () => Math.max(MIN_W, innerWidth - EDGE);
 const savedWidth = () => { try { const w = Number(localStorage.getItem(WIDTH_KEY)); return w > 0 ? w : null; } catch { return null; } };
 
-export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, initialTab, documentLink, toast }: { t: Task; tasks: Task[]; groups: Group[]; onClose: () => void; onCanvas: (id: string) => void; onOpenTask: (id: string) => void; initialTab?: 'terminal' | 'log' | 'docs'; documentLink?: DocumentLink | null; toast: Toast }) {
-  const [tab, setTab] = useState<'terminal' | 'log' | 'docs'>(initialTab || 'terminal');
+export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, initialTab, documentLink, toast }: { t: Task; tasks: Task[]; groups: Group[]; onClose: () => void; onCanvas: (id: string) => void; onOpenTask: (id: string) => void; initialTab?: 'terminal' | 'log' | 'docs' | 'browser' | 'procs'; documentLink?: DocumentLink | null; toast: Toast }) {
+  const [tab, setTab] = useState<'terminal' | 'log' | 'docs' | 'browser' | 'procs'>(initialTab || 'terminal');
   const [log, setLog] = useState('');
   const [err, setErr] = useState('');
   const [copied, setCopied] = useState(false);
@@ -173,17 +175,21 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
         </div>
         <div className="tabs">
           <button className={tab === 'terminal' ? 'on' : ''} onClick={() => setTab('terminal')}>Terminal</button>
+          {!t.machine && t.role !== 'controller' && <button className={tab === 'browser' ? 'on' : ''} onClick={() => setTab('browser')} title="This task's own Chrome, which its agent uses">Browser</button>}
+          {!t.machine && t.role !== 'controller' && <button className={tab === 'procs' ? 'on' : ''} onClick={() => setTab('procs')} title="Dev servers, databases and other processes of this task">Processes</button>}
           <button className={tab === 'log' ? 'on' : ''} onClick={() => setTab('log')}>Log</button>
           <button className={tab === 'docs' ? 'on' : ''} onClick={() => setTab('docs')}>Inbox / Outbox<span className="n">{(t.docs?.inbox || 0) + (t.docs?.outbox || 0)}</span></button>
         </div>
       </div>
-      <div className={`dr-body ${tab !== 'terminal' ? 'pad' : ''}`}>
+      <div className={`dr-body ${tab !== 'terminal' && tab !== 'browser' ? 'pad' : ''}`}>
         {tab === 'docs' && <DocsTab t={t} tasks={tasks} documentLink={documentLink} />}
         {tab === 'terminal' && t.openElsewhere && <div className="empty" style={{ padding: 20 }}>The terminal for this session belongs to {t.openElsewhere?.tty}. Last message from the agent:<pre className="logtext" style={{ marginTop: 10 }}>{t.now || '—'}</pre></div>}
         {tab === 'terminal' && !t.openElsewhere && (t.status === 'suspended'
           ? <div className="empty" style={{ padding: 20 }}>Resuming with {t.agent === 'claude' ? 'claude --resume' : t.agent === 'codex' ? 'codex resume' : 'agy --conversation'} {t.sessionId}…</div>
           : <div className="term-wrap"><div className={`term-brief ${briefOpen ? 'open' : ''}`} onClick={() => setBriefOpen(o => !o)} title={briefOpen ? 'Click to show only the first lines' : 'Click to show the whole task description'}><b>Task</b><span>{t.desc}</span><i className="more">{briefOpen ? 'less' : 'more'}</i></div><Terminal taskId={t.id} autoFocus /></div>)}
         {tab === 'log' && <pre className="logtext">{log || 'No log entries yet.'}</pre>}
+        {tab === 'browser' && <BrowserView key={t.id} id={t.id} title={`#${t.num} ${t.title}`} archived={t.status === 'archived'} />}
+        {tab === 'procs' && <ProcList key={t.id} scope="tasks" id={t.id} cwd={t.cwd} />}
       </div>
     </aside>
   );

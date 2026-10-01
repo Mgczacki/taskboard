@@ -22,6 +22,7 @@ import { movingTasks, resetSessionEvents } from './events.ts';
 import * as workspaceTrust from './trust.ts';
 import { credentialGuidance } from './credential-guidance.ts';
 import * as rules from './rules.ts';
+import * as taskBrowser from './task-browser.ts';
 
 const exec = promisify(execFile);
 
@@ -75,7 +76,7 @@ export function writeClaudeSettings() {
   hooks.PreToolUse = [{ matcher: 'Bash', hooks: [{ type: 'command', command: `node ${tmux.quote(GUARD_SCRIPT)}`, timeout: 5 }] }];
   // The log and documents live in the vault, outside the project folder; allow writing there without a prompt each turn.
   const vault = VAULT.replace(HOME, '~');
-  const permissions = { allow: [`Edit(${vault}/**)`, `Read(${vault}/**)`, 'Bash(tb review:*)', 'Bash(tb inbox wait:*)', 'Bash(tb suggest:*)', 'Bash(tb permit request:*)', 'Bash(tb permit result:*)', 'Bash(tb permit list)', `Bash(python3 ${WORDING_SCRIPT}:*)`] }; // Edit rules cover every file-writing tool
+  const permissions = { allow: [`Edit(${vault}/**)`, `Read(${vault}/**)`, 'Bash(tb review:*)', 'Bash(tb inbox wait:*)', 'Bash(tb suggest:*)', 'Bash(tb permit request:*)', 'Bash(tb permit result:*)', 'Bash(tb permit list)', `Bash(python3 ${WORDING_SCRIPT}:*)`, 'Bash(tb run:*)', 'Bash(tb ps:*)', 'Bash(tb proc:*)', 'Bash(tb browser:*)', 'mcp__task-browser'] }; // Edit rules cover every file-writing tool
   // status line: shows the model and usage in the terminal and reports the account's usage windows to Taskboard
   const statusLine = { type: 'command', command: `node ${tmux.quote(STATUSLINE_SCRIPT)}` };
   writeFileSync(CLAUDE_SETTINGS_FILE, JSON.stringify({ hooks, permissions, statusLine }, null, 2));
@@ -261,6 +262,55 @@ export async function startController(): Promise<Task> {
 // Instructions for every Taskboard task. Claude Code writes its own log entry each turn. For Codex and Antigravity,
 // Taskboard writes the entry from the first paragraph of the agent's last reply (events.ts codexEvent and
 // antigravityEvent), so they are told that instead.
+// The task's processes (tb run) and its browser (server/task-procs.ts, server/task-browser.ts).
+export function browserMode(t: Task): machine.BrowserMode {
+  if (t.role === 'controller' || t.agent === 'antigravity') return 'off';
+  return machine.get().browser?.[t.agent] || 'off';
+}
+function processAndBrowserRules(t: Task): string[] {
+  if (t.role === 'controller') return [];
+  const lines = [
+    'Start a dev server, a database or another long-running process for this task with `tb run <name> [--port <n>] [--stop "<command>"] -- <command>`. Do not start it in the background yourself.',
+    'Taskboard shows these processes in the task. It ends them when the user archives the task, and when an idle task is suspended. Use `tb ps`, `tb proc logs <name>`, `tb proc restart <name>` and `tb proc stop <name>`.',
+  ];
+  const mode = browserMode(t);
+  if (mode !== 'off' && taskBrowser.mcpServer(ROOT, t.id)) lines.push(
+    'This task has its own Chrome browser, which the user sees in Taskboard. Use the MCP tools of the server `task-browser` for all browser work.',
+    `Open a page for the user with \`tb browser open <url>\`.${mode === 'only' ? ' Do not use another browser.' : ''}`,
+  );
+  return lines;
+}
+
+// Claude Code reads the task browser's MCP server from a file (--mcp-config). It holds the task's browser key, so only
+// the user can read it.
+function claudeMcpConfig(t: Task): string | null {
+  const server = taskBrowser.mcpServer(ROOT, t.id);
+  if (!server) return null;
+  const dir = join(TB_DIR, 'task-mcp'); mkdirSync(dir, { recursive: true });
+  const file = join(dir, `${t.id}.json`);
+  writeFileSync(file, JSON.stringify({ mcpServers: { 'task-browser': { type: 'stdio', ...server, env: { CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS: '1' } } } }, null, 2), { mode: 0o600 });
+  return file;
+}
+// Codex: the same server as -c settings. In "only" mode the Chrome extension backend is turned off (the feature
+// browser_use_external, and the chrome backend of the node_repl server when the user's config has that server).
+function codexBrowserFlags(t: Task): string[] {
+  const mode = browserMode(t);
+  const server = mode === 'off' ? null : taskBrowser.mcpServer(ROOT, t.id);
+  if (!server) return [];
+  const flags = ['-c', `mcp_servers.task_browser.command=${JSON.stringify(server.command)}`, '-c', `mcp_servers.task_browser.args=${JSON.stringify(server.args)}`,
+    '-c', 'mcp_servers.task_browser.env={CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS="1"}', '-c', 'mcp_servers.task_browser.startup_timeout_sec=30'];
+  if (mode === 'only') {
+    flags.push('--disable', 'browser_use_external');
+    if (codexConfigHas(t, /^\[mcp_servers\.node_repl\]/m)) flags.push('-c', 'mcp_servers.node_repl.env.BROWSER_USE_AVAILABLE_BACKENDS="iab"');
+  }
+  return flags;
+}
+function codexConfigHas(t: Task, pattern: RegExp) {
+  const acct = accounts.get(t.account);
+  const f = join(acct && !acct.isDefault ? acct.dir : (process.env.CODEX_HOME || join(HOME, '.codex')), 'config.toml');
+  try { return pattern.test(readFileSync(f, 'utf8')); } catch { return false; }
+}
+
 export function taskInstructions(t: Task, inlineRules = true) {
   const dir = store.taskDir(t.id);
   const gitCli = join(TB_DIR, 'bin', 'tb');
@@ -292,6 +342,7 @@ export function taskInstructions(t: Task, inlineRules = true) {
     `The server stops after the first failed step. Read the result with tb permit result <id> --wait.`,
     `Do not rerun an approved command yourself.`,
     `When a document in your outbox needs the user's review or approval, run: tb review <path>. Their comments arrive in your inbox.`,
+    ...processAndBrowserRules(t),
     credentialGuidance(HOME),
     ...(t.agent === 'claude' ? [`Writing the log entry is always allowed, even if the user asked you not to use tools. Do it quietly: do not mention the log to the user.`] : []),
     writingRules('the log entries, the documents and artifacts in your outbox, and all other text for the user or for other agents'),
@@ -348,7 +399,7 @@ export function codexKeychainArgs(platform = process.platform): string[] {
   } catch { return []; }
 }
 
-function baseEnv(t: Task): Record<string, string> {
+export function baseEnv(t: Task): Record<string, string> {
   const env: Record<string, string> = {
     TASK_ID: t.id, TASK_DIR: store.taskDir(t.id), TASK_NUM: String(t.num),
     ...(t.worktree ? { TASK_WORKTREE: t.cwd } : {}),
@@ -360,6 +411,8 @@ function baseEnv(t: Task): Record<string, string> {
     ...accounts.envFor(accounts.get(t.account)),
   };
   if (t.id === 'controller') env.TB_MAIL_CONTROLLER_TOKEN = controllerMailToken;
+  // programs that open a page with $BROWSER (Python's webbrowser, Vite's --open) open it in the task browser
+  if (browserMode(t) !== 'off') env.BROWSER = join(TB_DIR, 'bin', 'tb-open');
   const orig = codexOriginalNotify(t); if (t.agent === 'codex' && orig) env.TB_CODEX_ORIG_NOTIFY = orig;
   return env;
 }
@@ -429,6 +482,9 @@ function buildCommand(t: Task, prompt: string | null, resume: boolean, codexTrus
   if (t.agent === 'claude') {
     const c = ['claude', '--settings', claudeTaskSettings(t), '--add-dir', VAULT, '--append-system-prompt', taskInstructions(t, inlineRules)];
     if (t.model) c.push('--model', t.model);
+    const mode = browserMode(t), mcp = mode === 'off' ? null : claudeMcpConfig(t);
+    if (mcp) c.push('--mcp-config', mcp);
+    if (mcp && mode === 'only') c.push('--no-chrome');
     c.push('--permission-mode', machine.get().permissions.autoReview ? 'auto' : 'default');
     if (resume && t.sessionId) c.push('--resume', t.sessionId);
     else if (t.sessionId) c.push('--session-id', t.sessionId);
@@ -448,7 +504,7 @@ function buildCommand(t: Task, prompt: string | null, resume: boolean, codexTrus
     }
     return c;
   }
-  const c = ['codex', ...codexFlags(), ...codexTrust];
+  const c = ['codex', ...codexFlags(), ...codexTrust, ...codexBrowserFlags(t)];
   c.push('-a', 'on-request', '-s', 'workspace-write', '--add-dir', VAULT, '-c', 'sandbox_workspace_write.network_access=true', ...codexKeychainArgs(), '-c', `approvals_reviewer="${machine.get().permissions.autoReview ? 'auto_review' : 'user'}"`);
   if (t.model) c.push('-m', t.model);
   // Codex has no flag that appends to its system prompt. developer_instructions is a config value, so it is written as a

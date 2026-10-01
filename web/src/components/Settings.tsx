@@ -1,12 +1,13 @@
 // Settings: what the controller and other agents may do without asking, and this machine's controller. The page has
 // one section for each entry of SECTIONS in settingsIndex.ts, a side list of those sections and a search box.
 import { useEffect, useRef, useState } from 'react';
-import type { MachineInfo, MessageLevel, PushRecord, RestartImpact, RestartResult, Task } from '../api';
+import type { BrowserMode, BrowserStatus, MachineInfo, MessageLevel, PushRecord, RestartImpact, RestartResult, Task } from '../api';
 import { api, autoReload, confirmEnd, setAutoReload, setConfirmEnd } from '../api';
 import { ControllerBox, MaxTasksInput, loadAccounts } from './Accounts';
 import { MessageLevels } from './MessageLevels';
 import { Integrations } from './Integrations';
 import { RulesFiles } from './RulesFiles';
+import { BrowserView } from './TaskBrowser';
 import type { Account } from './Accounts';
 import type { KeyAction } from '../keys';
 import { ACTIONS, CTX_NAME, comboOf, fmtCombo, isCustom, keysOf, resetKeys, setKeys, setRecording, useKeymap } from '../keys';
@@ -40,7 +41,7 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
     addEventListener('hashchange', go);
     return () => { clearTimeout(timer); removeEventListener('hashchange', go); };
   }, []);
-  const save = async (p: { routingRules?: string; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; permitFolders?: string[]; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; checkPrivateNotes?: boolean; confirmLowerControl?: boolean; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean }) => {
+  const save = async (p: { routingRules?: string; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; permitFolders?: string[]; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; checkPrivateNotes?: boolean; confirmLowerControl?: boolean; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string }) => {
     setBusy(true); try { setInfo(await api.updateInfo(p)); } catch (e) { setErr(String((e as Error).message || e)); } setBusy(false);
   };
   const ctl = tasks.find(t => t.role === 'controller');
@@ -167,6 +168,10 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
               </SettingGroup>
             </SettingSection>
 
+            <SettingSection id="taskBrowsers">
+              <TaskBrowserSettings info={info} busy={busy} save={save} />
+            </SettingSection>
+
             <SettingSection id="messages">
               <Integrations />
               <MessageLevels />
@@ -246,6 +251,46 @@ function RestartBox() {
 
 // Keyboard shortcuts: every action in keys.ts with its keys. ＋ waits for the next key and adds it; × removes a key.
 // A search that matches only some action names shows only those actions.
+const MODES: { value: BrowserMode; label: string }[] = [
+  { value: 'task', label: 'Task browser, and the shared Chrome extension' },
+  { value: 'only', label: 'Task browser only' },
+  { value: 'off', label: 'Off: only the agent\'s own browser tools' },
+];
+function TaskBrowserSettings({ info, busy, save }: { info: MachineInfo | null; busy: boolean; save: (p: { browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string }) => Promise<void> }) {
+  const [tpl, setTpl] = useState<BrowserStatus | null>(null);
+  const [chrome, setChrome] = useState('');
+  const [open, setOpen] = useState(false);
+  useEffect(() => { setChrome(info?.settings.browser?.chromePath || ''); }, [info?.settings.browser?.chromePath]);
+  useEffect(() => { const load = () => api.browserTemplate().then(setTpl).catch(() => {}); void load(); const t = setInterval(load, 4000); return () => clearInterval(t); }, []);
+  const b = info?.settings.browser;
+  const check = tpl?.check;
+  return <>
+    <SettingGroup section="taskBrowsers" id="agents" title="Agents" help={<>Each task gets its own headless Chrome, shown in the task's Browser tab. Agents use it through the MCP server <code>task-browser</code>. A change reaches an agent when its session starts or resumes. Antigravity keeps its own browser.</>}>
+      {b && <>
+        <SettingItem id="browserClaude"><label className="opt">Browser for Claude Code tasks <select disabled={busy} value={b.claude} onChange={e => void save({ browserClaude: e.target.value as BrowserMode })}>{MODES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}</select></label>
+          <div className="sub">"Task browser only" starts Claude Code with <code>--no-chrome</code>, so it cannot use Claude in Chrome in your own Chrome.</div></SettingItem>
+        <SettingItem id="browserCodex"><label className="opt">Browser for Codex tasks <select disabled={busy} value={b.codex} onChange={e => void save({ browserCodex: e.target.value as BrowserMode })}>{MODES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}</select></label>
+          <div className="sub">"Task browser only" turns off the Codex feature <code>browser_use_external</code> (ChatGPT for Chrome) for the task.</div></SettingItem>
+        <SettingItem id="chromePath">
+          <label className="opt" htmlFor="chrome-path">Chrome program</label>
+          <input id="chrome-path" value={chrome} onChange={e => setChrome(e.target.value)} placeholder={tpl?.chrome || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'} spellCheck={false} />
+          <div className="sub">Empty: the installed Google Chrome. Found now: {check?.chrome || 'no Chrome'}. Node for the MCP server: {check?.node || 'none found (needs Node 20.19 or 22.12 or newer)'}{check && !check.mcp ? '. The MCP server package is missing: run pnpm install.' : ''}.</div>
+          <div><button className="btn" disabled={busy || chrome === (b.chromePath || '')} onClick={() => void save({ chromePath: chrome.trim() })}>Save</button></div>
+        </SettingItem>
+      </>}
+    </SettingGroup>
+    <SettingGroup section="taskBrowsers" id="template" title="Template profile">
+      <SettingItem id="templateBrowser">
+        <div className="opt">Template browser for sign-ins</div>
+        <div className="sub">Sign in here to the sites that agents need. Each new task browser copies this profile when it first starts. Every agent can use the accounts in it, so add only those accounts. Close the template browser before new task browsers start, because Chrome locks an open profile.</div>
+        <div className="sub">{tpl ? (tpl.running ? `Open now (${tpl.tabs.length} tab(s)).` : tpl.profile ? 'Closed. The profile exists.' : 'No template profile yet.') : '…'}</div>
+        <div><button className="btn" onClick={() => setOpen(o => !o)}>{open ? 'Hide the template browser' : 'Show the template browser'}</button></div>
+        {open && <div className="tpl-browser"><BrowserView id="template" title="Template browser" isTemplate /></div>}
+      </SettingItem>
+    </SettingGroup>
+  </>;
+}
+
 function KeySettings({ query }: { query: string }) {
   useKeymap();
   const [adding, setAdding] = useState<string | null>(null);

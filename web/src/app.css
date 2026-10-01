@@ -472,3 +472,60 @@ table.keyset .keycell { text-align: right; white-space: normal; }
 .nt-image { position: relative; width: 96px; height: 72px; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; background: var(--bg2); }
 .nt-image img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .nt-image .btn { position: absolute; top: 2px; right: 2px; padding: 0 5px; line-height: 18px; background: rgba(0,0,0,.55); color: #fff; }
+
+/* task browser (TaskBrowser.tsx) */
+.bw { display: flex; flex-direction: column; flex: 1; min-height: 0; height: 100%; width: 100%; }
+.dr-body > .bw, .dr-body > .bw-empty { flex: 1; }
+.bw-tabs { display: flex; gap: 2px; padding: 6px 8px 0; background: var(--panel2); border-bottom: 1px solid var(--line); overflow-x: auto; flex: none; }
+.bw-tab { display: flex; align-items: center; gap: 4px; max-width: 200px; padding: 4px 6px 4px 10px; border: 1px solid var(--line); border-bottom: none; border-radius: 6px 6px 0 0; background: var(--panel2); color: var(--muted); cursor: pointer; font-size: 12px; white-space: nowrap; }
+.bw-tab.on { background: var(--panel); color: var(--text); }
+.bw-tab .t { overflow: hidden; text-overflow: ellipsis; }
+.bw-tab .x { background: none; border: 0; padding: 0 3px; color: var(--dim); cursor: pointer; }
+.bw-tab .x:hover { color: var(--text); }
+.bw-new { background: none; border: 0; color: var(--dim); cursor: pointer; padding: 2px 8px; }
+.bw-bar { display: flex; gap: 6px; align-items: center; padding: 6px 8px; border-bottom: 1px solid var(--line); flex: none; }
+.bw-url { flex: 1; min-width: 80px; font: 12px var(--mono); }
+.bw-agent { font-size: 11px; color: var(--st-unread); white-space: nowrap; }
+.bw-screen { flex: 1; min-height: 120px; position: relative; overflow: hidden; background: #fff; outline: none; cursor: default; }
+.bw-screen:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+.bw-screen img { display: block; width: 100%; height: 100%; object-fit: fill; user-select: none; }
+.bw-screen img:not([src]) { visibility: hidden; }
+.bw-wait { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; color: #666; }
+.bw-empty { display: flex; flex-direction: column; gap: 10px; padding: 20px; color: var(--muted); }
+.bw-empty p { margin: 0; }
+.bw-saved { display: flex; flex-direction: column; gap: 2px; }
+.bw-float .fw-b { display: flex; }
+.tpl-browser { height: 520px; display: flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; margin-top: 8px; }
+
+/* processes (TaskProcs.tsx) */
+.procs { display: flex; flex-direction: column; gap: 8px; }
+.procs-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.procs-head .sp { flex: 1; }
+.procs-add { display: grid; grid-template-columns: 1fr 2fr; gap: 6px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel2); }
+.procs-add .pcmd { font-family: var(--mono); font-size: 12px; }
+.procs-table { width: 100%; font-size: 12px; }
+.procs-table th { text-align: left; font-weight: 500; color: var(--dim); padding: 5px 8px; border-bottom: 1px solid var(--line); }
+.procs-table td { padding: 5px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.procs-table td.pcmd { font: 12px var(--mono); color: var(--muted); max-width: 320px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.procs-table td.act { text-align: right; white-space: nowrap; }
+.procs-table td.act .btn { margin-left: 4px; padding: 2px 8px; font-size: 12px; }
+.procs-table tr.sel td { background: var(--accent-bg); }
+.procs-table a { color: var(--accent); }
+.procs-log { max-height: 320px; overflow: auto; margin: 0; }
+.procs-none { padding: 4px 0; }
+
+/* browsers and processes of a Canvas view (GroupRuntime.tsx) */
+.grt { flex: none; max-height: 55vh; overflow: auto; margin: 0 10px 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); display: flex; flex-direction: column; gap: 10px; }
+.grt-head { display: flex; gap: 10px; align-items: baseline; }
+.grt-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
+.grt-tile { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; cursor: pointer; background: var(--panel2); display: flex; flex-direction: column; }
+.grt-tile:hover { border-color: var(--accent); }
+.grt-th { display: flex; align-items: center; gap: 6px; padding: 6px 8px; font-size: 12px; white-space: nowrap; overflow: hidden; }
+.grt-th b { overflow: hidden; text-overflow: ellipsis; }
+.grt-th .num { font: 11px var(--mono); color: var(--dim); }
+.grt-shot { height: 150px; background: var(--bg2); position: relative; display: flex; align-items: center; justify-content: center; }
+.grt-shot img { width: 100%; height: 100%; object-fit: cover; object-position: top left; }
+.grt-agent { position: absolute; right: 6px; bottom: 6px; font-size: 10px; padding: 1px 6px; border-radius: 4px; background: rgba(0,0,0,.65); color: #7ee787; }
+.grt-tabs { display: flex; gap: 4px; flex-wrap: wrap; padding: 6px 8px 0; }
+.grt-tabs .chip { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.grt-foot { padding: 4px 8px 6px; }

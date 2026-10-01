@@ -207,6 +207,23 @@ A move between windows never changes a task's groups. A new task goes after the 
   Use `tb new --no-worktree` or "Use the folder as is" in the new task form when you need the original folder.
   A new worktree uses the source folder's `node_modules` when present. Otherwise Taskboard installs dependencies from a supported lockfile.
   Run `pnpm test` to see every test name and the name of any failed test.
+- **Task processes:** `tb run <name> [--port n] [--stop "<command>"] [--cwd dir] -- <command>` starts a dev server,
+  database or other process for the agent's task (`--group <name>` for a group). Each process runs in its own window
+  of the tmux session `proc-<num>` (`gproc-<group>` for a group), so it keeps running when the Taskboard server
+  restarts. The list is `procs.json` in the task folder, the output is `procs/<name>.log`. The task panel's Processes
+  tab starts, stops and restarts them and shows the log. `tb ps` and `tb proc logs|restart|stop <name>` do the same.
+  End & archive and the idle suspend end every process: Taskboard runs the stop command, sends SIGTERM to the process
+  group, sends SIGKILL after 5 s, and then ends processes that left the group (found by `TB_PROC_OWNER` in their
+  environment). Resume starts the processes that the suspend ended. Deleting a group ends its processes.
+- **Task browsers:** each task gets its own headless Google Chrome with the profile
+  `~/.taskboard/browsers/<task>/profile`. The first start copies the template profile, so sign in once in the template
+  browser (Settings → Task browsers). Agents use it through the MCP server `task-browser` (`chrome-devtools-mcp`,
+  connected through `ws://127.0.0.1:4317/ws/cdp/<task>?key=…`), which starts the browser when it is first used.
+  The task panel's Browser tab shows the active tab as a screencast with mouse and key input, and Pop out shows it in a
+  floating window. Canvas → Browsers shows a still frame of each task's browser. `tb browser open <url>` and `$BROWSER`
+  open a page in it. Archive and the idle suspend close the browser. Resume opens it again with the same pages.
+  Settings → Task browsers chooses, for Claude Code and Codex, the task browser together with the shared Chrome
+  extension, the task browser only (`--no-chrome` / `--disable browser_use_external`), or off.
 - **Usage limits:** the Accounts page shows each account's windows (5-hour, weekly) with % used and reset time.
   Claude Code: reported by the status line Taskboard gives its sessions (sessions started before this was added show it
   after they are resumed). Codex: read from the newest session file of that account every minute. Automatic account
@@ -229,5 +246,12 @@ A move between windows never changes a task's groups. A new task goes after the 
   automatically, so no approval prompt appeared in testing.
 - Moving a session to another account works for Claude Code only.
 - Documents cannot yet be sent between tasks on different machines (only within one machine).
+- The `task-browser` MCP server needs Node 20.19 or 22.12 or newer. Taskboard uses the first such Node it finds (for
+  example `/opt/homebrew/opt/node@22/bin/node`). Without one, tasks get no task browser tools.
+- Antigravity keeps its own browser. Task browsers are not available for tasks on other machines.
+- A task browser has no sign-ins of your normal Chrome profile, only those of the template profile. Some sites refuse
+  sign-in in a browser that a program controls.
+- macOS does not show the environment of some system programs (for example `/bin/sleep`) to `ps`. A child of such a
+  program that leaves its process group is not found by its `TB_PROC_OWNER` mark.
 - The server does not start at login unless you run `scripts/install-launchd.sh` once (stop the manually started server first).
   After a reboot, tasks show Suspended and resume when you open them.

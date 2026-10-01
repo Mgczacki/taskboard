@@ -19,7 +19,7 @@ export interface ImportCandidate {
   updated: string; source?: string; running?: { pid: number; tty: string; exact: boolean };
 }
 
-export interface MachineInfo { role?: 'production' | 'sandbox'; root?: string; machine: string; machineId?: string; host: string; url: string; settings: { name: string; routingRules: string; newTaskDefaultAgent: Agent | 'auto'; controller: { autostart: boolean; remoteControl: boolean; dangerouslySkipPermissions: boolean; models: Record<Agent, string> }; permissions: { controllerNeedsApproval: boolean; agentsNeedApproval: boolean; trustWorkspaces: boolean; autoReview: boolean; controllerCanApprovePermits: boolean }; permitFolders: string[]; pushes: { taskBranches: 'run' | 'ask' | 'never'; ownRepositories: string[]; protectedBranches: string[] }; ask: { agent: 'claude' | 'codex'; account: string; model: string }; review: { account: string; model: string }; messages: { incoming: MessageLevel; outgoing: MessageLevel; checkPrivateNotes: boolean }; accounts: { defaultMaxParallel: number } }; controller: null | { agent: string; account?: string; status: string; remoteUrl?: string; label: string } }
+export interface MachineInfo { role?: 'production' | 'sandbox'; root?: string; machine: string; machineId?: string; host: string; url: string; settings: { name: string; routingRules: string; newTaskDefaultAgent: Agent | 'auto'; controller: { autostart: boolean; remoteControl: boolean; dangerouslySkipPermissions: boolean; models: Record<Agent, string> }; permissions: { controllerNeedsApproval: boolean; agentsNeedApproval: boolean; trustWorkspaces: boolean; autoReview: boolean; controllerCanApprovePermits: boolean }; permitFolders: string[]; pushes: { taskBranches: 'run' | 'ask' | 'never'; ownRepositories: string[]; protectedBranches: string[] }; ask: { agent: 'claude' | 'codex'; account: string; model: string }; review: { account: string; model: string }; messages: { incoming: MessageLevel; outgoing: MessageLevel; checkPrivateNotes: boolean }; accounts: { defaultMaxParallel: number }; browser: { claude: BrowserMode; codex: BrowserMode; chromePath: string } }; controller: null | { agent: string; account?: string; status: string; remoteUrl?: string; label: string } }
 // the user's rules files for the controller and for task sessions (server/rules.ts)
 export type RulesKind = 'controller' | 'task';
 export interface RulesFile { kind: RulesKind; file: string; text: string; chars: number; max: number; updated: string | null; preview: { lines: string[]; more: boolean } }
@@ -40,6 +40,12 @@ export interface TransferCheck {
   bundle: { available: boolean; size?: number; hash?: string; commits?: number; reason?: string } | null;
 }
 export type MessageLevel = 1 | 2 | 3;
+// processes and browsers of tasks and groups (server/task-procs.ts, server/task-browser.ts)
+export type BrowserMode = 'off' | 'task' | 'only';
+export type ProcScope = 'tasks' | 'groups';
+export interface Proc { name: string; command: string; cwd: string; stop?: string; port?: number; startedBy: 'agent' | 'user'; state: 'starting' | 'running' | 'exited' | 'stopped' | 'suspended'; exitCode?: number; started?: string; ended?: string; window?: string; stopNote?: string }
+export interface BrowserTab { id: string; title: string; url: string }
+export interface BrowserStatus { id: string; running: boolean; port?: number; tabs: BrowserTab[]; profile: boolean; copiedFromTemplate?: string; suspended?: boolean; stoppedAt?: string; error?: string; rssMb?: number | null; agents: number; chrome: string | null; check?: { chrome: string | null; node: string | null; mcp: boolean } }
 export interface Approval { id: string; actor: string; action: string; summary: string; detail: string; created: string; state: 'pending' | 'running' | 'approved' | 'denied' | 'failed' | 'expired' | 'unknown' | 'returned'; result?: string; returnable?: boolean; payload?: { permitId?: string; pushId?: string; state?: { forcePush?: boolean }; canPermit?: boolean; message?: string; hash?: string; body?: string; quality?: { state: string; flags: { text: string; start: number; end: number; reason: string }[] } } }
 export interface Permit { id: string; taskId: string; taskNum: number; agent: Agent; reason: string; statedRisk?: string; createdAt: string; expiresAt: string; state: string; approvedBy?: string; approvalRule?: string; riskClass?: 'low' | 'high'; controllerRequestText?: string; decisionComment?: string; error?: string; riskFlags: string[]; steps: { command: string; cwd: string; timeoutSeconds: number; network: boolean; state: string; exitCode?: number | null; outputTail?: string; error?: string }[] }
 export interface PushRecord { id: string; at: string; taskId: string; branch: string; remote: string; remoteUrl: string; oldHead: string | null; newHead: string; state: string; result?: string; approvalId?: string }
@@ -144,7 +150,7 @@ export const api = {
   restart: (id: string, when: 'now' | 'after-turn' | 'cancel') => call<Task>('POST', `/api/tasks/${encodeURIComponent(id)}/restart`, { when }),
   remove: (id: string) => call('DELETE', `/api/tasks/${encodeURIComponent(id)}`),
   info: () => call<MachineInfo>('GET', '/api/info'),
-  updateInfo: (patch: { name?: string; routingRules?: string; newTaskDefaultAgent?: Agent | 'auto'; autostart?: boolean; remoteControl?: boolean; dangerouslySkipPermissions?: boolean; controllerModels?: Partial<Record<Agent, string>>; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; permitFolders?: string[]; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; checkPrivateNotes?: boolean; confirmLowerControl?: boolean; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean }) => call<MachineInfo>('PATCH', '/api/info', patch),
+  updateInfo: (patch: { name?: string; routingRules?: string; newTaskDefaultAgent?: Agent | 'auto'; autostart?: boolean; remoteControl?: boolean; dangerouslySkipPermissions?: boolean; controllerModels?: Partial<Record<Agent, string>>; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; permitFolders?: string[]; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; checkPrivateNotes?: boolean; confirmLowerControl?: boolean; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string }) => call<MachineInfo>('PATCH', '/api/info', patch),
   agentLoad: () => call<{ agents: number; medianMb: number; totalMb: number; memMb: number; noteAbove: number }>('GET', '/api/agent-load'),
   setControllerAccount: (account: string) => call<Task>('POST', '/api/controller/account', { account }),
   // sent as raw bytes; octet-stream so the server's JSON parser leaves .json files alone
@@ -193,6 +199,14 @@ export const api = {
   ask: (id: string, question: string) => call<AskThread>('POST', `/api/tasks/${encodeURIComponent(id)}/ask`, { question }),
   askStop: (id: string) => call('POST', `/api/tasks/${encodeURIComponent(id)}/ask/stop`, {}),
   askClear: (id: string) => call<AskThread>('DELETE', `/api/tasks/${encodeURIComponent(id)}/ask`),
+  procs: (scope: ProcScope, id: string) => call<Proc[]>('GET', `/api/${scope}/${encodeURIComponent(id)}/procs`),
+  startProc: (scope: ProcScope, id: string, b: { name: string; command: string; cwd?: string; stop?: string; port?: number }) => call<Proc>('POST', `/api/${scope}/${encodeURIComponent(id)}/procs`, b),
+  procAction: (scope: ProcScope, id: string, name: string, action: 'stop' | 'restart' | 'remove') => call<unknown>('POST', `/api/${scope}/${encodeURIComponent(id)}/procs/${encodeURIComponent(name)}/${action}`, {}),
+  procLog: (scope: ProcScope, id: string, name: string) => call<string>('GET', `/api/${scope}/${encodeURIComponent(id)}/procs/${encodeURIComponent(name)}/log?bytes=131072`),
+  browser: (id: string) => call<BrowserStatus>('GET', `/api/tasks/${encodeURIComponent(id)}/browser`),
+  browserAction: (id: string, action: 'start' | 'stop' | 'reset') => call<BrowserStatus>('POST', `/api/tasks/${encodeURIComponent(id)}/browser/${action}`, {}),
+  browserTemplate: () => call<BrowserStatus>('GET', '/api/browser-template'),
+  browserTemplateAction: (action: 'start' | 'stop') => call<BrowserStatus>('POST', `/api/browser-template/${action}`, {}),
   getUi: () => call<Record<string, unknown>>('GET', '/api/ui'),
   putUi: (x: Record<string, unknown>) => call('PUT', '/api/ui', x),
 };

@@ -38,4 +38,7 @@ export function installRuntimeFiles() {
   copyFileSync(join(ROOT, 'bin', 'tb'), join(RUNTIME_BIN, 'tb')); chmodSync(join(RUNTIME_BIN, 'tb'), 0o755);
   // tb uses ES module syntax; without this file next to it Node reads it as CommonJS and every tb command fails
   writeFileSync(join(RUNTIME_BIN, 'package.json'), '{ "type": "module" }\n');
+  // $BROWSER of task sessions (agents.ts): a program that opens a page this way opens it in the task's browser
+  writeFileSync(join(RUNTIME_BIN, 'tb-open'), '#!/bin/sh\nexec "$(dirname "$0")/tb" browser open "$@"\n', { mode: 0o755 });
+  chmodSync(join(RUNTIME_BIN, 'tb-open'), 0o755);
 }

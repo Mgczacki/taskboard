@@ -87,8 +87,10 @@ test('task rules at the maximum length fit, and a long prompt moves them into a 
     assert.match(long.join(' '), new RegExp(`rules for every task session are in ${copy.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
     assert.match(readFileSync(copy, 'utf8'), /Rule text\. Rule text\./);
     await tmux.newSession(t.session, root, { TB_TASK_ID: t.id }, long, async () => {});
-    for (let i = 0; i < 50 && !existsSync(join(root, 'args-claude')); i++) await new Promise(done => setTimeout(done, 100));
-    assert.match(readFileSync(join(root, 'args-claude'), 'utf8'), /Read that file before you start work/);
+    // the fake claude writes its arguments while the test reads, so wait for the whole text (not only for the file)
+    const args = () => existsSync(join(root, 'args-claude')) ? readFileSync(join(root, 'args-claude'), 'utf8') : '';
+    for (let i = 0; i < 50 && !/Read that file before you start work/.test(args()); i++) await new Promise(done => setTimeout(done, 100));
+    assert.match(args(), /Read that file before you start work/);
   } finally {
     rules.write('task', '');
     try { execFileSync('tmux', ['-L', process.env.TASKBOARD_TMUX_SOCKET!, 'kill-server'], { stdio: 'ignore' }); } catch { /* no server */ }

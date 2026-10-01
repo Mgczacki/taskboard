@@ -60,6 +60,16 @@ export const SECTIONS: SectionDef[] = [
       { id: 'askModel', label: 'Model', words: 'ask question ? sonnet haiku opus' },
     ] },
   ] },
+  { id: 'taskBrowsers', title: 'Task browsers', help: 'The Chrome browser of each task, the template profile that new task browsers copy, and which agents use them.', groups: [
+    { id: 'agents', title: 'Agents', settings: [
+      { id: 'browserClaude', label: 'Browser for Claude Code tasks', words: 'chrome mcp devtools claude in chrome extension' },
+      { id: 'browserCodex', label: 'Browser for Codex tasks', words: 'chrome mcp devtools chatgpt extension' },
+      { id: 'chromePath', label: 'Chrome program', words: 'path binary chromium executable' },
+    ] },
+    { id: 'template', title: 'Template profile', settings: [
+      { id: 'templateBrowser', label: 'Template browser for sign-ins', words: 'profile cookies login copy accounts' },
+    ] },
+  ] },
   { id: 'messages', title: 'Messages and integrations', help: 'The sign-ins that Taskboard uses, and who approves messages between you, your agents and other people.', groups: [
     { id: 'integrations', title: 'Integrations', settings: [
       { id: 'a2aNotes', label: 'A2A Notes (Slack)', words: 'slack sign-in connect setup integration' },

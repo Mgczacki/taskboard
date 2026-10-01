@@ -17,6 +17,9 @@ importers:
       a2a-notes:
         specifier: github:Mgczacki/a2a-notes#18d822dd702daf253fba0cdd232902a1791a9fdc
         version: https://codeload.github.com/Mgczacki/a2a-notes/tar.gz/18d822dd702daf253fba0cdd232902a1791a9fdc
+      chrome-devtools-mcp:
+        specifier: 1.10.1
+        version: 1.10.1
       dompurify:
         specifier: ^3.4.16
         version: 3.4.16
@@ -731,6 +734,19 @@ packages:
 
   chevrotain@11.1.2:
     resolution: {integrity: sha512-opLQzEVriiH1uUQ4Kctsd49bRoFDXGGSC4GUqj7pGyxM3RehRhvTlZJc1FL/Flew2p5uwxa1tUDWKzI4wNM8pg==}
+
+  chrome-devtools-mcp@1.10.1:
+    resolution: {integrity: sha512-Klw6HWDqHC/XS1JwZldd2r49aUhbUJN9m9Mvcx4SEueIPXtzuQX+QelxAViobv8YUkDZ7HWDrmViR6LeYK0wAw==}
+    engines: {node: ^20.19.0 || ^22.12.0 || >=23}
+    hasBin: true
+    peerDependencies:
+      '@blackwell-systems/gcf': ^2.2.2
+      '@toon-format/toon': ^4.1.0
+    peerDependenciesMeta:
+      '@blackwell-systems/gcf':
+        optional: true
+      '@toon-format/toon':
+        optional: true
 
   cliui@9.0.1:
     resolution: {integrity: sha512-k7ndgKhwoQveBL+/1tqGJYNz097I7WOvwbmmU2AR5+magtbjPWQTS1C5vzGkBC8Ym8UWRzfKUzUUqFLypY4Q+w==}
@@ -2156,6 +2172,8 @@ snapshots:
       '@chevrotain/types': 11.1.2
       '@chevrotain/utils': 11.1.2
       lodash-es: 4.17.23
+
+  chrome-devtools-mcp@1.10.1: {}
 
   cliui@9.0.1:
     dependencies:
