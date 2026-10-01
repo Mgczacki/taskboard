@@ -15,6 +15,7 @@ import { HOME, HOST, machineId, PORT, ROOT, TB_DIR, TOKEN, URL_BASE } from './co
 import * as docs from './docs.ts';
 import * as events from './events.ts';
 import * as groups from './groups.ts';
+import * as canvasOrder from './canvasOrder.ts';
 import * as importer from './importer.ts';
 import * as approvals from './approvals.ts';
 import * as ask from './ask.ts';
@@ -106,6 +107,7 @@ setInterval(() => {
   }
 }, 5000).unref();
 groups.load();
+canvasOrder.load();
 // "open in another terminal" used to be a status; it is now only the openElsewhere field, and the status is read from the transcript
 for (const t of store.all()) if (t.openElsewhere && (t.status as string) === 'elsewhere' || t.openElsewhere && t.status === 'suspended')
   store.update(t.id, { status: 'idle', transcript: t.transcript || importer.transcriptFor(t.agent, t.sessionId || '', (accounts.get(t.account) || accounts.defaultFor(t.agent)).dir) });
@@ -812,6 +814,21 @@ app.post('/api/groups/order', (req, res) => {
   if (!Array.isArray(ids) || !ids.every(x => typeof x === 'string' && x)) return fail(res, 'ids must be a list of group ids');
   try { res.json(groups.reorder(ids)); } catch (e) { fail(res, e); }
 });
+// the order of the terminals in a group view on the Canvas page; only the order inside the group changes
+app.post('/api/groups/:id/order', (req, res) => {
+  const { ids } = req.body;
+  if (!Array.isArray(ids) || !ids.every(x => typeof x === 'string' && x)) return fail(res, 'ids must be a list of task ids');
+  if (!groups.get(req.params.id)) return res.status(404).json({ error: 'The group no longer exists.' });
+  try { res.json(groups.reorderTasks(req.params.id, ids)); } catch (e) { fail(res, e); }
+});
+// the order of the terminals in a Canvas view that is not a group (server/canvasOrder.ts)
+app.get('/api/canvas/order', (_req, res) => res.json(canvasOrder.all()));
+app.post('/api/canvas/order', (req, res) => {
+  const { view, ids } = req.body;
+  if (typeof view !== 'string' || !canvasOrder.validKey(view)) return fail(res, 'view must be ungrouped, needs, live or t:<task ids>');
+  if (!Array.isArray(ids) || !ids.every(x => typeof x === 'string' && x)) return fail(res, 'ids must be a list of task ids');
+  try { canvasOrder.set(view, ids); res.json(canvasOrder.all()); } catch (e) { fail(res, e); }
+});
 app.patch('/api/groups/:id', (req, res) => {
   const { name, color, tasks, add, remove } = req.body; const g = groups.get(req.params.id); if (!g) return res.status(404).end();
   let list = tasks ?? g.tasks;
@@ -1066,6 +1083,7 @@ server.on('upgrade', (req, socket, head) => {
       sendEvent(ws, JSON.stringify({ type: 'hello', build: BUILD_ID }));
       sendEvent(ws, JSON.stringify({ type: 'tasks', tasks: [...store.all().map(view), ...machines.remoteTasks()] }));
       sendEvent(ws, JSON.stringify({ type: 'groups', groups: groups.all() }));
+      sendEvent(ws, JSON.stringify({ type: 'canvasOrder', orders: canvasOrder.all() }));
       sendEvent(ws, JSON.stringify({ type: 'approvals', approvals: approvals.all() }));
       const opened = new Set<string>();
       ws.on('message', m => {
@@ -1124,6 +1142,10 @@ machines.onRemoteChange(changed => {
 });
 groups.onGroupsChange(() => {
   const msg = JSON.stringify({ type: 'groups', groups: groups.all() });
+  for (const c of eventClients) sendEvent(c, msg);
+});
+canvasOrder.onCanvasOrderChange(() => {
+  const msg = JSON.stringify({ type: 'canvasOrder', orders: canvasOrder.all() });
   for (const c of eventClients) sendEvent(c, msg);
 });
 store.onTaskRemoved(id => {

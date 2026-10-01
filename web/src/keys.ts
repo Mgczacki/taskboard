@@ -31,6 +31,8 @@ export const ACTIONS: KeyAction[] = [
   { id: 'canvasNewTask', ctx: 'canvas', label: 'New task in this canvas view', keys: ['Ctrl+Alt+KeyT'] },
   { id: 'nextWindow', ctx: 'canvas', label: 'Focus the next window', keys: ['Ctrl+Alt+ArrowRight', 'Ctrl+Alt+ArrowDown'] },
   { id: 'prevWindow', ctx: 'canvas', label: 'Focus the previous window', keys: ['Ctrl+Alt+ArrowLeft', 'Ctrl+Alt+ArrowUp'] },
+  { id: 'windowEarlier', ctx: 'canvas', label: 'Move the focused window one place to the left (up in Rows)', keys: ['Ctrl+Alt+Shift+Comma'] },
+  { id: 'windowLater', ctx: 'canvas', label: 'Move the focused window one place to the right (down in Rows)', keys: ['Ctrl+Alt+Shift+Period'] },
   { id: 'nextNeedy', ctx: 'canvas', label: 'Next window waiting on you', keys: ['Ctrl+Alt+KeyN'] },
   { id: 'maximize', ctx: 'canvas', label: 'Maximize the focused window', keys: ['Ctrl+Alt+Enter'] },
   { id: 'layout', ctx: 'canvas', label: 'Change layout: columns, grid, rows', keys: ['Ctrl+Alt+KeyL'] },

@@ -65,13 +65,15 @@ export const confirmEnd = () => { try { return localStorage.getItem('tb-confirm-
 export const setConfirmEnd = (on: boolean) => { try { localStorage.setItem('tb-confirm-end', on ? 'on' : 'off'); } catch { /* storage off */ } };
 let tasks: Task[] = [];
 let groups: Group[] = [];
+// the order of the terminals in each Canvas view that is not a group (server/canvasOrder.ts)
+let canvasOrder: Record<string, string[]> = {};
 let approvals: Approval[] = [];
 let machines: Machine[] = [];
 const loadMachines = () => fetch('/api/machines').then(r => r.json()).then(m => { machines = m; publish(); }).catch(() => {});
 let connected = false;
 const subs = new Set<() => void>();
 const emit = () => subs.forEach(f => f());
-let snapshot = { tasks, groups, approvals, machines, connected };
+let snapshot = { tasks, groups, canvasOrder, approvals, machines, connected };
 
 let ws: WebSocket | null = null;
 let viewingIds: string[] = [];
@@ -93,6 +95,7 @@ function connect() {
     }
     if (m.type === 'tasks') tasks = m.tasks;
     if (m.type === 'groups') groups = m.groups;
+    if (m.type === 'canvasOrder') canvasOrder = m.orders;
     if (m.type === 'approvals') approvals = m.approvals;
     if (m.type === 'machines') { loadMachines(); return; }
     if (m.type === 'removed') tasks = tasks.filter(t => t.id !== m.id);
@@ -100,7 +103,7 @@ function connect() {
     publish();
   };
 }
-function publish() { snapshot = { tasks, groups, approvals, machines, connected }; emit(); }
+function publish() { snapshot = { tasks, groups, canvasOrder, approvals, machines, connected }; emit(); }
 connect();
 
 // the groups as they are now, for an Undo that runs after the page has re-rendered
@@ -181,6 +184,8 @@ export const api = {
   createGroup: (name: string, tasks: string[] = []) => call<Group>('POST', '/api/groups', { name, tasks }),
   updateGroup: (id: string, patch: { name?: string; color?: string; tasks?: string[]; add?: string | string[]; remove?: string | string[] }) => call<Group>('PATCH', `/api/groups/${id}`, patch),
   reorderGroups: (ids: string[]) => call<Group[]>('POST', '/api/groups/order', { ids }),
+  reorderGroupTasks: (id: string, ids: string[]) => call<Group>('POST', `/api/groups/${id}/order`, { ids }),
+  setCanvasOrder: (view: string, ids: string[]) => call<Record<string, string[]>>('POST', '/api/canvas/order', { view, ids }),
   moveGroupTask: (taskId: string, fromId: string, toId: string) => call<Group[]>('POST', '/api/groups/move', { taskId, fromId, toId }),
   deleteGroup: (id: string, requireArchived = false) => call<Group>('DELETE', `/api/groups/${id}${requireArchived ? '?requireArchived=1' : ''}`),
   restoreGroup: (g: Group) => call('POST', '/api/groups/restore', g),
