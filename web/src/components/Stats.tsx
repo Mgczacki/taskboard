@@ -1,18 +1,28 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { AGENT_NAME } from '../api';
-import type { Agent } from '../api';
-import { formatTokens } from '../formatTokens';
+import { AGENTS, MEASURE_LABEL, RANGES, RANGE_KEY, accountTotals, activityTip, agentTokens, calendarWeeks, heatTip, levels, parseRange, pretty, rangeDates, rangeDays, tokenText, tokenTip, totals } from '../statsRange';
+import type { Account, Day, Measure, Range, Tip } from '../statsRange';
 import './stats.css';
 
-type Account = { id: string; name: string; agent: Agent };
-type AccountDay = { tokens: number; turns: number; taskboardTokens: number; otherTokens: number };
-type Day = { date: string; tokens: number; estimatedTokens: number; turns: number; started: number; imported: number; archived: number; byAccount: Record<string, AccountDay> };
 type Stats = { days: Day[]; accounts: Account[]; scannedAt?: string; scanning: boolean; scanned: number; total: number; timeZone: string };
-type Measure = 'tokens' | 'turns' | 'started' | 'archived';
-const zero = (date: string): Day => ({ date, tokens: 0, estimatedTokens: 0, turns: 0, started: 0, imported: 0, archived: 0, byAccount: {} });
-const addDays = (day: string, n: number) => { const d = new Date(day + 'T12:00:00Z'); d.setUTCDate(d.getUTCDate() + n); return d.toISOString().slice(0, 10); };
-const pretty = (n: number) => new Intl.NumberFormat().format(n);
-const tokenText = (n: number, estimated = false) => `${estimated ? '~' : ''}${formatTokens(Math.round(n))}`;
+
+// One tooltip for each chart. show() puts it above the middle of the hovered element, inside the chart's box.
+// Near the left or right edge of the box, the tooltip aligns to that edge so it stays inside the panel.
+function useTooltip() {
+  const box = useRef<HTMLDivElement>(null);
+  const [at, setAt] = useState<{ x: number; y: number; side: 'left' | 'mid' | 'right'; tip: Tip } | null>(null);
+  const show = (el: Element, tip: Tip) => {
+    if (!box.current) return;
+    const b = box.current.getBoundingClientRect(), r = el.getBoundingClientRect(), x = r.left + r.width / 2 - b.left;
+    setAt({ x, y: r.top - b.top, side: x < b.width * 0.2 ? 'left' : x > b.width * 0.8 ? 'right' : 'mid', tip });
+  };
+  const hide = () => setAt(null);
+  const view = at && <div className={`stats-tip ${at.side}`} role="tooltip" style={{ left: at.x, top: at.y }}>
+    <div className="stats-tip-title">{at.tip.title}{at.tip.sub && <span>{at.tip.sub}</span>}</div>
+    {at.tip.rows.map(r => <div key={r.label} className={`stats-tip-row${r.strong ? ' strong' : ''}`}>{r.swatch ? <i className={r.swatch} /> : <i className="none" />}<span>{r.label}</span><b>{r.value}</b></div>)}
+  </div>;
+  return { box, show, hide, view };
+}
 
 export function StatsPage() {
   const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC';
@@ -21,7 +31,9 @@ export function StatsPage() {
   const [data, setData] = useState<Stats | null>(null);
   const [error, setError] = useState('');
   const [measure, setMeasure] = useState<Measure>('tokens');
-  const [selected, setSelected] = useState(today);
+  const [range, setRange] = useState<Range>(() => { try { return parseRange(localStorage.getItem(RANGE_KEY)); } catch { return parseRange(null); } });
+  // null: the account table shows the sum of the whole range. A date: the table shows that day.
+  const [selected, setSelected] = useState<string | null>(null);
   useEffect(() => {
     let live = true;
     const load = async () => {
@@ -30,32 +42,53 @@ export function StatsPage() {
     };
     void load(); const timer = setInterval(load, 3000); return () => { live = false; clearInterval(timer); };
   }, [timeZone]);
+  const pickRange = (r: Range) => { setRange(r); try { localStorage.setItem(RANGE_KEY, String(r)); } catch { /* private mode */ } };
   const byDate = useMemo(() => new Map(data?.days.map(d => [d.date, d]) || []), [data]);
-  const dates = useMemo(() => Array.from({ length: 371 }, (_, i) => addDays(today, i - 370)), [today]);
-  const values = dates.map(d => byDate.get(d)?.[measure] || 0).filter(x => x > 0).sort((a, b) => a - b);
-  const limits = [0.25, 0.5, 0.75].map(x => values[Math.floor((values.length - 1) * x)] || 0);
-  const level = (n: number) => !n ? 0 : n <= limits[0] ? 1 : n <= limits[1] ? 2 : n <= limits[2] ? 3 : 4;
-  const chosen = byDate.get(selected) || zero(selected);
-  const recent = dates.slice(-90).map(d => byDate.get(d) || zero(d));
-  const peak = Math.max(1, ...recent.map(d => d.tokens));
-  const maxActivity = Math.max(1, ...recent.slice(-30).map(d => d.turns + d.started + d.archived));
+  const dates = useMemo(() => rangeDates(today, range), [today, range]);
+  useEffect(() => { if (selected && !dates.includes(selected)) setSelected(null); }, [dates, selected]);
+  const days = rangeDays(byDate, dates);
+  const sum = totals(days);
+  const level = levels(days.map(d => d[measure]));
+  const peak = Math.max(1, ...days.map(d => d.tokens));
+  const maxActivity = Math.max(1, ...days.map(d => d.turns + d.started + d.archived));
   const current = data?.accounts || [];
-  const agentTokens = (d: Day, agent: Agent) => current.filter(a => a.agent === agent).reduce((sum, a) => sum + (d.byAccount[a.id]?.tokens || 0), 0);
+  const chosen = selected ? days.find(d => d.date === selected) : undefined;
+  const tableAccounts = chosen ? chosen.byAccount : accountTotals(days);
+  const tableSum = chosen || sum;
+  const pick = (d: string) => setSelected(selected === d ? null : d);
+  const heat = useTooltip(), tokens = useTooltip(), activity = useTooltip();
+  const longDate = (d: string) => new Date(d + 'T12:00:00Z').toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+  const rangeText = `Last ${range} days`;
   return <div className="stats-page">
-    <div className="stats-intro"><div><h2>Daily use on this machine</h2><p>Calendar days use {timeZone}. Each step's date gets its tokens. Antigravity counts estimate visible text only. They exclude context sent again on later model calls.</p></div><div className="stats-scan">{data?.scanning ? `Reading files ${data.scanned} / ${data.total}` : data?.scannedAt ? `Read ${new Date(data.scannedAt).toLocaleString()}` : 'Waiting for first scan'}</div></div>
+    <div className="stats-intro"><div><h2>Daily use on this machine</h2><p>{rangeText}: {dates[0]} to {dates.at(-1)}. Calendar days use {timeZone}. Each step's date gets its tokens. Antigravity counts estimate visible text only. They exclude context sent again on later model calls.</p></div>
+      <div className="stats-intro-side"><div className="stats-measures stats-range" role="group" aria-label="Date range">{RANGES.map(r => <button key={r} className={range === r ? 'on' : ''} aria-pressed={range === r} onClick={() => pickRange(r)}>Last {r} days</button>)}</div>
+        <div className="stats-scan">{data?.scanning ? `Reading files ${data.scanned} / ${data.total}` : data?.scannedAt ? `Read ${new Date(data.scannedAt).toLocaleString()}` : 'Waiting for first scan'}</div></div></div>
     {error && <div className="banner">{error}</div>}
     <div className="stats-cards">
-      <div><span>Tokens today</span><strong>{tokenText(byDate.get(today)?.tokens || 0, !!byDate.get(today)?.estimatedTokens)}</strong><small>Includes Antigravity estimates</small></div>
-      <div><span>Turns today</span><strong>{pretty(byDate.get(today)?.turns || 0)}</strong><small>All three agents</small></div>
-      <div><span>Tasks started today</span><strong>{pretty(byDate.get(today)?.started || 0)}</strong><small>{pretty(byDate.get(today)?.imported || 0)} imported</small></div>
-      <div><span>Tasks archived today</span><strong>{pretty(byDate.get(today)?.archived || 0)}</strong><small>Past dates can be partial</small></div>
+      <div><span>Tokens</span><strong>{tokenText(sum.tokens, !!sum.estimatedTokens)}</strong><small>{rangeText}. Includes Antigravity estimates</small></div>
+      <div><span>Turns</span><strong>{pretty(sum.turns)}</strong><small>{rangeText}. All three agents</small></div>
+      <div><span>Tasks started</span><strong>{pretty(sum.started)}</strong><small>{rangeText}. {pretty(sum.imported)} imported</small></div>
+      <div><span>Tasks archived</span><strong>{pretty(sum.archived)}</strong><small>{rangeText}. Past dates can be partial</small></div>
     </div>
-    <section className="stats-panel"><div className="stats-heading"><div><h3>Daily activity</h3><span>Click a day to see its accounts.</span></div><div className="stats-measures">{(['tokens', 'turns', 'started', 'archived'] as Measure[]).map(m => <button key={m} className={measure === m ? 'on' : ''} onClick={() => setMeasure(m)}>{m === 'started' ? 'Tasks started' : m === 'archived' ? 'Tasks archived' : m[0].toUpperCase() + m.slice(1)}</button>)}</div></div>
-      <div className="stats-heat-scroll"><div className="stats-months">{dates.filter((d, i) => i % 7 === 0).map((d, i) => <span key={d} style={{ gridColumn: i + 1 }}>{d.slice(8) <= '07' ? new Date(d + 'T12:00:00Z').toLocaleString(undefined, { month: 'short', timeZone: 'UTC' }) : ''}</span>)}</div><div className="stats-heat">{dates.map(d => { const n = byDate.get(d)?.[measure] || 0; return <button key={d} className={`stats-cell l${level(n)} ${selected === d ? 'picked' : ''}`} title={`${d}: ${measure === 'tokens' ? tokenText(n, !!byDate.get(d)?.estimatedTokens) : pretty(n)} ${measure}`} aria-label={`${d}: ${measure === 'tokens' ? tokenText(n, !!byDate.get(d)?.estimatedTokens) : pretty(n)} ${measure}`} onClick={() => setSelected(d)} />; })}</div></div>
+    <section className="stats-panel"><div className="stats-heading"><div><h3>Daily activity</h3><span>{rangeText}. Click a day to see its accounts.</span></div><div className="stats-measures">{(['tokens', 'turns', 'started', 'archived'] as Measure[]).map(m => <button key={m} className={measure === m ? 'on' : ''} onClick={() => setMeasure(m)}>{MEASURE_LABEL[m]}</button>)}</div></div>
+      <div className="stats-tip-box stats-calendar" ref={heat.box} onMouseLeave={heat.hide}>
+        <div className="stats-weekdays">{['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(w => <span key={w}>{w}</span>)}</div>
+        {calendarWeeks(dates).map((week, i) => <div key={i} className="stats-week">{week.map((d, j) => {
+          if (!d) return <span key={j} className="stats-cell empty" />;
+          const day = days.find(x => x.date === d)!, n = day[measure];
+          return <button key={d} className={`stats-cell l${level(n)} ${selected === d ? 'picked' : ''}`} aria-label={`${d}: ${measure === 'tokens' ? tokenText(n, !!day.estimatedTokens) : pretty(n)} ${MEASURE_LABEL[measure].toLowerCase()}`}
+            onMouseEnter={e => heat.show(e.currentTarget, heatTip(day, measure))} onFocus={e => heat.show(e.currentTarget, heatTip(day, measure))} onBlur={heat.hide} onClick={() => pick(d)}>{Number(d.slice(8))}</button>;
+        })}</div>)}
+        {heat.view}
+      </div>
       <div className="stats-legend">Less <i className="l0" /><i className="l1" /><i className="l2" /><i className="l3" /><i className="l4" /> More</div>
     </section>
-    <section className="stats-panel"><div className="stats-heading"><div><h3>Tokens by day</h3><span>Last 90 days. The bar colors show the agents.</span></div></div><div className="stats-chart" role="img" aria-label="Daily token totals for the last 90 days">{recent.map(d => <div key={d.date} className="stats-bar-wrap" title={`${d.date}: ${tokenText(d.tokens, !!d.estimatedTokens)} tokens`} onClick={() => setSelected(d.date)}><div className="stats-bar" style={{ height: `${Math.max(d.tokens ? 2 : 0, d.tokens / peak * 100)}%` }}>{(['claude', 'codex', 'antigravity'] as Agent[]).map(a => <span key={a} className={`agent-${a}`} style={{ height: `${d.tokens ? agentTokens(d, a) / d.tokens * 100 : 0}%` }} />)}</div></div>)}</div><div className="stats-axis"><span>{recent[0]?.date}</span><span>{recent.at(-1)?.date}</span></div><div className="stats-series"><span className="agent-claude" /> Claude Code <span className="agent-codex" /> Codex <span className="agent-antigravity" /> Antigravity estimate</div></section>
-    <section className="stats-panel"><div className="stats-heading"><div><h3>Tasks and turns</h3><span>Last 30 days. Each bar stacks turns, task starts, and archives.</span></div></div><div className="stats-chart activity">{recent.slice(-30).map(d => <div key={d.date} className="stats-bar-wrap" title={`${d.date}: ${d.turns} turns, ${d.started} started, ${d.archived} archived`} onClick={() => setSelected(d.date)}><div className="stats-bar" style={{ height: `${(d.turns + d.started + d.archived) / maxActivity * 100}%` }}><span className="turns" style={{ height: `${(d.turns + d.started + d.archived) ? d.turns / (d.turns + d.started + d.archived) * 100 : 0}%` }} /><span className="started" style={{ height: `${(d.turns + d.started + d.archived) ? d.started / (d.turns + d.started + d.archived) * 100 : 0}%` }} /><span className="archived" style={{ height: `${(d.turns + d.started + d.archived) ? d.archived / (d.turns + d.started + d.archived) * 100 : 0}%` }} /></div></div>)}</div><div className="stats-series"><span className="turns" /> Turns <span className="started" /> Tasks started <span className="archived" /> Tasks archived</div></section>
-    <section className="stats-panel"><div className="stats-heading"><div><h3>{new Date(selected + 'T12:00:00Z').toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' })}</h3><span>{tokenText(chosen.tokens, !!chosen.estimatedTokens)} tokens · {pretty(chosen.turns)} turns · {chosen.started} tasks started · {chosen.archived} tasks archived · {chosen.imported} imported</span></div></div><div className="stats-table-wrap"><table><thead><tr><th>Agent</th><th>Account</th><th>Tokens</th><th>Taskboard sessions</th><th>Other sessions</th><th>Turns</th></tr></thead><tbody>{current.map(a => { const x = chosen.byAccount[a.id]; const estimated = a.agent === 'antigravity'; const cell = (n: number) => <td title={estimated && !x?.tokens ? undefined : `${estimated ? '~' : ''}${pretty(Math.round(n))}`}>{estimated && !x?.tokens ? 'Unavailable' : tokenText(n, estimated)}</td>; return <tr key={a.id}><td>{AGENT_NAME[a.agent]}</td><td>{a.name}</td>{cell(x?.tokens || 0)}{cell(x?.taskboardTokens || 0)}{cell(x?.otherTokens || 0)}<td>{pretty(x?.turns || 0)}</td></tr>; })}</tbody></table></div><p className="stats-note">An imported session stays under Other sessions before its import time. Older archive counts can miss tasks that changed status or were removed.</p></section>
+    <section className="stats-panel"><div className="stats-heading"><div><h3>Tokens by day</h3><span>{rangeText}. The bar colors show the agents.</span></div></div>
+      <div className="stats-tip-box" ref={tokens.box} onMouseLeave={tokens.hide}><div className="stats-chart" role="img" aria-label={`Daily token totals for the last ${range} days`}>{days.map(d => <div key={d.date} className={`stats-bar-wrap ${selected === d.date ? 'picked' : ''}`} tabIndex={0} onMouseEnter={e => tokens.show(e.currentTarget.firstElementChild!, tokenTip(d, current))} onFocus={e => tokens.show(e.currentTarget.firstElementChild!, tokenTip(d, current))} onBlur={tokens.hide} onClick={() => pick(d.date)}><div className="stats-bar" style={{ height: `${Math.max(d.tokens ? 2 : 0, d.tokens / peak * 100)}%` }}>{AGENTS.map(({ agent: a }) => <span key={a} className={`agent-${a}`} style={{ height: `${d.tokens ? agentTokens(d, current, a) / d.tokens * 100 : 0}%` }} />)}</div></div>)}</div>{tokens.view}</div>
+      <div className="stats-axis"><span>{dates[0]}</span><span>{dates.at(-1)}</span></div><div className="stats-series">{AGENTS.map(a => <span key={a.agent} className="stats-series-item"><span className={`agent-${a.agent}`} /> {a.label}</span>)}</div></section>
+    <section className="stats-panel"><div className="stats-heading"><div><h3>Tasks and turns</h3><span>{rangeText}. Each bar stacks turns, task starts, and archives.</span></div></div>
+      <div className="stats-tip-box" ref={activity.box} onMouseLeave={activity.hide}><div className="stats-chart activity" role="img" aria-label={`Daily turns, task starts and archives for the last ${range} days`}>{days.map(d => { const all = d.turns + d.started + d.archived; return <div key={d.date} className={`stats-bar-wrap ${selected === d.date ? 'picked' : ''}`} tabIndex={0} onMouseEnter={e => activity.show(e.currentTarget.firstElementChild!, activityTip(d))} onFocus={e => activity.show(e.currentTarget.firstElementChild!, activityTip(d))} onBlur={activity.hide} onClick={() => pick(d.date)}><div className="stats-bar" style={{ height: `${Math.max(all ? 2 : 0, all / maxActivity * 100)}%` }}><span className="turns" style={{ height: `${all ? d.turns / all * 100 : 0}%` }} /><span className="started" style={{ height: `${all ? d.started / all * 100 : 0}%` }} /><span className="archived" style={{ height: `${all ? d.archived / all * 100 : 0}%` }} /></div></div>; })}</div>{activity.view}</div>
+      <div className="stats-axis"><span>{dates[0]}</span><span>{dates.at(-1)}</span></div><div className="stats-series"><span className="stats-series-item"><span className="turns" /> Turns</span><span className="stats-series-item"><span className="started" /> Tasks started</span><span className="stats-series-item"><span className="archived" /> Tasks archived</span></div></section>
+    <section className="stats-panel"><div className="stats-heading"><div><h3>{chosen ? longDate(chosen.date) : `${rangeText}, by account`}</h3><span>{tokenText(tableSum.tokens, !!tableSum.estimatedTokens)} tokens · {pretty(tableSum.turns)} turns · {pretty(tableSum.started)} tasks started · {pretty(tableSum.archived)} tasks archived · {pretty(tableSum.imported)} imported</span></div>{chosen && <div className="stats-measures"><button onClick={() => setSelected(null)}>Show all {range} days</button></div>}</div><div className="stats-table-wrap"><table><thead><tr><th>Agent</th><th>Account</th><th>Tokens</th><th>Taskboard sessions</th><th>Other sessions</th><th>Turns</th></tr></thead><tbody>{current.map(a => { const x = tableAccounts[a.id]; const estimated = a.agent === 'antigravity'; const cell = (n: number) => <td title={estimated && !x?.tokens ? undefined : `${estimated ? '~' : ''}${pretty(Math.round(n))}`}>{estimated && !x?.tokens ? 'Unavailable' : tokenText(n, estimated)}</td>; return <tr key={a.id}><td>{AGENT_NAME[a.agent]}</td><td>{a.name}</td>{cell(x?.tokens || 0)}{cell(x?.taskboardTokens || 0)}{cell(x?.otherTokens || 0)}<td>{pretty(x?.turns || 0)}</td></tr>; })}</tbody></table></div><p className="stats-note">An imported session stays under Other sessions before its import time. Older archive counts can miss tasks that changed status or were removed.</p></section>
   </div>;
 }
