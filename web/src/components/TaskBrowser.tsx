@@ -1,6 +1,7 @@
 // The browser of a task (or the template browser): a screencast of one tab over /ws/browser, with the tab strip, an
 // address bar, and mouse and key input sent back to the page (server/task-browser.ts). The view can pop out into a
 // floating window inside the page; only one view of a browser streams at a time, so the panel shows a note meanwhile.
+// The sound switch (SoundSwitch) is in both views: a browser starts muted until the user turns its sound on.
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { BrowserStatus, BrowserTab } from '../api';
@@ -63,6 +64,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate }: { id: st
   const [state, setState] = useState<BrowserStatus | null>(null);
   const [running, setRunning] = useState<boolean | null>(null);
   const [agents, setAgents] = useState(0);
+  const [muted, setMuted] = useState<boolean | null>(null);
   const [err, setErr] = useState('');
   const [addr, setAddr] = useState('');
   const [editing, setEditing] = useState(false);
@@ -80,9 +82,9 @@ function Live({ id, title, autostart, floating, archived, isTemplate }: { id: st
       s.onmessage = ev => {
         const m = JSON.parse(ev.data);
         if (m.type === 'frame') { frameSize.current = { w: m.w, h: m.h }; if (img.current) img.current.src = 'data:image/jpeg;base64,' + m.data; setRunning(true); }
-        else if (m.type === 'tabs') { setTabs(m.tabs); setRunning(true); setAgents(m.agents || 0); setErr(''); }
+        else if (m.type === 'tabs') { setTabs(m.tabs); setRunning(true); setAgents(m.agents || 0); setMuted(m.muted ?? null); setErr(''); }
         else if (m.type === 'active') setActive(m.id);
-        else if (m.type === 'state') { setRunning(m.running); setState(m); if (!m.running) { setTabs([]); setActive(''); if (img.current) img.current.removeAttribute('src'); } }
+        else if (m.type === 'state') { setRunning(m.running); setState(m); setMuted(m.muted ?? null); if (!m.running) { setTabs([]); setActive(''); if (img.current) img.current.removeAttribute('src'); } }
         else if (m.type === 'error') setErr(m.message);
       };
       s.onopen = () => sendSize();
@@ -134,7 +136,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate }: { id: st
     <div className="bw-empty">
       {archived ? <p>The task is archived. Its browser is closed. The profile is kept until the task is removed.</p>
         : <p>{isTemplate ? 'The template browser is closed.' : state?.suspended ? 'The browser was closed when the task was suspended. It opens again when the task resumes.' : 'The browser is not running. It starts when the agent uses it, or when you start it.'}</p>}
-      {!archived && <div><button className="btn primary" onClick={startNow}>{isTemplate ? 'Open the template browser' : 'Start the browser'}</button></div>}
+      {!archived && <div><button className="btn primary" onClick={startNow}>{isTemplate ? 'Open the template browser' : 'Start the browser'}</button> <SoundSwitch id={id} muted={muted} running={false} agents={0} onDone={s => { setState(s); setMuted(s.muted); }} onError={setErr} /></div>}
       {!!state?.tabs.length && <div className="bw-saved"><b>Pages that open at the next start</b>{state.tabs.map(t => <div key={t.id} className="sub">{t.url}</div>)}</div>}
       {!isTemplate && state && <div className="sub">{state.profile ? `Profile ${state.copiedFromTemplate ? `copied from the template on ${new Date(state.copiedFromTemplate).toLocaleString()}` : 'without a template copy'}.` : 'The first start copies the template profile.'}</div>}
       {!isTemplate && state?.profile && !archived && <div><button className="btn" onClick={() => api.browserAction(id, 'reset').then(setState).catch(e => setErr(String(e.message || e)))} title="Delete this task's profile and copy the template again. The task loses its own sign-ins.">Reset from template</button></div>}
@@ -160,6 +162,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate }: { id: st
         <button className="btn icon" onClick={() => send({ type: 'nav', action: 'reload' })} title="Reload">↻</button>
         <input className="bw-url" value={addr} onFocus={e => { setEditing(true); e.target.select(); }} onBlur={() => setEditing(false)} onChange={e => setAddr(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') go(); if (e.key === 'Escape') { setEditing(false); (e.target as HTMLInputElement).blur(); } }} spellCheck={false} />
         {!isTemplate && <BrowserMemory id={id} />}
+        <SoundSwitch id={id} muted={muted} running agents={agents} onDone={s => setMuted(s.muted)} onError={setErr} />
         {agents > 0 && <span className="bw-agent" title="An agent is connected to this browser through its task-browser tools">agent connected</span>}
         {!floating && <button className="btn" onClick={() => popOutBrowser(id, title || (isTemplate ? 'Template browser' : 'Task browser'), isTemplate ? 'Sign in here. New task browsers copy this profile.' : '')} title="Show the browser in a floating window inside Taskboard">Pop out</button>}
         <button className="btn" onClick={() => send({ type: 'stop' })} title={isTemplate ? 'Close the template browser. New task browsers can copy it only when it is closed.' : 'Close the browser. Its pages open again at the next start.'}>{isTemplate ? 'Close' : 'Stop'}</button>
@@ -189,4 +192,35 @@ function BrowserMemory({ id }: { id: string }) {
     return () => { live = false; clearInterval(timer); };
   }, [id]);
   return memMb === null ? null : <span className="bw-mem sub" title="Resident memory (RSS) of this browser's processes, read with ps. Shared pages count in each process.">{mb(memMb)}</span>;
+}
+
+// Sound on or off for this browser (setSound in server/task-browser.ts). Chrome reads --mute-audio only at start, so a
+// running browser restarts and opens its tabs again. The restart ends an agent's connection, so the user confirms it.
+function SoundSwitch({ id, muted, running, agents, onDone, onError }: { id: string; muted: boolean | null; running: boolean; agents: number; onDone: (s: BrowserStatus) => void; onError: (m: string) => void }) {
+  const [busy, setBusy] = useState(false);
+  if (muted === null) return null;
+  const on = muted; // the click turns the sound on when the browser is muted
+  const agentNote = (n: number) => `An agent is connected to this browser (${n}). The restart ends its connection, and the agent must connect again.`;
+  const toggle = async () => {
+    const restart = `The browser restarts to ${on ? 'turn the sound on' : 'mute it'}. Its tabs open again.${on ? ' The sound plays on the speakers of this Mac, not in the dashboard.' : ''}`;
+    if (running && !confirm(agents ? `${restart}\n\n${agentNote(agents)}` : restart)) return;
+    setBusy(true);
+    try {
+      let force = running && agents > 0;
+      for (;;) {
+        try { onDone(await api.browserSound(id, on, force)); break; }
+        catch (e) {
+          // an agent connected after the view showed its count: ask again
+          if (!force && /agent is connected/i.test(String((e as Error).message)) && confirm(`${restart}\n\n${agentNote(1)}`)) { force = true; continue; }
+          throw e;
+        }
+      }
+    } catch (e) { onError(String((e as Error).message || e)); } finally { setBusy(false); }
+  };
+  return (
+    <button className={`btn bw-sound ${muted ? '' : 'on'}`} onClick={toggle} disabled={busy} aria-pressed={!muted}
+      title={muted ? `Muted. Click to turn the sound on${running ? ' (the browser restarts and keeps its tabs)' : ' at the next start'}. Sound plays on the speakers of this Mac, not in the dashboard.` : `Sound on. Click to mute${running ? ' (the browser restarts and keeps its tabs)' : ' at the next start'}.`}>
+      {busy ? (running ? 'Restarting…' : 'Saving…') : muted ? '🔇 Muted' : '🔊 Sound on'}
+    </button>
+  );
 }

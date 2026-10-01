@@ -50,7 +50,7 @@ export interface RuntimeCount { browser: number; procs: number }
 export interface RuntimeItem { task: string; kind: 'browser' | 'proc'; name: string; state: string; port?: number; pages?: number; agents?: number; command?: string; memMb: number | null }
 export interface RuntimeList { items: RuntimeItem[]; total: { browsers: number; procs: number; memMb: number } }
 export interface BrowserTab { id: string; title: string; url: string }
-export interface BrowserStatus { id: string; running: boolean; port?: number; tabs: BrowserTab[]; profile: boolean; copiedFromTemplate?: string; suspended?: boolean; stoppedAt?: string; error?: string; rssMb?: number | null; agents: number; chrome: string | null; check?: { chrome: string | null; node: string | null; mcp: boolean } }
+export interface BrowserStatus { id: string; running: boolean; port?: number; tabs: BrowserTab[]; profile: boolean; copiedFromTemplate?: string; suspended?: boolean; stoppedAt?: string; error?: string; rssMb?: number | null; agents: number; chrome: string | null; sound: boolean; muted: boolean; check?: { chrome: string | null; node: string | null; mcp: boolean } }
 export interface Approval { id: string; actor: string; action: string; summary: string; detail: string; created: string; state: 'pending' | 'running' | 'approved' | 'denied' | 'failed' | 'expired' | 'unknown' | 'returned'; result?: string; returnable?: boolean; payload?: { permitId?: string; pushId?: string; state?: { forcePush?: boolean }; canPermit?: boolean; message?: string; hash?: string; body?: string; quality?: { state: string; flags: { text: string; start: number; end: number; reason: string }[] } } }
 export interface Permit { id: string; taskId: string; taskNum: number; agent: Agent; reason: string; statedRisk?: string; createdAt: string; expiresAt: string; state: string; approvedBy?: string; approvalRule?: string; riskClass?: 'low' | 'high'; controllerRequestText?: string; decisionComment?: string; error?: string; riskFlags: string[]; steps: { command: string; cwd: string; timeoutSeconds: number; network: boolean; state: string; exitCode?: number | null; outputTail?: string; error?: string }[] }
 export interface PushRecord { id: string; at: string; taskId: string; branch: string; remote: string; remoteUrl: string; oldHead: string | null; newHead: string; state: string; result?: string; approvalId?: string }
@@ -213,6 +213,8 @@ export const api = {
   runtime: (ids: string[]) => call<RuntimeList>('GET', `/api/runtime?tasks=${ids.map(encodeURIComponent).join(',')}`),
   browser: (id: string) => call<BrowserStatus>('GET', `/api/tasks/${encodeURIComponent(id)}/browser`),
   browserAction: (id: string, action: 'start' | 'stop' | 'reset') => call<BrowserStatus>('POST', `/api/tasks/${encodeURIComponent(id)}/browser/${action}`, {}),
+  // POST …/browser/sound: 409 when an agent is connected and force is not set
+  browserSound: (id: string, on: boolean, force = false) => call<BrowserStatus & { restarted: boolean }>('POST', id === 'template' ? '/api/browser-template/sound' : `/api/tasks/${encodeURIComponent(id)}/browser/sound`, { on, force }),
   browserTemplate: () => call<BrowserStatus>('GET', '/api/browser-template'),
   browserTemplateAction: (action: 'start' | 'stop') => call<BrowserStatus>('POST', `/api/browser-template/${action}`, {}),
   getUi: () => call<Record<string, unknown>>('GET', '/api/ui'),
