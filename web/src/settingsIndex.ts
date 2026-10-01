@@ -1,6 +1,6 @@
 // The sections of the Settings page, their groups and their settings, in page order. The side list and the search box
 // read this list. Each `label` is the text that the page shows for the setting. `words` adds search terms that are
-// not in the label. A section with no settings (Rules files) is hidden until a component adds settings to it.
+// not in the label. A section with no settings is hidden.
 
 export interface SettingDef { id: string; label: string; words?: string }
 export interface GroupDef { id: string; title?: string; settings: SettingDef[] }
@@ -66,9 +66,12 @@ export const SECTIONS: SectionDef[] = [
       { id: 'trustedPeople', label: 'Trusted people', words: 'a2a notes slack trust person' },
     ] },
   ] },
-  // Space for the editor of the rules files of the controller and task sessions. Its task adds the component in
-  // Settings.tsx and its settings here.
-  { id: 'rules', title: 'Rules files', help: 'The rules files that the controller and task sessions read.', groups: [] },
+  { id: 'rules', title: 'Rules files', help: 'The rules files that the controller and task sessions read.', groups: [
+    { id: 'rules', settings: [
+      { id: 'controllerRules', label: 'Controller rules', words: 'rules file instructions claude.md agents.md' },
+      { id: 'taskRules', label: 'Task session rules', words: 'rules file instructions claude.md agents.md' },
+    ] },
+  ] },
   { id: 'browser', title: 'This app or browser', help: 'These choices are saved in this app or browser only.', groups: [
     { id: 'canvas', title: 'Canvas', settings: [
       { id: 'confirmEnd', label: 'Ask before ⏻ in a window header ends and archives the task', words: 'end archive confirm power' },

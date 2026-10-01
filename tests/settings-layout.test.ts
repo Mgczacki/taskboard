@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { SECTIONS, filterSettings, matcher, settingText } from '../web/src/settingsIndex.ts';
 
-const source = ['Settings', 'SettingsLayout', 'Accounts', 'MessageLevels', 'Integrations']
+const source = ['Settings', 'SettingsLayout', 'Accounts', 'MessageLevels', 'Integrations', 'RulesFiles']
   .map(name => readFileSync(new URL(`../web/src/components/${name}.tsx`, import.meta.url), 'utf8')).join('\n');
 const settings = SECTIONS.flatMap(s => s.groups.flatMap(g => g.settings));
 const ids = settings.map(d => d.id);
@@ -63,10 +63,12 @@ test('the page renders one SettingSection for each section, in the same order', 
   assert.deepEqual(order, SECTIONS.map(s => s.id));
 });
 
-test('the Rules files section exists and stays hidden until it has settings', () => {
-  const rules = SECTIONS.find(s => s.id === 'rules');
-  assert.ok(rules);
-  assert.equal(filterSettings('').count('rules'), 0);
+test('the Rules files section holds the controller and task session rules', () => {
+  const f = filterSettings('rules');
+  assert.equal(f.count('rules'), 2);
+  assert.equal(f.shows('controllerRules'), true);
+  assert.equal(f.shows('taskRules'), true);
+  assert.equal(filterSettings('claude.md').shows('taskRules'), true);
 });
 
 test('an empty search shows every setting', () => {
