@@ -1,7 +1,7 @@
 // Settings: what the controller and other agents may do without asking, and this machine's controller. The page has
 // one section for each entry of SECTIONS in settingsIndex.ts, a side list of those sections and a search box.
 import { useEffect, useRef, useState } from 'react';
-import type { MachineInfo, MessageLevel, PushRecord, Task } from '../api';
+import type { MachineInfo, MessageLevel, PushRecord, RestartImpact, RestartResult, Task } from '../api';
 import { api, autoReload, confirmEnd, setAutoReload, setConfirmEnd } from '../api';
 import { ControllerBox, MaxTasksInput, loadAccounts } from './Accounts';
 import { MessageLevels } from './MessageLevels';
@@ -108,6 +108,10 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
               <SettingGroup section="controller" id="controller" bare><ControllerBox ctl={ctl} setErr={setErr} /></SettingGroup>
             </SettingSection>
 
+            <SettingSection id="server">
+              <SettingGroup section="server" id="restart"><RestartBox /></SettingGroup>
+            </SettingSection>
+
             <SettingSection id="accounts">
               <SettingGroup section="accounts" id="accounts" title="Agents and accounts">
                 {info && <SettingItem id="defaultMaxParallel">
@@ -195,6 +199,49 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
       </SettingsFilterProvider>
     </div>
   );
+}
+
+// Restart the installed Taskboard server (POST /api/restart runs scripts/restart.mjs). The box first shows what a
+// restart does to running tasks; work that it stops needs a second click. The page reconnects by itself afterwards.
+function RestartBox() {
+  const [impact, setImpact] = useState<RestartImpact | null>(null);
+  const [last, setLast] = useState<RestartResult | null>(null);
+  const [state, setState] = useState<'idle' | 'checking' | 'restarting'>('idle');
+  const [err, setErr] = useState('');
+  useEffect(() => { api.restartLast().then(setLast).catch(() => {}); }, []);
+  const check = async () => { setErr(''); setState('checking'); try { setImpact(await api.restartCheck()); } catch (e) { setErr(String((e as Error).message || e)); } setState('idle'); };
+  const go = async () => {
+    setErr(''); setState('restarting');
+    try { await api.restartTaskboard(true); } catch (e) { setErr(String((e as Error).message || e)); setState('idle'); return; }
+    // wait for the new server, then show the script's result
+    const started = Date.now();
+    const poll = async () => {
+      const r = await api.restartLast().catch(() => null);
+      if (r && Date.parse(r.at) >= started) { setLast(r); setImpact(null); setState('idle'); return; }
+      if (Date.now() - started > 120000) { setErr('No result after 2 minutes. Read ~/.taskboard/restart.log.'); setState('idle'); return; }
+      setTimeout(() => void poll(), 2000);
+    };
+    setTimeout(() => void poll(), 3000);
+  };
+  const stops = impact ? impact.stops.length > 0 || impact.tmuxStops : false;
+  return <SettingItem id="restartServer">
+    <div className="ctl-box set-card">
+      <div><b>Restart Taskboard</b></div>
+      <div className="sub">Stops this server and starts the installed release again. It does not build or release code. You can also run <code>tb restart</code> in a terminal.</div>
+      {err && <div className="banner" role="alert">{err}</div>}
+      {!impact && <div><button className="btn" disabled={state !== 'idle'} onClick={() => void check()}>{state === 'checking' ? 'Checking…' : 'Restart Taskboard…'}</button></div>}
+      {impact && <div className={stops ? 'banner' : ''} role={stops ? 'alert' : undefined}>
+        <p>{impact.tmuxStops ? `The tmux server of the agents is in Taskboard's process group. A restart can stop all ${impact.sessions.length} agent sessions.` : `${impact.sessions.length} agent session${impact.sessions.length === 1 ? '' : 's'} keep running in tmux.`}</p>
+        {impact.stops.length > 0 && <><p>A restart stops this work:</p><ul>{impact.stops.map((s, i) => <li key={i}>#{s.num} {s.title}: {s.what}</li>)}</ul></>}
+        {impact.notes.map((n, i) => <p key={i} className="sub">{n}</p>)}
+        <div className="ap-a">
+          <button className="btn primary" disabled={state !== 'idle'} onClick={() => void go()}>{state === 'restarting' ? 'Restarting…' : stops ? 'Restart and stop this work' : 'Restart now'}</button>
+          <button className="btn" disabled={state === 'restarting'} onClick={() => setImpact(null)}>Cancel</button>
+        </div>
+      </div>}
+      {last && <div className="sub">Last restart {new Date(last.at).toLocaleString()}: {last.message.split('\n')[0]}</div>}
+    </div>
+  </SettingItem>;
 }
 
 // Keyboard shortcuts: every action in keys.ts with its keys. ＋ waits for the next key and adds it; × removes a key.

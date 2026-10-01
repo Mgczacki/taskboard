@@ -45,6 +45,7 @@ export function get(id: string): AskThread {
 }
 const save = (id: string, t: AskThread) => writeFileSync(file(id), JSON.stringify(t, null, 2));
 
+export const runningTasks = () => [...running.keys()];
 export function clear(id: string) { stop(id); save(id, { items: [] }); return get(id); }
 export function stop(id: string) { const p = running.get(id); if (p) p.kill('SIGTERM'); }
 

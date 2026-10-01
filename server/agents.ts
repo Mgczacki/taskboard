@@ -206,6 +206,8 @@ Account rules appear in \`tb accounts\`. Apply them when you choose an account.
 - When the user explicitly asks for a release or rebuild, start a task with \`tb new\`.
   State in the task prompt that the user explicitly authorized the release.
 - Never start a release on your own.
+- Run \`tb restart\` only when the user explicitly asks to restart Taskboard. It puts an Approve card on the dashboard.
+  Never start a restart on your own. Tasks cannot restart Taskboard.
 - You cannot use account limit resets. If an agent hit a limit, tell the user; they decide on the dashboard.
 - Never start more than 5 agents from one request without asking.
 - Never send to a task whose status is working unless the user says to interrupt it.
