@@ -25,6 +25,7 @@ import * as external from './external.ts';
 import * as machines from './machines.ts';
 import * as machine from './machine.ts';
 import * as rules from './rules.ts';
+import { typeCommand } from './type-command.ts';
 import * as trust from './trust.ts';
 import * as agyReview from './agy-review.ts';
 import { acquire } from './lock.ts';
@@ -775,6 +776,13 @@ app.post('/api/tasks/:id/send', async (req, res) => {
     store.update(t.id, { status: 'working', ask: '', statusSource: `Message sent by you${delivery.resumed ? ' after resuming the task' : ''}.` });
     return delivery;
   }, () => `Typed into #${t.num}.`);
+});
+// Hold to run: the dashboard types a "! <command>" that the user held the mouse button on (server/type-command.ts).
+// Only the dashboard page may call this. tb and agents send the token or x-tb-actor, so they are refused.
+app.post('/api/tasks/:id/type-command', async (req, res) => {
+  if (!req.get('origin') || !originOk(req.get('origin')!) || req.get('x-taskboard-token') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Only the dashboard can type a held command.' });
+  const t = store.get(req.params.id); if (!t) return res.status(404).end();
+  try { res.json(await typeCommand(t, req.body.command)); } catch (e) { fail(res, e); }
 });
 app.post('/api/tasks/:id/kill', async (req, res) => {
   const t = store.get(req.params.id); if (!t) return res.status(404).end();

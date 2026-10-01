@@ -11,6 +11,8 @@ import { taskboardKey } from '../keys';
 import { useStore } from '../api';
 import { openDocumentLink, type DocumentLink } from '../documentLinks';
 import { continues, findPaths, joinRows, type Row } from '../terminalPaths';
+import { commandAt, commandsFrom, type CellRow } from '../bangCommand';
+import { beginHold } from '../holdRun';
 
 const cssVar = (n: string, fallback: string) => getComputedStyle(document.documentElement).getPropertyValue(n).trim() || fallback;
 
@@ -82,6 +84,35 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
       if (event.type === 'click') activeLink();
     };
     for (const type of ['mousedown', 'mouseup', 'click'] as const) el.addEventListener(type, onModifiedMouse, true);
+    // Hold to run (bangCommand.ts): a "! <command>" that the agent printed, typed into this task's agent prompt
+    const holdable = () => !!taskId && !session && !taskId.includes('~') && tasksRef.current.some(t => t.id === taskId);
+    // buffer rows first to last, with the character and the foreground color of each cell
+    const cellRows = (first: number, last: number): CellRow[] => {
+      const buffer = term.buffer.active, rows: CellRow[] = [];
+      for (let i = first; i <= Math.min(last, buffer.length - 1); i++) {
+        const line = buffer.getLine(i), chars: string[] = [], colors: string[] = [];
+        for (let x = 0; x < term.cols; x++) {
+          const cell = line?.getCell(x);
+          chars.push(!cell ? ' ' : cell.getWidth() === 0 ? '' : cell.getChars() || ' ');
+          colors.push(cell ? `${cell.getFgColorMode()}:${cell.getFgColor()}` : '');
+        }
+        rows.push({ chars, colors, wrapped: !!line?.isWrapped });
+      }
+      return rows;
+    };
+    const holdHint = `Hold the mouse button for 3 seconds to type this command into the agent prompt and run it`;
+    const onHoldStart = (event: MouseEvent) => {
+      if (event.button !== 0 || modified(event) || event.altKey || event.shiftKey || !holdable()) return;
+      const screen = el.querySelector('.xterm-screen');
+      if (!screen) return;
+      const box = screen.getBoundingClientRect();
+      const col = Math.floor((event.clientX - box.left) / (box.width / term.cols)), row = Math.floor((event.clientY - box.top) / (box.height / term.rows));
+      if (col < 0 || col >= term.cols || row < 0 || row >= term.rows) return;
+      const y = term.buffer.active.viewportY + row, first = Math.max(0, y - 30);
+      const span = commandAt(cellRows(first, y + 30), y - first, col, term.cols);
+      if (span) beginHold(event, taskId, span.command);
+    };
+    el.addEventListener('mousedown', onHoldStart, true);
     const taskPattern = /(?:^|[\s(])(#\d+|task-\d+)(?=$|[\s),.;])/g;
     const linkCache = new Map<string, Promise<DocumentLink | null>>();
     const lookup = (path: string, fresh = false) => {
@@ -117,6 +148,17 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
           hover: () => { activeLink = () => dispatchEvent(new CustomEvent('taskboard:task-link', { detail: task.id })); drawUnderline(range(ref.start, ref.start + ref.text.length)); el.title = `${mac ? 'Command' : 'Control'}-click to open task #${num}`; },
           leave: () => { activeLink = null; underline.replaceChildren(); el.title = ''; },
         });
+      }
+      if (holdable()) {
+        const here = y - 1, first = Math.max(0, here - 30), around = cellRows(first, here + 30);
+        for (let r = 0; r <= here - first; r++) for (const span of commandsFrom(around, r, term.cols)) {
+          if (span.end.row < here - first) continue;
+          const where = { start: { x: span.start.col + 1, y: first + span.start.row + 1 }, end: { x: span.end.col + 1, y: first + span.end.row + 1 } };
+          refLinks.push({ range: where, text: span.command, activate: () => {},
+            hover: () => { drawUnderline(where); el.title = holdHint; },
+            leave: () => { underline.replaceChildren(); el.title = ''; },
+          });
+        }
       }
       if (!found.length) { callback(refLinks); return; }
       Promise.all(found.map(async match => {
@@ -233,7 +275,7 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
     term.textarea?.addEventListener('focus', onF);
     if (autoFocus) setTimeout(() => term.focus(), 50);
 
-    return () => { document.removeEventListener('visibilitychange', restoreDisplay); window.removeEventListener('focus', restoreDisplay); clearTimeout(sizeTimer); clearTimeout(redrawnTimer); clearInterval(stallCheck); io.disconnect(); parsed.dispose(); rendered.dispose(); if (records.get(id) === record) records.delete(id); ro.disconnect(); input.dispose(); provider?.dispose(); underline.remove(); for (const type of ['mousedown', 'mouseup', 'click'] as const) el.removeEventListener(type, onModifiedMouse, true); el.removeEventListener('paste', onPaste, true); term.textarea?.removeEventListener('focus', onF); ws?.dispose(); termRef.current = null; term.dispose(); };
+    return () => { document.removeEventListener('visibilitychange', restoreDisplay); window.removeEventListener('focus', restoreDisplay); clearTimeout(sizeTimer); clearTimeout(redrawnTimer); clearInterval(stallCheck); io.disconnect(); parsed.dispose(); rendered.dispose(); if (records.get(id) === record) records.delete(id); ro.disconnect(); input.dispose(); provider?.dispose(); underline.remove(); for (const type of ['mousedown', 'mouseup', 'click'] as const) el.removeEventListener(type, onModifiedMouse, true); el.removeEventListener('paste', onPaste, true); el.removeEventListener('mousedown', onHoldStart, true); term.textarea?.removeEventListener('focus', onF); ws?.dispose(); termRef.current = null; term.dispose(); };
   }, [taskId, session]);
 
   useEffect(() => { if (termRef.current) termRef.current.options.fontSize = fontSize; }, [fontSize]);

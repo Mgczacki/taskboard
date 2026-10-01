@@ -130,6 +130,7 @@ export const api = {
   importList: () => call<ImportCandidate[]>('GET', '/api/import'),
   importItems: (items: ImportCandidate[]) => call<{ made: Task[]; errors: string[] }>('POST', '/api/import', { items }),
   send: (id: string, text: string) => call('POST', `/api/tasks/${id}/send`, { text }),
+  typeCommand: (id: string, command: string) => call<{ ran: boolean; message: string }>('POST', `/api/tasks/${encodeURIComponent(id)}/type-command`, { command }),
   kill: (id: string) => call('POST', `/api/tasks/${id}/kill`, {}),
   restart: (id: string, when: 'now' | 'after-turn' | 'cancel') => call<Task>('POST', `/api/tasks/${encodeURIComponent(id)}/restart`, { when }),
   remove: (id: string) => call('DELETE', `/api/tasks/${encodeURIComponent(id)}`),

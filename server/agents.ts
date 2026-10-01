@@ -559,7 +559,7 @@ export function checkResumeAccount(t: Task) {
 }
 
 const delivering = new Set<string>();
-const blockingQuestion = /trust this folder|Do you trust the (files|contents)|Select login method|Please log in|Sign in with ChatGPT|Update available[\s\S]*(Update now|Skip)|approval requested|Allow this action|Approve this tool/i;
+export const blockingQuestion = /trust this folder|Do you trust the (files|contents)|Select login method|Please log in|Sign in with ChatGPT|Update available[\s\S]*(Update now|Skip)|approval requested|Allow this action|Approve this tool/i;
 const readyPrompt = /(?:^|\n)\s*[❯›>]\s*(?:$|\n)|\? for shortcuts/i;
 
 // Resume before typing into a task whose tmux session has ended.

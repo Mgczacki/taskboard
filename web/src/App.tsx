@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import type { Group, SpinOffExchange, Task } from './api';
 import { ATTN, api, fmtWait, setViewing, useStore } from './api';
 import { ACTIONS, CTX_NAME, fmtCombo, hit, hitIn, keyLabel, keysOf, keysText, useKeymap } from './keys';
@@ -20,6 +20,8 @@ import { StatsPage } from './components/Stats';
 import type { DocumentLink } from './documentLinks';
 import { previewHtml, readMarkdown } from './components/Docs';
 import { archiveTriageTask, confirmTriageArchive } from './triageArchive';
+import { cancelHold, holdView, subscribeHold } from './holdRun';
+import { HOLD_MS, SHOW_MS } from './bangCommand';
 
 type Page = 'list' | 'board' | 'canvas' | 'graph' | 'inbox' | 'permits' | 'accounts' | 'stats' | 'settings';
 // #list · #board · #canvas · #canvas:<view>  (view = g:<group> | needs | live | t:<id,id>) · #settings:<section>
@@ -51,6 +53,29 @@ function ToastNotice({ toast, dismiss }: { toast: Toast; dismiss: () => void }) 
       <span>{seconds}</span>
     </span>
     <button className="toast-dismiss" onClick={dismiss}>Dismiss</button>
+  </div>;
+}
+
+// The card for a hold on a "! <command>" (holdRun.ts). It shows the whole command and the task that gets it.
+function HoldCard({ tasks }: { tasks: Task[] }) {
+  const hold = useSyncExternalStore(subscribeHold, holdView);
+  if (!hold || (hold.phase === 'holding' && hold.elapsed < SHOW_MS)) return null;
+  const task = tasks.find(t => t.id === hold.taskId);
+  const where = task ? `#${task.num} ${task.title}` : hold.taskId;
+  const remaining = Math.max(0, HOLD_MS - hold.elapsed);
+  const circumference = 2 * Math.PI * 11;
+  const title = hold.phase === 'holding' ? `Running in ${(remaining / 1000).toFixed(1)} s` : hold.phase === 'typing' ? 'Typing the command' : hold.phase === 'ran' ? 'Command sent' : 'Command not run';
+  return <div className={`toast hold-card ${hold.phase}`} role="status">
+    <div className="b">
+      <b>{title}</b>
+      <pre className="hold-command">! {hold.command}</pre>
+      <small>{hold.message || (hold.phase === 'holding' ? `Types this into ${where} and presses Enter. Release the button, move the pointer or press Escape to cancel.` : `In ${where}`)}</small>
+    </div>
+    {hold.phase === 'holding' && <span className="toast-timer" aria-label={`Runs in ${Math.ceil(remaining / 1000)} seconds`}>
+      <svg viewBox="0 0 28 28" aria-hidden="true"><circle className="toast-timer-track" cx="14" cy="14" r="11" /><circle className="toast-timer-progress" cx="14" cy="14" r="11" strokeDasharray={circumference} strokeDashoffset={circumference * (1 - remaining / HOLD_MS)} /></svg>
+      <span>{Math.ceil(remaining / 1000)}</span>
+    </span>}
+    {hold.phase !== 'typing' && <button className="toast-dismiss" onClick={() => cancelHold()}>{hold.phase === 'holding' ? 'Cancel' : 'Dismiss'}</button>}
   </div>;
 }
 
@@ -281,7 +306,7 @@ export function App() {
             {a.returnable && <button className="btn" disabled={!cardComments[a.id]?.trim()} onClick={() => void api.giveBack(a.id, cardComments[a.id]).then(r => { if (r.result) toast(r.result); }).catch(e => toast((e as Error).message))}>Send back</button>}
             <button className="btn" onClick={() => api.decide(a.id, false)}>Deny</button><button className="btn ghost" onClick={() => a.actor === 'controller' ? openController() : setOpenId(a.actor)}>{a.actor === 'controller' ? 'Open controller' : 'Open task'}</button></div></>}
         </div>))}</div>}
-      <div className="toasts">{toasts.map(t => <ToastNotice key={t.id} toast={t} dismiss={() => setToasts(x => x.filter(y => y.id !== t.id))} />)}</div>
+      <div className="toasts"><HoldCard tasks={allTasks} />{toasts.map(t => <ToastNotice key={t.id} toast={t} dismiss={() => setToasts(x => x.filter(y => y.id !== t.id))} />)}</div>
     </div>
   );
 }
