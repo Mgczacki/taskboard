@@ -423,7 +423,7 @@ function pushNotice(task: store.Task, record: push.PushRecord) {
 }
 async function createPushRequest(task: store.Task, reason: string, options: { branch?: string; remote?: string; base?: string; thenRelease?: boolean }) {
     const state = await push.inspectPush(task, reason, options);
-    if (!state.fastForward && !state.forcePush) throw new Error('The remote branch does not allow a fast-forward push, and its head is not in a backup that tb git repair made for this task.');
+    if (!state.fastForward && !state.forcePush) throw new Error(state.forceRefusal || 'The push is not a fast-forward, and Taskboard cannot offer a force push. Ask the user what to do.');
     const id = randomUUID();
     if (!state.needsCard && !state.forcePush) {
       const record = push.recordPush(state, id);
