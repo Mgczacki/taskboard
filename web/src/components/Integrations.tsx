@@ -2,6 +2,7 @@
 // adds its own card here. The Inbox shows the messages and links here when a connection is missing.
 import { useEffect, useState } from 'react';
 import { request as a2aRequest, type Status } from './A2ANotes';
+import { SettingGroup, SettingItem } from './SettingsLayout';
 
 function useAction(load: () => Promise<void>) {
   const [busy, setBusy] = useState(false);
@@ -45,9 +46,7 @@ function A2ANotesCard() {
 }
 
 export function Integrations() {
-  return <>
-    <h3 className="set-h">Integrations</h3>
-    <p className="sub">The sign-ins that Taskboard uses. Each integration has its own card.</p>
-    <A2ANotesCard />
-  </>;
+  return <SettingGroup section="messages" id="integrations" title="Integrations" help="The sign-ins that Taskboard uses. Each integration has its own card." bare>
+    <SettingItem id="a2aNotes"><A2ANotesCard /></SettingItem>
+  </SettingGroup>;
 }

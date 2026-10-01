@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import type { MessageLevel } from '../api';
 import { request } from './messages';
+import { SettingGroup, SettingItem } from './SettingsLayout';
 
 type Direction = 'incoming' | 'outgoing';
 const LEVELS: Record<Direction, { label: string; options: [MessageLevel, string, string][]; risk: string }> = {
@@ -51,11 +52,9 @@ export function MessageLevels() {
     void save({ [direction]: level });
   };
   const confirm = async () => { if (!asking) return; await save({ [asking.direction]: asking.level, confirmLowerControl: true }); setAsking(null); };
-  return <>
-    <h3 className="set-h">Messages from other people</h3>
-    <p className="sub">Messages through A2A Notes. A2A Notes enforces these levels. Agents and the controller cannot change them.</p>
+  return <SettingGroup section="messages" id="levels" title="Messages from other people" help="Messages through A2A Notes. A2A Notes enforces these levels. Agents and the controller cannot change them." bare>
     {!policy ? <div className="ctl-box"><div className="sub">{error ? `The levels are not available: ${error}` : 'Loading…'} Set up A2A Notes under Integrations above.</div></div> : <>
-      {(['incoming', 'outgoing'] as Direction[]).map(direction => <div className="ctl-box" key={direction} role="radiogroup" aria-label={LEVELS[direction].label}>
+      {(['incoming', 'outgoing'] as Direction[]).map(direction => <SettingItem key={direction} id={direction === 'incoming' ? 'messageIncoming' : 'messageOutgoing'}><div className="ctl-box" role="radiogroup" aria-label={LEVELS[direction].label}>
         <b>{LEVELS[direction].label}</b>
         {LEVELS[direction].options.map(([level, title, text]) => <label className="opt" key={level}>
           <input type="radio" name={`message-${direction}`} disabled={busy} checked={(asking?.direction === direction ? asking.level : policy[direction]) === level} onChange={() => choose(direction, level)} />
@@ -65,9 +64,9 @@ export function MessageLevels() {
           <p>{LEVELS[direction].risk}</p>
           <div className="ap-a"><button className="btn primary" disabled={busy} onClick={() => void confirm()}>Change level</button><button className="btn" disabled={busy} onClick={() => setAsking(null)}>Cancel</button></div>
         </div>}
-      </div>)}
-      <div className="ctl-box"><label className="opt"><input type="checkbox" disabled={busy} checked={policy.checkBody} onChange={e => void save({ checkBody: e.target.checked })} /> Check drafts for private working notes and internal terms</label><div className="sub">When this is on, a draft with flagged text always needs your approval.</div></div>
-      <div className="ctl-box">
+      </div></SettingItem>)}
+      <SettingItem id="checkBody"><div className="ctl-box"><label className="opt"><input type="checkbox" disabled={busy} checked={policy.checkBody} onChange={e => void save({ checkBody: e.target.checked })} /> Check drafts for private working notes and internal terms</label><div className="sub">When this is on, a draft with flagged text always needs your approval.</div></div></SettingItem>
+      <SettingItem id="trustedPeople"><div className="ctl-box">
         <b>Trusted people</b>
         <div className="sub">A message from or to a person who is not on this list always needs your approval, at every level.</div>
         {error && <div className="banner">{error}</div>}
@@ -78,7 +77,7 @@ export function MessageLevels() {
         </div>
         {people.filter(p => !policy.trusted.some(t => t.address === p.address)).slice(0, 8).map(p => <div className="opt" key={p.address}>{p.name}{p.title ? <span className="sub"> · {p.title}</span> : null}
           <button className="btn" disabled={busy} onClick={() => void act(async () => { await request('/trusted', { address: p.address, name: p.name, trusted: true }); setQuery(''); })}>Trust this person</button></div>)}
-      </div>
+      </div></SettingItem>
     </>}
-  </>;
+  </SettingGroup>;
 }
