@@ -24,6 +24,7 @@ import * as load from './load.ts';
 import * as external from './external.ts';
 import * as machines from './machines.ts';
 import * as machine from './machine.ts';
+import * as rules from './rules.ts';
 import * as trust from './trust.ts';
 import * as agyReview from './agy-review.ts';
 import { acquire } from './lock.ts';
@@ -523,6 +524,14 @@ app.patch('/api/info', async (req, res) => {
     if (trustWorkspaces === false) trust.restore();
     res.json(info());
   } catch (e) { fail(res, e); }
+});
+// The user's rules files for the controller and for task sessions (rules.ts). Agents can read them; only the dashboard
+// saves them. A saved file reaches the next new session.
+app.get('/api/rules', (_req, res) => res.json(rules.RULES_KINDS.map(rules.info)));
+app.put('/api/rules/:kind', (req, res) => {
+  if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Rules files are changed on the dashboard.' });
+  if (!rules.isKind(req.params.kind)) return res.status(404).json({ error: 'There is no such rules file.' });
+  try { res.json(rules.write(req.params.kind, req.body?.text)); } catch (e) { fail(res, e); }
 });
 app.get('/api/machines', (_req, res) => res.json([{ id: 'local', name: machine.get().name, url: URL_BASE, local: true, online: true }, ...machines.all().map(m => ({ id: m.id, name: m.name, url: m.url, online: !!machines.stateOf(m.id)?.online, latency: machines.stateOf(m.id)?.latency, lastSeen: machines.stateOf(m.id)?.lastSeen, error: machines.stateOf(m.id)?.error, tasks: machines.stateOf(m.id)?.tasks.length || 0 }))]));
 app.post('/api/machines', async (req, res) => {
