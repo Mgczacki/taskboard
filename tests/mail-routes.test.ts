@@ -40,7 +40,7 @@ test('mail routes restrict readers and require separate approval and routing', a
   try {
     const failedSignIn = await fetch(base + '/slack/callback?state=expired&code=private-code', { redirect: 'manual' });
     assert.equal(failedSignIn.status, 302);
-    assert.equal(failedSignIn.headers.get('location'), '/#inbox');
+    assert.equal(failedSignIn.headers.get('location'), '/#settings');
     const failure = (await call('', 'user')).data.error;
     assert.match(failure, /Sign-in expired/);
     assert.ok(!failure.includes('private-code'));

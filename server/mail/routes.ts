@@ -24,6 +24,9 @@ import { Avatars, isSlackUser } from './avatars.ts';
 // Set by mountMail: makes the approval cards again after the permission levels change on the Settings page.
 let levelsChanged = () => {};
 export const messageLevelsChanged = () => levelsChanged();
+// Set by mountMail: the Slack name and the picture address of a member of the connected workspace, from the same
+// store as the Graph (server/mail/avatars.ts). Other modules (server/a2anotes/routes.ts) use it to show people.
+export let slackPerson: (user: string) => { name?: string; picture: string } | undefined = () => undefined;
 
 const origins = new Set([URL_BASE, `http://localhost:${PORT}`, 'http://localhost:5173', 'http://127.0.0.1:5173']);
 export function human(req: Request) {
@@ -217,7 +220,7 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
       if (bound && bound !== identity.user) { slack.disconnect(); throw new Error('This mailbox belongs to a different Slack user'); }
       store.change(d => { d.owner = identity.user; });
       signInError = '';
-      res.redirect('/#inbox');
+      res.redirect('/#settings');
     } catch (error) {
       const reason = error instanceof Error ? error.message : '';
       const known = new Set([
@@ -231,7 +234,7 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
       signInError = known.has(reason) ? `${reason}. Select Connect Slack to try again.`
         : error instanceof SlackError ? `${error.message}. Select Connect Slack to try again.`
         : 'Taskboard could not complete the connection to Slack. Select Connect Slack to try again.';
-      res.redirect('/#inbox');
+      res.redirect('/#settings');
     }
   });
   app.use('/api/mail', (req, res, next) => {
@@ -281,6 +284,12 @@ export function mountMail(app: Express, options: { review?: typeof reviewMessage
   // The Graph page (web/src/components/Graph.tsx): the Slack people in the mailbox and a short record of each message
   // with them. The full text stays out of this list. The page loads one message with GET /api/mail/:id on a click.
   const avatars = new Avatars(join(TB_DIR, 'avatars'), slack);
+  slackPerson = user => {
+    if (!isSlackUser(user)) return undefined;
+    const name = store.read().contacts.find(c => c.user === user)?.name || avatars.name(user);
+    if (!name) avatars.warm(user);
+    return { name, picture: `/api/mail/avatar/${user}` };
+  };
   app.get('/api/mail/graph', endpoint(req => {
     user(req);
     const d = store.read(), persons = new Set<string>();

@@ -318,14 +318,8 @@ export function InboxPage(props: { tasks: Task[]; open: (id: string, tab?: 'term
     </nav>
     {(error || loadError) && <p role="alert">{error || loadError}</p>}
     {tab === 'a2anotes' ? <A2ANotesPanel tasks={props.tasks} /> : tab === 'documents' ? <Documents {...props} /> : <>
-      <details className="mail-settings"><summary>Slack connection and approval settings</summary>
-        <p>{data?.identity ? `Connected as ${data.identity.name || data.identity.user}` : 'Connect your Slack account to exchange private messages.'}</p>
-        {data?.identity?.needsReconnect && <p role="alert">Reconnect Slack to grant the current permissions. Disconnect Slack, then connect it again.</p>}
-
-        <button className="btn" disabled={busy} onClick={() => act(async () => { if (data?.identity) await request('/slack/disconnect', {}); else { const r = await request('/slack/connect', {}); location.assign(r.url); } })}>{data?.identity ? 'Disconnect Slack' : 'Connect Slack'}</button>
-        <p>Taskboard reads Taskboard messages in your Slack direct conversations.</p>
-        <p>Incoming level {data?.levels.incoming ?? '…'}, outgoing level {data?.levels.outgoing ?? '…'}. Approval levels and trusted people are on the <a href="#settings">Settings page</a>.</p>
-      </details>
+      <p className="mail-meta">{data?.identity ? `Connected to Slack as ${data.identity.name || data.identity.user}.` : 'Slack is not connected.'} Slack sign-in is on the <a href="#settings">Settings page</a>, under Integrations. Approval levels and trusted people are on the same page.</p>
+      {data?.identity?.needsReconnect && <p role="alert">Reconnect Slack on the <a href="#settings">Settings page</a> to grant the current permissions.</p>}
       <div className="mail-tabs">
         {tab === 'inbox' && <label className="opt"><input className="mail-checkbox" type="checkbox" checked={dismissed} onChange={e => setDismissed(e.target.checked)} />Show dismissed</label>}
 
