@@ -11,7 +11,8 @@ interface Summary {
 }
 interface Detail extends Summary { body: string; review: { reason: string } | null; body_check: { flags: { reason: string; text: string; code: string }[] } | null;
   agent_file: { name: string; sha256: string } | null; failure?: { code: string; reason: string }; error: string | null }
-interface Status { enabled: boolean; url?: string; error?: string; identity?: { address?: string; name?: string }; connection?: { signed_in: boolean; last_scan_at: string | null; last_error: string | null; stale: boolean; missing_scopes: string[] } }
+interface Setup { installed: boolean; version?: string; configured: boolean; running: boolean; serviceVersion?: string; linked: boolean; updateAvailable: boolean; folder: string; port: number }
+interface Status { enabled: boolean; url?: string; error?: string; setup?: Setup; identity?: { address?: string; name?: string }; connection?: { signed_in: boolean; last_scan_at: string | null; last_error: string | null; stale: boolean; missing_scopes: string[] } }
 
 async function request(path: string, body?: unknown) {
   const response = await fetch('/api/a2anotes' + path, { method: body === undefined ? 'GET' : 'POST', headers: { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -37,18 +38,31 @@ export function A2ANotesPanel({ tasks }: { tasks: Task[] }) {
   const show = (id: string) => act(async () => { const d = await request(`/messages/${encodeURIComponent(id)}`); setOpen(o => ({ ...o, [id]: d })); });
 
   if (!status) return <p>Loading A2A Notes…</p>;
+  // Setup starts the A2A Notes service and connects Taskboard to it (server/a2anotes/setup.ts)
+  const runSetup = () => act(() => request('/setup', {}));
+  const signIn = () => act(async () => { const link = await request('/slack-sign-in', {}); location.assign(link.url); });
+  const s = status.setup;
   if (!status.enabled) return <section className="mail-settings">
-    <p>A2A Notes is off on this Taskboard. The Messages and Sent tabs keep working as before.</p>
-    <p>To turn it on, run the A2A Notes service and add its address and client tokens to a2anotes.json in the Taskboard folder. The package README lists the steps.</p>
+    <p>A2A Notes sends messages between people and their agents over Slack. It runs as its own service on this computer. The Messages and Sent tabs keep working as before.</p>
+    {s && !s.installed ? <p role="alert">A2A Notes is not installed with this Taskboard. Run pnpm install in the Taskboard folder.</p>
+      : <p>Setup starts the service{s?.running ? ' (it is already running)' : ''}, keeps it running after you sign in to this computer, and connects Taskboard to it. Then you connect Slack.</p>}
+    {error && <p role="alert">{error}</p>}
+    <button className="btn" disabled={busy || (!!s && !s.installed)} onClick={runSetup}>{busy ? 'Setting up…' : 'Set up A2A Notes'}</button>
   </section>;
   const c = status.connection;
   return <div className="a2a-notes">
     <section className="mail-settings">
-      {status.error ? <p role="alert">{status.error}</p> : <p>{c?.signed_in ? `Connected as ${status.identity?.name} (${status.identity?.address}).` : 'The A2A Notes service is not connected to Slack.'} Last scan: {c?.last_scan_at ? new Date(c.last_scan_at).toLocaleString() : 'never'}{c?.stale ? '. The inbox may be out of date.' : '.'}</p>}
+      {status.error ? <p role="alert">{status.error}</p> : <p>{c?.signed_in
+        ? <>Connected as {status.identity?.name} ({status.identity?.address}). Last scan: {c.last_scan_at ? new Date(c.last_scan_at).toLocaleString() : 'never'}{c.stale ? '. The inbox may be out of date.' : '.'}</>
+        : 'A2A Notes is running. Connect Slack to send and receive messages.'}</p>}
       {c?.last_error && <p role="alert">Last scan error: {c.last_error}</p>}
       {!!c?.missing_scopes.length && <p role="alert">Missing Slack scopes: {c.missing_scopes.join(', ')}</p>}
+      {s?.updateAvailable && <p>A2A Notes {s.version} is installed. The running service is version {s.serviceVersion}. Restart it to use the new version.</p>}
       <div className="mail-tabs">
-        <button className="btn" disabled={busy} onClick={() => act(async () => { const link = await request('/page-link', {}); window.open(link.url, '_blank', 'noopener'); })}>Open the A2A Notes review page</button>
+        {status.error && s && !s.running && <button className="btn" disabled={busy} onClick={runSetup}>{busy ? 'Starting…' : 'Start A2A Notes'}</button>}
+        {s?.updateAvailable && <button className="btn" disabled={busy} onClick={runSetup}>{busy ? 'Restarting…' : 'Restart A2A Notes'}</button>}
+        {!status.error && !c?.signed_in && <button className="btn" disabled={busy} onClick={signIn}>Connect Slack</button>}
+        <button className="btn" disabled={busy || !!status.error} onClick={() => act(async () => { const link = await request('/page-link', {}); window.open(link.url, '_blank', 'noopener'); })}>Open the A2A Notes review page</button>
         <button className="btn" disabled={busy || !c?.signed_in} onClick={() => act(() => request('/sync', {}))}>{busy ? 'Working…' : 'Check Slack now'}</button>
       </div>
     </section>
