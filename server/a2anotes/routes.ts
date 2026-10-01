@@ -7,7 +7,7 @@ import express, { type Express, type Request, type Response } from 'express';
 import { randomUUID, createHash } from 'node:crypto';
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, join, sep } from 'node:path';
-import { TB_DIR, TOKEN } from '../config.ts';
+import { TB_DIR, TOKEN, URL_BASE } from '../config.ts';
 import * as tasks from '../store.ts';
 import * as docs from '../docs.ts';
 import type { Delivery } from '../inbox-delivery.ts';
@@ -15,6 +15,7 @@ import { isControllerToken } from '../mail/auth.ts';
 import { human } from '../mail/routes.ts';
 import { savePrivate } from '../mail/store.ts';
 import { A2AError, A2ANotesClient, readSettings, type Role, type Settings } from './client.ts';
+import { setup, setupState } from './setup.ts';
 
 const MAX_FILE = 10 * 1024 * 1024;
 export interface A2ADeps { deliver: (task: string, name: string) => Promise<Delivery> }
@@ -22,7 +23,8 @@ interface Route { task: string; file: string; at: string; by: 'person' | 'review
 
 export function mountA2ANotes(app: Express, options: { delivery?: A2ADeps; settings?: () => Settings; background?: boolean; dir?: string } = {}) {
   const dir = options.dir || TB_DIR;
-  const settingsFor = options.settings || (() => readSettings(join(dir, 'a2anotes.json')));
+  const settingsFile = join(dir, 'a2anotes.json');
+  const settingsFor = options.settings || (() => readSettings(settingsFile));
   let client: A2ANotesClient | undefined, clientKey = '';
   const service = () => {
     const settings = settingsFor();
@@ -108,12 +110,14 @@ export function mountA2ANotes(app: Express, options: { delivery?: A2ADeps; setti
   app.get('/api/a2anotes/status', endpoint(async req => {
     need(req, 'person', 'reviewer', 'agent');
     const settings = settingsFor();
-    if (!settings.enabled) return { enabled: false };
+    // the dashboard also gets the setup state, so it can offer the setup and update buttons
+    const extra = async () => role(req) === 'person' ? { setup: await setupState(settings) } : {};
+    if (!settings.enabled) return { enabled: false, ...await extra() };
     const r = role(req)!;
     try {
       const [identity, connection] = await Promise.all([service().call(r, 'a2anotes_identity'), service().call(r, 'a2anotes_connection_status')]);
-      return { enabled: true, url: settings.url, identity, connection };
-    } catch (e) { return { enabled: true, url: settings.url, error: (e as Error).message, code: (e as A2AError).code }; }
+      return { enabled: true, url: settings.url, identity, connection, ...await extra() };
+    } catch (e) { return { enabled: true, url: settings.url, error: (e as Error).message, code: (e as A2AError).code, ...await extra() }; }
   }));
   app.get('/api/a2anotes/people', endpoint(req => service().call(need(req, 'person', 'reviewer', 'agent'), 'a2anotes_find_people', { query: String(req.query.q || '') })));
   app.get('/api/a2anotes/messages', endpoint(async req => {
@@ -185,6 +189,14 @@ export function mountA2ANotes(app: Express, options: { delivery?: A2ADeps; setti
     return service().call(need(req, 'person'), 'a2anotes_set_policy', { ...(b.incoming ? { incoming: Number(b.incoming) } : {}), ...(b.outgoing ? { outgoing: Number(b.outgoing) } : {}), ...(typeof b.checkBody === 'boolean' ? { checkBody: b.checkBody } : {}) });
   }));
   app.post('/api/a2anotes/page-link', endpoint(req => service().call(need(req, 'person'), 'a2anotes_review_page_link')));
+  // Setup from the dashboard (server/a2anotes/setup.ts). Only the person can start it.
+  app.post('/api/a2anotes/setup', endpoint(async req => {
+    need(req, 'person');
+    if (options.settings) throw new A2AError('not_configured', 'This server has fixed A2A Notes settings.');
+    return { setup: await setup(settingsFile, settingsFor) };
+  }));
+  // Slack sign-in for the A2A Notes service. After sign-in, Slack returns the browser to the Taskboard Inbox.
+  app.post('/api/a2anotes/slack-sign-in', endpoint(req => service().call(need(req, 'person'), 'a2anotes_slack_sign_in', { return_to: `${URL_BASE}/#inbox` })));
   app.post('/api/a2anotes/sync', endpoint(async req => { const r = need(req, 'person', 'reviewer', 'agent'); const status = await service().call(r, 'a2anotes_sync'); await checkIncoming(); return status; }));
 
   // The service scans Slack itself. Taskboard only asks for new held messages that the controller may approve.
