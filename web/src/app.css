@@ -82,6 +82,16 @@
 .wh .b { background: none; border: 0; color: var(--dim); cursor: pointer; padding: 3px 5px; border-radius: 4px; font-size: 12px; }
 .wh .b:hover { background: var(--hover); color: var(--text); }
 .win .wb { flex: 1; min-height: 0; display: flex; }
+.wh .grip { cursor: grab; color: var(--dim); font-size: 13px; line-height: 1; padding: 2px 1px; margin-right: -3px; }
+.wh .grip:hover { color: var(--text); }
+/* dragging a window to a new position: the dragged window is faded and a bar in the gap marks the drop slot.
+   The bar is an outer shadow because .win clips its content (overflow: hidden). */
+.win.dragging { opacity: .45; }
+.win.dragging .wh, .win.dragging .grip { cursor: grabbing; }
+.win.slot-before { box-shadow: -6px 0 0 0 var(--accent); }
+.win.slot-after { box-shadow: 6px 0 0 0 var(--accent); }
+.win.vslot.slot-before { box-shadow: 0 -6px 0 0 var(--accent); }
+.win.vslot.slot-after { box-shadow: 0 6px 0 0 var(--accent); }
 .win .wb .xterm-box { flex: 1; }
 
 .emptyview { margin: 12vh auto; max-width: 520px; text-align: center; color: var(--muted); }

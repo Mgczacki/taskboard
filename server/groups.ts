@@ -85,6 +85,24 @@ export function reorder(ids: string[]): Group[] {
   emit();
   return all();
 }
+// Puts the tasks of `ids` in that order inside group `id`. The Canvas page shows the tasks of a group in the order of
+// its tasks list, so this moves the terminals on the page. Only the places of the listed tasks change: a task that
+// `ids` leaves out (archived or suspended, so not on the page) keeps its place. An id that the group does not list is
+// ignored, so this never adds a task to the group or takes one out of it.
+export function reorderTasks(id: string, ids: string[]): Group {
+  const g = groups.get(id);
+  if (!g) throw new Error('The group no longer exists.');
+  const listed = [...new Set(ids)].filter(t => g.tasks.includes(t));
+  const places = g.tasks.map((t, i) => listed.includes(t) ? i : -1).filter(i => i >= 0);
+  const next = [...g.tasks];
+  places.forEach((at, i) => { next[at] = listed[i]; });
+  if (next.every((t, i) => t === g.tasks[i])) return g;
+  const before = g.tasks;
+  g.tasks = next;
+  try { write(g); } catch (e) { g.tasks = before; throw e; }
+  emit();
+  return g;
+}
 export function remove(id: string): Group | undefined {
   const g = groups.get(id); if (!g) return;
   groups.delete(id); const f = join(DIR, id + '.md'); if (existsSync(f)) unlinkSync(f); emit(); return g;

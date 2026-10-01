@@ -3,7 +3,7 @@
 // Grid, Rows. The keys are in keys.ts (⌃⌥ + key by default, so typing into agents is not affected).
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Group, SpinOffExchange, Task } from '../api';
-import { ATTN, STATUS_LABEL, api, confirmEnd } from '../api';
+import { ATTN, STATUS_LABEL, api, confirmEnd, useStore } from '../api';
 import { AgentChip, Dot, MachineChip, WhereChip } from './ui';
 import { Terminal, terminalDebugRecord } from './Terminal';
 import { hit as key, hitIn, keyLabel, keysText, useKeymap } from '../keys';
@@ -12,6 +12,7 @@ import { archiveAll, archiveAndDelete, archivePlan, restoreAll, restoreGroupAndT
 import { dropHint, planCanvasTabDrop, planUngroup, type DropPlan } from '../groupMove';
 import { runGroupChange } from '../groupActions';
 import { inOrder, moveBy, moveToSlot, slotAt, slotHint } from '../groupOrder';
+import { orderKey, renderOrder, slotNear, tileHint, withSavedOrder } from '../tileOrder';
 
 type Layout = 'columns' | 'grid' | 'rows';
 const MINW = 640;
@@ -66,6 +67,13 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
   useEffect(() => setPendingOrder(null), [saved]);
   const groups = useMemo(() => inOrder(saved, pendingOrder), [saved, pendingOrder]);
   const draggedTab = useRef(false); // true from the end of a tab drag until its click event, so the drop does not open the tab
+  // Dragging a window: the dragged task and the slot (gap between two windows on screen) under the pointer (tileOrder.ts).
+  const [tileDrag, setTileDrag] = useState<{ id: string; slot: number | null } | null>(null);
+  // The saved order of the views that are not a group (server/canvasOrder.ts).
+  const savedOrder = useStore().canvasOrder;
+  // The new window order of a view until the server sends the saved order back, so the windows do not jump back.
+  const [pendingTiles, setPendingTiles] = useState<{ view: string; ids: string[] } | null>(null);
+  useEffect(() => setPendingTiles(null), [saved, savedOrder, view]);
   const [ending, setEnding] = useState<string | null>(null); // the window whose header asks "End & archive?"
   const [archiving, setArchiving] = useState<{ group: Group; deleteGroup: boolean } | null>(null);
   const [asking, setAsking] = useState<Set<string>>(new Set()); // tiles with the Ask panel open
@@ -87,8 +95,12 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
   const ids = useMemo(() => {
     let base: string[] = view.startsWith('g:') ? (group?.tasks || []) : view.startsWith('t:') ? view.slice(2).split(',') : view === 'ungrouped' ? ungrouped.filter(id => !hidden.includes(id)) : (frozen || []);
     base = [...base, ...extra.filter(x => !base.includes(x))];
+    // a group view shows the order of the group's tasks list; the other views have their own saved order
+    const key = orderKey(view);
+    if (key) base = withSavedOrder(base, savedOrder[key]);
+    if (pendingTiles?.view === view) base = withSavedOrder(base, pendingTiles.ids);
     return base.filter(id => live(tasks.find(t => t.id === id)));
-  }, [view, group, ungrouped, hidden, frozen, extra, tasks]);
+  }, [view, group, ungrouped, hidden, frozen, extra, tasks, savedOrder, pendingTiles]);
   const suspendedHere = (view.startsWith('g:') ? (group?.tasks || []) : view.startsWith('t:') ? view.slice(2).split(',') : view === 'ungrouped' ? ungrouped : []).map(id => tasks.find(t => t.id === id)).filter((t): t is Task => !!t && t.status === 'suspended');
   const newInSmart = (view === 'needs' || view === 'live') && frozen ? liveSet().filter(x => !frozen.includes(x)).length : 0;
 
@@ -202,6 +214,7 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
       else if (key(e, 'layout')) setLayout(l => l === 'columns' ? 'grid' : l === 'grid' ? 'rows' : 'columns');
       else if (key(e, 'focusMode')) setFocusMode(!focusMode);
       else if (key(e, 'groupLeft') || key(e, 'groupRight')) { if (group && !solo) reorderTabs(group.id, moveBy(groups.map(g => g.id), group.id, key(e, 'groupLeft') ? -1 : 1)); }
+      else if (key(e, 'windowEarlier') || key(e, 'windowLater')) { if (focused && !maxId) { const next = moveBy(wins.map(t => t.id), focused, key(e, 'windowEarlier') ? -1 : 1); reorderTiles(focused, next); if (next && per) setPage(Math.floor(next.indexOf(focused) / per)); } }
       else if (key(e, 'newGroup')) setMenu('new');
       else if (key(e, 'canvasNewTask')) newTask();
       else if (key(e, 'nextView')) { if (!solo) turnView(1); }
@@ -226,24 +239,38 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
     addEventListener('mousemove', on); return () => removeEventListener('mousemove', on);
   }, [focusMode, menu]);
 
-  // Drag a window header onto a tab. A group tab moves the task from the current group, or adds it from another view.
-  // The Ungrouped tab takes the task out of the group of the current tab, or out of
-  // every group when the current tab is not a group. A tab that refuses the drop shows why (groupMove.ts).
+  // Drag a window by its header (the ⠿ handle shows where) to move it. Two kinds of drop:
+  // - between two windows: the window moves to that position in this view. Its groups do not change.
+  // - on a tab: a group tab moves the task from the current group, or adds it from another view. The Ungrouped tab
+  //   takes the task out of the group of the current tab, or out of every group when the current tab is not a group.
+  //   A tab that refuses the drop shows why (groupMove.ts).
+  // A bar shows the drop position between the windows. Esc cancels the drag.
   const startDrag = (e: React.PointerEvent, id: string) => {
-    if ((e.target as HTMLElement).closest('button')) return;
+    if (e.button !== 0 || (e.target as HTMLElement).closest('button')) return;
     if (e.metaKey || e.shiftKey) { toggleSel(id); return; }
     const num = tasks.find(t => t.id === id)?.num ?? '?';
     const fromGroup = group?.id;
-    const sx = e.clientX, sy = e.clientY; let moving = false, key: string | null = null, plan: DropPlan | null = null, x = sx, y = sy;
+    const order = wins.map(t => t.id);
+    const first = per && !maxId ? pg * per : 0; // the place in `order` of the first window on screen
+    const onScreen = shown.map(t => t.id);
+    const sx = e.clientX, sy = e.clientY; let moving = false, key: string | null = null, plan: DropPlan | null = null, next: string[] | null = null, x = sx, y = sy;
     const ghost = document.createElement('div');
-    const idle = `#${num} → drop on a group tab or on Ungrouped`;
+    const idle = `#${num} → drop between two windows, on a group tab or on Ungrouped`;
     const show = () => {
       const tab = (document.elementFromPoint(x, y) as HTMLElement | null)?.closest('[data-drop]') as HTMLElement | null;
       key = tab ? tab.dataset.drop! : null;
       plan = planCanvasTabDrop(id, num, groups, key, fromGroup);
+      // over the stage (and not over a tab), the slot between the windows on screen; a maximized window has no slot
+      const box = stage.current?.getBoundingClientRect();
+      const inStage = !tab && !maxId && !!box && x >= box.left && x <= box.right && y >= box.top && y <= box.bottom;
+      const rects = onScreen.map(w => stage.current?.querySelector(`[data-win="${w}"]`)?.getBoundingClientRect()).filter((r): r is DOMRect => !!r);
+      let slot = inStage && rects.length === onScreen.length ? slotNear(rects, x, y, layout === 'rows') : null;
+      next = slot === null ? null : moveToSlot(order, id, first + slot);
+      if (!next) slot = null;
+      setTileDrag({ id, slot });
       const refused = plan && 'refused' in plan ? plan.refused : undefined;
-      ghost.textContent = !plan ? idle : 'change' in plan ? `#${num} → ${dropHint(plan.change)}` : `⊘ ${refused}`;
-      ghost.classList.toggle('refused', !!refused);
+      ghost.textContent = inStage ? tileHint(next, id, num) : !plan ? idle : 'change' in plan ? `#${num} → ${dropHint(plan.change)}` : `⊘ ${refused}`;
+      ghost.classList.toggle('refused', !inStage && !!refused);
       setDropTab(key ? { key, refused } : null);
     };
     const mv = (ev: PointerEvent) => {
@@ -251,17 +278,41 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
       if (!moving) { moving = true; ghost.className = 'drag-ghost'; document.body.appendChild(ghost); }
       x = ev.clientX; y = ev.clientY;
       ghost.style.left = x + 12 + 'px'; ghost.style.top = y + 12 + 'px';
+      // near the left or right edge of a stage that scrolls sideways, scroll it so the windows out of view can be reached
+      const el = stage.current, box = el?.getBoundingClientRect();
+      if (el && box && y >= box.top && y <= box.bottom) { if (x < box.left + 40) el.scrollLeft -= 24; else if (x > box.right - 40) el.scrollLeft += 24; }
       show();
     };
-    const up = (ev: PointerEvent) => {
-      removeEventListener('pointermove', mv); removeEventListener('pointerup', up);
-      ghost.remove(); setDropTab(null);
-      if (!moving || !key) return;
-      x = ev.clientX; y = ev.clientY; show(); setDropTab(null);
-      if (plan && 'change' in plan) runGroupChange(plan.change, toast); else if (plan) toast(plan.refused + '.');
+    const end = () => {
+      removeEventListener('pointermove', mv); removeEventListener('pointerup', up); removeEventListener('keydown', esc, true);
+      ghost.remove(); setDropTab(null); setTileDrag(null);
     };
-    addEventListener('pointermove', mv); addEventListener('pointerup', up);
+    const up = (ev: PointerEvent) => {
+      end();
+      if (!moving) return;
+      x = ev.clientX; y = ev.clientY; show(); setDropTab(null); setTileDrag(null);
+      if (next) reorderTiles(id, next);
+      else if (!key) return;
+      else if (plan && 'change' in plan) runGroupChange(plan.change, toast); else if (plan) toast(plan.refused + '.');
+    };
+    const esc = (ev: KeyboardEvent) => { if (ev.key === 'Escape') { ev.preventDefault(); ev.stopPropagation(); end(); } };
+    addEventListener('pointermove', mv); addEventListener('pointerup', up); addEventListener('keydown', esc, true);
   };
+
+  // Saves a new window order for this view. Undo puts back the order from before the change.
+  const reorderTiles = (moved: string, next: string[] | null) => {
+    if (!next) return;
+    const before = wins.map(t => t.id);
+    const num = tasks.find(t => t.id === moved)?.num ?? '?';
+    const at = view, inGroup = group?.id, k = orderKey(view);
+    const save = (list: string[]) => inGroup ? api.reorderGroupTasks(inGroup, list) : api.setCanvasOrder(k!, list);
+    setPendingTiles({ view: at, ids: next });
+    save(next).then(
+      () => toast(`Moved #${num} to position ${next.indexOf(moved) + 1} of ${next.length}.`, { label: 'Undo', fn: () => { setPendingTiles({ view: at, ids: before }); save(before).catch(e => { setPendingTiles(null); toast(`Could not undo the move: ${e instanceof Error ? e.message : String(e)}`); }); } }),
+      e => { setPendingTiles(null); toast(`Could not save the window order: ${e instanceof Error ? e.message : String(e)}`); });
+  };
+  // the bar for the drop slot: before the window at the slot, or after the last window for the slot at the end
+  const tileSlotClass = (i: number) => tileDrag?.slot === i ? 'slot-before' : tileDrag?.slot === shown.length && i === shown.length - 1 ? 'slot-after' : '';
 
   // Saves a new tab order. Undo puts back the order from before the change.
   const reorderTabs = (moved: string, next: string[] | null) => {
@@ -366,10 +417,11 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
       {archiving && <ArchiveAllPanel g={archiving.group} deleteGroup={archiving.deleteGroup} groups={groups} tasks={tasks} close={() => setArchiving(null)} onDeleted={() => { if (view === 'g:' + archiving.group.id) setView('live'); }} onRestored={() => setView('g:' + archiving.group.id)} onEnded={ids => { if (panelTaskId && ids.includes(panelTaskId)) openPanel(null); }} toast={toast} />}
       <div className="stage-grid" ref={stage} style={style}>
         {!wins.length && <div className="emptyview"><h2>{group ? `“${group.name}” is empty` : view === 'ungrouped' && !hidden.length ? 'Every live task is in a group' : 'No windows'}</h2><p>Use <b>＋ New task</b> to start an agent here. Use <b>＋ Add window</b> to show a task that already exists.</p></div>}
-        {shown.map((t, i) => (
-          <div key={t.id} data-win={t.id} className={`win ${t.status} ${focused === t.id ? 'focus' : ''} ${selected.has(t.id) ? 'selected' : ''}`} style={layout === 'grid' && !maxId ? { gridColumn: `span ${i < tileCount - lastRow ? lastRow : gridCols}` } : undefined} onMouseDown={() => { setFocused(t.id); if (t.status === 'unread') api.seen(t.id); }}>
+        {/* renderOrder: the page keeps the windows in one fixed order and CSS order puts them in place, so a move does not remount a terminal */}
+        {renderOrder(shown).map(({ item: t, at: i }) => (
+          <div key={t.id} data-win={t.id} className={`win ${t.status} ${focused === t.id ? 'focus' : ''} ${selected.has(t.id) ? 'selected' : ''} ${tileDrag?.id === t.id ? 'dragging' : ''} ${tileSlotClass(i)} ${layout === 'rows' ? 'vslot' : ''}`} style={{ order: i, ...(layout === 'grid' && !maxId ? { gridColumn: `span ${i < tileCount - lastRow ? lastRow : gridCols}` } : {}) }} onMouseDown={() => { setFocused(t.id); if (t.status === 'unread') api.seen(t.id); }}>
             <div className="wh" onPointerDown={e => startDrag(e, t.id)} onDoubleClick={() => setMaxId(m => m ? null : t.id)}>
-              <span className="ix">{i + 1}</span><Dot s={t.status} /><span className="n">#{t.num}</span><span className="ti">{t.title}</span>
+              <span className="grip" title={`Drag to move this window between two others, or onto a group tab. Move it one place: ${keysText('windowEarlier')} / ${keysText('windowLater')}`}>⠿</span><span className="ix">{i + 1}</span><Dot s={t.status} /><span className="n">#{t.num}</span><span className="ti">{t.title}</span>
               <span className={`st st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} />
               {ending === t.id ? <><span className="sel-warn">End & archive?</span><button className="b" onClick={() => endTask(t)}>Yes, end it</button><button className="b" onClick={() => setEnding(null)}>Cancel</button></> : <>
               {(t.status === 'suspended' || t.openElsewhere) && <button className="b" onClick={() => openPanel(t.id)}>{t.openElsewhere ? 'Options…' : 'Resume…'}</button>}
