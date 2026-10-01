@@ -208,19 +208,27 @@ A move between windows never changes a task's groups. A new task goes after the 
   A new worktree uses the source folder's `node_modules` when present. Otherwise Taskboard installs dependencies from a supported lockfile.
   Run `pnpm test` to see every test name and the name of any failed test.
 - **Task processes:** `tb run <name> [--port n] [--stop "<command>"] [--cwd dir] -- <command>` starts a dev server,
-  database or other process for the agent's task (`--group <name>` for a group). Each process runs in its own window
-  of the tmux session `proc-<num>` (`gproc-<group>` for a group), so it keeps running when the Taskboard server
+  database or other process for the agent's task. A group owns no processes. Each process runs in its own window
+  of the tmux session `proc-<num>`, so it keeps running when the Taskboard server
   restarts. The list is `procs.json` in the task folder, the output is `procs/<name>.log`. The task panel's Processes
   tab starts, stops and restarts them and shows the log. `tb ps` and `tb proc logs|restart|stop <name>` do the same.
   End & archive and the idle suspend end every process: Taskboard runs the stop command, sends SIGTERM to the process
   group, sends SIGKILL after 5 s, and then ends processes that left the group (found by `TB_PROC_OWNER` in their
-  environment). Resume starts the processes that the suspend ended. Deleting a group ends its processes.
+  environment). Resume starts the processes that the suspend ended. Deleting a group, or taking a task out of it,
+  stops nothing.
+- **What runs for a task:** the task panel's tab row and each Canvas window header show a count, for example
+  "1 browser · 2 processes", and nothing when nothing runs. A click shows the items with their memory and opens the
+  Browser tab, the Processes tab or the pop-out. Canvas → Browsers & processes lists the items of every task in the
+  view, each with the task that owns it, a Stop button for that one item, and a total count and memory. A click on a row
+  opens the owning task. `tb ps --group <name>` prints the same list. Memory is the resident memory (RSS) of the item's
+  process group from one `ps` call. RSS counts shared pages in each process, so a Chrome shows about twice the number
+  that `footprint` gives. The server reads memory only while a view that shows it is open (every 4 s).
 - **Task browsers:** each task gets its own headless Google Chrome with the profile
   `~/.taskboard/browsers/<task>/profile`. The first start copies the template profile, so sign in once in the template
   browser (Settings → Task browsers). Agents use it through the MCP server `task-browser` (`chrome-devtools-mcp`,
   connected through `ws://127.0.0.1:4317/ws/cdp/<task>?key=…`), which starts the browser when it is first used.
   The task panel's Browser tab shows the active tab as a screencast with mouse and key input, and Pop out shows it in a
-  floating window. Canvas → Browsers shows a still frame of each task's browser. `tb browser open <url>` and `$BROWSER`
+  floating window. Canvas → Browsers & processes shows a small still frame of each running task browser. `tb browser open <url>` and `$BROWSER`
   open a page in it. Archive and the idle suspend close the browser. Resume opens it again with the same pages.
   Settings → Task browsers chooses, for Claude Code and Codex, the task browser together with the shared Chrome
   extension, the task browser only (`--no-chrome` / `--disable browser_use_external`), or off.

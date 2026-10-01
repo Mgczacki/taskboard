@@ -14,6 +14,7 @@ import { runGroupChange, type Toast } from '../groupActions';
 import { TransferPanel } from './TransferPanel';
 import { BrowserView } from './TaskBrowser';
 import { ProcList } from './TaskProcs';
+import { RuntimeButton } from './TaskRuntime';
 
 // The drawer's width, set by dragging its left edge and kept across reloads. null means the default width.
 const WIDTH_KEY = 'tb-drawer-width', MIN_W = 420, EDGE = 120;
@@ -179,6 +180,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
           {!t.machine && t.role !== 'controller' && <button className={tab === 'procs' ? 'on' : ''} onClick={() => setTab('procs')} title="Dev servers, databases and other processes of this task">Processes</button>}
           <button className={tab === 'log' ? 'on' : ''} onClick={() => setTab('log')}>Log</button>
           <button className={tab === 'docs' ? 'on' : ''} onClick={() => setTab('docs')}>Inbox / Outbox<span className="n">{(t.docs?.inbox || 0) + (t.docs?.outbox || 0)}</span></button>
+          <span className="tabs-sp" /><RuntimeButton t={t} onOpen={setTab} />
         </div>
       </div>
       <div className={`dr-body ${tab !== 'terminal' && tab !== 'browser' ? 'pad' : ''}`}>

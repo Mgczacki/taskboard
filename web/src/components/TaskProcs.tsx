@@ -1,4 +1,4 @@
-// The processes of a task or a group (server/task-procs.ts): state, port, start / stop / restart, and the output log.
+// The processes of a task (server/task-procs.ts): state, port, memory, start / stop / restart, and the output log.
 import { useEffect, useState } from 'react';
 import type { Proc, ProcScope } from '../api';
 import { api } from '../api';
@@ -38,7 +38,7 @@ export function ProcList({ scope, id, cwd, compact = false }: { scope: ProcScope
     <div className={`procs ${compact ? 'compact' : ''}`}>
       <div className="procs-head">
         <b>Processes</b>
-        <span className="sub">{scope === 'tasks' ? 'Taskboard ends them when the task is archived or suspended.' : 'Taskboard ends them when the group is deleted.'}</span>
+        <span className="sub">Taskboard ends them when the task is archived or suspended.</span>
         <span className="sp" />
         <button className="btn" onClick={() => setAdding(a => !a)}>＋ Add process</button>
       </div>
@@ -53,7 +53,7 @@ export function ProcList({ scope, id, cwd, compact = false }: { scope: ProcScope
       </div>}
       {list && !list.length && !adding && <div className="sub procs-none">No processes. An agent starts one with <code>tb run &lt;name&gt; -- &lt;command&gt;</code>. You can add one here.</div>}
       {!!list?.length && <table className="procs-table">
-        <thead><tr><th>Name</th><th>State</th>{!compact && <th>Command</th>}<th>Port</th>{!compact && <th>Started by</th>}<th /></tr></thead>
+        <thead><tr><th>Name</th><th>State</th>{!compact && <th>Command</th>}<th>Port</th><th title="Resident memory (RSS) of the process group, read with ps while this tab is open. Shared pages count in each process.">Memory</th>{!compact && <th>Started by</th>}<th /></tr></thead>
         <tbody>{list.map(p => {
           const on = p.state === 'running' || p.state === 'starting';
           return (
@@ -62,6 +62,7 @@ export function ProcList({ scope, id, cwd, compact = false }: { scope: ProcScope
               <td title={p.stopNote || (p.started ? `Started ${new Date(p.started).toLocaleString()}` : '')}><span className={`dot ${STATE_DOT[p.state]}`} /> {p.state}{p.state === 'exited' && p.exitCode !== undefined ? ` (${p.exitCode})` : ''}</td>
               {!compact && <td className="pcmd" title={`${p.command}\nin ${p.cwd}${p.stop ? `\nstop command: ${p.stop}` : ''}`}>{p.command}</td>}
               <td>{p.port ? <a href={`http://localhost:${p.port}`} target="_blank" rel="noreferrer" title="Open in your own browser">{p.port}</a> : '—'}</td>
+              <td className="pmem">{on && typeof p.memMb === 'number' ? `${p.memMb} MB` : '—'}</td>
               {!compact && <td>{p.startedBy === 'agent' ? 'agent' : 'you'}</td>}
               <td className="act">
                 {on ? <><button className="btn" disabled={busy === p.name} onClick={() => act(p.name, 'stop')}>Stop</button><button className="btn" disabled={busy === p.name} onClick={() => act(p.name, 'restart')}>Restart</button></>

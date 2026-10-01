@@ -40,10 +40,15 @@ export interface TransferCheck {
   bundle: { available: boolean; size?: number; hash?: string; commits?: number; reason?: string } | null;
 }
 export type MessageLevel = 1 | 2 | 3;
-// processes and browsers of tasks and groups (server/task-procs.ts, server/task-browser.ts)
+// the processes and the browser of each task (server/task-procs.ts, server/task-browser.ts). A group owns none.
 export type BrowserMode = 'off' | 'task' | 'only';
-export type ProcScope = 'tasks' | 'groups';
-export interface Proc { name: string; command: string; cwd: string; stop?: string; port?: number; startedBy: 'agent' | 'user'; state: 'starting' | 'running' | 'exited' | 'stopped' | 'suspended'; exitCode?: number; started?: string; ended?: string; window?: string; stopNote?: string }
+export type ProcScope = 'tasks';
+export interface Proc { name: string; command: string; cwd: string; stop?: string; port?: number; startedBy: 'agent' | 'user'; state: 'starting' | 'running' | 'exited' | 'stopped' | 'suspended'; exitCode?: number; started?: string; ended?: string; window?: string; stopNote?: string; memMb?: number | null }
+// server/runtime-summary.ts: the running counts of a task (pushed as the "runtime" event, only tasks with one or more)
+// and the items of a set of tasks with memory (GET /api/runtime, read while a view is open)
+export interface RuntimeCount { browser: number; procs: number }
+export interface RuntimeItem { task: string; kind: 'browser' | 'proc'; name: string; state: string; port?: number; pages?: number; agents?: number; command?: string; memMb: number | null }
+export interface RuntimeList { items: RuntimeItem[]; total: { browsers: number; procs: number; memMb: number } }
 export interface BrowserTab { id: string; title: string; url: string }
 export interface BrowserStatus { id: string; running: boolean; port?: number; tabs: BrowserTab[]; profile: boolean; copiedFromTemplate?: string; suspended?: boolean; stoppedAt?: string; error?: string; rssMb?: number | null; agents: number; chrome: string | null; check?: { chrome: string | null; node: string | null; mcp: boolean } }
 export interface Approval { id: string; actor: string; action: string; summary: string; detail: string; created: string; state: 'pending' | 'running' | 'approved' | 'denied' | 'failed' | 'expired' | 'unknown' | 'returned'; result?: string; returnable?: boolean; payload?: { permitId?: string; pushId?: string; state?: { forcePush?: boolean }; canPermit?: boolean; message?: string; hash?: string; body?: string; quality?: { state: string; flags: { text: string; start: number; end: number; reason: string }[] } } }
@@ -74,12 +79,13 @@ let groups: Group[] = [];
 // the order of the terminals in each Canvas view that is not a group (server/canvasOrder.ts)
 let canvasOrder: Record<string, string[]> = {};
 let approvals: Approval[] = [];
+let runtime: Record<string, RuntimeCount> = {};
 let machines: Machine[] = [];
 const loadMachines = () => fetch('/api/machines').then(r => r.json()).then(m => { machines = m; publish(); }).catch(() => {});
 let connected = false;
 const subs = new Set<() => void>();
 const emit = () => subs.forEach(f => f());
-let snapshot = { tasks, groups, canvasOrder, approvals, machines, connected };
+let snapshot = { tasks, groups, canvasOrder, approvals, machines, connected, runtime };
 
 let ws: WebSocket | null = null;
 let viewingIds: string[] = [];
@@ -103,13 +109,14 @@ function connect() {
     if (m.type === 'groups') groups = m.groups;
     if (m.type === 'canvasOrder') canvasOrder = m.orders;
     if (m.type === 'approvals') approvals = m.approvals;
+    if (m.type === 'runtime') runtime = m.counts || {};
     if (m.type === 'machines') { loadMachines(); return; }
     if (m.type === 'removed') tasks = tasks.filter(t => t.id !== m.id);
     if (m.type === 'task') { const i = tasks.findIndex(t => t.id === m.task.id); if (i >= 0) tasks = tasks.map(t => t.id === m.task.id ? m.task : t); else tasks = [m.task, ...tasks]; notifyIfNeeded(m.task); }
     publish();
   };
 }
-function publish() { snapshot = { tasks, groups, canvasOrder, approvals, machines, connected }; emit(); }
+function publish() { snapshot = { tasks, groups, canvasOrder, approvals, machines, connected, runtime }; emit(); }
 connect();
 
 // the groups as they are now, for an Undo that runs after the page has re-rendered
@@ -203,6 +210,7 @@ export const api = {
   startProc: (scope: ProcScope, id: string, b: { name: string; command: string; cwd?: string; stop?: string; port?: number }) => call<Proc>('POST', `/api/${scope}/${encodeURIComponent(id)}/procs`, b),
   procAction: (scope: ProcScope, id: string, name: string, action: 'stop' | 'restart' | 'remove') => call<unknown>('POST', `/api/${scope}/${encodeURIComponent(id)}/procs/${encodeURIComponent(name)}/${action}`, {}),
   procLog: (scope: ProcScope, id: string, name: string) => call<string>('GET', `/api/${scope}/${encodeURIComponent(id)}/procs/${encodeURIComponent(name)}/log?bytes=131072`),
+  runtime: (ids: string[]) => call<RuntimeList>('GET', `/api/runtime?tasks=${ids.map(encodeURIComponent).join(',')}`),
   browser: (id: string) => call<BrowserStatus>('GET', `/api/tasks/${encodeURIComponent(id)}/browser`),
   browserAction: (id: string, action: 'start' | 'stop' | 'reset') => call<BrowserStatus>('POST', `/api/tasks/${encodeURIComponent(id)}/browser/${action}`, {}),
   browserTemplate: () => call<BrowserStatus>('GET', '/api/browser-template'),
