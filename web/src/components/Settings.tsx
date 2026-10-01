@@ -5,6 +5,7 @@ import { api, autoReload, confirmEnd, setAutoReload, setConfirmEnd } from '../ap
 import { ControllerBox, MaxTasksInput, loadAccounts } from './Accounts';
 import { MessageLevels } from './MessageLevels';
 import { Integrations } from './Integrations';
+import { RulesFiles } from './RulesFiles';
 import type { Account } from './Accounts';
 import type { KeyAction } from '../keys';
 import { ACTIONS, CTX_NAME, comboOf, fmtCombo, isCustom, keysOf, resetKeys, setKeys, setRecording, useKeymap } from '../keys';
@@ -72,6 +73,7 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
         <div className="sub">The controller reads these rules when it starts. A user request can choose an agent or account.</div>
         <button className="btn" disabled={busy || routingRules === info?.settings.routingRules} onClick={() => save({ routingRules })}>Save routing rules</button>
       </div>
+      <RulesFiles />
       <h3 className="set-h">Agent sessions</h3>
       {p && <div className="ctl-box">
         <label className="opt"><input type="checkbox" disabled={busy} checked={p.trustWorkspaces} onChange={e => save({ trustWorkspaces: e.target.checked })} /> Trust each task folder before an agent starts</label>

@@ -19,6 +19,9 @@ export interface ImportCandidate {
 }
 
 export interface MachineInfo { role?: 'production' | 'sandbox'; root?: string; machine: string; host: string; url: string; settings: { name: string; routingRules: string; newTaskDefaultAgent: Agent | 'auto'; controller: { autostart: boolean; remoteControl: boolean; dangerouslySkipPermissions: boolean; models: Record<Agent, string> }; permissions: { controllerNeedsApproval: boolean; agentsNeedApproval: boolean; trustWorkspaces: boolean; autoReview: boolean; controllerCanApprovePermits: boolean }; permitFolders: string[]; pushes: { taskBranches: 'run' | 'ask' | 'never'; ownRepositories: string[]; protectedBranches: string[] }; ask: { agent: 'claude' | 'codex'; account: string; model: string }; review: { account: string; model: string }; messages: { incoming: MessageLevel; outgoing: MessageLevel; checkPrivateNotes: boolean }; accounts: { defaultMaxParallel: number } }; controller: null | { agent: string; account?: string; status: string; remoteUrl?: string; label: string } }
+// the user's rules files for the controller and for task sessions (server/rules.ts)
+export type RulesKind = 'controller' | 'task';
+export interface RulesFile { kind: RulesKind; file: string; text: string; chars: number; max: number; updated: string | null; preview: { lines: string[]; more: boolean } }
 export interface Machine { id: string; name: string; url: string; local?: boolean; online: boolean; latency?: number; lastSeen?: string; error?: string; tasks?: number }
 export type MessageLevel = 1 | 2 | 3;
 export interface Approval { id: string; actor: string; action: string; summary: string; detail: string; created: string; state: 'pending' | 'running' | 'approved' | 'denied' | 'failed' | 'expired' | 'unknown' | 'returned'; result?: string; returnable?: boolean; payload?: { permitId?: string; pushId?: string; canPermit?: boolean; message?: string; hash?: string; body?: string; quality?: { state: string; flags: { text: string; start: number; end: number; reason: string }[] } } }
@@ -102,6 +105,8 @@ async function call<T = unknown>(method: string, path: string, body?: unknown): 
   return data as T;
 }
 export const api = {
+  rules: () => call<RulesFile[]>('GET', '/api/rules'),
+  saveRules: (kind: RulesKind, text: string) => call<RulesFile>('PUT', `/api/rules/${kind}`, { text }),
   create: (b: { title: string; desc: string; agent: string; folder: string; worktree?: boolean; branch?: string; account?: string; model?: string; machine?: string; group?: string; images?: { type: string; data: string }[]; spinOff?: SpinOffExchange }) => call<Task>('POST', '/api/tasks', b),
   setStatus: (id: string, status: string) => call('POST', `/api/tasks/${id}/status`, { status }),
   seen: (id: string) => call('POST', `/api/tasks/${id}/seen`, {}),

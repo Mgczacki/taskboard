@@ -21,6 +21,7 @@ import { transcriptFor } from './importer.ts';
 import { movingTasks, resetSessionEvents } from './events.ts';
 import * as workspaceTrust from './trust.ts';
 import { credentialGuidance } from './credential-guidance.ts';
+import * as rules from './rules.ts';
 
 const exec = promisify(execFile);
 
@@ -172,7 +173,7 @@ function messageRules() {
 // Instructions appended to Claude Code's system prompt for every Taskboard task.
 const CONTROLLER_SETTINGS_FILE = join(TB_DIR, 'controller-settings.json');
 const CONTROLLER_DIR = join(VAULT, 'controller');
-const controllerMd = () => `# Controller
+export const controllerMd = () => `# Controller
 
 You are the Taskboard controller for the machine **${machine.get().name}** (host ${hostname()}, Taskboard server ${URL_BASE}).
 There is one Taskboard server and one controller per machine. When the user asks which machine you are, or whether you are
@@ -224,7 +225,7 @@ ${messageRules()}
 ${writingRules('your reports to the user, the messages that you send to tasks, and the prompts for new agents')}
 
 ${credentialGuidance(HOME)}
-`;
+${rules.section('controller') ? `\n${rules.section('controller')}\n` : ''}`;
 // what the controller's command line depends on; when it changes, the running controller is restarted between turns
 export const controllerLaunchKey = (agent: string) => JSON.stringify({ mail: 2, credentialGuidance: 1, agent, model: machine.get().controller.models[agent as 'claude' | 'codex' | 'antigravity'] || '', label: machine.controllerLabel(), remote: agent === 'claude' && machine.get().controller.remoteControl, skipPermissions: agent === 'claude' && machine.get().controller.dangerouslySkipPermissions, approval: machine.get().permissions.controllerNeedsApproval });
 
@@ -258,7 +259,7 @@ export async function startController(): Promise<Task> {
 // Instructions for every Taskboard task. Claude Code writes its own log entry each turn. For Codex and Antigravity,
 // Taskboard writes the entry from the first paragraph of the agent's last reply (events.ts codexEvent and
 // antigravityEvent), so they are told that instead.
-function taskInstructions(t: Task) {
+export function taskInstructions(t: Task, inlineRules = true) {
   const dir = store.taskDir(t.id);
   const gitCli = join(TB_DIR, 'bin', 'tb');
   const log = t.agent === 'claude' ? [
@@ -292,7 +293,20 @@ function taskInstructions(t: Task) {
     credentialGuidance(HOME),
     ...(t.agent === 'claude' ? [`Writing the log entry is always allowed, even if the user asked you not to use tools. Do it quietly: do not mention the log to the user.`] : []),
     writingRules('the log entries, the documents and artifacts in your outbox, and all other text for the user or for other agents'),
+    // last, so the user's rules follow the Taskboard rules that they may not override (rules.ts section)
+    ...taskRules(t, inlineRules),
   ].join('\n');
+}
+
+// The task rules as text, or, when the command would be too long for tmux (see command), a copy of them in the task
+// folder and a line that names the copy.
+function taskRules(t: Task, inline: boolean): string[] {
+  const section = rules.section('task');
+  if (!section) return [];
+  if (inline) return [section];
+  const copy = join(store.taskDir(t.id), 'rules.md');
+  mkdirSync(store.taskDir(t.id), { recursive: true }); writeFileSync(copy, section + '\n');
+  return [`The user's rules for every task session are in ${copy}. Read that file before you start work. When one of those rules conflicts with a Taskboard rule above, follow the Taskboard rule.`];
 }
 
 function claudeTaskSettings(t: Task): string {
@@ -389,9 +403,18 @@ function codexFlags(): string[] {
   ];
 }
 
-function command(t: Task, prompt: string | null, resume: boolean, codexTrust: string[] = []): string[] {
+// tmux refuses a command longer than about 16 KB (rules.ts), and the environment variables use part of it. When the
+// task rules make the command longer than this, the instructions name a copy of the rules in the task folder instead.
+export const MAX_COMMAND_BYTES = 14_000;
+export function command(t: Task, prompt: string | null, resume: boolean, codexTrust: string[] = []): string[] {
+  const c = buildCommand(t, prompt, resume, codexTrust, true);
+  if (Buffer.byteLength(c.join(' ')) <= MAX_COMMAND_BYTES || !rules.section('task')) return c;
+  return buildCommand(t, prompt, resume, codexTrust, false);
+}
+
+function buildCommand(t: Task, prompt: string | null, resume: boolean, codexTrust: string[], inlineRules: boolean): string[] {
   if (t.agent === 'claude') {
-    const c = ['claude', '--settings', claudeTaskSettings(t), '--add-dir', VAULT, '--append-system-prompt', taskInstructions(t)];
+    const c = ['claude', '--settings', claudeTaskSettings(t), '--add-dir', VAULT, '--append-system-prompt', taskInstructions(t, inlineRules)];
     if (t.model) c.push('--model', t.model);
     c.push('--permission-mode', machine.get().permissions.autoReview ? 'auto' : 'default');
     if (resume && t.sessionId) c.push('--resume', t.sessionId);
@@ -407,7 +430,7 @@ function command(t: Task, prompt: string | null, resume: boolean, codexTrust: st
     if (t.model) c.push('--model', t.model);
     if (resume && t.sessionId) return [...c, '--conversation', t.sessionId];
     if (prompt) {
-      const text = t.role === 'controller' ? prompt : `${taskInstructions(t)}\n\n---\n\n${prompt}`;
+      const text = t.role === 'controller' ? prompt : `${taskInstructions(t, inlineRules)}\n\n---\n\n${prompt}`;
       if (agyTrusted(t)) c.push('-i', text); else pendingPrompt.set(t.id, text);
     }
     return c;
@@ -417,7 +440,7 @@ function command(t: Task, prompt: string | null, resume: boolean, codexTrust: st
   if (t.model) c.push('-m', t.model);
   // Codex has no flag that appends to its system prompt. developer_instructions is a config value, so it is written as a
   // TOML string (a JSON string is also a valid TOML basic string). The controller reads AGENTS.md in its folder instead.
-  if (t.role !== 'controller') c.push('-c', `developer_instructions=${JSON.stringify(taskInstructions(t))}`);
+  if (t.role !== 'controller') c.push('-c', `developer_instructions=${JSON.stringify(taskInstructions(t, inlineRules))}`);
   if (resume && t.sessionId) return [...c.slice(0, 1), 'resume', ...c.slice(1), t.sessionId, ...(prompt ? [prompt] : [])];
   if (prompt) c.push(prompt);
   return c;
