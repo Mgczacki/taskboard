@@ -211,7 +211,7 @@ A move between windows never changes a task's groups. A new task goes after the 
   database or other process for the agent's task (`--group <name>` for a group). Each process runs in its own window
   of the tmux session `proc-<num>` (`gproc-<group>` for a group), so it keeps running when the Taskboard server
   restarts. The list is `procs.json` in the task folder, the output is `procs/<name>.log`. The task panel's Processes
-  tab starts, stops and restarts them and shows the log. `tb ps`, `tb logs`, `tb restart` and `tb stop` do the same.
+  tab starts, stops and restarts them and shows the log. `tb ps` and `tb proc logs|restart|stop <name>` do the same.
   End & archive and the idle suspend end every process: Taskboard runs the stop command, sends SIGTERM to the process
   group, sends SIGKILL after 5 s, and then ends processes that left the group (found by `TB_PROC_OWNER` in their
   environment). Resume starts the processes that the suspend ended. Deleting a group ends its processes.

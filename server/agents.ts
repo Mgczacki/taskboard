@@ -76,7 +76,7 @@ export function writeClaudeSettings() {
   hooks.PreToolUse = [{ matcher: 'Bash', hooks: [{ type: 'command', command: `node ${tmux.quote(GUARD_SCRIPT)}`, timeout: 5 }] }];
   // The log and documents live in the vault, outside the project folder; allow writing there without a prompt each turn.
   const vault = VAULT.replace(HOME, '~');
-  const permissions = { allow: [`Edit(${vault}/**)`, `Read(${vault}/**)`, 'Bash(tb review:*)', 'Bash(tb inbox wait:*)', 'Bash(tb suggest:*)', 'Bash(tb permit request:*)', 'Bash(tb permit result:*)', 'Bash(tb permit list)', `Bash(python3 ${WORDING_SCRIPT}:*)`, 'Bash(tb run:*)', 'Bash(tb ps:*)', 'Bash(tb stop:*)', 'Bash(tb restart:*)', 'Bash(tb logs:*)', 'Bash(tb browser:*)', 'mcp__task-browser'] }; // Edit rules cover every file-writing tool
+  const permissions = { allow: [`Edit(${vault}/**)`, `Read(${vault}/**)`, 'Bash(tb review:*)', 'Bash(tb inbox wait:*)', 'Bash(tb suggest:*)', 'Bash(tb permit request:*)', 'Bash(tb permit result:*)', 'Bash(tb permit list)', `Bash(python3 ${WORDING_SCRIPT}:*)`, 'Bash(tb run:*)', 'Bash(tb ps:*)', 'Bash(tb proc:*)', 'Bash(tb browser:*)', 'mcp__task-browser'] }; // Edit rules cover every file-writing tool
   // status line: shows the model and usage in the terminal and reports the account's usage windows to Taskboard
   const statusLine = { type: 'command', command: `node ${tmux.quote(STATUSLINE_SCRIPT)}` };
   writeFileSync(CLAUDE_SETTINGS_FILE, JSON.stringify({ hooks, permissions, statusLine }, null, 2));
@@ -271,7 +271,7 @@ function processAndBrowserRules(t: Task): string[] {
   if (t.role === 'controller') return [];
   const lines = [
     'Start a dev server, a database or another long-running process for this task with `tb run <name> [--port <n>] [--stop "<command>"] -- <command>`. Do not start it in the background yourself.',
-    'Taskboard shows these processes in the task. It ends them when the user archives the task, and when an idle task is suspended. Use `tb ps`, `tb logs <name>`, `tb restart <name>` and `tb stop <name>`.',
+    'Taskboard shows these processes in the task. It ends them when the user archives the task, and when an idle task is suspended. Use `tb ps`, `tb proc logs <name>`, `tb proc restart <name>` and `tb proc stop <name>`.',
   ];
   const mode = browserMode(t);
   if (mode !== 'off' && taskBrowser.mcpServer(ROOT, t.id)) lines.push(

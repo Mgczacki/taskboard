@@ -59,8 +59,11 @@ test('a stop keeps the open pages and the next start opens them again', { skip, 
   assert.equal(meta.suspended, true);
   assert.deepEqual([...(meta.tabs || [])].sort(), [`file://${page}`, `file://${page2}`]);
   await browser.ensure('b2');
-  const tabs = await browser.tabs('b2');
-  assert.deepEqual(tabs.map(t => t.url).sort(), [`file://${page}`, `file://${page2}`], 'both kept pages opened again, and no blank start page is left');
+  // Chrome opens and closes the tabs a moment after the start
+  const want = JSON.stringify([`file://${page}`, `file://${page2}`]);
+  let urls: string[] = [];
+  for (let i = 0; i < 50 && JSON.stringify(urls) !== want; i++) { urls = (await browser.tabs('b2')).map(t => t.url).sort(); await new Promise(r => setTimeout(r, 100)); }
+  assert.equal(JSON.stringify(urls), want, 'both kept pages opened again, and no blank start page is left');
   assert.equal(browser.readMeta('b2').suspended, undefined);
 });
 

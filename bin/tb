@@ -99,8 +99,8 @@ const HELP = `tb — Taskboard command line
                                      start a dev server, database or other process for your task (or a group);
                                      Taskboard ends it when the task is archived or suspended
   tb ps [--group <group>] [--task <task>]       the processes of your task (or a group)
-  tb logs <name> [-n lines] [--group <group>]   the last lines of a process's output
-  tb restart <name> | tb stop <name> [--remove] [--group <group>]
+  tb proc logs <name> [-n lines] [--group <group>]   the last lines of a process's output
+  tb proc stop <name> [--remove] | tb proc restart <name>   [--group <group>] [--task <task>]
   tb browser [status|tabs|open <url>|start|stop] [--task <task>]
                                      your task's own Chrome, shown in Taskboard (agents use the task-browser MCP tools)
 <task> is a number (12 or #12) or a task id.`;
@@ -144,7 +144,7 @@ switch (cmd) {
     const command = cmdWords.length === 1 ? cmdWords[0] : cmdWords.map(shellWord).join(' ');
     const o = await runtimeOwner(opts);
     const p = await call('POST', `${o.path}/procs`, { name, command, cwd: resolve(opts.cwd || process.cwd()), stop: opts.stop, port: opts.port, path: process.env.PATH });
-    console.log(`Started ${p.name} for ${o.label} in ${p.cwd} (tmux window ${p.window})${p.port ? `, port ${p.port}` : ''}. Output: tb logs ${p.name}${opts.group ? ` --group ${opts.group}` : ''}.`);
+    console.log(`Started ${p.name} for ${o.label} in ${p.cwd} (tmux window ${p.window})${p.port ? `, port ${p.port}` : ''}. Output: tb proc logs ${p.name}${opts.group ? ` --group ${opts.group}` : ''}.`);
     break;
   }
   case 'ps': {
@@ -155,22 +155,20 @@ switch (cmd) {
     console.log(list.length ? list.map(procLine).join('\n') : `No processes for ${o.label}. Start one with tb run <name> -- <command>.`);
     break;
   }
-  case 'logs': {
-    const { opts, pos } = runtimeArgs(rest, ['--group', '--task']);
-    if (!pos[0]) { console.error('Usage: tb logs <name> [-n lines]'); process.exit(1); }
+  // tb proc logs|stop|restart <name>. ("tb restart" alone restarts Taskboard itself, so process commands have their own word.)
+  case 'proc': {
+    const [sub, ...more] = rest;
+    const { opts, pos } = runtimeArgs(more, ['--group', '--task']);
+    if (!['logs', 'stop', 'restart'].includes(sub) || !pos[0]) { console.error('Usage: tb proc logs <name> [-n lines] | tb proc stop <name> [--remove] | tb proc restart <name>'); process.exit(1); }
     const o = await runtimeOwner(opts);
-    const text = await call('GET', `${o.path}/procs/${encodeURIComponent(pos[0])}/log?bytes=262144`);
-    console.log(String(text).split('\n').slice(-(Number(opts.n) || 60)).join('\n'));
-    break;
-  }
-  case 'stop':
-  case 'restart': {
-    const { opts, pos } = runtimeArgs(rest, ['--group', '--task']);
-    if (!pos[0]) { console.error(`Usage: tb ${cmd} <name>`); process.exit(1); }
-    const o = await runtimeOwner(opts);
-    const action = cmd === 'restart' ? 'restart' : opts.remove ? 'remove' : 'stop';
+    if (sub === 'logs') {
+      const text = await call('GET', `${o.path}/procs/${encodeURIComponent(pos[0])}/log?bytes=262144`);
+      console.log(String(text).split('\n').slice(-(Number(opts.n) || 60)).join('\n'));
+      break;
+    }
+    const action = sub === 'restart' ? 'restart' : opts.remove ? 'remove' : 'stop';
     const r = await call('POST', `${o.path}/procs/${encodeURIComponent(pos[0])}/${action}`, {});
-    console.log(cmd === 'restart' ? `Restarted ${r.name}.` : `${opts.remove ? 'Stopped and removed' : 'Stopped'} ${pos[0]}.`);
+    console.log(sub === 'restart' ? `Restarted ${r.name}.` : `${opts.remove ? 'Stopped and removed' : 'Stopped'} ${pos[0]}.`);
     break;
   }
   case 'browser': {

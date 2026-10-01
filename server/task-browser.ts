@@ -98,7 +98,7 @@ export function ensure(id: string): Promise<Meta & { ws: string }> {
     const child = spawn(bin, args, { detached: true, stdio: ['ignore', log, log] });
     child.unref();
     let port = 0;
-    for (let i = 0; i < 150 && !port; i++) {
+    for (let i = 0; i < 300 && !port; i++) { // up to 30 s: a busy Mac can take more than 15 s to start Chrome
       await new Promise(r => setTimeout(r, 100));
       if (child.exitCode !== null) break;
       try { port = Number(readFileSync(portFile, 'utf8').split('\n')[0]) || 0; } catch { /* not yet */ }
