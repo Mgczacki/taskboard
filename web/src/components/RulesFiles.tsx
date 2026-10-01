@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import type { RulesFile, RulesKind } from '../api';
 import { api } from '../api';
+import { SettingGroup, SettingItem } from './SettingsLayout';
 
 const TITLE: Record<RulesKind, string> = { controller: 'Controller rules', task: 'Task session rules' };
 const WHO: Record<RulesKind, string> = {
@@ -17,11 +18,9 @@ export function RulesFiles() {
   useEffect(() => { api.rules().then(setFiles).catch(e => setErr(String((e as Error).message || e))); }, []);
   const saved = (f: RulesFile) => setFiles(fs => fs.map(x => x.kind === f.kind ? f : x));
   const editing = files.find(f => f.kind === open);
-  return <>
-    <h3 className="set-h">Rules files</h3>
-    <p className="sub">Free text that tells the agents how to work. Taskboard adds it next to a project's own CLAUDE.md or AGENTS.md and does not change those files.</p>
+  return <SettingGroup section="rules" id="rules" help="Free text that tells the agents how to work. Taskboard adds it next to a project's own CLAUDE.md or AGENTS.md and does not change those files." bare>
     {err && <div className="banner" role="alert">{err}</div>}
-    {files.map(f => <div key={f.kind} className="ctl-box" data-rules={f.kind}>
+    {files.map(f => <SettingItem key={f.kind} id={f.kind === 'controller' ? 'controllerRules' : 'taskRules'}><div className="ctl-box" data-rules={f.kind}>
       <b>{TITLE[f.kind]}</b>
       <div className="sub">{WHO[f.kind]}</div>
       <button className="btn ghost" title="Open the editor" aria-label={`Edit the ${TITLE[f.kind].toLowerCase()}`} onClick={() => setOpen(f.kind)}
@@ -29,9 +28,9 @@ export function RulesFiles() {
         {f.preview.lines.length ? f.preview.lines.join('\n') + (f.preview.more ? '\n…' : '') : <span className="sub">No rules yet. Click to write them.</span>}
       </button>
       <div className="sub">{f.chars} of {f.max} characters{f.updated ? ` · saved ${new Date(f.updated).toLocaleString()}` : ''} · <code>{f.file}</code></div>
-    </div>)}
+    </div></SettingItem>)}
     {editing && <RulesEditor file={editing} onClose={() => setOpen(null)} onSaved={saved} />}
-  </>;
+  </SettingGroup>;
 }
 
 function RulesEditor({ file, onClose, onSaved }: { file: RulesFile; onClose: () => void; onSaved: (f: RulesFile) => void }) {

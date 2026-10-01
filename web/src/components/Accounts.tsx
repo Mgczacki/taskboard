@@ -5,6 +5,7 @@ import { api } from '../api';
 import type { Agent, MachineInfo, Task } from '../api';
 import { AGENTS, AGENT_NAME, fmtWait } from '../api';
 import { Terminal } from './Terminal';
+import { SettingItem } from './SettingsLayout';
 
 export interface Account {
   id: string; agent: Agent; name: string; dir: string; isDefault?: boolean; maxParallel: number;
@@ -70,17 +71,17 @@ export function ControllerBox({ ctl, setErr }: { ctl?: Task; setErr: (s: string)
   const s = info.settings.controller, agent = ctl?.agent || 'claude', isClaude = agent === 'claude';
   return (
     <div className="ctl-box">
-      <div className="ctl-row"><b>This machine</b>
+      <SettingItem id="machineName"><div className="ctl-row"><b>This machine</b>
         <input type="text" value={name} onChange={e => setName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }} onBlur={() => { if (name.trim() && name.trim() !== info.machine) save({ name }); }} title="The name the controller uses for itself, and its session name in the Claude app" />
-        <span className="sub">host {info.host} · one Taskboard server per machine</span></div>
-      <label className="opt" title="When the Taskboard server starts, it starts the controller; if the controller exits, Taskboard starts it again within a minute"><input type="checkbox" checked={s.autostart} disabled={busy} onChange={e => save({ autostart: e.target.checked })} /> Start the controller with Taskboard and keep it running</label>
-      <label className="opt"><input type="checkbox" checked={s.dangerouslySkipPermissions} disabled={busy || !isClaude} onChange={e => save({ dangerouslySkipPermissions: e.target.checked })} /> Run the Claude controller with <code>--dangerously-skip-permissions</code>{!isClaude && ' (Claude Code only)'}</label>
-      {isClaude && <div className="sub">Claude skips its permission prompts when this is on. Taskboard still checks <code>tb</code> commands and permit requests. A change restarts the controller between turns.</div>}
-      <div className="ctl-row"><label htmlFor="controller-model">Controller model for {AGENT_NAME[agent]}</label>
+        <span className="sub">host {info.host} · one Taskboard server per machine</span></div></SettingItem>
+      <SettingItem id="controllerAutostart"><label className="opt" title="When the Taskboard server starts, it starts the controller; if the controller exits, Taskboard starts it again within a minute"><input type="checkbox" checked={s.autostart} disabled={busy} onChange={e => save({ autostart: e.target.checked })} /> Start the controller with Taskboard and keep it running</label></SettingItem>
+      <SettingItem id="controllerSkipPermissions"><label className="opt"><input type="checkbox" checked={s.dangerouslySkipPermissions} disabled={busy || !isClaude} onChange={e => save({ dangerouslySkipPermissions: e.target.checked })} /> Run the Claude controller with <code>--dangerously-skip-permissions</code>{!isClaude && ' (Claude Code only)'}</label>
+      {isClaude && <div className="sub">Claude skips its permission prompts when this is on. Taskboard still checks <code>tb</code> commands and permit requests. A change restarts the controller between turns.</div>}</SettingItem>
+      <SettingItem id="controllerModel"><div className="ctl-row"><label htmlFor="controller-model">Controller model for {AGENT_NAME[agent]}</label>
         <input id="controller-model" type="text" maxLength={80} key={`${agent}:${s.models[agent]}`} defaultValue={s.models[agent]} disabled={busy} placeholder="Use the agent default" onBlur={e => { const model = e.target.value.trim(); if (model !== s.models[agent]) save({ controllerModels: { [agent]: model } }); }} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} />
-        <span className="sub">A change restarts the controller between turns.</span></div>
-      <label className="opt" title={isClaude ? 'Lets you continue the controller from claude.ai/code or the Claude mobile app' : 'Remote Control is a Claude Code feature; it is off while the controller runs Codex'}><input type="checkbox" checked={s.remoteControl} disabled={busy || !isClaude} onChange={e => save({ remoteControl: e.target.checked })} /> Remote Control: reach the controller from the Claude app as “{info.controller?.label || 'Taskboard controller · ' + info.machine}”{!isClaude && ' (Claude Code only)'}</label>
-      {isClaude && s.remoteControl && <div className="sub">{ctl?.remoteUrl ? <>Open it on any device: <a href={ctl.remoteUrl} target="_blank" rel="noreferrer">{ctl.remoteUrl}</a> — in the Claude mobile app it is listed under Code.</> : 'The link appears here once the controller runs with Remote Control. After a change, the controller restarts by itself as soon as it is between turns (its conversation continues).'}</div>}
+        <span className="sub">A change restarts the controller between turns.</span></div></SettingItem>
+      <SettingItem id="remoteControl"><label className="opt" title={isClaude ? 'Lets you continue the controller from claude.ai/code or the Claude mobile app' : 'Remote Control is a Claude Code feature; it is off while the controller runs Codex'}><input type="checkbox" checked={s.remoteControl} disabled={busy || !isClaude} onChange={e => save({ remoteControl: e.target.checked })} /> Remote Control: reach the controller from the Claude app as “{info.controller?.label || 'Taskboard controller · ' + info.machine}”{!isClaude && ' (Claude Code only)'}</label>
+      {isClaude && s.remoteControl && <div className="sub">{ctl?.remoteUrl ? <>Open it on any device: <a href={ctl.remoteUrl} target="_blank" rel="noreferrer">{ctl.remoteUrl}</a> — in the Claude mobile app it is listed under Code.</> : 'The link appears here once the controller runs with Remote Control. After a change, the controller restarts by itself as soon as it is between turns (its conversation continues).'}</div>}</SettingItem>
     </div>
   );
 }

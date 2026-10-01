@@ -352,6 +352,47 @@ body.in-app.app-buttons .app:not(:has(.rail)) .top { padding-left: 84px; }
 
 .set-h { margin: 18px 0 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .5px; color: var(--muted); }
 
+/* Settings page: a side list of sections with a search box, then one section per group of settings.
+   Below 760px of page width the side list becomes a bar above the sections. */
+.set-page { max-width: 1180px; container-type: inline-size; }
+.set-page [hidden] { display: none !important; }
+.set-layout { display: grid; grid-template-columns: 210px minmax(0, 1fr); gap: 28px; align-items: start; }
+.set-nav { position: sticky; top: 0; display: grid; gap: 8px; padding: 2px 0 12px; max-height: calc(100vh - 80px); overflow-y: auto; background: var(--bg); z-index: 2; }
+.set-search { width: 100%; box-sizing: border-box; background: var(--bg2); color: var(--text); border: 1px solid var(--line2); border-radius: 6px; padding: 6px 9px; font: inherit; }
+.set-search:focus { border-color: var(--accent); outline: none; }
+.set-count { padding: 0 2px; }
+.set-nav nav { display: grid; gap: 1px; }
+.set-nav nav a { display: flex; align-items: center; gap: 8px; padding: 5px 9px; border-radius: 6px; color: var(--muted); text-decoration: none; font-size: 12.5px; border-left: 2px solid transparent; }
+.set-nav nav a:hover { color: var(--text); background: var(--bg2); }
+.set-nav nav a.on { color: var(--text); background: var(--accent-bg); border-left-color: var(--accent); }
+.set-nav nav a .n { margin-left: auto; font: 11px var(--mono); color: var(--dim); }
+.set-body { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
+.set-page .ctl-box, .set-item { grid-template-columns: minmax(0, 1fr); }
+.set-page .ctl-row input { min-width: 0; }
+.set-page .sub { overflow-wrap: anywhere; }
+.set-page .btn { max-width: 100%; white-space: normal; }
+.set-page .mail-tabs { flex-wrap: wrap; }
+.set-sec { scroll-margin-top: 8px; padding: 2px 0 18px; border-bottom: 1px solid var(--line); }
+.set-sec:last-child { border-bottom: 0; }
+.set-sec > h3 { margin: 6px 0 2px; font-size: 15px; color: var(--text); }
+.set-sec .set-help { margin: 0 0 8px; max-width: 760px; }
+.set-group > .set-h { margin: 14px 0 4px; font-size: 11.5px; }
+.set-group > .set-h + .set-help { margin-top: 0; }
+.set-card { gap: 10px; }
+.set-item { display: grid; gap: 6px; min-width: 0; }
+.set-card > .set-item:not([hidden]) ~ .set-item:not([hidden]) { border-top: 1px solid var(--line); padding-top: 10px; }
+.set-item .opt { flex-wrap: wrap; }
+.set-item select, .set-item .ctl-row input { max-width: 100%; }
+.set-scroll { overflow-x: auto; }
+@container (max-width: 760px) {
+  .set-layout { grid-template-columns: minmax(0, 1fr); gap: 10px; }
+  .set-nav { max-height: none; overflow: visible; padding-bottom: 8px; border-bottom: 1px solid var(--line); }
+  .set-nav nav { display: flex; gap: 4px; overflow-x: auto; padding-bottom: 2px; }
+  .set-nav nav a { white-space: nowrap; border-left: 0; border-bottom: 2px solid transparent; border-radius: 6px 6px 0 0; }
+  .set-nav nav a.on { border-bottom-color: var(--accent); }
+  .set-sec { scroll-margin-top: 140px; }
+}
+
 /* task description above the panel's terminal: two lines, click for all (scrolls, at most 40% of the window) */
 .term-brief span { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; flex: 1; }
 .term-brief.open span { display: block; -webkit-line-clamp: unset; max-height: 40vh; overflow: auto; }

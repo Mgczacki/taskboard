@@ -22,11 +22,12 @@ import { previewHtml, readMarkdown } from './components/Docs';
 import { archiveTriageTask, confirmTriageArchive } from './triageArchive';
 
 type Page = 'list' | 'board' | 'canvas' | 'graph' | 'inbox' | 'permits' | 'accounts' | 'stats' | 'settings';
-// #list · #board · #canvas · #canvas:<view>  (view = g:<group> | needs | live | t:<id,id>)
+// #list · #board · #canvas · #canvas:<view>  (view = g:<group> | needs | live | t:<id,id>) · #settings:<section>
 function parseHash(): { page: Page; view?: string } {
   const h = decodeURIComponent(location.hash.slice(1));
   if (h === 'review') return { page: 'inbox' };
   if (h.startsWith('canvas:')) return { page: 'canvas', view: h.slice(7) };
+  if (h.startsWith('settings:')) return { page: 'settings' }; // #settings:<section> (Settings scrolls to it)
   return { page: (['list', 'board', 'canvas', 'graph', 'inbox', 'permits', 'accounts', 'stats', 'settings'].includes(h) ? h : 'list') as Page };
 }
 export const SOLO = new URLSearchParams(location.search).get('solo') === '1';
@@ -260,7 +261,7 @@ export function App() {
       {groupPrompt && <GroupPrompt ids={groupPrompt} close={() => setGroupPrompt(null)} done={(g, openWin) => { setGroupPrompt(null); setSelected(new Set()); toast(`Group “${g.name}” created`); if (openWin) openInWindow('g:' + g.id); else { setView('g:' + g.id); go('canvas'); } }} />}
       {role === 'sandbox' && <div className="sandbox-bar" title={`This is a sandbox: a separate test copy of Taskboard (${machineName}). Its agents and tasks are not your real ones.`}>Sandbox · {machineName} · not your real Taskboard</div>}
       {updateReady && <div className="update-bar">A new version of Taskboard is ready. <button className="btn primary" onClick={() => location.reload()}>Reload</button><button className="btn ghost" onClick={() => setUpdateReady(false)}>Later</button></div>}
-      {keysHelp && <KeysHelp close={() => setKeysHelp(false)} settings={() => { setKeysHelp(false); go('settings'); }} />}
+      {keysHelp && <KeysHelp close={() => setKeysHelp(false)} settings={() => { setKeysHelp(false); go('settings'); location.hash = 'settings:keys'; }} />}
       {addMachine && <AddMachine close={() => setAddMachine(false)} />}
       {triage && <Triage queue={queue} close={() => setTriage(false)} open={id => { setTriage(false); setOpenId(id); }} />}
       {approvals.some(a => (page !== 'permits' || a.action !== 'permit') && (a.state === 'pending' || (a.action === 'permit' && a.state === 'running'))) && <div className="approvals">{approvals.filter(a => (page !== 'permits' || a.action !== 'permit') && (a.state === 'pending' || (a.action === 'permit' && a.state === 'running'))).map(a => (
