@@ -41,17 +41,21 @@ export function chromePath(): string | null {
 }
 
 const pidAlive = (pid?: number) => { if (!pid) return false; try { process.kill(pid, 0); return true; } catch { return false; } };
-async function version(port: number): Promise<{ webSocketDebuggerUrl: string } | null> {
-  try { const r = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(1500) }); return r.ok ? await r.json() as { webSocketDebuggerUrl: string } : null; } catch { return null; }
+async function version(port: number, timeout = 3000): Promise<{ webSocketDebuggerUrl: string } | null> {
+  try { const r = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(timeout) }); return r.ok ? await r.json() as { webSocketDebuggerUrl: string } : null; } catch { return null; }
 }
 // the browser of this id is running and answers on its port
 async function live(id: string): Promise<(Meta & { ws: string }) | null> {
   const m = readMeta(id);
   if (!m.port || !pidAlive(m.pid)) return null;
-  const v = await version(m.port);
+  // a busy Mac can answer slowly: ask twice before treating a live process as not running (a second Chrome on the
+  // same profile would hand over to the first one and exit)
+  const v = await version(m.port) || await version(m.port);
   return v ? { ...m, ws: v.webSocketDebuggerUrl } : null;
 }
 export const isRunning = async (id: string) => !!(await live(id));
+// the template's Chrome process exists (checked by process, so a slow answer cannot hide an open template)
+const templateOpen = () => { const m = readMeta(TEMPLATE); return !!m.port && pidAlive(m.pid); };
 
 export async function tabs(id: string): Promise<Tab[]> {
   const m = await live(id); if (!m) return [];
@@ -84,7 +88,7 @@ export function ensure(id: string): Promise<Meta & { ws: string }> {
     const meta = readMeta(id);
     mkdirSync(folder(id), { recursive: true });
     if (!existsSync(profileDir(id)) && id !== TEMPLATE) {
-      if (await isRunning(TEMPLATE)) throw new Error('The template browser is open. Close it on the Settings page, then try again. A copy of an open profile can lose its sign-ins.');
+      if (templateOpen()) throw new Error('The template browser is open. Close it on the Settings page, then try again. A copy of an open profile can lose its sign-ins.');
       if (copyTemplate(id)) meta.copiedFromTemplate = new Date().toISOString();
     }
     mkdirSync(profileDir(id), { recursive: true });
@@ -154,7 +158,7 @@ export async function stop(id: string, opts: { suspended?: boolean } = {}): Prom
 export async function resetFromTemplate(id: string) {
   if (id === TEMPLATE) throw new Error('The template cannot be reset from itself.');
   if (!existsSync(profileDir(TEMPLATE))) throw new Error('There is no template profile yet. Open the template browser on the Settings page and sign in first.');
-  if (await isRunning(TEMPLATE)) throw new Error('The template browser is open. Close it on the Settings page first.');
+  if (templateOpen()) throw new Error('The template browser is open. Close it on the Settings page first.');
   await stop(id);
   rmSync(profileDir(id), { recursive: true, force: true });
   copyTemplate(id);
