@@ -11,7 +11,8 @@ import { Terminal } from './components/Terminal';
 import { AgentChip, Dot, StatusLabel, ThreeLines } from './components/ui';
 import { BoardView, ListView } from './components/Views';
 import { GraphView } from './components/Graph';
-import { InboxPage, FlaggedBody, request as mailRequest } from './components/Mail';
+import { InboxPage } from './components/Mail';
+import { FlaggedBody, request as messageRequest } from './components/messages';
 import { AccountsPage } from './components/Accounts';
 import { SettingsPage } from './components/Settings';
 import { PermitDetails, PermitsPage } from './components/Permits';
@@ -186,8 +187,9 @@ export function App() {
   // pending reviews for the sidebar count
   const [reviewCount, setReviewCount] = useState(0);
   useEffect(() => {
-    const load = () => Promise.all([fetch('/api/review').then(r => r.json()), fetch('/api/mail').then(r => r.json())])
-      .then(([docs, mail]) => setReviewCount(docs.filter((x: { state: string }) => x.state === 'pending').length + (mail.messages || []).filter((m: { direction: string; approval?: unknown; unseen?: boolean }) => m.direction === 'inbox' && (!m.approval || m.unseen)).length)).catch(() => {});
+    // pending documents, incoming messages that wait for you, and unread notes from tasks (GET /api/a2anotes/inbox-count)
+    const load = () => Promise.all([fetch('/api/review').then(r => r.json()), fetch('/api/a2anotes/inbox-count').then(r => r.json()).catch(() => ({ count: 0 }))])
+      .then(([docs, inbox]) => setReviewCount(docs.filter((x: { state: string }) => x.state === 'pending').length + (Number(inbox.count) || 0))).catch(() => {});
     void load(); const timer = setInterval(load, 5000); return () => clearInterval(timer);
   }, []);
 
@@ -271,11 +273,10 @@ export function App() {
           {a.returnable && <textarea className="routing-rule" rows={2} aria-label="Comment for Send back" placeholder={a.action === 'mail-in' ? 'What is wrong with the message or the task? The controller receives this comment.' : 'What should change in the draft? The agent that wrote it receives this comment.'} value={cardComments[a.id] || ''} onChange={e => setCardComments(c => ({ ...c, [a.id]: e.target.value }))} />}
           <div className="ap-a"><button className="btn primary" onClick={() => void api.decide(a.id, true).then(r => { if (a.returnable && r.result) toast(r.result); }).catch(e => toast((e as Error).message))}>Approve</button>
             {a.action === 'mail-out' && a.payload?.quality?.flags.length && <button className="btn" onClick={() => void (async () => {
-              const m = await mailRequest(`/${a.payload!.message}`);
-              await mailRequest(`/${m.id}/edit`, { subject: m.subject, body: a.payload!.quality!.suggestedBody, files: a.payload!.files || [], hash: a.payload!.hash });
+              await messageRequest(`/messages/${a.payload!.message}/remove-flagged`, { hash: a.payload!.hash });
               toast('Flagged text was removed. Taskboard checks the edited draft again.');
             })().catch(e => toast((e as Error).message))}>Remove flagged text</button>}
-            {/* the result says whether the agent received the comment (server/mail/cards.ts giveBack) */}
+            {/* the result says where the comment went (server/a2anotes/cards.ts giveBack) */}
             {a.returnable && <button className="btn" disabled={!cardComments[a.id]?.trim()} onClick={() => void api.giveBack(a.id, cardComments[a.id]).then(r => { if (r.result) toast(r.result); }).catch(e => toast((e as Error).message))}>Send back</button>}
             <button className="btn" onClick={() => api.decide(a.id, false)}>Deny</button><button className="btn ghost" onClick={() => a.actor === 'controller' ? openController() : setOpenId(a.actor)}>{a.actor === 'controller' ? 'Open controller' : 'Open task'}</button></div></>}
         </div>))}</div>}

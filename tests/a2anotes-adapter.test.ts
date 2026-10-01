@@ -14,14 +14,16 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 
 const root = mkdtempSync(join(tmpdir(), 'tb-a2anotes-'));
 process.env.TASKBOARD_DIR = join(root, 'server'); process.env.TASKBOARD_VAULT = join(root, 'vault');
+process.env.TASKBOARD_A2A_CHECKS = 'rules';
 process.env.TASKBOARD_A2A_PORT = String(4700 + Math.floor(Math.random() * 200));
 const { startFakeSlack } = await import('a2a-notes/fake-slack');
 const { startService } = await import('a2a-notes');
 const savePrivate = (file: string, data: unknown) => writeFileSync(file, JSON.stringify(data), { mode: 0o600 });
 const { mountA2ANotes } = await import('../server/a2anotes/routes.ts');
 const { TOKEN, URL_BASE, TB_DIR } = await import('../server/config.ts');
-const { controllerMailToken } = await import('../server/mail/auth.ts');
+const { controllerMailToken } = await import('../server/a2anotes/auth.ts');
 const tasks = await import('../server/store.ts');
+const approvals = await import('../server/approvals.ts');
 
 const fake = await startFakeSlack({ team: 'TEXAMPLE', users: [{ id: 'UMARIO01', name: 'Mario G' }, { id: 'UALEX01', name: 'Alex B' }] });
 async function person(user: string) {
@@ -51,7 +53,9 @@ async function call(actor: Actor, path: string, body?: unknown) {
   if (actor === 'user') headers.origin = URL_BASE;
   else if (actor !== 'stranger') { headers['x-taskboard-token'] = TOKEN; headers['x-tb-actor'] = actor === 'task' ? 'worker' : 'controller'; }
   if (actor === 'controller') headers['x-tb-mail-controller'] = controllerMailToken;
-  const res = await fetch(base + path, { method: body === undefined ? 'GET' : 'POST', headers, body: body === undefined ? undefined : JSON.stringify(body) });
+  // /notes is under /api/notes, the rest under /api/a2anotes
+  const url = path.startsWith('/notes') ? base.replace(/\/a2anotes$/, '') + path : base + path;
+  const res = await fetch(url, { method: body === undefined ? 'GET' : 'POST', headers, body: body === undefined ? undefined : JSON.stringify(body) });
   return { status: res.status, data: await res.json() };
 }
 async function mcp(url: string, token: string) {
@@ -153,7 +157,7 @@ test('a person without Taskboard sends to Taskboard, and the controller gives th
 test('a reply to a task message suggests that task, from local metadata that Taskboard set', async () => {
   const draft = (await call('task', '/drafts', { to: alex.address, subject: 'Question from the worker', body: 'Hi Alex, which host should we use?', audience: 'person',
     metadata: { 'taskboard.task_id': 'controller' } })).data;
-  assert.deepEqual(draft.metadata, { 'taskboard.proposed_by': 'task', 'taskboard.task_id': 'worker', 'taskboard.task_num': 7 }, 'the caller decides the task, not the request body');
+  assert.deepEqual(draft.metadata, { 'taskboard.proposed_by': 'task', 'taskboard.task_id': 'worker', 'taskboard.task_num': 7, 'taskboard.agent': 'claude' }, 'the caller decides the task, not the request body');
   await call('controller', `/messages/${draft.id}/approve`, { hash: draft.hash });
   await call('controller', `/messages/${draft.id}/send`, { hash: draft.hash });
   await alexAgent('a2anotes_sync');
@@ -208,6 +212,80 @@ test('Taskboard and a plain MCP client see the same message and approval state a
   assert.equal(after.approved_by, 'person');
 });
 
+test('approval cards: a task draft for the user sends on Approve and returns the comment on Send back', async () => {
+  assert.equal((await call('user', '/policy', { outgoing: 1 })).status, 200, 'a lower level needs no confirmation');
+  const raise = await call('user', '/policy', { incoming: 3 });
+  assert.equal(raise.status, 400, 'a higher level needs the confirmation');
+  assert.match(raise.data.error, /Confirm on the Settings page/);
+  const card = async (id: string) => { await adapter.cards.sync(); return approvals.all().find(a => (a.payload as any)?.message === id && a.state === 'pending'); };
+  // the recipient by name: Taskboard finds the one member called Alex
+  const d = (await call('task', '/drafts', { to: 'Alex', subject: 'Card test', body: 'Hi Alex, the plan is ready. Please read it by Friday.' })).data;
+  assert.equal(d.to, alex.address);
+  assert.equal(d.approver, 'person');
+  const c1 = await card(d.id);
+  assert.ok(c1, 'a task draft for the user gets a card');
+  assert.equal(c1!.actor, 'worker');
+  assert.equal(c1!.action, 'mail-out');
+  const done = await approvals.decide(c1!.id, true);
+  assert.equal(done!.state, 'approved', done!.result);
+  assert.equal((await call('user', `/messages/${d.id}`)).data.state, 'sent');
+
+  const e = (await call('task', '/drafts', { to: alex.address, subject: 'Second card', body: 'Hi Alex, here is another plan.' })).data;
+  const c2 = await card(e.id);
+  const back = await approvals.giveBack(c2!.id, 'Ask for the date first.');
+  assert.equal(back!.state, 'returned', back!.result);
+  const rejected = (await call('user', `/messages/${e.id}`)).data;
+  assert.equal(rejected.state, 'rejected');
+  assert.equal(rejected.rejected.comment, 'Ask for the date first.');
+  const comment = inbox('worker').find(n => n.startsWith(`a2anotes-${e.id}-comment`));
+  assert.ok(comment && readFileSync(join(process.env.TASKBOARD_VAULT!, 'tasks', 'worker', 'inbox', comment), 'utf8').includes('Ask for the date first.'), 'the task that wrote the draft gets the comment');
+  assert.equal((await card(e.id)), undefined, 'the card closes');
+
+  // Remove flagged text: the sentence that the rules flag goes, and the draft is checked again
+  const f = (await call('task', '/drafts', { to: alex.address, subject: 'Flagged', body: 'Hi Alex, the plan is ready. I will check it later.' })).data;
+  assert.equal(f.body_flags, 1);
+  const fixed = await call('user', `/messages/${f.id}/remove-flagged`, { hash: f.hash });
+  assert.equal(fixed.status, 200, JSON.stringify(fixed.data));
+  assert.equal(fixed.data.body, 'Hi Alex, the plan is ready.');
+  assert.equal(fixed.data.body_flags, 0);
+  assert.equal((await call('user', '/policy', { outgoing: 2, confirmLowerControl: true })).status, 200);
+});
+
+test('incoming cards follow the controller proposal, and task notes stay local', async () => {
+  assert.equal((await call('user', '/policy', { incoming: 1 })).status, 200);
+  const d = await alexPerson('a2anotes_create_draft', { to_address: mario.address, subject: 'Incoming card', body: 'Hi Mario, the files are ready.', audience: 'person', request_id: `r-${randomUUID()}` });
+  await alexPerson('a2anotes_approve', { id: d.id, expected_hash: d.hash, decision: 'approve' });
+  await alexPerson('a2anotes_send', { id: d.id, expected_hash: d.hash, request_id: `r-${randomUUID()}` });
+  await call('controller', '/sync', {});
+  const m = (await call('controller', '/messages?direction=incoming')).data.messages.find((x: any) => x.message_id === d.id);
+  assert.equal(m.approver, 'person');
+  const notice = inbox('controller').find(n => n.startsWith(`a2anotes-${m.id}-notice`));
+  assert.ok(notice && readFileSync(join(process.env.TASKBOARD_VAULT!, 'tasks', 'controller', 'inbox', notice), 'utf8').includes('propose-route'), 'the controller is asked to propose a task');
+  assert.equal((await call('task', `/messages/${m.id}/propose-route`, { task: 'none' })).status, 403, 'only the controller proposes');
+  assert.equal((await call('controller', `/messages/${m.id}/propose-route`, { task: 'none' })).status, 200);
+  const c = approvals.all().find(a => (a.payload as any)?.message === m.id && a.state === 'pending');
+  assert.ok(c, 'the proposal makes a card');
+  assert.equal(c!.action, 'mail-in');
+  assert.equal((await approvals.decide(c!.id, true))!.state, 'approved');
+  assert.equal((await call('user', `/messages/${m.id}`)).data.state, 'approved');
+  assert.equal((await call('user', '/policy', { incoming: 2, confirmLowerControl: true })).status, 200);
+
+  const note = await call('task', '/notes', { subject: 'Done', body: 'The report is in my outbox.' });
+  assert.equal(note.status, 200);
+  assert.equal((await call('task', '/notes')).status, 403, 'tasks cannot read the notes');
+  const list = await call('user', '/notes');
+  assert.equal(list.data[0].subject, 'Done');
+  assert.equal(list.data[0].task, 'worker');
+  assert.equal((await call('user', `/notes/${list.data[0].id}/seen`, {})).data.seen !== undefined, true);
+  const count = await call('user', '/inbox-count');
+  assert.equal(typeof count.data.count, 'number');
+  // the Graph: people and messages in the dashboard's view
+  const graph = (await call('user', '/graph')).data;
+  assert.ok(graph.people.some((p: any) => p.user === 'UALEX01' && p.name === 'Alex B'));
+  assert.ok(graph.messages.some((x: any) => x.direction === 'outbox' && x.person === 'UALEX01'));
+  assert.ok(graph.messages.every((x: any) => x.body === undefined), 'the Graph list has no message text');
+});
+
 test('when a2anotes.json is missing, the adapter reports off and changes nothing', async () => {
   const offRoot = mkdtempSync(join(tmpdir(), 'tb-a2anotes-off-'));
   const offApp = express(); offApp.use(express.json());
@@ -230,6 +308,7 @@ test('when a2anotes.json is missing, the adapter reports off and changes nothing
   assert.deepEqual({ configured: done.setup.configured, running: done.setup.running, linked: done.setup.linked, version: done.setup.serviceVersion },
     { configured: true, running: true, linked: true, version: done.setup.version });
   assert.equal(done.setup.folder, join(TB_DIR, 'a2a-notes'), 'a test server never uses the real ~/.a2a-notes');
+  assert.equal(done.setup.checks, 'rules', 'tests use the fixed rules, never the real Claude account');
   const settingsText = readFileSync(join(offRoot, 'a2anotes.json'), 'utf8');
   assert.equal(statSync(join(offRoot, 'a2anotes.json')).mode & 0o777, 0o600);
   const after = await (await fetch(`${url}/status`, { headers })).json();

@@ -30,7 +30,6 @@ import { acquire } from './lock.ts';
 import { ROLE, installRuntimeFiles, refuseReason } from './instance.ts';
 import { hostname } from 'node:os';
 import WebSocket from 'ws';
-import { messageLevelsChanged, mountMail } from './mail/routes.ts';
 import { mountA2ANotes } from './a2anotes/routes.ts';
 import * as inboxDelivery from './inbox-delivery.ts';
 import { mountReview, pendingFor, pendingForPath } from './review.ts';
@@ -40,7 +39,7 @@ import * as stats from './stats.ts';
 import * as taskGit from './task-git.ts';
 import * as push from './push.ts';
 import * as permits from './permits.ts';
-import { controllerMailToken } from './mail/auth.ts';
+import { controllerMailToken } from './a2anotes/auth.ts';
 import * as tmux from './tmux.ts';
 import { sampleResources } from './resource-log.ts';
 import { stopTaskSandboxes } from './sandbox-cleanup.ts';
@@ -507,11 +506,10 @@ app.get('/api/info', (_req, res) => res.json(info()));
 app.patch('/api/info', async (req, res) => {
   if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Machine settings are changed on the dashboard.' });
   try {
-    const { name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, messageIncoming, messageOutgoing, checkPrivateNotes, confirmLowerControl, defaultMaxParallel, newTaskDefaultAgent, applyMaxParallelToAll } = req.body;
-    // A higher message level gives the user less control. The page asks first and then sends confirmLowerControl.
-    const current = machine.get().messages;
-    if (confirmLowerControl !== true && ((messageIncoming ?? 0) > current.incoming || (messageOutgoing ?? 0) > current.outgoing || (controllerCanApprovePermits === true && !machine.get().permissions.controllerCanApprovePermits)))
-      return res.status(400).json({ error: 'Confirm on the Settings page before you give the controller more control over messages.' });
+    const { name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, confirmLowerControl, defaultMaxParallel, newTaskDefaultAgent, applyMaxParallelToAll } = req.body;
+    // Letting the controller approve permits gives the user less control. The page asks first and then sends confirmLowerControl.
+    if (confirmLowerControl !== true && controllerCanApprovePermits === true && !machine.get().permissions.controllerCanApprovePermits)
+      return res.status(400).json({ error: 'Confirm on the Settings page before you give the controller more control.' });
     if (askAgent && !['claude', 'codex'].includes(askAgent)) return res.status(400).json({ error: 'Antigravity does not have verified read-only Ask controls.' });
     const agent = askAgent || machine.get().ask.agent;
     if (askAccount && accounts.get(askAccount)?.agent !== agent) return res.status(400).json({ error: `Pick a ${agent} account for questions.` });
@@ -519,10 +517,9 @@ app.patch('/api/info', async (req, res) => {
       return res.status(400).json({ error: 'Pick a valid model for questions.' });
     if (reviewAccount && accounts.get(reviewAccount)?.agent !== 'claude') return res.status(400).json({ error: 'Pick a Claude Code account for auto review.' });
     if (defaultMaxParallel !== undefined) machine.checkMaxParallel(defaultMaxParallel); // refuse before anything is saved
-    machine.update({ name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, messageIncoming, messageOutgoing, checkPrivateNotes, defaultMaxParallel, newTaskDefaultAgent });
+    machine.update({ name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, defaultMaxParallel, newTaskDefaultAgent });
     // the Settings page confirms first; running tasks keep running, only new starts check the new maximum
     if (applyMaxParallelToAll === true) accounts.setAllMaxParallel(machine.get().accounts.defaultMaxParallel);
-    if (messageIncoming !== undefined || messageOutgoing !== undefined || checkPrivateNotes !== undefined) messageLevelsChanged();
     if (trustWorkspaces === false) trust.restore();
     res.json(info());
   } catch (e) { fail(res, e); }
@@ -616,10 +613,9 @@ app.post('/api/tasks/:id/restart', async (req, res) => {
   try { await restartTask(t); res.json(view(store.get(t.id)!)); } catch (e) { fail(res, e); }
 });
 mountReview(app);
-// A file from the mail module (a comment from an approval card, a routed message or file, a notice for the controller)
-// goes into the task's Taskboard inbox, and server/inbox-delivery.ts tells the agent, for every agent and status.
-mountMail(app, { delivery: inboxDelivery });
-// A2A Notes (github.com/Mgczacki/a2a-notes) through its MCP server. It is off until ~/.taskboard/a2anotes.json enables it.
+// Messages between people and their agents, through A2A Notes (github.com/Mgczacki/a2a-notes) and its MCP server.
+// A file from it (a comment from an approval card, a routed message, a notice for the controller) goes into the task's
+// Taskboard inbox, and server/inbox-delivery.ts tells the agent, for every agent and status.
 mountA2ANotes(app, { delivery: inboxDelivery });
 inboxDelivery.start();
 

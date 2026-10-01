@@ -3,7 +3,7 @@
 // States: pending → running → approved | failed, or pending → denied. Deciding only works on a pending approval, so
 // a second click or a late Deny cannot run the action twice or contradict it. Approvals are saved to
 // TB_DIR/approvals.json; after a restart, a pending one is marked expired (nothing ran) and a running one unknown.
-// Message cards (mail-in, mail-out) are made again from mail.json after a restart (server/mail/cards.ts). They can also
+// Message cards (mail-in, mail-out) are made again from A2A Notes after a restart (server/a2anotes/cards.ts). They can also
 // be sent back with a comment (pending → returned), and close when the message is decided in the Inbox.
 import { randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';

@@ -7,7 +7,7 @@ Taskboard shows what each one is doing, which ones need you, and lets you open a
 
 Start with [Set up Taskboard on your Mac](SETUP.md). It covers installation and your first task.
 
-The guide also explains Slack connection and messages to workspace members.
+The guide also explains messages with other people through A2A Notes (https://github.com/Mgczacki/a2a-notes) over Slack.
 
 ## Install (from this repository)
 
@@ -108,7 +108,7 @@ Agents that work on Taskboard itself run inside the real one, so the setup keeps
 | Board | Columns by status, or by group (drag a card onto a group to add it. Hold ⌥ to move it). |
 | Graph | Tasks in lanes (group, folder or status). Arrows show documents sent from one task to another. |
 | Canvas | Live terminals. Tabs across the top are your groups. Columns / Grid / Rows. |
-| Inbox | Account messages and documents to review. The Sent tab shows outgoing drafts, send attempts, and sent messages. Filter by recipient, proposer, or state. |
+| Inbox | Messages with other people (A2A Notes), notes from your tasks, and documents to review. The Sent tab shows drafts and sent messages. |
 | Accounts | Settings folders per account, sign-in, limit marks, and limit resets (only you can use them). |
 
 Keys (press `?` in the app for the full list; change them on the Settings page): `⌘K` (Command-K) controller, also from inside

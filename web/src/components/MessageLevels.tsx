@@ -1,8 +1,8 @@
-// Settings: who approves messages between Taskboard users, in each direction, and the people you trust.
-// The server enforces the levels (server/mail/policy.ts). A change to less human control asks first on this page.
+// Settings: who approves messages with other people, in each direction, and the people you trust. The levels live in
+// A2A Notes (a2anotes://policy), and A2A Notes enforces them. A change to less human control asks first on this page.
 import { useEffect, useState } from 'react';
-import type { MachineInfo, MessageLevel } from '../api';
-import { MemberPicker, request, type Person } from './Mail';
+import type { MessageLevel } from '../api';
+import { request } from './messages';
 
 type Direction = 'incoming' | 'outgoing';
 const LEVELS: Record<Direction, { label: string; options: [MessageLevel, string, string][]; risk: string }> = {
@@ -22,64 +22,63 @@ const LEVELS: Record<Direction, { label: string; options: [MessageLevel, string,
       [2, 'The controller approves ordinary messages, you approve the rest.', 'The controller sends drafts that pass the check. It asks you when it finds a problem or is not sure.'],
       [3, 'The controller decides.', 'The controller approves and sends drafts with no step for you. Drafts that fail the safety check still wait for you.'],
     ],
-    risk: 'With this level, the controller can send a message in your name without asking you. The safety check can miss private data or secrets in a draft. Taskboard cannot take back a sent Slack message.',
+    risk: 'With this level, the controller can send a message in your name without asking you. The safety check can miss private data or secrets in a draft. A sent Slack message cannot be taken back.',
   },
 };
 
-export function MessageLevels({ info, busy, save }: {
-  info: MachineInfo; busy: boolean;
-  save: (p: { messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; checkPrivateNotes?: boolean; confirmLowerControl?: boolean }) => Promise<void>;
-}) {
-  const levels = info.settings.messages;
+interface Policy { incoming: MessageLevel; outgoing: MessageLevel; checkBody: boolean; version: number; trusted: { address: string; name: string }[] }
+export function MessageLevels() {
+  const [policy, setPolicy] = useState<Policy | null>(null);
   const [asking, setAsking] = useState<{ direction: Direction; level: MessageLevel } | null>(null);
-  const [trusted, setTrusted] = useState<{ user: string; name: string }[] | null>(null);
-  const [adding, setAdding] = useState('');
-  const [addingPerson, setAddingPerson] = useState<Person | null>(null);
+  const [query, setQuery] = useState('');
+  const [people, setPeople] = useState<{ address: string; name: string; title: string; active: boolean }[]>([]);
+  const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const load = () => request('/policy').then(setPolicy).catch(e => setError(e.message));
+  useEffect(() => { void load(); }, []);
   useEffect(() => {
-    request('').then(d => setTrusted(d.trustedSenders || [])).catch(e => setError(e.message));
-  }, []);
+    if (query.trim().length < 2) { setPeople([]); return; }
+    const t = setTimeout(() => { request(`/people?q=${encodeURIComponent(query.trim())}`).then(r => setPeople(r.people.filter((p: { active: boolean }) => p.active))).catch(() => setPeople([])); }, 300);
+    return () => clearTimeout(t);
+  }, [query]);
+  const act = async (fn: () => Promise<unknown>) => { setBusy(true); setError(''); try { await fn(); await load(); } catch (e) { setError((e as Error).message); } finally { setBusy(false); } };
+  const save = (p: Record<string, unknown>) => act(() => request('/policy', p));
   const choose = (direction: Direction, level: MessageLevel) => {
-    if (level === levels[direction]) return;
+    if (!policy || level === policy[direction]) return;
     // a higher level gives the controller more control: explain the risk before saving
-    if (level > levels[direction]) { setAsking({ direction, level }); return; }
+    if (level > policy[direction]) { setAsking({ direction, level }); return; }
     setAsking(null);
-    void save(direction === 'incoming' ? { messageIncoming: level } : { messageOutgoing: level });
+    void save({ [direction]: level });
   };
-  const confirm = async () => {
-    if (!asking) return;
-    await save({ ...(asking.direction === 'incoming' ? { messageIncoming: asking.level } : { messageOutgoing: asking.level }), confirmLowerControl: true });
-    setAsking(null);
-  };
-  const setTrust = async (user: string, name: string, value: boolean) => {
-    setError('');
-    try { setTrusted((await request('/trusted', { user, name, trusted: value })).trustedSenders || []); setAdding(''); setAddingPerson(null); } catch (e) { setError((e as Error).message); }
-  };
+  const confirm = async () => { if (!asking) return; await save({ [asking.direction]: asking.level, confirmLowerControl: true }); setAsking(null); };
   return <>
     <h3 className="set-h">Messages from other people</h3>
-    <p className="sub">Slack messages between Taskboard users. The Taskboard server enforces these levels. Agents and the controller cannot change them.</p>
-    {(['incoming', 'outgoing'] as Direction[]).map(direction => <div className="ctl-box" key={direction} role="radiogroup" aria-label={LEVELS[direction].label}>
-      <b>{LEVELS[direction].label}</b>
-      {LEVELS[direction].options.map(([level, title, text]) => <label className="opt" key={level}>
-        <input type="radio" name={`message-${direction}`} disabled={busy} checked={(asking?.direction === direction ? asking.level : levels[direction]) === level} onChange={() => choose(direction, level)} />
-        {' '}<b>{title}</b>{level === 2 && ' (default)'} <span className="sub">{text}</span>
-      </label>)}
-      {asking?.direction === direction && <div className="banner" role="alert">
-        <p>{LEVELS[direction].risk}</p>
-        <div className="ap-a"><button className="btn primary" disabled={busy} onClick={() => void confirm()}>Change level</button><button className="btn" disabled={busy} onClick={() => setAsking(null)}>Cancel</button></div>
-      </div>}
-    </div>)}
-    <div className="ctl-box"><label className="opt"><input type="checkbox" disabled={busy} checked={levels.checkPrivateNotes} onChange={e => void save({ checkPrivateNotes: e.target.checked })} /> Check messages for private working notes</label><div className="sub">Taskboard marks text the reader may not need. A draft with flags waits for your approval.</div></div>
-    <div className="ctl-box">
-      <b>Trusted people</b>
-      <div className="sub">A message from or to a person who is not on this list always needs your approval, at every level.</div>
-      {error && <div className="banner">{error}</div>}
-      {trusted?.length === 0 && <div className="sub">No trusted people yet.</div>}
-      {trusted?.map(t => <div className="opt" key={t.user}>{t.name} <span className="sub">({t.user})</span> <button className="btn ghost" onClick={() => void setTrust(t.user, t.name, false)}>Remove</button></div>)}
-      <div className="opt">
-        <MemberPicker value={adding} onChange={setAdding} onSelect={setAddingPerson} exclude={trusted?.map(t => t.user) || []} disabled={busy} />
-        <button className="btn" disabled={!addingPerson} onClick={() => { if (addingPerson) void setTrust(addingPerson.user, addingPerson.name, true); }}>Trust this person</button>
+    <p className="sub">Messages through A2A Notes. A2A Notes enforces these levels. Agents and the controller cannot change them.</p>
+    {!policy ? <div className="ctl-box"><div className="sub">{error ? `The levels are not available: ${error}` : 'Loading…'} Set up A2A Notes under Integrations above.</div></div> : <>
+      {(['incoming', 'outgoing'] as Direction[]).map(direction => <div className="ctl-box" key={direction} role="radiogroup" aria-label={LEVELS[direction].label}>
+        <b>{LEVELS[direction].label}</b>
+        {LEVELS[direction].options.map(([level, title, text]) => <label className="opt" key={level}>
+          <input type="radio" name={`message-${direction}`} disabled={busy} checked={(asking?.direction === direction ? asking.level : policy[direction]) === level} onChange={() => choose(direction, level)} />
+          {' '}<b>{title}</b>{level === 2 && ' (default)'} <span className="sub">{text}</span>
+        </label>)}
+        {asking?.direction === direction && <div className="banner" role="alert">
+          <p>{LEVELS[direction].risk}</p>
+          <div className="ap-a"><button className="btn primary" disabled={busy} onClick={() => void confirm()}>Change level</button><button className="btn" disabled={busy} onClick={() => setAsking(null)}>Cancel</button></div>
+        </div>}
+      </div>)}
+      <div className="ctl-box"><label className="opt"><input type="checkbox" disabled={busy} checked={policy.checkBody} onChange={e => void save({ checkBody: e.target.checked })} /> Check drafts for private working notes and internal terms</label><div className="sub">When this is on, a draft with flagged text always needs your approval.</div></div>
+      <div className="ctl-box">
+        <b>Trusted people</b>
+        <div className="sub">A message from or to a person who is not on this list always needs your approval, at every level.</div>
+        {error && <div className="banner">{error}</div>}
+        {policy.trusted.length === 0 && <div className="sub">No trusted people yet.</div>}
+        {policy.trusted.map(t => <div className="opt" key={t.address}>{t.name} <span className="sub">({t.address})</span> <button className="btn ghost" disabled={busy} onClick={() => void act(() => request('/trusted', { address: t.address, name: t.name, trusted: false }))}>Remove</button></div>)}
+        <div className="opt">
+          <input className="routing-rule" aria-label="Find a person to trust" placeholder="Find a person by name or email" value={query} onChange={e => setQuery(e.target.value)} />
+        </div>
+        {people.filter(p => !policy.trusted.some(t => t.address === p.address)).slice(0, 8).map(p => <div className="opt" key={p.address}>{p.name}{p.title ? <span className="sub"> · {p.title}</span> : null}
+          <button className="btn" disabled={busy} onClick={() => void act(async () => { await request('/trusted', { address: p.address, name: p.name, trusted: true }); setQuery(''); })}>Trust this person</button></div>)}
       </div>
-    </div>
+    </>}
   </>;
 }

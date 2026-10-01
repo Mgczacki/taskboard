@@ -10,7 +10,7 @@
 // - Tasks with no links fill the free cells of their lane row by row: waiting on you first, then by task number.
 // - People (the "People" checkbox): Slack members that a task, the controller or the user sent a message to, or whose
 //   message was routed to a task. They are in their own "People" lane at the bottom in every lane layout, with the
-//   Controller, You and Unknown sender nodes for messages that no task proposed. Data: GET /api/mail/graph.
+//   Controller, You and Unknown sender nodes for messages that no task proposed. Data: GET /api/a2anotes/graph.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Group, Status, Task } from '../api';
 import { AGENT_NAME, ATTN, ORDER, STATUS_LABEL, fmtWait } from '../api';
@@ -281,7 +281,7 @@ export function GraphView({ tasks, groups, open }: Props) {
   useEffect(() => {
     if (!showPeople) return;
     let dead = false;
-    const load = () => fetch('/api/mail/graph').then(r => r.ok ? r.json() : null).then(d => { if (!dead && d && Array.isArray(d.messages)) setMail(d); }).catch(() => {});
+    const load = () => fetch('/api/a2anotes/graph').then(r => r.ok ? r.json() : null).then(d => { if (!dead && d && Array.isArray(d.messages)) setMail(d); }).catch(() => {});
     const h = setTimeout(load, 500), iv = setInterval(load, 30_000);
     return () => { dead = true; clearTimeout(h); clearInterval(iv); };
   }, [taskKey, showPeople]);
