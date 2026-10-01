@@ -14,6 +14,8 @@ import { runGroupChange } from '../groupActions';
 import { inOrder, moveBy, moveToSlot, slotAt, slotHint } from '../groupOrder';
 import { orderKey, renderOrder, slotNear, tileHint, withSavedOrder } from '../tileOrder';
 import { GroupRuntime } from './GroupRuntime';
+import { RuntimeButton, type RuntimeTab } from './TaskRuntime';
+import { countText, sumCounts } from '../runtimeText';
 
 type Layout = 'columns' | 'grid' | 'rows';
 const MINW = 640;
@@ -38,7 +40,7 @@ export function openInWindow(view: string) {
 }
 
 interface Props {
-  tasks: Task[]; groups: Group[]; view: string; setView: (v: string) => void; openPanel: (id: string | null) => void;
+  tasks: Task[]; groups: Group[]; view: string; setView: (v: string) => void; openPanel: (id: string | null, tab?: RuntimeTab) => void;
   panelTaskId?: string | null; // the task whose panel is open (its tile then does not attach a second terminal)
   selected: Set<string>; toggleSel: (id: string) => void; clearSel: () => void; solo: boolean;
   focusMode: boolean; setFocusMode: (f: boolean) => void; toast: (s: string, action?: { label: string; fn: () => void }) => void;
@@ -73,7 +75,7 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
   // Dragging a window: the dragged task and the slot (gap between two windows on screen) under the pointer (tileOrder.ts).
   const [tileDrag, setTileDrag] = useState<{ id: string; slot: number | null } | null>(null);
   // The saved order of the views that are not a group (server/canvasOrder.ts).
-  const savedOrder = useStore().canvasOrder;
+  const { canvasOrder: savedOrder, runtime: runtimeCounts } = useStore();
   // The new window order of a view until the server sends the saved order back, so the windows do not jump back.
   const [pendingTiles, setPendingTiles] = useState<{ view: string; ids: string[] } | null>(null);
   useEffect(() => setPendingTiles(null), [saved, savedOrder, view]);
@@ -108,6 +110,9 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
   const newInSmart = (view === 'needs' || view === 'live') && frozen ? liveSet().filter(x => !frozen.includes(x)).length : 0;
 
   const wins = ids.map(id => tasks.find(t => t.id === id)!).filter(Boolean);
+  // the tasks whose browsers and processes the view lists: in a group view every task of the group that is not archived
+  // (a suspended task can keep a stopped browser), in other views the windows on screen
+  const runtimeTasks = group ? group.tasks.map(id => tasks.find(t => t.id === id)).filter((t): t is Task => !!t && t.status !== 'archived') : wins;
   // pages: only the tiles of one page are on screen (and connected); the others wait
   const per = perPage === 'off' ? 0 : perPage;
   const pageCount = per ? Math.max(1, Math.ceil(wins.length / per)) : 1;
@@ -413,13 +418,14 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
         <span className="sp" />
         <span className="lbl">{per && pageCount > 1 ? '' : `${wins.length} windows`}{focusedTask ? `${per && pageCount > 1 ? '' : ' · '}typing into #${focusedTask.num}` : ''}</span>
         {suspendedHere.length > 0 && <button className="btn" title={`Not running: ${suspendedHere.map(t => '#' + t.num + ' ' + t.title).join(', ')}. Resume starts their agents again and continues their conversations.`} onClick={() => suspendedHere.forEach(t => api.resume(t.id).catch(() => {}))}>{suspendedHere.length} suspended · Resume</button>}
-        <button className={`btn ${runtimeOpen ? 'on' : ''}`} onClick={() => setRuntimeOpen(o => !o)} title="The browsers of the tasks in this view, and the processes of this group">Browsers{group ? ' & processes' : ''}</button>
+        {(() => { const n = countText(sumCounts(runtimeCounts, runtimeTasks.map(t => t.id))); return (
+          <button className={`btn ${runtimeOpen ? 'on' : ''}`} onClick={() => setRuntimeOpen(o => !o)} title={`The browsers and processes of the tasks in this view, with their memory. Each task owns its own.${n ? ` Running now: ${n}.` : ''}`}>Browsers & processes{n && <span className="rtb-total">{n}</span>}</button>); })()}
         <button className="btn" onClick={() => setFocusMode(!focusMode)} title={`Focus mode (${keysText('focusMode')})`}>Focus mode {keyLabel('focusMode') && <kbd>{keyLabel('focusMode')}</kbd>}</button>
       </div>
       {menu === 'new' && <NewGroupMenu tasks={tasks} onScreen={ids} selected={[...selected].filter(id => tasks.some(t => t.id === id))} close={() => setMenu(null)} done={g => { clearSel(); setMenu(null); setView('g:' + g.id); toast(`Group “${g.name}” created`); }} />}
       {menu && typeof menu === 'object' && <GroupMenu g={groups.find(x => x.id === menu.group)!} archiveCount={(g => g ? archivePlan(g, groups, tasks).targets.length : 0)(groups.find(x => x.id === menu.group))} onArchiveAll={(g, deleteGroup) => { setMenu(null); setArchiving({ group: { ...g, tasks: [...g.tasks] }, deleteGroup }); }} close={() => setMenu(null)} onDeleted={g => { if (view === 'g:' + g.id) setView('live'); toast(`Deleted “${g.name}”. Its tasks keep running.`, { label: 'Undo', fn: () => { api.restoreGroup(g); setView('g:' + g.id); } }); }} />}
       {archiving && <ArchiveAllPanel g={archiving.group} deleteGroup={archiving.deleteGroup} groups={groups} tasks={tasks} close={() => setArchiving(null)} onDeleted={() => { if (view === 'g:' + archiving.group.id) setView('live'); }} onRestored={() => setView('g:' + archiving.group.id)} onEnded={ids => { if (panelTaskId && ids.includes(panelTaskId)) openPanel(null); }} toast={toast} />}
-      {runtimeOpen && <GroupRuntime tasks={wins} group={group} />}
+      {runtimeOpen && <GroupRuntime tasks={runtimeTasks} group={group} onOpen={(id, tab) => openPanel(id, tab)} />}
       <div className="stage-grid" ref={stage} style={style}>
         {!wins.length && <div className="emptyview"><h2>{group ? `“${group.name}” is empty` : view === 'ungrouped' && !hidden.length ? 'Every live task is in a group' : 'No windows'}</h2><p>Use <b>＋ New task</b> to start an agent here. Use <b>＋ Add window</b> to show a task that already exists.</p></div>}
         {/* renderOrder: the page keeps the windows in one fixed order and CSS order puts them in place, so a move does not remount a terminal */}
@@ -427,7 +433,7 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
           <div key={t.id} data-win={t.id} className={`win ${t.status} ${focused === t.id ? 'focus' : ''} ${selected.has(t.id) ? 'selected' : ''} ${tileDrag?.id === t.id ? 'dragging' : ''} ${tileSlotClass(i)} ${layout === 'rows' ? 'vslot' : ''}`} style={{ order: i, ...(layout === 'grid' && !maxId ? { gridColumn: `span ${i < tileCount - lastRow ? lastRow : gridCols}` } : {}) }} onMouseDown={() => { setFocused(t.id); if (t.status === 'unread') api.seen(t.id); }}>
             <div className="wh" onPointerDown={e => startDrag(e, t.id)} onDoubleClick={() => setMaxId(m => m ? null : t.id)}>
               <span className="grip" title={`Drag to move this window between two others, or onto a group tab. Move it one place: ${keysText('windowEarlier')} / ${keysText('windowLater')}`}>⠿</span><span className="ix">{i + 1}</span><Dot s={t.status} /><span className="n">#{t.num}</span><span className="ti">{t.title}</span>
-              <span className={`st st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} />
+              <span className={`st st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} /><RuntimeButton t={t} small onOpen={tab => openPanel(t.id, tab)} />
               {ending === t.id ? <><span className="sel-warn">End & archive?</span><button className="b" onClick={() => endTask(t)}>Yes, end it</button><button className="b" onClick={() => setEnding(null)}>Cancel</button></> : <>
               {(t.status === 'suspended' || t.openElsewhere) && <button className="b" onClick={() => openPanel(t.id)}>{t.openElsewhere ? 'Options…' : 'Resume…'}</button>}
               <button className={`b ${asking.has(t.id) ? 'on' : ''}`} title="Ask a separate agent about this session. This agent does not see the question." onClick={() => toggleAsk(t.id)}>?</button>

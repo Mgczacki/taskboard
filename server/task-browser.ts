@@ -214,6 +214,7 @@ export async function shot(id: string): Promise<Buffer | null> {
 
 const listeners = new Set<(id: string) => void>();
 export const onChange = (fn: (id: string) => void) => { listeners.add(fn); };
+export const agentCount = (id: string) => agentConnections.get(id) || 0;
 const changed = (id: string) => { for (const fn of listeners) try { fn(id); } catch { /* listener failed */ } };
 
 // ---------- agents: DevTools connections forwarded to the task's browser ----------

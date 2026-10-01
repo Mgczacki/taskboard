@@ -1,20 +1,17 @@
-// HTTP and WebSocket routes for the processes (task-procs.ts) and the browser (task-browser.ts) of tasks and groups,
+// HTTP and WebSocket routes for the processes (task-procs.ts) and the browser (task-browser.ts) of each task,
 // and the steps that end them when a task is archived, suspended or removed, and start them again on resume.
+// A group owns no processes and no browser. Deleting a group, or taking a task out of it, stops nothing.
 import type express from 'express';
 import type { IncomingMessage } from 'node:http';
 import type { Duplex } from 'node:stream';
-import { join } from 'node:path';
 import { WebSocketServer } from 'ws';
 import * as agents from './agents.ts';
-import { TB_DIR, TOKEN_FILE, URL_BASE } from './config.ts';
-import * as groups from './groups.ts';
 import * as store from './store.ts';
 import * as procs from './task-procs.ts';
 import * as browser from './task-browser.ts';
+import * as summary from './runtime-summary.ts';
 
-const groupEnv = (): Record<string, string> => ({ TB_URL: URL_BASE, TB_TOKEN_FILE: TOKEN_FILE, PATH: `${join(TB_DIR, 'bin')}:${process.env.PATH || '/usr/bin:/bin'}` });
 export const taskOwner = (t: store.Task) => procs.taskOwner(t, agents.baseEnv(t));
-export const groupOwner = (id: string) => procs.groupOwner(id, groupEnv());
 
 // Archive ("stopped") and idle suspend ("suspended"): end the task's processes and close its browser.
 export async function stopTaskRuntime(t: store.Task, state: 'stopped' | 'suspended') {
@@ -27,10 +24,32 @@ export async function removeTaskRuntime(t: store.Task) {
   await stopTaskRuntime(t, 'stopped');
   await browser.remove(t.id).catch(() => {});
 }
-export async function removeGroupRuntime(id: string) {
-  const o = groupOwner(id);
-  await procs.stopAll(o, 'stopped').catch(e => console.error('group processes', id, e));
-  procs.forget(o);
+
+// The running browser and process counts of every task, sent to the dashboard as a "runtime" event when they change.
+// Changes come from the process and browser modules. A timer also reads tmux every 10 s for tasks with running
+// processes, so a process that exits by itself, or a Chrome that crashes, leaves the count without a page open.
+let lastCounts = '';
+export const runtimeCounts = () => summary.counts(taskOwner);
+export function watchCounts(send: (counts: Record<string, summary.Count>) => void) {
+  let timer: NodeJS.Timeout | null = null;
+  const check = () => {
+    timer = null;
+    const c = runtimeCounts(), json = JSON.stringify(c);
+    if (json !== lastCounts) { lastCounts = json; send(c); }
+  };
+  const soon = () => { if (!timer) timer = setTimeout(check, 300); };
+  procs.onChange(soon);
+  browser.onChange(soon);
+  store.onTaskChange(soon);
+  store.onTaskRemoved(soon);
+  setInterval(() => {
+    for (const t of store.all()) {
+      if (!summary.local(t)) continue;
+      const o = taskOwner(t);
+      if (procs.load(o).some(p => p.state === 'running' || p.state === 'starting')) void procs.refresh(o).catch(() => {});
+    }
+    soon();
+  }, 10000).unref();
 }
 
 // A task that leaves "suspended" (any resume path) starts the processes and the browser that the suspend ended.
@@ -55,44 +74,49 @@ function mayChange(req: express.Request, taskIds: string[]) {
 const dashboardOnly = (req: express.Request) => !!req.get('origin') && !req.get('x-tb-actor') && !req.get('x-taskboard-token');
 
 export function mount(app: express.Express, fail: Fail) {
-  const owner = (req: express.Request, kind: string): { o: procs.Owner; cwd?: string; ids: string[] } | null => {
-    if (kind === 'tasks') {
-      const t = store.get(String(req.params.id)); if (!t) return null;
-      return { o: taskOwner(t), cwd: t.cwd, ids: [t.id] };
-    }
-    const g = groups.get(String(req.params.id)); if (!g) return null;
-    const first = g.tasks.map(id => store.get(id)).find(Boolean);
-    return { o: groupOwner(g.id), cwd: first?.cwd, ids: g.tasks };
+  // The browsers and processes of the given tasks, with memory, for a view that is open on the dashboard.
+  // A group view sends the ids of its tasks: each item names the task that owns it.
+  app.get('/api/runtime', async (req, res) => {
+    const ids = String(req.query.tasks || '').split(',').filter(Boolean).slice(0, 200);
+    try { const list = await summary.items(ids, taskOwner); res.json({ items: list, total: summary.total(list) }); } catch (e) { fail(res, e); }
+  });
+  app.get('/api/runtime/counts', (_req, res) => res.json(runtimeCounts()));
+
+  const owner = (req: express.Request): { o: procs.Owner; cwd?: string; ids: string[] } | null => {
+    const t = store.get(String(req.params.id)); if (!t) return null;
+    return { o: taskOwner(t), cwd: t.cwd, ids: [t.id] };
   };
-  for (const k of ['tasks', 'groups']) {
-    app.get(`/api/${k}/:id/procs`, async (req, res) => {
-      const x = owner(req, k); if (!x) return res.status(404).end();
-      try { res.json(await procs.refresh(x.o)); } catch (e) { fail(res, e); }
-    });
-    app.post(`/api/${k}/:id/procs`, async (req, res) => {
-      const x = owner(req, k); if (!x) return res.status(404).end();
-      if (!mayChange(req, x.ids)) return res.status(403).json({ error: 'An agent can start processes only for its own task or its own groups.' });
-      const b = req.body || {};
-      const cwd = typeof b.cwd === 'string' && b.cwd ? b.cwd : x.cwd;
-      if (!cwd) return fail(res, 'Give the folder to run the command in (--cwd).');
-      try { res.json(await procs.start(x.o, { name: b.name, command: b.command, cwd, stop: b.stop || undefined, port: b.port === undefined || b.port === '' ? undefined : Number(b.port), startedBy: req.get('x-tb-actor') ? 'agent' : 'user', path: b.path })); } catch (e) { fail(res, e); }
-    });
-    app.post(`/api/${k}/:id/procs/:name/:action`, async (req, res) => {
-      const x = owner(req, k); if (!x) return res.status(404).end();
-      if (!mayChange(req, x.ids)) return res.status(403).json({ error: 'An agent can change processes only for its own task or its own groups.' });
-      try {
-        const name = procs.checkName(String(req.params.name));
-        if (req.params.action === 'stop') res.json(await procs.stop(x.o, name));
-        else if (req.params.action === 'remove') res.json(await procs.stop(x.o, name, true));
-        else if (req.params.action === 'restart' || req.params.action === 'start') res.json(await procs.restart(x.o, name));
-        else res.status(404).end();
-      } catch (e) { fail(res, e); }
-    });
-    app.get(`/api/${k}/:id/procs/:name/log`, (req, res) => {
-      const x = owner(req, k); if (!x) return res.status(404).end();
-      try { res.type('text/plain').send(procs.readTail(procs.logFile(x.o, procs.checkName(String(req.params.name))), Math.min(Number(req.query.bytes) || 65536, 1 << 20))); } catch (e) { fail(res, e); }
-    });
-  }
+  app.get('/api/tasks/:id/procs', async (req, res) => {
+    const x = owner(req); if (!x) return res.status(404).end();
+    try {
+      const list = await procs.refresh(x.o);
+      const rss = list.some(p => p.pid) ? await summary.rssByGroup() : new Map<number, number>();
+      res.json(list.map(p => ({ ...p, memMb: p.state === 'running' || p.state === 'starting' ? summary.memMb(rss, p.pid) : null })));
+    } catch (e) { fail(res, e); }
+  });
+  app.post('/api/tasks/:id/procs', async (req, res) => {
+    const x = owner(req); if (!x) return res.status(404).end();
+    if (!mayChange(req, x.ids)) return res.status(403).json({ error: 'An agent can start processes only for its own task.' });
+    const b = req.body || {};
+    const cwd = typeof b.cwd === 'string' && b.cwd ? b.cwd : x.cwd;
+    if (!cwd) return fail(res, 'Give the folder to run the command in (--cwd).');
+    try { res.json(await procs.start(x.o, { name: b.name, command: b.command, cwd, stop: b.stop || undefined, port: b.port === undefined || b.port === '' ? undefined : Number(b.port), startedBy: req.get('x-tb-actor') ? 'agent' : 'user', path: b.path })); } catch (e) { fail(res, e); }
+  });
+  app.post('/api/tasks/:id/procs/:name/:action', async (req, res) => {
+    const x = owner(req); if (!x) return res.status(404).end();
+    if (!mayChange(req, x.ids)) return res.status(403).json({ error: 'An agent can change processes only for its own task.' });
+    try {
+      const name = procs.checkName(String(req.params.name));
+      if (req.params.action === 'stop') res.json(await procs.stop(x.o, name));
+      else if (req.params.action === 'remove') res.json(await procs.stop(x.o, name, true));
+      else if (req.params.action === 'restart' || req.params.action === 'start') res.json(await procs.restart(x.o, name));
+      else res.status(404).end();
+    } catch (e) { fail(res, e); }
+  });
+  app.get('/api/tasks/:id/procs/:name/log', (req, res) => {
+    const x = owner(req); if (!x) return res.status(404).end();
+    try { res.type('text/plain').send(procs.readTail(procs.logFile(x.o, procs.checkName(String(req.params.name))), Math.min(Number(req.query.bytes) || 65536, 1 << 20))); } catch (e) { fail(res, e); }
+  });
 
   // ---------- browser ----------
   const task = (req: express.Request, res: express.Response) => { const t = store.get(String(req.params.id)); if (!t) { res.status(404).end(); return null; } return t; };

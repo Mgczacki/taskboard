@@ -23,6 +23,7 @@ import { archiveTriageTask, confirmTriageArchive } from './triageArchive';
 import { cancelHold, holdView, subscribeHold } from './holdRun';
 import { HOLD_MS, SHOW_MS } from './bangCommand';
 
+type PanelTab = 'terminal' | 'log' | 'docs' | 'browser' | 'procs';
 type Page = 'list' | 'board' | 'canvas' | 'graph' | 'inbox' | 'permits' | 'accounts' | 'stats' | 'settings';
 // #list · #board · #canvas · #canvas:<view>  (view = g:<group> | needs | live | t:<id,id>) · #settings:<section>
 function parseHash(): { page: Page; view?: string } {
@@ -99,9 +100,9 @@ export function App() {
   // the open task panel is kept in the address (?open=<id>&tab=…), so a reload or a reopened window shows it again
   const initParams = new URLSearchParams(location.search);
   const [openId, setOpenIdRaw] = useState<string | null>(initParams.get('open'));
-  const [openTab, setOpenTab] = useState<'terminal' | 'log' | 'docs' | undefined>((initParams.get('tab') as 'terminal' | 'log' | 'docs') || undefined);
+  const [openTab, setOpenTab] = useState<PanelTab | undefined>((initParams.get('tab') as PanelTab) || undefined);
   const [documentLink, setDocumentLink] = useState<DocumentLink | null>(null);
-  const setOpenId = (id: string | null, tab?: 'terminal' | 'log' | 'docs') => { setOpenTab(tab); setOpenIdRaw(id); };
+  const setOpenId = (id: string | null, tab?: PanelTab) => { setOpenTab(tab); setOpenIdRaw(id); };
   useEffect(() => {
     const onDocument = (event: Event) => {
       const link = (event as CustomEvent<DocumentLink>).detail;
@@ -271,7 +272,7 @@ export function App() {
           {page === 'permits' && <PermitsPage openTask={setOpenId} />}
           {page === 'inbox' && <InboxPage tasks={tasks} open={(id, tab) => setOpenId(id, tab)} documentLink={documentLink?.reviewId ? documentLink : null} />}
           {page === 'graph' && <GraphView tasks={tasks} groups={groups} open={(id, tab) => setOpenId(id, tab)} />}
-          {page === 'canvas' && <Canvas tasks={tasks} groups={groups} view={view} setView={setView} openPanel={id => setOpenId(id)} panelTaskId={openId} selected={selected} toggleSel={toggleSel} clearSel={() => setSelected(new Set())} solo={SOLO} focusMode={focusMode} setFocusMode={setFocusMode} toast={toast} newTask={() => setNewOpen(true)} newTaskToFocus={newTaskToFocus} onNewTaskFocused={() => setNewTaskToFocus(null)} onSpinOff={(exchange, task) => { setSpinOff({ exchange, task }); setNewOpen(true); }} />}
+          {page === 'canvas' && <Canvas tasks={tasks} groups={groups} view={view} setView={setView} openPanel={(id, tab) => setOpenId(id, tab)} panelTaskId={openId} selected={selected} toggleSel={toggleSel} clearSel={() => setSelected(new Set())} solo={SOLO} focusMode={focusMode} setFocusMode={setFocusMode} toast={toast} newTask={() => setNewOpen(true)} newTaskToFocus={newTaskToFocus} onNewTaskFocused={() => setNewTaskToFocus(null)} onSpinOff={(exchange, task) => { setSpinOff({ exchange, task }); setNewOpen(true); }} />}
         </div>
       </div>
       {selected.size > 0 && <SelectionBar ids={[...selected]} tasks={tasks} groups={groups} clear={() => setSelected(new Set())} newGroup={ids => setGroupPrompt(ids)} toast={toast} />}

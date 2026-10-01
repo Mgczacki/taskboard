@@ -1,14 +1,14 @@
-// Processes that belong to a task or a group (dev servers, databases), started with `tb run` or from the dashboard.
-// Each process runs in its own window of a tmux session on Taskboard's tmux server: proc-<num> for a task,
-// gproc-<group id> for a group. tmux keeps them running when the Taskboard server restarts, like the agents.
-// The list is a registry file: <task folder>/procs.json, or ~/.taskboard/group-procs/<group id>.json. Output goes to
+// Processes that belong to a task (dev servers, databases), started with `tb run` or from the dashboard. A group owns
+// none: the group view lists the processes of its tasks (runtime-summary.ts).
+// Each process runs in its own window of the tmux session proc-<num> on Taskboard's tmux server. tmux keeps them
+// running when the Taskboard server restarts, like the agents.
+// The list is a registry file: <task folder>/procs.json. Output goes to
 // a log file next to it (tmux pipe-pane). Each process gets TB_PROC_OWNER and TB_PROC_NAME in its environment, so a
 // child that leaves the process group of its tmux pane (setsid) can still be found with `ps` and stopped.
 import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, openSync, readFileSync, readSync, closeSync, statSync, writeFileSync, rmSync, fstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { TB_DIR } from './config.ts';
 import * as store from './store.ts';
 import { tmux, quote } from './tmux.ts';
 
@@ -21,7 +21,7 @@ export interface Proc {
   window?: string; pid?: number; stopNote?: string;
   path?: string; // the PATH of the shell that ran tb run, so the command finds the same programs as the agent
 }
-export interface Owner { kind: 'task' | 'group'; id: string; session: string; dir: string; env: Record<string, string> }
+export interface Owner { kind: 'task'; id: string; session: string; dir: string; env: Record<string, string> }
 
 const NAME = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,39}$/;
 export const checkName = (name: unknown) => { if (typeof name !== 'string' || !NAME.test(name)) throw new Error('A process name has 1 to 40 letters, digits, dots, dashes or underscores, and starts with a letter or digit.'); return name; };
@@ -29,11 +29,8 @@ export const checkName = (name: unknown) => { if (typeof name !== 'string' || !N
 export function taskOwner(t: store.Task, env: Record<string, string>): Owner {
   return { kind: 'task', id: t.id, session: `proc-${t.num}`, dir: store.taskDir(t.id), env };
 }
-export function groupOwner(id: string, env: Record<string, string>): Owner {
-  return { kind: 'group', id, session: `gproc-${id.replace(/[^a-zA-Z0-9-]/g, '-').slice(0, 40)}`, dir: join(TB_DIR, 'group-procs', id), env };
-}
-// the value of TB_PROC_OWNER: a task id, or group:<id>
-const ownerTag = (o: Owner) => o.kind === 'task' ? o.id : `group:${o.id}`;
+// the value of TB_PROC_OWNER: the task id
+const ownerTag = (o: Owner) => o.id;
 const registry = (o: Owner) => join(o.dir, 'procs.json');
 export const logFile = (o: Owner, name: string) => join(o.dir, 'procs', `${name}.log`);
 
@@ -283,4 +280,3 @@ export function resumeSuspended(o: Owner): Promise<number> {
   });
 }
 
-export function forget(o: Owner) { rmSync(registry(o), { force: true }); }

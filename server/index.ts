@@ -844,7 +844,6 @@ app.delete('/api/groups/:id', async (req, res) => {
     const live = g.tasks.filter(id => { const t = store.get(id); return t && t.status !== 'archived'; });
     if (live.length) return res.status(409).json({ error: `The group still has ${live.length} unarchived task(s).` });
   }
-  await runtime.removeGroupRuntime(g.id);
   res.json(groups.remove(g.id));
 });
 app.post('/api/groups/restore', (req, res) => { groups.restore(req.body); res.json({}); });
@@ -874,7 +873,7 @@ app.post('/api/tasks/:id/type-command', async (req, res) => {
   const t = store.get(req.params.id); if (!t) return res.status(404).end();
   try { res.json(await typeCommand(t, req.body.command)); } catch (e) { fail(res, e); }
 });
-// processes and browsers of tasks and groups (runtime-routes.ts)
+// the processes and the browser of each task (runtime-routes.ts)
 runtime.mount(app, fail);
 runtime.watchResume();
 app.post('/api/tasks/:id/kill', async (req, res) => {
@@ -1093,6 +1092,7 @@ server.on('upgrade', (req, socket, head) => {
       sendEvent(ws, JSON.stringify({ type: 'groups', groups: groups.all() }));
       sendEvent(ws, JSON.stringify({ type: 'canvasOrder', orders: canvasOrder.all() }));
       sendEvent(ws, JSON.stringify({ type: 'approvals', approvals: approvals.all() }));
+      sendEvent(ws, JSON.stringify({ type: 'runtime', counts: runtime.runtimeCounts() }));
       const opened = new Set<string>();
       ws.on('message', m => {
         // the UI reports which tasks are open, so a finished turn in an open task goes straight to "idle"
@@ -1151,6 +1151,11 @@ machines.onRemoteChange(changed => {
 });
 groups.onGroupsChange(() => {
   const msg = JSON.stringify({ type: 'groups', groups: groups.all() });
+  for (const c of eventClients) sendEvent(c, msg);
+});
+// the running browser and process counts of each task (runtime-routes.ts), for the buttons on tasks and windows
+runtime.watchCounts(counts => {
+  const msg = JSON.stringify({ type: 'runtime', counts });
   for (const c of eventClients) sendEvent(c, msg);
 });
 canvasOrder.onCanvasOrderChange(() => {

@@ -516,16 +516,46 @@ table.keyset .keycell { text-align: right; white-space: normal; }
 
 /* browsers and processes of a Canvas view (GroupRuntime.tsx) */
 .grt { flex: none; max-height: 55vh; overflow: auto; margin: 0 10px 8px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); display: flex; flex-direction: column; gap: 10px; }
-.grt-head { display: flex; gap: 10px; align-items: baseline; }
-.grt-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 10px; }
-.grt-tile { border: 1px solid var(--line); border-radius: 8px; overflow: hidden; cursor: pointer; background: var(--panel2); display: flex; flex-direction: column; }
-.grt-tile:hover { border-color: var(--accent); }
-.grt-th { display: flex; align-items: center; gap: 6px; padding: 6px 8px; font-size: 12px; white-space: nowrap; overflow: hidden; }
-.grt-th b { overflow: hidden; text-overflow: ellipsis; }
-.grt-th .num { font: 11px var(--mono); color: var(--dim); }
-.grt-shot { height: 150px; background: var(--bg2); position: relative; display: flex; align-items: center; justify-content: center; }
-.grt-shot img { width: 100%; height: 100%; object-fit: cover; object-position: top left; }
-.grt-agent { position: absolute; right: 6px; bottom: 6px; font-size: 10px; padding: 1px 6px; border-radius: 4px; background: rgba(0,0,0,.65); color: #7ee787; }
-.grt-tabs { display: flex; gap: 4px; flex-wrap: wrap; padding: 6px 8px 0; }
-.grt-tabs .chip { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.grt-foot { padding: 4px 8px 6px; }
+.grt-head { display: flex; gap: 10px; align-items: baseline; flex-wrap: wrap; }
+
+/* the browser and process count of a task (TaskRuntime.tsx), its panel, and the list of items with memory */
+.rtb { display: inline-flex; align-items: center; gap: 8px; flex: none; padding: 2px 8px; border-radius: 10px; border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line)); background: var(--accent-bg); color: var(--text); font-size: 11.5px; cursor: pointer; white-space: nowrap; }
+.rtb:hover, .rtb.on { border-color: var(--accent); }
+.rtb.small { padding: 0 6px; gap: 6px; font: 10.5px var(--mono); }
+.rtb-n { display: inline-flex; align-items: center; gap: 4px; }
+.rtb-ico { width: 7px; height: 7px; flex: none; display: inline-block; }
+.rtb-ico.b { border-radius: 50%; background: var(--accent); }
+.rtb-ico.p { border-radius: 1px; background: var(--st-unread); }
+.rtb-total { margin-left: 6px; font: 10.5px var(--mono); color: var(--accent); }
+.tabs .tabs-sp { flex: 1; }
+.tabs .rtb { align-self: center; margin-right: 4px; }
+.rtb-pop { position: fixed; z-index: 300; max-height: 70vh; overflow: auto; display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; background: var(--panel); color: var(--text); border: 1px solid var(--line2); border-radius: 10px; box-shadow: 0 16px 40px rgb(0 0 0 / .35); font-size: 12.5px; }
+.rtb-pop-h { display: flex; align-items: center; gap: 8px; }
+.rtb-pop-h b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rtb-pop-h .sp { flex: 1; }
+.rtb-pop-f { display: flex; gap: 6px; flex-wrap: wrap; }
+.rtl { display: flex; flex-direction: column; gap: 6px; }
+.rtl-total { font-size: 12px; color: var(--muted); }
+.rtl-none { padding: 4px 0; }
+.rtl-table { width: 100%; font-size: 12px; border-collapse: collapse; }
+.rtl-table th { text-align: left; font-weight: 500; color: var(--dim); padding: 4px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.rtl-table td { padding: 4px 8px; border-bottom: 1px solid var(--line); vertical-align: middle; }
+.rtl-row { cursor: pointer; }
+.rtl-row:hover td { background: var(--hover); }
+.rtl-task { white-space: nowrap; max-width: 260px; overflow: hidden; text-overflow: ellipsis; }
+.rtl-task .dot { margin-right: 6px; vertical-align: middle; }
+.rtl-task .num { font: 11px var(--mono); color: var(--dim); margin-right: 6px; }
+.rtl-item { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.rtl-state, .rtl-table td:nth-last-child(3) { white-space: nowrap; }
+.rtl-item b { white-space: nowrap; }
+.rtl-kind { font: 10px var(--mono); padding: 0 5px; border-radius: 3px; border: 1px solid var(--line2); color: var(--muted); }
+.rtl-kind.browser { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 40%, var(--line)); }
+.rtl-kind.proc { color: var(--st-unread); border-color: color-mix(in srgb, var(--st-unread) 40%, var(--line)); }
+.rtl-cmd { font: 11.5px var(--mono); color: var(--muted); max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rtl-agent { font-size: 10.5px; color: var(--st-unread); white-space: nowrap; }
+.rtl-shot { width: 64px; height: 40px; object-fit: cover; object-position: top left; border: 1px solid var(--line); border-radius: 4px; background: var(--bg2); flex: none; }
+.rtl-mem, .procs-table td.pmem { font: 11.5px var(--mono); white-space: nowrap; }
+.rtl-act { text-align: right; white-space: nowrap; }
+.rtl-act .btn { margin-left: 4px; padding: 2px 8px; font-size: 12px; }
+.rtl-table a { color: var(--accent); }
+.bw-mem { font: 11px var(--mono); white-space: nowrap; }

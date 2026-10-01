@@ -5,6 +5,7 @@ import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { BrowserStatus, BrowserTab } from '../api';
 import { api } from '../api';
+import { mb } from '../runtimeText';
 
 // ---------- which browsers are popped out ----------
 const popped = new Map<string, () => void>();
@@ -158,6 +159,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate }: { id: st
         <button className="btn icon" onClick={() => send({ type: 'nav', action: 'forward' })} title="Forward">→</button>
         <button className="btn icon" onClick={() => send({ type: 'nav', action: 'reload' })} title="Reload">↻</button>
         <input className="bw-url" value={addr} onFocus={e => { setEditing(true); e.target.select(); }} onBlur={() => setEditing(false)} onChange={e => setAddr(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') go(); if (e.key === 'Escape') { setEditing(false); (e.target as HTMLInputElement).blur(); } }} spellCheck={false} />
+        {!isTemplate && <BrowserMemory id={id} />}
         {agents > 0 && <span className="bw-agent" title="An agent is connected to this browser through its task-browser tools">agent connected</span>}
         {!floating && <button className="btn" onClick={() => popOutBrowser(id, title || (isTemplate ? 'Template browser' : 'Task browser'), isTemplate ? 'Sign in here. New task browsers copy this profile.' : '')} title="Show the browser in a floating window inside Taskboard">Pop out</button>}
         <button className="btn" onClick={() => send({ type: 'stop' })} title={isTemplate ? 'Close the template browser. New task browsers can copy it only when it is closed.' : 'Close the browser. Its pages open again at the next start.'}>{isTemplate ? 'Close' : 'Stop'}</button>
@@ -175,4 +177,16 @@ function Live({ id, title, autostart, floating, archived, isTemplate }: { id: st
       </div>
     </div>
   );
+}
+
+// The memory of a task browser (RSS of its process group, from GET /api/runtime), read every 4 s while the view is open.
+function BrowserMemory({ id }: { id: string }) {
+  const [memMb, setMemMb] = useState<number | null>(null);
+  useEffect(() => {
+    let live = true;
+    const read = () => api.runtime([id]).then(r => { if (live) setMemMb(r.items.find(i => i.kind === 'browser')?.memMb ?? null); }).catch(() => {});
+    void read(); const timer = setInterval(read, 4000);
+    return () => { live = false; clearInterval(timer); };
+  }, [id]);
+  return memMb === null ? null : <span className="bw-mem sub" title="Resident memory (RSS) of this browser's processes, read with ps. Shared pages count in each process.">{mb(memMb)}</span>;
 }
