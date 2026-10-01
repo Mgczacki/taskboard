@@ -41,6 +41,7 @@ import * as stats from './stats.ts';
 import * as taskGit from './task-git.ts';
 import * as taskRepair from './task-repair.ts';
 import * as push from './push.ts';
+import * as restart from './restart.ts';
 import * as permits from './permits.ts';
 import { controllerMailToken } from './a2anotes/auth.ts';
 import * as tmux from './tmux.ts';
@@ -268,9 +269,9 @@ app.post('/api/permits', (req, res) => {
     res.status(202).json({ permit: p });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    if (/task Git commands|release or rollback|GitHub write/.test(message)) {
+    if (/task Git commands|release or rollback|restart of Taskboard|GitHub write/.test(message)) {
       const command = steps?.map(s => s.command).join('\n') || '';
-      const help = /release|rollback/.test(message) ? 'Use tb release-request for a release. Rollback needs a user action.' : 'Use tb git commit, tb git rebase, tb git repair, tb git merge-request, or tb git push-request.';
+      const help = /restart/.test(message) ? 'Only the user restarts Taskboard, from the dashboard or a terminal.' : /release|rollback/.test(message) ? 'Use tb release-request for a release. Rollback needs a user action.' : 'Use tb git commit, tb git rebase, tb git repair, tb git merge-request, or tb git push-request.';
       const card = approvals.request({ actor, action: 'tool-refusal', summary: 'review a refused command', detail: `${command}\n${help}`, payload: { command, canPermit: false } }, async () => help);
       store.update(actor, { status: 'needs-you', ask: `Refused: ${command}`, statusSource: help });
       return res.status(400).json({ error: `${message} ${help}`, refusal: card.id });
@@ -351,6 +352,53 @@ app.post('/api/release/request', (req, res) => {
     return res.status(403).json({ error: 'A Taskboard task must request the release.' });
   const approval = createReleaseApproval(task);
   res.status(202).json({ approval });
+});
+// ---------- restart (scripts/restart.mjs, server/restart.ts) ----------
+// Only the user restarts Taskboard: from the dashboard (POST /api/restart) or a terminal (tb restart runs the script).
+// The controller asks with POST /api/restart/request, which waits for an Approve card. Tasks cannot ask.
+async function restartImpact() {
+  const t = await restart.tmuxProcess();
+  return restart.restartImpact({
+    tasks: store.all(), liveSessions: ((await tmux.listSessions()) || []).filter(s => !s.dead).map(s => s.name),
+    askRunning: ask.runningTasks(), permitsRunning: permits.all().filter(p => p.state === 'running').map(p => ({ taskId: p.taskId, id: p.id })),
+    moving: [...events.movingTasks], pendingApprovals: approvals.pendingCount(), tmuxPid: t.pid, tmuxGroup: t.group, ownGroup: await restart.ownGroup(),
+  });
+}
+const impactText = (i: restart.RestartImpact) => [
+  i.tmuxStops ? `The tmux server of the agents is in Taskboard's process group. All ${i.sessions.length} agent sessions can stop.` : `${i.sessions.length} agent sessions keep running in tmux.`,
+  ...i.stops.map(s => `Stops: #${s.num} ${s.title}: ${s.what}`), ...i.notes].join('\n');
+app.get('/api/restart/check', async (req, res) => {
+  if (!req.get('referer')?.startsWith(URL_BASE + '/') && !tokenOk(req)) return res.status(403).end();
+  try { res.json(await restartImpact()); } catch (e) { fail(res, e); }
+});
+app.get('/api/restart/last', (req, res) => {
+  if (!req.get('referer')?.startsWith(URL_BASE + '/') && !tokenOk(req)) return res.status(403).end();
+  res.json(restart.lastResult());
+});
+let restartStarted = 0;
+app.post('/api/restart', async (req, res) => {
+  if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Restart Taskboard on the dashboard or with tb restart in a terminal.' });
+  try {
+    const impact = await restartImpact();
+    if ((impact.stops.length || impact.tmuxStops) && req.body.confirm !== true) return res.status(409).json({ error: 'Confirm that the restart may stop this work.', impact });
+    if (Date.now() - restartStarted < 60000) return res.status(409).json({ error: 'A restart is already running.' });
+    restartStarted = Date.now();
+    res.status(202).json({ pid: restart.startRestart(), impact });
+  } catch (e) { fail(res, e); }
+});
+app.post('/api/restart/request', async (req, res) => {
+  if (req.get('x-tb-actor') !== 'controller' || req.get('x-tb-mail-controller') !== controllerMailToken)
+    return res.status(403).json({ error: 'Only the user restarts Taskboard, from the dashboard or a terminal. Ask the user.' });
+  try {
+    const impact = await restartImpact();
+    const approval = approvals.request({ actor: 'controller', action: 'restart', summary: 'restart Taskboard',
+      detail: `The controller asks to restart Taskboard. It starts the installed release again and builds nothing.\n${impactText(impact)}`, payload: {} }, async () => {
+      if (Date.now() - restartStarted < 60000) throw new Error('A restart is already running.');
+      restartStarted = Date.now();
+      return `Restart started (process ${restart.startRestart()}). Log: ${join(TB_DIR, 'restart.log')}`;
+    });
+    res.status(202).json({ approval });
+  } catch (e) { fail(res, e); }
 });
 function createReleaseApproval(task: store.Task) {
   const actor = task.id;

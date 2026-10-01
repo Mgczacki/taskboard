@@ -35,7 +35,7 @@ for (const p of parts) {
     reasons.push(`process ${serverPid} is the running Taskboard server`);
   if (new RegExp(`tmux\\b.*-L\\s*${socket}\\b.*\\bkill-(server|session)\\b`).test(p))
     reasons.push(`tmux -L ${socket} holds the real agents and the controller`);
-  if (/launchctl\b.*\b(bootout|unload|remove|kill)\b.*taskboard/i.test(p))
+  if (/launchctl\b.*\b(bootout|unload|remove|kill|kickstart|stop)\b.*taskboard/i.test(p))
     reasons.push('this stops the Taskboard login service');
 }
 // The user approves one release for one task on the dashboard. The guard consumes that permit before the command runs.
@@ -57,6 +57,9 @@ if (release) {
   if (!allowed) reasons.push('a Taskboard release needs a dashboard approval for this task; run `tb release-request` first');
 }
 if (rollback) reasons.push('a Taskboard rollback needs the user to run it');
+// Only the user restarts Taskboard. The controller may run `tb restart`: it only puts an Approve card on the dashboard.
+if (/scripts\/restart\.mjs/.test(cmd) || (process.env.TASK_ID !== 'controller' && /(^|[\s;&|(\/])tb\s+restart\b/.test(cmd)))
+  reasons.push('only the user restarts Taskboard, from the dashboard or a terminal');
 // deleting or moving the real Taskboard's own folder (sandboxes live in the system temp folder instead)
 if (/\b(rm|mv|rsync\s+--delete)\b[^\n]*(~|\$HOME|\/Users\/[^/\s]+)\/\.taskboard(\/(app|releases|server\.pid|token|hooks|bin))?(\/?\s|\/?$)/.test(cmd)) reasons.push('this deletes or moves the real Taskboard\'s folder ~/.taskboard');
 // whole command: any stop command that names the server's pid file, entry point, port or tmux socket, also through

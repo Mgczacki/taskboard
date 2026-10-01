@@ -34,6 +34,11 @@ export const SECTIONS: SectionDef[] = [
       { id: 'remoteControl', label: 'Remote Control: reach the controller from the Claude app as', words: 'mobile phone link' },
     ] },
   ] },
+  { id: 'server', title: 'Taskboard server', help: 'Restart the installed Taskboard server. Agent sessions keep running in tmux.', groups: [
+    { id: 'restart', settings: [
+      { id: 'restartServer', label: 'Restart Taskboard', words: 'restart reload server tb restart launchd' },
+    ] },
+  ] },
   { id: 'accounts', title: 'Accounts and routing', help: 'The task limit for new accounts, and the rules that the controller uses to choose an agent and an account.', groups: [
     { id: 'accounts', title: 'Agents and accounts', settings: [
       { id: 'defaultMaxParallel', label: 'Default maximum tasks per account', words: 'limit parallel apply to all accounts' },

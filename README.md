@@ -53,9 +53,14 @@ sh scripts/install-launchd.sh    # once: run the release as a login service that
   (in the system temp folder) and tmux socket, without a controller, and prints its address. Its pages show an orange
   "Sandbox" bar. `pnpm sandbox stop [--clean]`, `pnpm sandbox list`. `pnpm dev` is a sandbox that restarts on code
   changes, with the Vite interface.
-- **Stop / restart the real one:** `launchctl kickstart -k gui/$(id -u)/com.taskboard.server` restarts it. Without the
-  login service, `pnpm stop` stops exactly the process in `~/.taskboard/server.pid`. Never use `pkill -f` patterns.
-  Agents keep running in tmux in every case and reconnect when the server is back.
+- **Restart the real one:** `~/.taskboard/bin/tb restart` in a terminal, or **Settings → Taskboard server → Restart
+  Taskboard** on the dashboard. It starts the installed release again and builds nothing. It first prints what a
+  restart does to running tasks and asks for confirmation when work would stop (for example a running Ask answer). It
+  checks that the installed code starts, restarts the server (with launchd: `launchctl kickstart -k`), and waits until
+  the new server answers. If the new server does not answer, it prints the error and `~/.taskboard/server.log`.
+  `--yes` skips the question. The controller's `tb restart` puts an Approve card on the dashboard. Tasks cannot restart.
+- **Stop the real one:** without the login service, `pnpm stop` stops exactly the process in `~/.taskboard/server.pid`.
+  Never use `pkill -f` patterns. Agents keep running in tmux in every case and reconnect when the server is back.
 - **Remove the login service:** `launchctl bootout gui/$(id -u)/com.taskboard.server && rm ~/Library/LaunchAgents/com.taskboard.server.plist`
 - **Log:** `~/.taskboard/server.log` (it says when and why the server stopped).
 - **Open an agent from a normal terminal:** `tmux -L taskboard attach -t task-<number>` (the task panel has a copy button).
@@ -91,7 +96,7 @@ window. It contains no server: the server keeps running under launchd, and quitt
 Agents that work on Taskboard itself run inside the real one, so the setup keeps the two apart:
 
 - The real server runs a release copy, so editing, rebuilding or breaking `~/taskboard` changes nothing that runs.
-- Only you release or roll back (the agents' guard blocks `pnpm release` / `pnpm rollback`).
+- Only you release, roll back or restart (the agents' guard blocks `pnpm release`, `pnpm rollback` and `tb restart`).
 - Every test copy is a sandbox with its own port, folders and tmux socket. A sandbox refuses to start on the real
   port, `~/.taskboard`, `~/AgentVault` or the `taskboard` tmux socket.
 - One server per `~/.taskboard` (an exclusive lock file). A second one exits with a message.

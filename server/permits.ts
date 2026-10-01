@@ -100,6 +100,7 @@ function hardRule(argv: string[], task?: Task) {
   if (bin === 'git' && argv.slice(1).some(x => /^(add|commit|rebase|merge|reset|checkout|switch|push|pull|cherry-pick|revert|worktree|update-ref|stash|branch|tag)$/.test(x)) && !allowedTaskGit(argv) && !(task && allowedSharedGit(argv, task))) throw new Error('Use the task Git commands for changes to Git refs.');
   if (/\bgit\s+push\b|\bgh\s+(repo|pr|api)\b/.test(text)) throw new Error('A GitHub write needs a separate user decision.');
   if (/\b(pnpm|npm|yarn)\b.*\b(release|rollback)\b|scripts\/release\.mjs|scripts\/rollback\.mjs/.test(text)) throw new Error('A release or rollback needs its own rule.');
+  if (/scripts\/restart\.mjs/.test(text)) throw new Error('A restart of Taskboard needs the user.');
   if (/\b(pkill|killall|launchctl)\b/.test(text)) throw new Error('This process command is outside permit scope.');
   if (/\.taskboard|server\.pid|server\/index\.ts|taskboard\s+kill-server/.test(text)) throw new Error('A permit cannot change the running Taskboard server.');
   if (argv.some(a => /(^|\/)\.env(?:\.|$)|\.(?:pem|key|p8|p12|pfx)$/.test(a))) throw new Error('A suggestion cannot display a credential file.');

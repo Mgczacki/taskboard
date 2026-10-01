@@ -120,7 +120,13 @@ async function call<T = unknown>(method: string, path: string, body?: unknown): 
   if (!r.ok) throw new Error((data as { error?: string }).error || r.statusText);
   return data as T;
 }
+// GET /api/restart/check (server/restart.ts)
+export interface RestartImpact { sessions: { num: number; title: string; status: string }[]; stops: { num: number; title: string; what: string }[]; notes: string[]; tmuxPid?: number; tmuxStops: boolean }
+export interface RestartResult { ok: boolean; message: string; at: string; log: string; oldPid?: number; newPid?: number }
 export const api = {
+  restartCheck: () => call<RestartImpact>('GET', '/api/restart/check'),
+  restartLast: () => call<RestartResult | null>('GET', '/api/restart/last'),
+  restartTaskboard: (confirm: boolean) => call<{ pid: number }>('POST', '/api/restart', { confirm }),
   rules: () => call<RulesFile[]>('GET', '/api/rules'),
   saveRules: (kind: RulesKind, text: string) => call<RulesFile>('PUT', `/api/rules/${kind}`, { text }),
   create: (b: { title: string; desc: string; agent: string; folder: string; worktree?: boolean; branch?: string; account?: string; model?: string; machine?: string; group?: string; images?: { type: string; data: string }[]; spinOff?: SpinOffExchange }) => call<Task>('POST', '/api/tasks', b),

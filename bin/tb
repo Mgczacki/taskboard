@@ -1,9 +1,11 @@
 #!/usr/bin/env node
 // tb — the Taskboard command line. Used by agents (for example `tb review <file>`) and by the controller agent.
 // Talks to the local Taskboard server with the token in ~/.taskboard/token.
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const URL_BASE = process.env.TB_URL || 'http://127.0.0.1:4317';
 const token = (() => { try { return readFileSync(process.env.TB_TOKEN_FILE || join(homedir(), '.taskboard', 'token'), 'utf8').trim(); } catch { return ''; } })();
@@ -68,6 +70,7 @@ const HELP = `tb — Taskboard command line
   tb mail                            messages with other people (A2A Notes over Slack) and notes to you: run for command help
   tb review <file>                   ask the user to review a document from your outbox
   tb release-request                 ask the user to allow one Taskboard release on the dashboard
+  tb restart [--yes]                 the user: restart the installed Taskboard (no release); the controller: ask on the dashboard
   tb permit request --reason "text" --command "program args" [--cwd PATH] [--timeout 30] [--network]
   tb permit request --reason "text" --steps steps.json
   tb suggest "program args" --why "reason" [--cwd PATH] [--risk "risk"] [--timeout 30]
@@ -282,6 +285,29 @@ switch (cmd) {
     if (!process.env.TASK_ID) { console.error('tb release-request: run this inside a Taskboard task'); process.exit(1); }
     await call('POST', '/api/release/request', {});
     break;
+  }
+  case 'restart': {
+    // The user runs scripts/restart.mjs of the installed release. A task cannot restart Taskboard. The controller puts an
+    // Approve card on the dashboard and waits for the new server.
+    const id = process.env.TASK_ID;
+    if (id && id !== 'controller') { console.error('tb restart: only the user restarts Taskboard, from the dashboard (Settings → Taskboard server) or a terminal. Tell the user why a restart is needed.'); process.exit(1); }
+    if (id === 'controller') {
+      const before = await call('GET', '/api/info');
+      await call('POST', '/api/restart/request', {});
+      const end = Date.now() + 120000;
+      for (;;) {
+        await sleep(2000);
+        const now = await fetch(URL_BASE + '/api/info', { signal: AbortSignal.timeout(2000) }).then(r => r.ok ? r.json() : null).catch(() => null);
+        if (now && now.pid !== before.pid) { console.log(`Taskboard restarted: process ${now.pid} answers at ${URL_BASE}.`); break; }
+        if (Date.now() > end) { console.error(`tb restart: no new server answered within 2 minutes. Read ${join(homedir(), '.taskboard', 'restart.log')}.`); process.exit(1); }
+      }
+      break;
+    }
+    // a sandbox has no installed release: use the script next to this tb (a checkout)
+    const script = process.env.TASKBOARD_DIR ? join(dirname(fileURLToPath(import.meta.url)), '..', 'scripts', 'restart.mjs') : join(homedir(), '.taskboard', 'app', 'scripts', 'restart.mjs');
+    const r = spawnSync(process.execPath, [script, ...args.slice(1)], { stdio: 'inherit' });
+    if (r.error) console.error(`tb restart: cannot run ${script}: ${r.error.message}`);
+    process.exit(r.status ?? 1);
   }
   case 'suggest':
   case 'permit': {

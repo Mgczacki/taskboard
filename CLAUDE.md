@@ -12,6 +12,7 @@ updates and the user loses the dashboard. Never stop, restart or rebuild it as p
 - `pnpm rollback`, or any direct change to `~/.taskboard` (the real server's folder).
 - `pnpm release` without a release permit from the user's dashboard approval.
 - `launchctl` commands for `com.taskboard.server`.
+- `tb restart` or `scripts/restart.mjs` against the real Taskboard. Only the user restarts it. Test the restart on a sandbox.
 
 A PreToolUse hook blocks most of these for Claude Code sessions started by Taskboard. Do not work around it.
 If a command fails under agent permissions, use `tb suggest "<command>" --why "<reason>" --risk "<risk>"`.
