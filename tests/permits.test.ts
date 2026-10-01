@@ -58,7 +58,7 @@ test('step 2 failure cancels steps 3 and 4', async () => {
 
 test('paths, expiry, and controller limits stop a request', async () => {
   const task = freshTask('limits');
-  assert.throws(() => permits.request(task, 'Wrong folder', [{ command: 'pwd', cwd: root }]), /outside this task/);
+  assert.throws(() => permits.request(task, 'Wrong folder', [{ command: 'pwd', cwd: root }]), /protected Taskboard files/);
   const expired = permits.request(task, 'Too late', [{ command: 'pwd' }]);
   expired.expiresAt = new Date(Date.now() - 1000).toISOString();
   let ran = false;
@@ -103,4 +103,72 @@ test('a restart marks a running record unknown without retrying it', () => {
   writeFileSync(join(root, 'tbdir', 'permits', p.id + '.json'), JSON.stringify(p));
   permits.load();
   assert.equal(permits.get(p.id)?.state, 'unknown');
+});
+
+test('the normal shell can signal a process after approval', async () => {
+  const task = freshTask('signal');
+  const { spawn } = await import('node:child_process');
+  const child = spawn('sleep', ['30']);
+  const stopped = new Promise(resolve => child.once('close', resolve));
+  assert.ok(child.pid);
+  const p = permits.request(task, 'Stop this test process', [{ command: `kill -TERM ${child.pid}` }]);
+  await permits.run(p, task, 'user');
+  assert.equal(p.state, 'succeeded');
+  assert.equal(p.steps[0].exitCode, 0);
+  await stopped;
+});
+
+test('a changed command fails its hash check', async () => {
+  const task = freshTask('hash');
+  const p = permits.request(task, 'Check text', [{ command: 'echo first' }]);
+  p.steps[0].command = 'echo second';
+  let ran = false;
+  await permits.run(p, task, 'user', '', '', async () => { ran = true; return { code: 0, signal: null, output: '' }; });
+  assert.equal(ran, false);
+  assert.match(p.error || '', /approved steps changed/);
+});
+
+test('a denial keeps the comment in the wake-up text', () => {
+  const task = freshTask('deny');
+  const p = permits.request(task, 'Check denial', [{ command: 'pwd' }]);
+  permits.deny(p, 'Use the task folder.');
+  assert.equal(p.decisionComment, 'Use the task folder.');
+  assert.match(permits.notice(p), /User comment: Use the task folder/);
+});
+
+test('a high-risk controller approval needs the user message in its chat', () => {
+  const task = freshTask('controller');
+  const p = permits.request(task, 'Send a signal', [{ command: 'kill -0 999999' }]);
+  assert.equal(p.riskClass, 'high');
+  const transcript = join(root, 'controller.jsonl');
+  const words = `Approve ${p.steps[0].command}`;
+  assert.equal(permits.explicitControllerRequest(transcript, 'claude', words, p), false);
+  writeFileSync(transcript, JSON.stringify({ type: 'assistant', message: { content: words } }) + '\n');
+  assert.equal(permits.explicitControllerRequest(transcript, 'claude', words, p), false);
+  writeFileSync(transcript, JSON.stringify({ type: 'user', message: { content: words } }) + '\n');
+  assert.equal(permits.explicitControllerRequest(transcript, 'claude', words, p), true);
+});
+
+test('a task branch git command is low risk only in its worktree', () => {
+  const task = { ...freshTask('git-rule'), worktree: true, branch: 'task/test' };
+  const p = permits.request(task, 'Save task changes', [{ command: 'git add -A' }]);
+  assert.equal(p.riskClass, 'low');
+  assert.equal(permits.controllerRule(p, task, true), 'low-risk commands');
+  permits.deny(p, 'test');
+  const other = join(root, 'other-folder');
+  mkdirSync(other, { recursive: true });
+  assert.throws(() => permits.request(task, 'Change another folder', [{ command: 'git add -A', cwd: other }]), /own worktree branch/);
+});
+
+test('a shared checkout merge sequence needs a user or explicit high-risk approval', () => {
+  const shared = join(root, 'shared-checkout');
+  mkdirSync(shared, { recursive: true });
+  const task = { ...freshTask('shared-merge'), worktree: true, branch: 'task/test', folder: shared };
+  const p = permits.request(task, 'Finish the merge', [
+    { command: 'git merge --abort', cwd: shared },
+    { command: 'git merge task/test', cwd: shared },
+  ]);
+  assert.equal(p.riskClass, 'high');
+  assert.equal(permits.controllerRule(p, task, true), undefined);
+  permits.deny(p, 'test');
 });
