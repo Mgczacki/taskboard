@@ -188,6 +188,22 @@ Document reviews appear under **Documents to review**. Use **Dismissed** there t
 
 A new document review request shows the document again, even if you dismissed its previous version.
 
+## Try A2A Notes (optional)
+
+A2A Notes is a separate package in the repository https://github.com/Mgczacki/a2a-notes. It sends `A2ANotes/1` messages over Slack to people who use Taskboard and to people who do not. Taskboard connects to it as an MCP client. The **Messages** and **Sent** tabs do not change. Taskboard turns the connection on only when `~/.taskboard/a2anotes.json` exists and says `"enabled": true`.
+
+1. Start the A2A Notes service. Follow the README in the `a2a-notes` repository.
+2. Make three client tokens: `a2a-notes token add taskboard-person --role person`, then the same command for `reviewer` and `agent`.
+3. Write `~/.taskboard/a2anotes.json` with mode 0600:
+
+   ```json
+   { "enabled": true, "url": "http://127.0.0.1:4460/mcp", "tokens": { "person": "a2an_…", "reviewer": "a2an_…", "agent": "a2an_…" } }
+   ```
+
+4. Open **Inbox**, then **A2A Notes**. The tab shows the connection and the messages.
+
+The dashboard uses the person token. The controller uses the reviewer token. Tasks use the agent token. Taskboard stores the calling task's ID in each draft's local metadata (`taskboard.task_id`) and never sends it. When a reply arrives, the A2A Notes tab suggests the task that sent the original message. You or the controller still approve before the reply goes to a task. In Terminal, `tb a2a` lists the commands. A task can draft a message and stage a file from its outbox. Only the controller or you can approve, send, or give a message to a task.
+
 ## If setup fails
 
 - If Inbox is missing, confirm that your installed release includes the Slack Inbox feature.

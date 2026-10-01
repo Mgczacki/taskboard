@@ -26,7 +26,7 @@ let levelsChanged = () => {};
 export const messageLevelsChanged = () => levelsChanged();
 
 const origins = new Set([URL_BASE, `http://localhost:${PORT}`, 'http://localhost:5173', 'http://127.0.0.1:5173']);
-function human(req: Request) {
+export function human(req: Request) {
   const origin = req.get('origin');
   if (origin) return origins.has(origin) && !req.get('x-tb-actor');
   try { return req.get('sec-fetch-site') === 'same-origin' && origins.has(new URL(req.get('referer') || '').origin); } catch { return false; }
