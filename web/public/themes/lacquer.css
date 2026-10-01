@@ -24,6 +24,8 @@ html[data-theme="lacquer"] {
   --st-archived: #52463c;
   --claude: #e58a5a;
   --term-bg: #0f0b08;
+  --term-fg: var(--text);
+  --term-cursor: var(--accent);
   --serif: "Instrument Serif", "Newsreader", Georgia, serif;
   --sans: "Instrument Sans", -apple-system, sans-serif;
   --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;

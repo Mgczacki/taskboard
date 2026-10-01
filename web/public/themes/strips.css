@@ -1,5 +1,5 @@
 /* Flight strips: you watch fifteen agents the way a tower controller watches traffic.
-   Tasks are printed paper strips in a grey strip bay; terminals are dark radar scopes.
+   Tasks are printed paper strips in a grey strip bay; terminals are light paper like the strips.
    Type is B612, the typeface Airbus designed for cockpit displays. */
 @import url('https://fonts.googleapis.com/css2?family=B612:ital,wght@0,400;0,700;1,400&family=B612+Mono:wght@400;700&family=JetBrains+Mono:wght@400;700&display=swap');
 
@@ -13,7 +13,7 @@ html[data-theme="strips"] {
   --line2: #858f8c;
   --text: #16201d;
   --muted: #3c4a46;
-  --dim: #66736f;
+  --dim: #414d49; /* 4.5:1 or more on --bg, --bg2, --panel and --panel2 (WCAG AA) */
   --accent: #1d5fa8;
   --accent-bg: rgba(29, 95, 168, .12);
   --st-needs: #d9480f;
@@ -23,7 +23,10 @@ html[data-theme="strips"] {
   --st-parked: #8c6b78;
   --st-archived: #9aa3a0;
   --claude: #ffd166;
-  --term-bg: #0d1814;
+  --term-bg: #f6f4ec;
+  --term-fg: #16201d;
+  --term-cursor: #1d5fa8;
+  --term-selection: #bcd3ec;
   --mono: "B612 Mono", ui-monospace, Menlo, monospace;
   --sans: "B612", -apple-system, sans-serif;
   --strip-buff: #f3eedd;
@@ -39,12 +42,12 @@ html[data-theme="strips"] {
   & ::-webkit-scrollbar-thumb { background: #8f9996; }
 
   /* console rail */
-  & .rail { background: var(--console); border-right: 0; color: var(--console-text); box-shadow: inset -1px 0 0 #111; }
+  & .rail { --dim: #96a49f; background: var(--console); border-right: 0; color: var(--console-text); box-shadow: inset -1px 0 0 #111; }
   & .rail .rail-item, & .rail .nav a { color: #aebbb6; }
   & .rail .rail-item:hover, & .rail .nav a:hover { background: #313d39; color: #fff; }
   & .rail .nav a.on { background: var(--strip-buff); color: var(--text); box-shadow: inset 5px 0 0 var(--st-working); border-radius: 1px; }
   & .rail .nav a.on .n { color: var(--muted); }
-  & .rail h6, & .rail .rail-foot, & .rail .m, & .rail kbd { color: #7f8e89; }
+  & .rail h6, & .rail .rail-foot, & .rail .m, & .rail kbd, & .rail .importbtn { color: var(--dim); }
   & .rail .rail-foot { border-top-color: #3a4642; }
   & .rail .rail-foot code { color: #c8d3cf; }
   & .rail .brand { font-family: var(--mono); letter-spacing: .5px; color: #fff; }
@@ -52,7 +55,9 @@ html[data-theme="strips"] {
   & .rail .newtask kbd { color: var(--muted); border-color: #b89a20; }
   & .rail .ctl-item { background: #2f3a37; border-color: #45524e; }
   & .rail .ctl-item b { color: #fff; }
-  & .rail-empty { color: #6f7d78; }
+  & .rail-empty { color: var(--dim); }
+  & .rail .addg { color: var(--console-text); }
+  & .rail .btn { --dim: #414d49; } /* light buttons in the dark rail use the page colours */
   & .top { background: #b1bab7; border-bottom: 1px solid #8f9996; }
   & .top h1 { font-family: var(--mono); font-size: 13px; letter-spacing: .5px; }
   & .search { background: var(--panel); border-color: var(--line2); border-radius: 1px; }
@@ -69,6 +74,7 @@ html[data-theme="strips"] {
   & .dot.idle { border-color: var(--st-idle); }
   & .dot.working { animation: none; box-shadow: 0 0 0 2px rgba(29,95,168,.25); }
   & .st-label { font-family: var(--mono); font-weight: 700; }
+  & .st-label.unread { color: color-mix(in srgb, var(--st-unread) 60%, #000); } /* the green is too light for small text on white */
 
   /* strips on the board */
   & body[data-page="board"] .cols { gap: 14px; }
@@ -115,10 +121,9 @@ html[data-theme="strips"] {
   & .tabs button { font-family: var(--mono); }
   & .tabs button.on { border-bottom: 3px solid var(--text); }
 
-  /* radar-scope terminals */
+  /* terminals: printed strips */
   & .term { background: var(--term-bg); }
-  & .term-bar { background: #15221d; border-bottom-color: #22342d; color: #6f9484; }
-  & .term-out, & .cmd { color: #c9e7d2; font-family: "JetBrains Mono", ui-monospace, Menlo, monospace; font-size: 12px; }
+  & .term-out, & .cmd { color: var(--term-fg); font-family: "JetBrains Mono", ui-monospace, Menlo, monospace; font-size: 12px; }
   & .k-dim { color: #5f8273; } & .k-acc { color: #ffd166; } & .k-grn { color: #7cf29a; } & .k-red { color: #ff7f6e; }
   & .k-blu { color: #86ccff; } & .k-yel { color: #ffe16b; } & .k-b { color: #effff4; }
   & .k-box, & .k-input { border-color: #2e4a3f; } & .k-welcome { border-color: #ffd166; } & .k-perm { border-color: #ffe16b; }
@@ -165,7 +170,7 @@ html[data-theme="strips"] {
   & .field input[type=text], & .field textarea, & .field select, & .fp-top input { background: #fff; border-color: var(--line2); color: var(--text); border-radius: 1px; }
   & .fp { background: #fff; border-radius: 1px; }
   & .fp-item.on { background: var(--strip-yellow); }
-  & .cmd { background: var(--term-bg); color: #c9e7d2; }
+  & .cmd { background: var(--term-bg); color: var(--term-fg); border-color: var(--line2); }
   & .toast { background: var(--strip-buff); border: 1px solid #948d74; color: var(--text); border-radius: 1px; box-shadow: 0 6px 16px rgba(0,0,0,.25); }
   & .toast small { color: var(--muted); }
   & .note-mock { background: var(--strip-yellow); border: 1px solid #a88a10; color: #3d3000; border-radius: 1px; box-shadow: 0 3px 6px rgba(0,0,0,.2); }

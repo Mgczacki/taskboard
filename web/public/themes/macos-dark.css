@@ -12,7 +12,7 @@ html[data-theme="macos-dark"] {
   --line2: rgba(255, 255, 255, .16);
   --text: #dfdfe1;          /* primary label */
   --muted: #a1a1a6;         /* secondary label, 7.2:1 on --bg */
-  --dim: #8a8a8f;           /* tertiary label, 4.9:1 on --bg */
+  --dim: #98989c;           /* 4.5:1 or more on --bg, --bg2, --panel and --panel2 (WCAG AA) */
   --accent: #0a84ff;
   --accent-bg: rgba(10, 132, 255, .18);
   --st-needs: #ff9f0a;
@@ -25,6 +25,8 @@ html[data-theme="macos-dark"] {
   --st-stopped: #ff453a;
   --claude: #e0896b;
   --term-bg: #1e1e1e;
+  --term-fg: var(--text);
+  --term-cursor: var(--accent);
   --mono: "SF Mono", ui-monospace, Menlo, monospace;
   --sans: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
   --wallpaper: radial-gradient(110% 80% at 12% 0%, #26406e 0%, transparent 60%), radial-gradient(90% 80% at 92% 100%, #4a2b5c 0%, transparent 62%), linear-gradient(160deg, #141b2b, #1b1524);
@@ -33,6 +35,7 @@ html[data-theme="macos-dark"] {
   & body { background: var(--wallpaper); font-size: 13px; -webkit-font-smoothing: antialiased; color: var(--text); }
   & code { background: rgba(255,255,255,.08); color: #e6e6e8; }
   & kbd { border-color: rgba(255,255,255,.18); color: var(--muted); background: rgba(255,255,255,.04); }
+  & .st-label.working { color: color-mix(in srgb, var(--st-working) 75%, #fff); }
   & ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.22); border: 3px solid transparent; background-clip: padding-box; border-radius: 8px; }
 
   /* sidebar with dark vibrancy */

@@ -21,16 +21,18 @@ let current = (() => { try { return localStorage.getItem(KEY) || 'default'; } ca
 // Swap the theme stylesheet in place. keep=false is a hover preview and is not saved.
 export function applyTheme(id: string, keep = true) {
   let link = document.getElementById('tb-theme-css') as HTMLLinkElement | null;
+  // terminals read their colours from the theme (terminalTheme.ts); tell them to read again once the stylesheet applies
+  const changed = () => window.dispatchEvent(new Event('tb-theme'));
+  let wait = false;
   if (id === 'default') link?.remove();
   else {
     if (!link) { link = document.createElement('link'); link.rel = 'stylesheet'; link.id = 'tb-theme-css'; document.head.appendChild(link); }
     const href = `/themes/${id}.css`;
-    if (link.getAttribute('href') !== href) link.setAttribute('href', href);
+    if (link.getAttribute('href') !== href) { link.onload = link.onerror = changed; link.setAttribute('href', href); wait = true; }
   }
   document.documentElement.dataset.theme = id;
-  // terminals read colours when they start; tell them to refresh
-  setTimeout(() => window.dispatchEvent(new Event('tb-theme')), 80);
+  if (!wait) requestAnimationFrame(changed);
   if (keep) { current = id; try { localStorage.setItem(KEY, id); } catch { /* private mode */ } }
 }
 export const currentTheme = () => current;
-applyTheme(current);
+if (typeof document !== 'undefined') applyTheme(current);

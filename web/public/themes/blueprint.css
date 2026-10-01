@@ -13,7 +13,7 @@ html[data-theme="blueprint"] {
   --line2: rgba(214, 236, 255, .42);
   --text: #eef7ff;
   --muted: #b3d3f0;
-  --dim: #7ea8cf;
+  --dim: #90b5d7; /* 4.5:1 or more on --bg, --bg2, --panel and --panel2 (WCAG AA) */
   --accent: #ffffff;
   --accent-bg: rgba(255, 255, 255, .1);
   --st-needs: #ff8a5c;
@@ -24,6 +24,8 @@ html[data-theme="blueprint"] {
   --st-archived: #4f7aa6;
   --claude: #ffb38a;
   --term-bg: #07203f;
+  --term-fg: var(--text);
+  --term-cursor: var(--accent);
   --mono: "Martian Mono", ui-monospace, Menlo, monospace;
   --sans: "IBM Plex Sans Condensed", -apple-system, sans-serif;
   --tick: rgba(238, 247, 255, .85);

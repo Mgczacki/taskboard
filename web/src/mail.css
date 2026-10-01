@@ -41,7 +41,7 @@
 .mail-member-picker { position:relative; width:min(100%,420px); margin:6px 0 14px; }
 .mail-member-trigger { display:flex; align-items:center; gap:9px; width:100%; min-height:38px; padding:6px 10px; border:1px solid var(--line2); border-radius:7px; background:var(--bg2); color:var(--text); font:inherit; text-align:left; cursor:pointer; }
 .mail-member-trigger > span:first-child { color:var(--muted); }
-.mail-member-trigger img,.mail-member-option img { width:24px; height:24px; border-radius:5px; object-fit:cover; }
+.mail-member-trigger img,.mail-member-option img { width:24px; height:24px; border-radius:5px; object-fit:cover; box-sizing:border-box; border:1px solid color-mix(in srgb, var(--text) 22%, var(--panel)); }
 .mail-member-chevron { margin-left:auto; color:var(--muted); }
 .mail-member-menu { position:absolute; z-index:20; top:calc(100% + 4px); left:0; right:0; padding:8px; border:1px solid var(--line2); border-radius:9px; background:var(--panel); box-shadow:0 12px 28px rgba(0,0,0,.22); }
 .mail-member-menu .mail-input { width:100%; box-sizing:border-box; margin:0 0 8px; }
