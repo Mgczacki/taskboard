@@ -42,6 +42,7 @@ export interface Task {
   openElsewhere?: { pid: number; tty: string }; // imported while still open in another terminal
   moveWhenDone?: boolean;
   restartWhenDone?: boolean; // restart the agent (same conversation) as soon as its current turn ends
+  newSessionWhenDone?: boolean; // controller: start it in a new conversation as soon as its current turn ends
   unscrollable?: boolean;    // running full screen without mouse support (Codex started before --no-alt-screen)
   launchedAs?: string; // controller: the name / Remote Control / agent it was started with (restarted when these change)
   remoteUrl?: string; // controller: its Remote Control address on claude.ai (read from its screen) // take the session over from that terminal as soon as its current turn ends
