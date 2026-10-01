@@ -3,6 +3,8 @@ import { promisify } from 'node:util';
 import type { Task } from './store.ts';
 import * as machine from './machine.ts';
 import { mergeStateForSource } from './task-git.ts';
+import { backupPrefix } from './task-repair.ts';
+import { scanHistory } from './task-history.ts';
 import { TB_DIR } from './config.ts';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -17,7 +19,7 @@ const secretLine = /^\+(?!\+\+).*(?:-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY
 
 export interface PushState {
   taskId: string; branch: string; remote: string; remoteUrl: string; oldHead: string | null; newHead: string;
-  fastForward: boolean; commitCount: number; commits: { hash: string; subject: string; author: string }[];
+  fastForward: boolean; forcePush?: boolean; replaced?: { hash: string; subject: string; author: string }[]; commitCount: number; commits: { hash: string; subject: string; author: string }[];
   fileCount: number; topFiles: string[]; warnings: string[]; reason: string; thenRelease: boolean;
   needsCard: boolean;
 }
@@ -42,12 +44,14 @@ function signedInLogin(): string {
   try { return execFileSync(gh, ['auth', 'status', '--json', 'hosts', '--jq', '.hosts."github.com"[] | select(.active) | .login'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim(); }
   catch { return ''; }
 }
+export const isProtectedBranch = (branch: string, defaultBranch: string | undefined, protectedBranches: string[]) =>
+  /^(master|main|prod)$/i.test(branch) || /^release\//i.test(branch) || branch === defaultBranch || protectedBranches.includes(branch);
 export function pushNeedsCard(taskBranch: string, branch: string, remote: string, remoteUrl: string, defaultBranch: string | undefined,
   login: string, settings: { taskBranches: 'run' | 'ask' | 'never'; ownRepositories: string[]; protectedBranches: string[] }) {
   const repository = repoName(remoteUrl);
   const owner = repository?.split('/')[0];
   const ownRepository = !!repository && (owner?.toLowerCase() === login.toLowerCase() || settings.ownRepositories.some(r => r.toLowerCase() === repository.toLowerCase()));
-  const protectedBranch = /^(master|main|prod)$/i.test(branch) || /^release\//i.test(branch) || branch === defaultBranch || settings.protectedBranches.includes(branch);
+  const protectedBranch = isProtectedBranch(branch, defaultBranch, settings.protectedBranches);
   if (branch === taskBranch && !protectedBranch && ownRepository && remote === 'origin' && settings.taskBranches === 'never')
     throw new Error('Settings block pushes of task branches to your own repositories.');
   return true;
@@ -101,20 +105,37 @@ export async function inspectPush(task: Task, reason: string, options: { branch?
   warnings.push(secretLine.test(diff) ? 'The quick diff scan found a line that looks like a secret.' : 'The quick diff scan found no secret pattern.');
   const remoteDefault = await git(cwd, 'ls-remote', '--symref', remote, 'HEAD').catch(() => '');
   const defaultBranch = remoteDefault.match(/^ref:\s+refs\/heads\/([^\s]+)\s+HEAD/m)?.[1];
-  const needsCard = pushNeedsCard(taskBranch, branch, remote, remoteUrl, defaultBranch, signedInLogin(), machine.get().pushes);
-  return { taskId: task.id, branch, remote, remoteUrl, oldHead, newHead, fastForward, commitCount: commits.length, commits,
+  // A force push is possible only for this task's own branch after tb git repair: the remote head must be in a
+  // backup that tb git repair made for this task. It always needs the user's approval on the push card.
+  let forcePush = false;
+  let replaced: PushState['replaced'] = [];
+  if (!fastForward && oldHead && oldAvailable && branch === taskBranch && !isProtectedBranch(branch, defaultBranch, machine.get().pushes.protectedBranches)) {
+    const backups = (await git(cwd, 'for-each-ref', '--format=%(objectname)', backupPrefix(task))).split('\n').filter(Boolean);
+    for (const b of backups) if (await isAncestor(cwd, oldHead, b)) { forcePush = true; break; }
+    if (forcePush) {
+      const gone = await git(cwd, 'log', '--format=%H%x00%s%x00%an <%ae>', `${newHead}..${oldHead}`);
+      replaced = gone ? gone.split('\n').map(line => { const [hash, subject, author] = line.split('\0'); return { hash, subject, author }; }) : [];
+    }
+  }
+  const history = await scanHistory(cwd, oldHead && oldAvailable ? [newHead, '--not', oldHead] : [newHead, '--not', `--remotes=${remote}`]).catch(() => null);
+  if (history) warnings.push(...history.warnings);
+  const needsCard = forcePush || pushNeedsCard(taskBranch, branch, remote, remoteUrl, defaultBranch, signedInLogin(), machine.get().pushes);
+  return { taskId: task.id, branch, remote, remoteUrl, oldHead, newHead, fastForward, forcePush, replaced, commitCount: commits.length, commits,
     fileCount: files.length, topFiles: files.slice(0, 20), warnings, reason: reason.trim(), thenRelease: !!options.thenRelease, needsCard };
 }
 
 export async function runPush(task: Task, expected: PushState): Promise<string> {
-  if (!expected.fastForward) throw new Error('The remote branch does not allow a fast-forward push.');
+  if (!expected.fastForward && !expected.forcePush) throw new Error('The remote branch does not allow a fast-forward push.');
   const current = await inspectPush(task, expected.reason, { branch: expected.branch, remote: expected.remote, thenRelease: expected.thenRelease });
   if (current.newHead !== expected.newHead || current.oldHead !== expected.oldHead || current.remoteUrl !== expected.remoteUrl || current.remote !== expected.remote)
     throw new Error('The branch changed. Ask for a new push request.');
-  if (!current.fastForward) throw new Error('The branch changed. Ask for a new push request.');
+  if (!current.fastForward && !(current.forcePush && expected.forcePush)) throw new Error('The branch changed. Ask for a new push request.');
+  if (!!current.forcePush !== !!expected.forcePush) throw new Error('The branch changed. Ask for a new push request.');
   const cwd = expected.branch === 'master' ? task.folder : task.cwd;
+  // --force-with-lease replaces the remote branch only while it still points to the head that the card showed
+  const lease = expected.forcePush && expected.oldHead ? [`--force-with-lease=refs/heads/${expected.branch}:${expected.oldHead}`] : [];
   try {
-    const result = await exec('git', ['push', '--porcelain', expected.remote, `${expected.newHead}:refs/heads/${expected.branch}`],
+    const result = await exec('git', ['push', '--porcelain', ...lease, expected.remote, `${expected.newHead}:refs/heads/${expected.branch}`],
       { cwd, maxBuffer: 1024 * 1024 });
     return safe(`${result.stdout}\n${result.stderr}`.trim());
   } catch (e) { throw new Error(safe(String(e))); }

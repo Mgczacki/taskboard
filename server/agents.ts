@@ -319,7 +319,7 @@ function claudeTaskSettings(t: Task): string {
     allow: ['$defaults', `Taskboard checks tb git commit and tb git rebase against this task's branch ${t.branch}. A merge into local master requires the Taskboard dashboard card. Other worktrees and branches are outside this task's scope.`],
   };
   const gitCli = join(TB_DIR, 'bin', 'tb');
-  settings.permissions.allow.push(`Bash(${gitCli} git commit:*)`, `Bash(${gitCli} git rebase)`, `Bash(${gitCli} git rebase --continue)`, `Bash(${gitCli} git rebase --abort)`, `Bash(${gitCli} git merge-request)`, `Bash(${gitCli} git push-request:*)`, `Bash(${gitCli} git push-result:*)`, `Bash(${gitCli} suggest:*)`, `Bash(${gitCli} permit request:*)`, `Bash(${gitCli} permit result:*)`);
+  settings.permissions.allow.push(`Bash(${gitCli} git commit:*)`, `Bash(${gitCli} git rebase)`, `Bash(${gitCli} git rebase --continue)`, `Bash(${gitCli} git rebase --abort)`, `Bash(${gitCli} git check:*)`, `Bash(${gitCli} git merge-request)`, `Bash(${gitCli} git push-request:*)`, `Bash(${gitCli} git push-result:*)`, `Bash(${gitCli} suggest:*)`, `Bash(${gitCli} permit request:*)`, `Bash(${gitCli} permit result:*)`);
   writeFileSync(file, JSON.stringify(settings, null, 2), { mode: 0o600 });
   return file;
 }

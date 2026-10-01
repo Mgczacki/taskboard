@@ -4,11 +4,12 @@ import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { TB_DIR } from './config.ts';
 import type { Task } from './store.ts';
+import { historyReport } from './task-history.ts';
 
 const exec = promisify(execFile);
 const git = async (cwd: string, ...args: string[]) => (await exec('git', args, { cwd })).stdout.trim();
 const gitPath = async (cwd: string, name: string) => resolve(cwd, await git(cwd, 'rev-parse', '--git-path', name));
-const rebasing = async (cwd: string) => existsSync(await gitPath(cwd, 'rebase-merge')) || existsSync(await gitPath(cwd, 'rebase-apply'));
+export const rebasing = async (cwd: string) => existsSync(await gitPath(cwd, 'rebase-merge')) || existsSync(await gitPath(cwd, 'rebase-apply'));
 const pendingPath = (t: Task, file?: string) => file || join(TB_DIR, 'git-merges', `${encodeURIComponent(t.id)}.json`);
 const readPending = (file: string): MergeState | null => {
   try { return JSON.parse(readFileSync(file, 'utf8')) as MergeState; } catch { return null; }
@@ -72,9 +73,34 @@ export async function mergeStateForSource(t: Task, allowRebase = false) {
   if (!entry || (!active && !entry.split('\n').includes(`branch refs/heads/${t.branch}`))) throw new Error('The task branch is not in its worktree; restore it before running tb git rebase.');
 }
 
-export async function rebaseTask(t: Task, action: 'start' | 'continue' | 'abort' = 'start', file = pendingPath(t)): Promise<string> {
+const redact = (s: string) => s.replace(/(https?:\/\/)[^/@\s]+@/g, '$1[redacted]@');
+
+// A base is local master or a branch of a configured remote of the task repository, such as origin/prod.
+// For a remote base, git fetch updates refs/remotes/<remote>/<branch> first. Only that remote-tracking ref changes.
+export async function resolveBase(t: Task, base = 'master'): Promise<{ name: string; ref: string; remote?: string }> {
+  if (base === 'master') return { name: 'master', ref: 'refs/heads/master' };
+  const refuse = () => new Error(`${base} is not a remote branch of this repository; give master or a remote branch such as origin/master.`);
+  const remotes = (await git(t.cwd, 'remote')).split('\n').filter(Boolean).sort((a, b) => b.length - a.length);
+  const remote = remotes.find(r => base.startsWith(r + '/'));
+  const branch = remote ? base.slice(remote.length + 1) : '';
+  if (!remote || !branch || branch === 'HEAD' || !/^[A-Za-z0-9][A-Za-z0-9._/-]*$/.test(branch)) throw refuse();
+  try { await exec('git', ['check-ref-format', `refs/heads/${branch}`], { cwd: t.cwd }); } catch { throw refuse(); }
+  const ref = `refs/remotes/${remote}/${branch}`;
+  try {
+    await exec('git', ['fetch', '--no-tags', '--quiet', remote, `+refs/heads/${branch}:${ref}`],
+      { cwd: t.cwd, timeout: 120000, env: { ...process.env, GIT_TERMINAL_PROMPT: '0' } });
+  } catch (e) {
+    const detail = redact(String((e as { stderr?: string }).stderr || (e as Error).message)).trim().split('\n')[0];
+    if (/couldn't find remote ref/i.test(detail)) throw refuse();
+    throw new Error(`git fetch ${remote} ${branch} failed, so nothing changed: ${detail}`);
+  }
+  return { name: base, ref, remote };
+}
+
+export async function rebaseTask(t: Task, action: 'start' | 'continue' | 'abort' = 'start', file = pendingPath(t), base = 'master'): Promise<string> {
   await mergeStateForSource(t, true);
   const active = await rebasing(t.cwd);
+  let target: Awaited<ReturnType<typeof resolveBase>> | undefined;
   if (action === 'abort') {
     if (!active) throw new Error('No rebase is in progress; run tb git rebase to start one.');
     await exec('git', ['rebase', '--abort'], { cwd: t.cwd });
@@ -84,7 +110,8 @@ export async function rebaseTask(t: Task, action: 'start' | 'continue' | 'abort'
   if (action === 'start') {
     if (active) throw new Error('A rebase is in progress; resolve conflicts and run tb git rebase --continue, or run tb git rebase --abort.');
     if (await git(t.cwd, 'status', '--porcelain')) throw new Error('The task worktree has local changes; run tb git commit before tb git rebase.');
-    try { await exec('git', ['rebase', 'master'], { cwd: t.cwd }); }
+    target = await resolveBase(t, base);
+    try { await exec('git', ['rebase', target.ref], { cwd: t.cwd }); }
     catch (e) { if (await rebasing(t.cwd)) throw new Error('The rebase has conflicts; resolve them in the task worktree and run tb git rebase --continue.'); throw e; }
   } else {
     if (!active) throw new Error('No rebase is in progress; run tb git rebase to start one.');
@@ -102,6 +129,7 @@ export async function rebaseTask(t: Task, action: 'start' | 'continue' | 'abort'
     try { const result = await withMasterLock(() => finishMerge(t, pending)); clearPending(file); return result; }
     catch (e) { clearPending(file); throw e; }
   }
+  if (target?.remote) return `Rebased ${t.branch} onto ${target.name}.\n\n${await historyReport(t.cwd, target.ref, target.name)}`;
   return `Rebased ${t.branch} onto local master; run tb git merge-request to request a merge.`;
 }
 
