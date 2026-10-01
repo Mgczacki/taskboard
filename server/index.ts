@@ -50,6 +50,7 @@ import * as transfer from './transfer.ts';
 const MACHINE_ID = machineId();
 import { sampleResources } from './resource-log.ts';
 import { stopTaskSandboxes } from './sandbox-cleanup.ts';
+import * as runtime from './runtime-routes.ts';
 import { trimTerminalLog } from './terminal-log.ts';
 import { idleSuspendMinutes, maySuspendIdleTask } from './idle-suspend.ts';
 
@@ -588,7 +589,7 @@ app.get('/api/info', (_req, res) => res.json(info()));
 app.patch('/api/info', async (req, res) => {
   if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Machine settings are changed on the dashboard.' });
   try {
-    const { name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, confirmLowerControl, defaultMaxParallel, newTaskDefaultAgent, applyMaxParallelToAll } = req.body;
+    const { name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, confirmLowerControl, defaultMaxParallel, newTaskDefaultAgent, applyMaxParallelToAll, browserClaude, browserCodex, chromePath } = req.body;
     // Letting the controller approve permits gives the user less control. The page asks first and then sends confirmLowerControl.
     if (confirmLowerControl !== true && controllerCanApprovePermits === true && !machine.get().permissions.controllerCanApprovePermits)
       return res.status(400).json({ error: 'Confirm on the Settings page before you give the controller more control.' });
@@ -599,7 +600,7 @@ app.patch('/api/info', async (req, res) => {
       return res.status(400).json({ error: 'Pick a valid model for questions.' });
     if (reviewAccount && accounts.get(reviewAccount)?.agent !== 'claude') return res.status(400).json({ error: 'Pick a Claude Code account for auto review.' });
     if (defaultMaxParallel !== undefined) machine.checkMaxParallel(defaultMaxParallel); // refuse before anything is saved
-    machine.update({ name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, defaultMaxParallel, newTaskDefaultAgent });
+    machine.update({ name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, defaultMaxParallel, newTaskDefaultAgent, browserClaude, browserCodex, chromePath });
     // the Settings page confirms first; running tasks keep running, only new starts check the new maximum
     if (applyMaxParallelToAll === true) accounts.setAllMaxParallel(machine.get().accounts.defaultMaxParallel);
     if (trustWorkspaces === false) trust.restore();
@@ -684,7 +685,7 @@ app.post('/api/tasks/:id/status', async (req, res) => {
         if (!['parked', 'archived'].includes(current.status)) throw new Error(`#${current.num} is ${current.status}. Only parked or archived tasks can be resumed with tb resume.`);
         agents.checkResumeAccount(current);
       }
-      if (s === 'archived') { await tmux.killSession(t0.session); await stopTaskSandboxes(t0.id); trimTerminalLog(store.terminalLog(t0.id)); }
+      if (s === 'archived') { await tmux.killSession(t0.session); await stopTaskSandboxes(t0.id); await runtime.stopTaskRuntime(t0, 'stopped'); trimTerminalLog(store.terminalLog(t0.id)); }
       const updated = store.update(t0.id, { status: s, statusSource: controllerResume ? 'Resumed by the controller.' : `Set at ${new Date().toTimeString().slice(0, 5)}.` })!;
       if (controllerResume) store.appendLog(t0.id, { did: 'Task resumed by the controller.', next: 'Send the instruction to the task.' });
       return view(updated);
@@ -836,13 +837,14 @@ app.patch('/api/groups/:id', (req, res) => {
   if (remove) list = list.filter((t: string) => ![].concat(remove).includes(t as never));
   res.json(groups.update(g.id, { ...(name ? { name } : {}), ...(color ? { color } : {}), tasks: list }));
 });
-app.delete('/api/groups/:id', (req, res) => {
+app.delete('/api/groups/:id', async (req, res) => {
   const g = groups.get(req.params.id);
   if (!g) return res.status(404).end();
   if (req.query.requireArchived === '1') {
     const live = g.tasks.filter(id => { const t = store.get(id); return t && t.status !== 'archived'; });
     if (live.length) return res.status(409).json({ error: `The group still has ${live.length} unarchived task(s).` });
   }
+  await runtime.removeGroupRuntime(g.id);
   res.json(groups.remove(g.id));
 });
 app.post('/api/groups/restore', (req, res) => { groups.restore(req.body); res.json({}); });
@@ -872,10 +874,13 @@ app.post('/api/tasks/:id/type-command', async (req, res) => {
   const t = store.get(req.params.id); if (!t) return res.status(404).end();
   try { res.json(await typeCommand(t, req.body.command)); } catch (e) { fail(res, e); }
 });
+// processes and browsers of tasks and groups (runtime-routes.ts)
+runtime.mount(app, fail);
+runtime.watchResume();
 app.post('/api/tasks/:id/kill', async (req, res) => {
   const t = store.get(req.params.id); if (!t) return res.status(404).end();
   await guarded(req, res, `end and archive #${t.num} ${t.title}`, '', 'kill',
-    async () => { await tmux.killSession(t.session); await stopTaskSandboxes(t.id); trimTerminalLog(store.terminalLog(t.id)); return view(store.update(t.id, { status: 'archived', statusSource: 'Session ended and archived.' })!); }, () => `#${t.num} ended and archived.`);
+    async () => { await tmux.killSession(t.session); await stopTaskSandboxes(t.id); await runtime.stopTaskRuntime(t, 'stopped'); trimTerminalLog(store.terminalLog(t.id)); return view(store.update(t.id, { status: 'archived', statusSource: 'Session ended and archived.' })!); }, () => `#${t.num} ended and archived.`);
 });
 // Remove a task from Taskboard (dashboard only). Ends its tmux session unless it runs in another terminal; the note
 // and folder go to ~/.taskboard/trash, and the conversation files of Claude Code / Codex stay where they are.
@@ -885,6 +890,7 @@ app.delete('/api/tasks/:id', async (req, res) => {
   if (t.role === 'controller') return fail(res, 'The controller cannot be removed.');
   try {
     if (!t.openElsewhere) await tmux.killSession(t.session);
+    await runtime.removeTaskRuntime(t);
     for (const g of groups.groupsOf(t.id)) groups.update(g.id, { tasks: g.tasks.filter(x => x !== t.id) });
     store.remove(t.id);
     res.json({});
@@ -1072,6 +1078,8 @@ setInterval(() => {
 
 server.on('upgrade', (req, socket, head) => {
   const url = new URL(req.url || '', URL_BASE);
+  // an agent's DevTools connection to its task browser carries the task's key instead of an origin or the token
+  if (runtime.upgradeCdp(req, socket, head, url)) return;
   // the dashboard is identified by its origin; anything else (another Taskboard server) must present the token
   if (req.headers.origin ? !originOk(req.headers.origin) : (url.searchParams.get('token') !== TOKEN && req.headers['x-taskboard-token'] !== TOKEN)) return socket.destroy();
   wss.handleUpgrade(req, socket, head, ws => {
@@ -1110,7 +1118,8 @@ server.on('upgrade', (req, socket, head) => {
       const t = store.get(url.searchParams.get('task') || '');
       if (!t) return ws.close(4004, 'no such task');
       attach(ws, t.session, Number(url.searchParams.get('cols')) || 120, Number(url.searchParams.get('rows')) || 40);
-    } else ws.close();
+    } else if (url.pathname === '/ws/browser') runtime.viewBrowser(ws, url);
+    else ws.close();
   });
 });
 
@@ -1325,6 +1334,7 @@ async function reconcile(first = false) {
       try { if (cur.transcript) transcriptTime = statSync(cur.transcript).mtimeMs; } catch { /* transcript moved */ }
       if (maySuspendIdleTask(cur, Date.now(), IDLE_SUSPEND_MINUTES, transcriptTime, store.launchedAt.get(cur.id) || 0, events.viewing.has(cur.id))) {
         await tmux.killSession(cur.session);
+        await runtime.stopTaskRuntime(cur, 'suspended');
         store.update(cur.id, { status: 'suspended', statusSource: `Idle for ${IDLE_SUSPEND_MINUTES} minutes. Open this task to resume it.` });
       }
     }
