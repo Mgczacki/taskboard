@@ -13,8 +13,7 @@ import { openDocumentLink, type DocumentLink } from '../documentLinks';
 import { continues, findPaths, joinRows, type Row } from '../terminalPaths';
 import { commandAt, commandsFrom, type CellRow } from '../bangCommand';
 import { beginHold } from '../holdRun';
-
-const cssVar = (n: string, fallback: string) => getComputedStyle(document.documentElement).getPropertyValue(n).trim() || fallback;
+import { readTerminalTheme } from '../terminalTheme';
 
 // Debug record: each terminal keeps its last 300 events (WebSocket messages with their size and first escape
 // sequences, input lengths, connection changes, stalls, messages from the server). It holds no text the agent printed
@@ -46,11 +45,11 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
 
   useEffect(() => {
     const el = box.current!;
+    const { theme, minimumContrastRatio } = readTerminalTheme();
     const term = new XTerm({
       fontFamily: '"JetBrains Mono", "SF Mono", ui-monospace, Menlo, monospace',
       fontSize, lineHeight: 1.25, cursorBlink: true, allowProposedApi: true, scrollback: 10000,
-      macOptionIsMeta: false, macOptionClickForcesSelection: true,
-      theme: { background: cssVar('--term-bg', '#0a0c0f'), foreground: '#d6dae0', cursor: '#e6edf3', selectionBackground: '#3a4a6a' },
+      macOptionIsMeta: false, macOptionClickForcesSelection: true, theme, minimumContrastRatio,
     });
     const fit = new FitAddon();
     term.loadAddon(fit); term.loadAddon(new WebLinksAddon());
@@ -280,7 +279,8 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
 
   useEffect(() => { if (termRef.current) termRef.current.options.fontSize = fontSize; }, [fontSize]);
   useEffect(() => {
-    const on = () => { if (termRef.current) termRef.current.options.theme = { ...termRef.current.options.theme, background: cssVar('--term-bg', '#0a0c0f') }; };
+    // a new theme object makes xterm.js repaint with the new colours; the buffer and the session stay as they are
+    const on = () => { const t = termRef.current; if (!t) return; const { theme, minimumContrastRatio } = readTerminalTheme(); t.options.theme = theme; t.options.minimumContrastRatio = minimumContrastRatio; };
     addEventListener('tb-theme', on); return () => removeEventListener('tb-theme', on);
   }, []);
   useEffect(() => { if (autoFocus) termRef.current?.focus(); }, [autoFocus]);

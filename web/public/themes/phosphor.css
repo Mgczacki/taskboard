@@ -12,7 +12,7 @@ html[data-theme="phosphor"] {
   --line2: #5a4219;
   --text: #ffb84d;
   --muted: #d9963a;
-  --dim: #8a6226;
+  --dim: #ac7b31; /* 4.5:1 or more on --bg, --bg2, --panel and --panel2 (WCAG AA) */
   --accent: #ffd27a;
   --accent-bg: rgba(255, 184, 77, .12);
   --st-needs: #ffe08a;
@@ -23,6 +23,8 @@ html[data-theme="phosphor"] {
   --st-archived: #4d3714;
   --claude: #ffcf7a;
   --term-bg: #0d0903;
+  --term-fg: var(--text);
+  --term-cursor: var(--accent);
   --mono: "IBM Plex Mono", ui-monospace, Menlo, monospace;
   --sans: "IBM Plex Mono", ui-monospace, Menlo, monospace;
   --glow: 0 0 5px rgba(255, 170, 40, .45);

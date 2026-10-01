@@ -62,7 +62,8 @@
 .gnode.person { border-radius: 31px; border-color: color-mix(in srgb, var(--st-review) 40%, var(--line)); }
 .gnode.source { background: var(--bg2); }
 .gnode .gface, .gpanel-head .gface { position: absolute; left: 12px; top: 50%; transform: translateY(-50%); }
-.gface { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; flex: none; background: var(--panel2); }
+/* the Slack picture and the initials get a thin ring in the theme's colours, so a white or a dark picture keeps its edge */
+.gface { width: 36px; height: 36px; border-radius: 50%; object-fit: cover; flex: none; background: var(--panel2); box-sizing: border-box; border: 1.5px solid color-mix(in srgb, var(--text) 22%, var(--panel)); }
 .gface.ini { display: inline-flex; align-items: center; justify-content: center; background: var(--fc); color: var(--bg); font: 600 12.5px var(--sans); }
 .gface.src { width: 36px; height: 36px; border-radius: 8px; display: inline-flex; align-items: center; justify-content: center; background: var(--line2); color: var(--text); font: 600 13px var(--sans); }
 .gnode .pn { font-size: 13px; font-weight: 600; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

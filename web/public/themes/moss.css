@@ -24,6 +24,8 @@ html[data-theme="moss"] {
   --st-archived: #43504a;
   --claude: #e3955f;
   --term-bg: #07100b;
+  --term-fg: var(--text);
+  --term-cursor: var(--accent);
   --sans: "Recursive", -apple-system, sans-serif;
   --mono: "DM Mono", ui-monospace, Menlo, monospace;
   --leaf: 50% 0 50% 0;

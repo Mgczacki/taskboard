@@ -8,7 +8,7 @@
   --line2: #333a44;
   --text: #e4e7ec;
   --muted: #9aa3af;
-  --dim: #69717d;
+  --dim: #838a94; /* 4.5:1 or more on --bg, --bg2, --panel and --panel2 (WCAG AA) */
   --accent: #7aa2ff;
   --accent-bg: rgba(122, 162, 255, .12);
 
@@ -24,6 +24,10 @@
   --claude: #d97757;
   --codex: #c9d1d9;
   --term-bg: #0a0c0f;
+  /* terminal colours (web/src/terminalTheme.ts reads them); a theme can also set --term-red, --term-bright-blue and the other ANSI colours */
+  --term-fg: #d6dae0;
+  --term-cursor: #e6edf3;
+  --term-selection: color-mix(in srgb, var(--accent) 35%, var(--term-bg));
 
   --mono: "JetBrains Mono", "SF Mono", ui-monospace, Menlo, monospace;
   --sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;

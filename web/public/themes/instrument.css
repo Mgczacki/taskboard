@@ -25,6 +25,8 @@ html[data-theme="instrument"] {
   --st-archived: #3a3d42;
   --claude: #ff9f5a;
   --term-bg: #08090a;
+  --term-fg: var(--text);
+  --term-cursor: var(--accent);
   --sans: "Chakra Petch", -apple-system, sans-serif;
   --mono: "Martian Mono", ui-monospace, Menlo, monospace;
   --brushed: repeating-linear-gradient(90deg, rgba(255,255,255,.022) 0 1px, transparent 1px 3px, rgba(0,0,0,.04) 3px 4px), linear-gradient(180deg, #25272b, #1b1c1f);
