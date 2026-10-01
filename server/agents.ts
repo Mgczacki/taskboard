@@ -335,6 +335,17 @@ function codexOriginalNotify(t?: Task): string | undefined {
   try { return JSON.stringify(JSON.parse(m[1])); } catch { return; }
 }
 
+// On macOS, gh and the Git helper `gh auth git-credential` read the GitHub token from the login keychain. The keychain
+// tool writes a lock file in the user cache folder (getconf DARWIN_USER_CACHE_DIR). The Codex workspace-write sandbox
+// denies that write, and gh then reports "The token in default is invalid". This folder is writable for Codex commands.
+export function codexKeychainArgs(platform = process.platform): string[] {
+  if (platform !== 'darwin') return [];
+  try {
+    const dir = execFileSync('getconf', ['DARWIN_USER_CACHE_DIR'], { encoding: 'utf8' }).trim().replace(/\/+$/, '');
+    return dir.startsWith('/') ? ['-c', `sandbox_workspace_write.writable_roots=${JSON.stringify([dir])}`] : [];
+  } catch { return []; }
+}
+
 function baseEnv(t: Task): Record<string, string> {
   const env: Record<string, string> = {
     TASK_ID: t.id, TASK_DIR: store.taskDir(t.id), TASK_NUM: String(t.num),
@@ -436,7 +447,7 @@ function buildCommand(t: Task, prompt: string | null, resume: boolean, codexTrus
     return c;
   }
   const c = ['codex', ...codexFlags(), ...codexTrust];
-  c.push('-a', 'on-request', '-s', 'workspace-write', '--add-dir', VAULT, '-c', 'sandbox_workspace_write.network_access=true', '-c', `approvals_reviewer="${machine.get().permissions.autoReview ? 'auto_review' : 'user'}"`);
+  c.push('-a', 'on-request', '-s', 'workspace-write', '--add-dir', VAULT, '-c', 'sandbox_workspace_write.network_access=true', ...codexKeychainArgs(), '-c', `approvals_reviewer="${machine.get().permissions.autoReview ? 'auto_review' : 'user'}"`);
   if (t.model) c.push('-m', t.model);
   // Codex has no flag that appends to its system prompt. developer_instructions is a config value, so it is written as a
   // TOML string (a JSON string is also a valid TOML basic string). The controller reads AGENTS.md in its folder instead.
