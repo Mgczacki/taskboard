@@ -39,6 +39,7 @@ import { attach, terminalViewerCount } from './pty.ts';
 import * as store from './store.ts';
 import * as stats from './stats.ts';
 import * as taskGit from './task-git.ts';
+import * as taskRepair from './task-repair.ts';
 import * as push from './push.ts';
 import * as permits from './permits.ts';
 import { controllerMailToken } from './a2anotes/auth.ts';
@@ -269,7 +270,7 @@ app.post('/api/permits', (req, res) => {
     const message = e instanceof Error ? e.message : String(e);
     if (/task Git commands|release or rollback|GitHub write/.test(message)) {
       const command = steps?.map(s => s.command).join('\n') || '';
-      const help = /release|rollback/.test(message) ? 'Use tb release-request for a release. Rollback needs a user action.' : 'Use tb git commit, tb git rebase, tb git merge-request, or tb git push-request.';
+      const help = /release|rollback/.test(message) ? 'Use tb release-request for a release. Rollback needs a user action.' : 'Use tb git commit, tb git rebase, tb git repair, tb git merge-request, or tb git push-request.';
       const card = approvals.request({ actor, action: 'tool-refusal', summary: 'review a refused command', detail: `${command}\n${help}`, payload: { command, canPermit: false } }, async () => help);
       store.update(actor, { status: 'needs-you', ask: `Refused: ${command}`, statusSource: help });
       return res.status(400).json({ error: `${message} ${help}`, refusal: card.id });
@@ -371,9 +372,9 @@ function pushNotice(task: store.Task, record: push.PushRecord) {
 }
 async function createPushRequest(task: store.Task, reason: string, options: { branch?: string; remote?: string; thenRelease?: boolean }) {
     const state = await push.inspectPush(task, reason, options);
-    if (!state.fastForward) throw new Error('The remote branch does not allow a fast-forward push.');
+    if (!state.fastForward && !state.forcePush) throw new Error('The remote branch does not allow a fast-forward push, and its head is not in a backup that tb git repair made for this task.');
     const id = randomUUID();
-    if (!state.needsCard) {
+    if (!state.needsCard && !state.forcePush) {
       const record = push.recordPush(state, id);
       try {
         const output = await push.runPush(task, state);
@@ -382,8 +383,9 @@ async function createPushRequest(task: store.Task, reason: string, options: { br
       } catch (e) { push.finishPush(record, 'failed', String(e)); pushNotice(task, record); }
       return { push: record };
     }
-    const detail = `Remote: ${state.remoteUrl}\nBranch: ${state.branch}\nRange: ${state.oldHead || '(new branch)'} -> ${state.newHead}\nCommits: ${state.commitCount}\n${state.commits.map(c => `${c.hash} ${c.subject} — ${c.author}`).join('\n')}\nFiles changed: ${state.fileCount}\n${state.topFiles.join('\n')}\nFast-forward now: ${state.fastForward ? 'Yes' : 'No'}\nWarnings:\n${state.warnings.join('\n')}`;
-    const approval = approvals.request({ actor: task.id, action: 'git-push', summary: `push ${state.branch} to ${state.remote}`, detail, payload: { pushId: id, state } }, async () => {
+    const force = state.forcePush ? `FORCE PUSH: Yes. This task changed its branch with tb git repair after an earlier push.\nApproving replaces ${state.oldHead} on ${state.remote}/${state.branch}. Taskboard pushes with --force-with-lease, so the push fails if the remote branch moved.\nCommits that leave the remote branch: ${state.replaced?.length || 0}\n${(state.replaced || []).map(c => `${c.hash} ${c.subject} — ${c.author}`).join('\n')}\n\n` : '';
+    const detail = `${force}Remote: ${state.remoteUrl}\nBranch: ${state.branch}\nRange: ${state.oldHead || '(new branch)'} -> ${state.newHead}\nCommits: ${state.commitCount}\n${state.commits.map(c => `${c.hash} ${c.subject} — ${c.author}`).join('\n')}\nFiles changed: ${state.fileCount}\n${state.topFiles.join('\n')}\nFast-forward now: ${state.fastForward ? 'Yes' : 'No'}\nWarnings:\n${state.warnings.join('\n')}`;
+    const approval = approvals.request({ actor: task.id, action: 'git-push', summary: `${state.forcePush ? 'force push' : 'push'} ${state.branch} to ${state.remote}`, detail, payload: { pushId: id, state } }, async () => {
       try {
         const output = await push.runPush(task, state);
         push.finishPush(record, 'succeeded', output); pushNotice(task, record);
@@ -465,8 +467,29 @@ app.post('/api/git/rebase', async (req, res) => {
   const task = store.get(req.get('x-tb-actor') || '');
   if (!task || task.role === 'controller') return res.status(403).json({ error: 'A Taskboard task must run tb git rebase on its own branch.' });
   const action = req.body.action || 'start';
-  if (!['start', 'continue', 'abort'].includes(action)) return res.status(400).json({ error: 'Run tb git rebase, tb git rebase --continue, or tb git rebase --abort.' });
-  try { res.json({ result: await taskGit.rebaseTask(task, action) }); } catch (e) { fail(res, e); }
+  if (!['start', 'continue', 'abort'].includes(action)) return res.status(400).json({ error: 'Run tb git rebase [BASE], tb git rebase --continue, or tb git rebase --abort.' });
+  if (req.body.base !== undefined && (typeof req.body.base !== 'string' || action !== 'start')) return res.status(400).json({ error: 'Give a base only to start a rebase, for example tb git rebase origin/master.' });
+  try { res.json({ result: await taskGit.rebaseTask(task, action, undefined, req.body.base || 'master') }); } catch (e) { fail(res, e); }
+});
+app.post('/api/git/repair', async (req, res) => {
+  const task = store.get(req.get('x-tb-actor') || '');
+  if (!task || task.role === 'controller') return res.status(403).json({ error: 'A Taskboard task must run tb git repair on its own branch.' });
+  const { mode, base, commit, message, backup } = req.body as Record<string, unknown>;
+  const text = (v: unknown) => typeof v === 'string' ? v : undefined;
+  try {
+    let result: string;
+    if (mode === 'squash') result = await taskRepair.squashTask(task, text(base) || '', text(message) || '');
+    else if (mode === 'drop') result = await taskRepair.dropCommit(task, text(commit) || '', text(base) || 'master');
+    else if (mode === 'restore') result = await taskRepair.restoreBackup(task, text(backup) || '');
+    else if (mode === 'list') result = await taskRepair.listBackups(task);
+    else return res.status(400).json({ error: 'Run tb git repair --squash --base BASE -m "message", --drop COMMIT, --restore BACKUP, or --list.' });
+    res.json({ result });
+  } catch (e) { fail(res, e); }
+});
+app.post('/api/git/check', async (req, res) => {
+  const task = store.get(req.get('x-tb-actor') || '');
+  if (!task || task.role === 'controller') return res.status(403).json({ error: 'A Taskboard task must run tb git check on its own branch.' });
+  try { res.json({ result: await taskRepair.checkTask(task, typeof req.body.base === 'string' && req.body.base ? req.body.base : 'master') }); } catch (e) { fail(res, e); }
 });
 
 // ---------- other machines ----------

@@ -76,9 +76,17 @@ const HELP = `tb — Taskboard command line
   tb permit approve ID [--user-request "the user's chat message"]   controller only
   tb git merge-request               ask the user to merge your worktree branch into local master
   tb git commit "<message>"           commit changes in your own worktree
-  tb git rebase                       rebase your own branch onto local master
+  tb git rebase [BASE]                rebase your own branch onto local master, or onto a remote branch such as
+                                     origin/master or origin/prod (runs git fetch first)
   tb git rebase --continue            stage resolved conflicts and finish the approved merge
   tb git rebase --abort               stop a rebase in your own worktree
+  tb git repair --squash --base BASE -m "<message>"
+                                     make your branch one commit over BASE (master or a remote branch)
+  tb git repair --drop COMMIT [--base BASE]
+                                     remove one commit that only your branch holds
+  tb git repair --restore BACKUP | --list
+                                     undo a repair with the backup it printed, or list the backups
+  tb git check [--base BASE]          list the files your branch changes and warn about large or unsafe files
   tb git push-request --reason "text" [--branch BRANCH] [--remote REMOTE] [--then-release]
   tb git push-result ID [--wait]      read the push result
   tb inbox wait [--timeout seconds]  wait until a file arrives in your inbox (uses TASK_ID; default 3600 s);
@@ -320,8 +328,22 @@ switch (cmd) {
     if (rest[0] === 'merge-request') await call('POST', '/api/git/merge-request', {});
     else if (rest[0] === 'commit') console.log((await call('POST', '/api/git/commit', { message: rest.slice(1).join(' ') })).result);
     else if (rest[0] === 'rebase') {
-      if (rest.length > 2 || (rest[1] && !['--continue', '--abort'].includes(rest[1]))) { console.error('tb git rebase: run tb git rebase, tb git rebase --continue, or tb git rebase --abort.'); process.exit(1); }
-      console.log((await call('POST', '/api/git/rebase', { action: rest[1] === '--continue' ? 'continue' : rest[1] === '--abort' ? 'abort' : 'start' })).result);
+      if (rest.length > 2 || (rest[1]?.startsWith('-') && !['--continue', '--abort'].includes(rest[1]))) { console.error('tb git rebase: run tb git rebase [BASE], tb git rebase --continue, or tb git rebase --abort.'); process.exit(1); }
+      const action = rest[1] === '--continue' ? 'continue' : rest[1] === '--abort' ? 'abort' : 'start';
+      console.log((await call('POST', '/api/git/rebase', { action, ...(action === 'start' && rest[1] ? { base: rest[1] } : {}) })).result);
+    }
+    else if (rest[0] === 'repair') {
+      const base = flag('--base'); const message = flag('-m'); const commit = flag('--drop'); const backup = flag('--restore');
+      const squash = has('--squash'); const list = has('--list');
+      const modes = [squash, !!commit, !!backup, list].filter(Boolean).length;
+      if (modes !== 1 || args.length > 2) { console.error('tb git repair: run --squash --base BASE -m "message", --drop COMMIT [--base BASE], --restore BACKUP, or --list.'); process.exit(1); }
+      const mode = squash ? 'squash' : commit ? 'drop' : backup ? 'restore' : 'list';
+      console.log((await call('POST', '/api/git/repair', { mode, base, message, commit, backup })).result);
+    }
+    else if (rest[0] === 'check') {
+      const base = flag('--base');
+      if (args.length > 2) { console.error('tb git check: run tb git check [--base BASE].'); process.exit(1); }
+      console.log((await call('POST', '/api/git/check', { base })).result);
     }
     else if (rest[0] === 'push-request') {
       if (rest.some(x => /^(--force|--delete|--tags|--mirror|--all)(?:$|[=-])/.test(x))) { console.error('tb git push-request: force pushes, deletions, and tags are not allowed'); process.exit(1); }
@@ -337,7 +359,7 @@ switch (cmd) {
         if (result.state !== 'pending' || !wait) { console.log(JSON.stringify(result, null, 2)); break; }
         await new Promise(resolve => setTimeout(resolve, 2000));
       }
-    } else { console.error('Run tb git commit, tb git rebase, tb git merge-request, tb git push-request, or tb git push-result.'); process.exit(1); }
+    } else { console.error('Run tb git commit, tb git rebase, tb git repair, tb git check, tb git merge-request, tb git push-request, or tb git push-result.'); process.exit(1); }
     break;
   }
   case 'park': { const t = await task(rest[0]); await call('POST', `/api/tasks/${t.id}/status`, { status: 'parked' }); console.log(`#${t.num} set aside.`); break; }

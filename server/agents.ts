@@ -319,7 +319,7 @@ function claudeTaskSettings(t: Task): string {
     allow: ['$defaults', `Taskboard checks tb git commit and tb git rebase against this task's branch ${t.branch}. A merge into local master requires the Taskboard dashboard card. Other worktrees and branches are outside this task's scope.`],
   };
   const gitCli = join(TB_DIR, 'bin', 'tb');
-  settings.permissions.allow.push(`Bash(${gitCli} git commit:*)`, `Bash(${gitCli} git rebase)`, `Bash(${gitCli} git rebase --continue)`, `Bash(${gitCli} git rebase --abort)`, `Bash(${gitCli} git merge-request)`, `Bash(${gitCli} git push-request:*)`, `Bash(${gitCli} git push-result:*)`, `Bash(${gitCli} suggest:*)`, `Bash(${gitCli} permit request:*)`, `Bash(${gitCli} permit result:*)`);
+  settings.permissions.allow.push(`Bash(${gitCli} git commit:*)`, `Bash(${gitCli} git rebase)`, `Bash(${gitCli} git rebase --continue)`, `Bash(${gitCli} git rebase --abort)`, `Bash(${gitCli} git check:*)`, `Bash(${gitCli} git merge-request)`, `Bash(${gitCli} git push-request:*)`, `Bash(${gitCli} git push-result:*)`, `Bash(${gitCli} suggest:*)`, `Bash(${gitCli} permit request:*)`, `Bash(${gitCli} permit result:*)`);
   writeFileSync(file, JSON.stringify(settings, null, 2), { mode: 0o600 });
   return file;
 }
@@ -333,6 +333,17 @@ function codexOriginalNotify(t?: Task): string | undefined {
   const m = top.match(/^\s*notify\s*=\s*(\[.*\])\s*$/m);
   if (!m) return;
   try { return JSON.stringify(JSON.parse(m[1])); } catch { return; }
+}
+
+// On macOS, gh and the Git helper `gh auth git-credential` read the GitHub token from the login keychain. The keychain
+// tool writes a lock file in the user cache folder (getconf DARWIN_USER_CACHE_DIR). The Codex workspace-write sandbox
+// denies that write, and gh then reports "The token in default is invalid". This folder is writable for Codex commands.
+export function codexKeychainArgs(platform = process.platform): string[] {
+  if (platform !== 'darwin') return [];
+  try {
+    const dir = execFileSync('getconf', ['DARWIN_USER_CACHE_DIR'], { encoding: 'utf8' }).trim().replace(/\/+$/, '');
+    return dir.startsWith('/') ? ['-c', `sandbox_workspace_write.writable_roots=${JSON.stringify([dir])}`] : [];
+  } catch { return []; }
 }
 
 function baseEnv(t: Task): Record<string, string> {
@@ -436,7 +447,7 @@ function buildCommand(t: Task, prompt: string | null, resume: boolean, codexTrus
     return c;
   }
   const c = ['codex', ...codexFlags(), ...codexTrust];
-  c.push('-a', 'on-request', '-s', 'workspace-write', '--add-dir', VAULT, '-c', 'sandbox_workspace_write.network_access=true', '-c', `approvals_reviewer="${machine.get().permissions.autoReview ? 'auto_review' : 'user'}"`);
+  c.push('-a', 'on-request', '-s', 'workspace-write', '--add-dir', VAULT, '-c', 'sandbox_workspace_write.network_access=true', ...codexKeychainArgs(), '-c', `approvals_reviewer="${machine.get().permissions.autoReview ? 'auto_review' : 'user'}"`);
   if (t.model) c.push('-m', t.model);
   // Codex has no flag that appends to its system prompt. developer_instructions is a config value, so it is written as a
   // TOML string (a JSON string is also a valid TOML basic string). The controller reads AGENTS.md in its folder instead.

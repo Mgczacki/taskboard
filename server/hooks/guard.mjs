@@ -28,7 +28,7 @@ const parts = cmd.split(/;|&&|\|\||\||\n/);
 const reasons = [];
 for (const p of parts) {
   if (process.env.TASK_ID && process.env.TASK_ID !== 'controller' && /^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:\S*\/)?git\s+(?:(?:-C|--git-dir|--work-tree)\s+\S+\s+)*(?:add|commit|rebase|merge|reset|checkout|switch|push|pull|cherry-pick|revert|worktree|update-ref|stash|branch|tag)\b/.test(p))
-    reasons.push('run `tb git commit`, `tb git rebase`, or `tb git merge-request` for Git writes in a Taskboard task');
+    reasons.push('run `tb git commit`, `tb git rebase`, `tb git repair`, or `tb git merge-request` for Git writes in a Taskboard task');
   if (/\b(pkill|killall)\b/.test(p) && /server\/index|taskboard|\btsx\b|\bnode\b|\bnpx\b/i.test(p))
     reasons.push('pkill/killall by name can match the real Taskboard server, not only a test server');
   if (serverPid && /\bkill\b/.test(p) && new RegExp(`(^|[^0-9])${serverPid}([^0-9]|$)`).test(p))
