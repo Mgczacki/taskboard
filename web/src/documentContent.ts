@@ -1,4 +1,6 @@
 import { openDocumentLink, type DocumentLink } from './documentLinks';
+import { markdownCommand } from './bangCommand';
+import { beginHold } from './holdRun';
 
 type Link =
   | { kind: 'document'; document: DocumentLink }
@@ -60,5 +62,46 @@ export function decorateDocument(root: HTMLElement, source: string): () => void 
     } else showError(root, link.error);
   };
   root.addEventListener('click', click, true);
-  return () => root.removeEventListener('click', click, true);
+  const stopHold = holdToRun(root, source);
+  return () => { root.removeEventListener('click', click, true); stopHold(); };
+}
+
+// Hold to run (bangCommand.ts): a "! <command>" in a task's inbox or outbox document goes to that task's prompt.
+function holdToRun(root: HTMLElement, source: string): () => void {
+  const taskId = /\/tasks\/([^/]+)\/(?:inbox|outbox)\//.exec(source)?.[1];
+  if (!taskId) return () => {};
+  const hint = 'Hold the mouse button for 3 seconds to type this command into the task prompt and run it';
+  for (const code of root.querySelectorAll<HTMLElement>('code')) if (code.textContent?.trimStart().startsWith('!') || /(?:^|\n)\s*!/.test(code.textContent || '')) code.title = hint;
+  const down = (event: MouseEvent) => {
+    if (event.button !== 0 || modifier(event) || event.altKey || event.shiftKey) return;
+    const hit = textAt(event.clientX, event.clientY);
+    if (!hit || !root.contains(hit.node) || hit.node.parentElement?.closest('a')) return;
+    const code = hit.node.parentElement?.closest('code');
+    const inline = !!code && !code.closest('pre');
+    const block = code || hit.node.parentElement?.closest('p, li, td, th');
+    if (!block || !root.contains(block)) return;
+    // the offset of the pointer in the whole text of the block
+    let offset = 0;
+    const walk = document.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+    for (let n = walk.nextNode(); n && n !== hit.node; n = walk.nextNode()) offset += n.textContent?.length || 0;
+    const command = markdownCommand(block.textContent || '', offset + hit.offset, inline);
+    if (command) beginHold(event, taskId, command);
+  };
+  root.addEventListener('mousedown', down);
+  return () => root.removeEventListener('mousedown', down);
+}
+// The text node and character under the point, only when the point is on that character (not in the space beside it).
+function textAt(x: number, y: number): { node: Text; offset: number } | null {
+  const doc = document as Document & { caretPositionFromPoint?: (x: number, y: number) => { offsetNode: Node; offset: number } | null };
+  const at = doc.caretPositionFromPoint ? doc.caretPositionFromPoint(x, y) : (() => { const r = document.caretRangeFromPoint?.(x, y); return r ? { offsetNode: r.startContainer, offset: r.startOffset } : null; })();
+  if (!at || at.offsetNode.nodeType !== Node.TEXT_NODE) return null;
+  const node = at.offsetNode as Text;
+  // the caret is between two characters: find the one whose box holds the point
+  for (const offset of [at.offset, at.offset - 1]) {
+    if (offset < 0 || offset >= node.length) continue;
+    const range = document.createRange();
+    range.setStart(node, offset); range.setEnd(node, offset + 1);
+    for (const box of range.getClientRects()) if (x >= box.left && x <= box.right && y >= box.top && y <= box.bottom) return { node, offset };
+  }
+  return null;
 }
