@@ -5,7 +5,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { TB_DIR } from './config.ts';
 
-export interface Machine { id: string; name: string; url: string; token: string }
+export interface Machine { id: string; name: string; url: string; token: string; identity?: string }
 export interface MachineState { online: boolean; latency?: number; lastSeen?: string; error?: string; tasks: any[]; groups: any[] }
 
 const FILE = join(TB_DIR, 'machines.json');
@@ -21,18 +21,24 @@ export const get = (id: string) => machines.find(m => m.id === id);
 export const stateOf = (id: string) => state.get(id);
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 24) || 'machine';
 
-export function add(name: string, url: string, token: string): Machine {
+export function add(name: string, url: string, token: string, identity?: string): Machine {
   let id = slug(name), n = 2; while (machines.some(m => m.id === id)) id = `${slug(name)}-${n++}`;
-  const m: Machine = { id, name, url: url.replace(/\/+$/, ''), token: token.trim() };
+  const m: Machine = { id, name, url: url.replace(/\/+$/, ''), token: token.trim(), identity };
   machines.push(m); save(); poll(m); return m;
+}
+export function rememberIdentity(id: string, identity: string) {
+  const m = get(id);
+  if (!m) throw new Error('Unknown machine.');
+  if (m.identity && m.identity !== identity) throw new Error('The target machine identity changed.');
+  if (!m.identity) { m.identity = identity; save(); }
 }
 export function remove(id: string) { machines = machines.filter(m => m.id !== id); state.delete(id); save(); }
 
 // "studio~fix-login-12" → { machine, id }
 export function split(fullId: string) { const i = fullId.indexOf(SEP); return i > 0 ? { machine: fullId.slice(0, i), id: fullId.slice(i + 1) } : null; }
 
-export async function call(m: Machine, method: string, path: string, body?: unknown) {
-  const r = await fetch(m.url + path, { method, headers: { 'content-type': 'application/json', 'x-taskboard-token': m.token }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(8000) });
+export async function call(m: Machine, method: string, path: string, body?: unknown, headers: Record<string, string> = {}, timeoutMs = 8000) {
+  const r = await fetch(m.url + path, { method, headers: { 'content-type': 'application/json', 'x-taskboard-token': m.token, ...headers }, body: body === undefined ? undefined : JSON.stringify(body), signal: AbortSignal.timeout(timeoutMs) });
   const text = await r.text(); let data: any; try { data = JSON.parse(text); } catch { data = text; }
   return { status: r.status, data, type: r.headers.get('content-type') || 'application/json' };
 }
@@ -54,7 +60,7 @@ async function poll(m: Machine) {
     if (prev?.online !== false) listeners.forEach(f => f([], m.id));
   }
 }
-setInterval(() => machines.forEach(m => poll(m)), 2000);
+setInterval(() => machines.forEach(m => poll(m)), 2000).unref();
 machines.forEach(m => poll(m));
 
 export const remoteTasks = () => machines.flatMap(m => state.get(m.id)?.tasks || []);

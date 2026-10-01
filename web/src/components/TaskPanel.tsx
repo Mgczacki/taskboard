@@ -1,7 +1,7 @@
 // The task panel: status, goal/now/waiting, actions, and tabs for the live terminal and the log.
 import { useEffect, useState } from 'react';
 import type { Group, Task } from '../api';
-import { AGENT_NAME, STATUS_LABEL, api, fmtWait, shortPath } from '../api';
+import { AGENT_NAME, STATUS_LABEL, api, fmtWait, linkedTaskId, shortPath } from '../api';
 import { AgentChip, ByController, Dot, MachineChip, ThreeLines, WhereChip } from './ui';
 import { Terminal } from './Terminal';
 import { DocsTab } from './Docs';
@@ -11,13 +11,14 @@ import { formatTokens } from '../formatTokens';
 import type { DocumentLink } from '../documentLinks';
 import { planUngroup } from '../groupMove';
 import { runGroupChange, type Toast } from '../groupActions';
+import { TransferPanel } from './TransferPanel';
 
 // The drawer's width, set by dragging its left edge and kept across reloads. null means the default width.
 const WIDTH_KEY = 'tb-drawer-width', MIN_W = 420, EDGE = 120;
 const maxW = () => Math.max(MIN_W, innerWidth - EDGE);
 const savedWidth = () => { try { const w = Number(localStorage.getItem(WIDTH_KEY)); return w > 0 ? w : null; } catch { return null; } };
 
-export function TaskPanel({ t, tasks, groups, onClose, onCanvas, initialTab, documentLink, toast }: { t: Task; tasks: Task[]; groups: Group[]; onClose: () => void; onCanvas: (id: string) => void; initialTab?: 'terminal' | 'log' | 'docs'; documentLink?: DocumentLink | null; toast: Toast }) {
+export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, initialTab, documentLink, toast }: { t: Task; tasks: Task[]; groups: Group[]; onClose: () => void; onCanvas: (id: string) => void; onOpenTask: (id: string) => void; initialTab?: 'terminal' | 'log' | 'docs'; documentLink?: DocumentLink | null; toast: Toast }) {
   const [tab, setTab] = useState<'terminal' | 'log' | 'docs'>(initialTab || 'terminal');
   const [log, setLog] = useState('');
   const [err, setErr] = useState('');
@@ -28,6 +29,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, initialTab, doc
   const [moveOpen, setMoveOpen] = useState(false);
   const [targetAccount, setTargetAccount] = useState('');
   const [moving, setMoving] = useState(false);
+  const [transferOpen, setTransferOpen] = useState(false);
   useEffect(() => {
     const load = () => loadAccounts().then(setAccts).catch(() => {});
     load(); const timer = setInterval(load, 15000);
@@ -49,7 +51,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, initialTab, doc
   useEffect(() => { api.since(t.id).then(s => { setSince(s); api.seen(t.id).catch(() => {}); }).catch(() => api.seen(t.id).catch(() => {})); }, [t.id]);
   useEffect(() => { if (tab === 'log') api.log(t.id).then(setLog).catch(() => setLog('')); }, [tab, t.id, t.updated]);
   // opening a suspended task resumes it
-  useEffect(() => { if (t.status === 'suspended') api.resume(t.id).catch(e => setErr(String(e.message || e))); }, [t.id]);
+  useEffect(() => { if (t.status === 'suspended' && !t.transfer) api.resume(t.id).catch(e => setErr(String(e.message || e))); }, [t.id]);
 
   const act = (p: Promise<unknown>) => p.catch(e => setErr(String(e.message || e)));
   const [confirmRm, setConfirmRm] = useState(false);
@@ -130,6 +132,8 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, initialTab, doc
           {t.openElsewhere && <span>Move the session here from its other terminal first.</span>}
           <button className="btn ghost" disabled={moving} onClick={() => setMoveOpen(false)}>Cancel</button>
         </div>}
+        {transferOpen && t.role !== 'controller' && <TransferPanel task={t} close={() => setTransferOpen(false)} openTarget={onOpenTask} />}
+        {t.transfer && <div className="banner">{t.transfer.direction === 'source' ? 'This task moved to another machine.' : 'This task came from another machine.'} {t.transfer.state === 'started' && <button className="btn" onClick={() => act(linkedTaskId(t.transfer!.peerIdentity, t.transfer!.task).then(id => id ? onOpenTask(id) : toast('The linked machine is not paired with this dashboard.')))}>Open linked task</button>}{t.transfer.direction === 'source' && t.transfer.state !== 'started' && <><span>Check the target before either task resumes.</span><button className="btn" onClick={() => act(api.transferRecover(t.id, 'status').then(r => toast(`Target transfer: ${r.state}.`)))}>Check target</button><button className="btn" onClick={() => act(api.transferRecover(t.id, 'retry-target').then(r => toast(`Target transfer: ${r.state}.`)))}>Retry target</button><button className="btn" onClick={() => act(api.transferRecover(t.id, 'resume-source').then(() => api.resume(t.id)))}>Resume source</button></>}</div>}
         {dropMsg && <div className="banner">{dropMsg} <button className="btn ghost" onClick={() => setDropMsg('')}>OK</button></div>}
         {err && <div className="banner stopped">{err}{err.startsWith('Still open') && <button className="btn" onClick={() => { setErr(''); act(api.resume(t.id, true)); }} title="Only if you are sure the other terminal is not using this conversation">Resume here anyway</button>}<button className="btn ghost" onClick={() => setErr('')}>Dismiss</button></div>}
         {t.imported && t.status === 'suspended' && !err && <div className="banner">Imported: {t.imported}.</div>}
@@ -157,10 +161,11 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, initialTab, doc
         </div>}
         <div className="dr-actions">
           {t.role !== 'controller' && <button className="btn" disabled={moving} onClick={() => setMoveOpen(o => !o)}>Move account…</button>}
+          {t.role !== 'controller' && !t.transfer && <button className="btn" onClick={() => setTransferOpen(o => !o)}>Move to machine…</button>}
           <button className="btn" onClick={() => { navigator.clipboard.writeText(t.attach); setCopied(true); setTimeout(() => setCopied(false), 1500); }} title="Open this agent in iTerm or Terminal">⧉ {copied ? 'Copied' : <>Copy <code>{t.attach}</code></>}</button>
           {t.role === 'controller' && !t.newSessionWhenDone && <button className="btn" onClick={() => setConfirmNew(o => !o)} title="End this conversation and start the controller in a new one, with the current instructions and tools">New session…</button>}
           <button className="btn" onClick={() => onCanvas(t.id)} title="Open this agent's live terminal as a window on the canvas">⊞ Show on canvas</button>
-          {t.status === 'suspended' && <button className="btn primary" onClick={() => act(api.resume(t.id))} title="Start the agent again in tmux and continue its saved conversation">Resume</button>}
+          {t.status === 'suspended' && !t.transfer && <button className="btn primary" onClick={() => act(api.resume(t.id))} title="Start the agent again in tmux and continue its saved conversation">Resume</button>}
           {t.status === 'parked' ? <button className="btn" onClick={() => act(api.setStatus(t.id, 'idle'))} title="Put it back on your lists as Idle">Bring back</button> : <button className="btn" onClick={() => act(api.setStatus(t.id, 'parked'))} title="Take it off Needs you, Unread and triage. The agent is not stopped; the task comes back by itself the next time the agent works or finishes a turn.">Set aside</button>}
           {t.status === 'archived' ? <button className="btn" onClick={() => act(api.setStatus(t.id, 'idle'))} title="Take it out of the archive; open it to resume the conversation">Restore</button> : <button className="btn" onClick={() => act(api.kill(t.id).then(onClose))} title={t.openElsewhere ? 'Archives the task; the session in the other terminal keeps running' : 'Ends the tmux session and archives the task'}>End & archive</button>}
           {t.role !== 'controller' && (!confirmRm ? <button className="btn ghost danger" onClick={() => setConfirmRm(true)} title="Delete the task from Taskboard (asks first). Its note goes to ~/.taskboard/trash; the conversation stays in the agent's own history">Remove…</button>

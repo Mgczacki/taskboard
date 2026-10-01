@@ -11,7 +11,7 @@ import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { WebSocketServer } from 'ws';
 import * as agents from './agents.ts';
-import { HOME, HOST, PORT, ROOT, TB_DIR, TOKEN, URL_BASE } from './config.ts';
+import { HOME, HOST, machineId, PORT, ROOT, TB_DIR, TOKEN, URL_BASE } from './config.ts';
 import * as docs from './docs.ts';
 import * as events from './events.ts';
 import * as groups from './groups.ts';
@@ -42,6 +42,8 @@ import * as push from './push.ts';
 import * as permits from './permits.ts';
 import { controllerMailToken } from './a2anotes/auth.ts';
 import * as tmux from './tmux.ts';
+import * as transfer from './transfer.ts';
+const MACHINE_ID = machineId();
 import { sampleResources } from './resource-log.ts';
 import { stopTaskSandboxes } from './sandbox-cleanup.ts';
 import { trimTerminalLog } from './terminal-log.ts';
@@ -111,6 +113,7 @@ await agents.configureIfRunning();
 
 // A new task can carry pasted images (agents.MAX_IMAGES of at most agents.MAX_IMAGE_BYTES each, as base64).
 app.use('/api/tasks', express.json({ limit: '150mb' }));
+app.use('/api/transfer/stage', express.json({ limit: '40mb' }));
 app.use(express.json({ limit: '2mb' }));
 
 const ALLOWED_ORIGINS = new Set([URL_BASE, `http://localhost:${PORT}`, 'http://localhost:5173', 'http://127.0.0.1:5173']);
@@ -476,11 +479,15 @@ app.use('/api', async (req, res, next) => {
   if (!target && req.path === '/tasks' && req.method === 'POST' && req.body?.machine && req.body.machine !== 'local') target = { machine: req.body.machine, path: '/api/tasks' };
   if (!target && req.query.machine && req.query.machine !== 'local' && ['/folders', '/file', '/browse'].includes(req.path)) target = { machine: String(req.query.machine), path: '/api' + req.path };
   if (!target) return next();
+  if (/\/transfer\/(move|recover)$/.test(target.path) && (!req.get('origin') || req.get('x-tb-actor') || req.get('x-taskboard-token')))
+    return res.status(403).json({ error: 'Only the dashboard can approve or recover a transfer.' });
   const mc = machines.get(target.machine); if (!mc) return res.status(404).json({ error: `Unknown machine ${target.machine}` });
   const qs = new URLSearchParams(req.query as Record<string, string>); qs.delete('machine');
   const path = target.path + (qs.toString() ? '?' + qs : '');
-  const body = req.method === 'GET' ? undefined : { ...req.body, machine: undefined };
-  const forward = async () => { const r = await machines.call(mc, req.method, path, body); if (r.status >= 400) throw new Error(typeof r.data === 'object' ? r.data.error : String(r.data)); return r; };
+  const body = req.method === 'GET' ? undefined : { ...req.body, ...(target.path === '/api/tasks' ? { machine: undefined } : {}) };
+  const transferAction = /\/transfer\/(move|recover)$/.test(target.path);
+  const relay = transferAction && body ? transfer.signedRequest(path, body) : null;
+  const forward = async () => { const r = await machines.call(mc, req.method, path, relay?.payload || body, relay?.headers); if (r.status >= 400) throw new Error(typeof r.data === 'object' ? r.data.error : String(r.data)); return r; };
   try {
     if (req.method !== 'GET' && req.get('x-tb-actor') === 'controller' && GUARDED.test(target.path.replace(/\/api\/tasks\/[^/]+/, '/api/tasks/x'))) {
       const summary = `${target.path.endsWith('/send') ? 'type into' : target.path === '/api/tasks' ? `start “${req.body.title}” on` : 'change a task on'} ${mc.name}`;
@@ -488,7 +495,7 @@ app.use('/api', async (req, res, next) => {
       store.update('controller', { status: 'needs-you', ask: `Approve: ${summary}`, statusSource: 'Waiting for your approval on the dashboard.' });
       return res.status(202).json({ approval: a });
     }
-    const r = await machines.call(mc, req.method, path, body);
+    const r = await machines.call(mc, req.method, path, relay?.payload || body, relay?.headers);
     if (r.type.includes('json')) {
       const tagIds = (x: any) => x && typeof x === 'object' && typeof x.id === 'string' && x.session ? { ...x, id: mc.id + machines.SEP + x.id, machine: { id: mc.id, name: mc.name } } : x;
       res.status(r.status).json(tagIds(r.data));
@@ -498,7 +505,7 @@ app.use('/api', async (req, res, next) => {
 // This machine: its name, the server, and the controller (tb info, the dashboard, other machines).
 const info = () => {
   const c = store.get('controller');
-  return { role: ROLE, root: ROOT, machine: machine.get().name, host: hostname(), url: URL_BASE, pid: process.pid, settings: machine.get(),
+  return { role: ROLE, root: ROOT, machine: machine.get().name, machineId: MACHINE_ID, host: hostname(), url: URL_BASE, pid: process.pid, settings: machine.get(),
     controller: c ? { agent: c.agent, account: c.account, status: c.status, remoteUrl: c.agent === 'claude' && machine.get().controller.remoteControl ? c.remoteUrl : undefined, label: machine.controllerLabel() } : null,
     tasks: store.all().filter(t => t.role !== 'controller' && t.status !== 'archived').length };
 };
@@ -533,12 +540,18 @@ app.put('/api/rules/:kind', (req, res) => {
   if (!rules.isKind(req.params.kind)) return res.status(404).json({ error: 'There is no such rules file.' });
   try { res.json(rules.write(req.params.kind, req.body?.text)); } catch (e) { fail(res, e); }
 });
-app.get('/api/machines', (_req, res) => res.json([{ id: 'local', name: machine.get().name, url: URL_BASE, local: true, online: true }, ...machines.all().map(m => ({ id: m.id, name: m.name, url: m.url, online: !!machines.stateOf(m.id)?.online, latency: machines.stateOf(m.id)?.latency, lastSeen: machines.stateOf(m.id)?.lastSeen, error: machines.stateOf(m.id)?.error, tasks: machines.stateOf(m.id)?.tasks.length || 0 }))]));
+app.get('/api/machines', (_req, res) => res.json([{ id: 'local', name: machine.get().name, url: URL_BASE, identity: MACHINE_ID, local: true, online: true }, ...machines.all().map(m => ({ id: m.id, name: m.name, url: m.url, identity: m.identity, online: !!machines.stateOf(m.id)?.online, latency: machines.stateOf(m.id)?.latency, lastSeen: machines.stateOf(m.id)?.lastSeen, error: machines.stateOf(m.id)?.error, tasks: machines.stateOf(m.id)?.tasks.length || 0 }))]));
 app.post('/api/machines', async (req, res) => {
   const { name, url, token } = req.body; if (!name || !url || !token) return fail(res, 'name, url and token are required');
-  try { const r = await machines.call({ id: 'x', name, url: String(url).replace(/\/+$/, ''), token }, 'GET', '/api/machines'); if (r.status !== 200) throw new Error(`the server answered ${r.status}`); }
+  let identity: string | undefined;
+  try {
+    const candidate = { id: 'x', name, url: String(url).replace(/\/+$/, ''), token };
+    const r = await machines.call(candidate, 'POST', '/api/transfer/identity', {});
+    if (r.status === 200) identity = r.data.machineId;
+    else if (r.status !== 404 || (await machines.call(candidate, 'GET', '/api/machines')).status !== 200) throw new Error(`the server answered ${r.status}`);
+  }
   catch (e) { return fail(res, `Could not reach ${url}: ${e instanceof Error ? e.message : e}`); }
-  const m = machines.add(name, url, token); res.json({ id: m.id, name: m.name, url: m.url });
+  const m = machines.add(name, url, token, identity); res.json({ id: m.id, name: m.name, url: m.url });
 });
 app.delete('/api/machines/:id', (req, res) => { machines.remove(req.params.id); res.json({}); });
 
@@ -667,6 +680,48 @@ app.post('/api/tasks/:id/move-account', async (req, res) => {
   const instruction = req.body.instruction || '';
   await guarded(req, res, `move #${t.num} to ${account.name}`, `Continue with ${agents.agentName(account.agent)} in ${t.cwd}.\n${instruction}`, 'move',
     async () => view(await agents.moveAccount(t, account.id, instruction)), r => `Moved #${r.num} to ${account.name} (${r.agent}).`);
+});
+
+// The dashboard approves a checked transfer. Peer routes also require a signature from a paired server.
+app.post('/api/tasks/:id/transfer/check', async (req, res) => {
+  const t = store.get(req.params.id); if (!t) return res.status(404).end();
+  try { res.json(await transfer.check(t, String(req.body.machine || ''), String(req.body.folder || ''))); } catch (e) { fail(res, e); }
+});
+app.get('/api/tasks/:id/transfer/machines', (req, res) => {
+  if (!store.get(req.params.id)) return res.status(404).end();
+  res.json(machines.all().map(m => ({ id: m.id, name: m.name, online: !!machines.stateOf(m.id)?.online })));
+});
+app.post('/api/tasks/:id/transfer/move', async (req, res) => {
+  try { if (!req.get('origin')) transfer.peer(req); else if (req.get('x-tb-actor') || req.get('x-taskboard-token')) throw new Error('Only the dashboard can approve a transfer.'); }
+  catch (e) { return fail(res, e); }
+  const t = store.get(req.params.id); if (!t) return res.status(404).end();
+  try { res.json(await transfer.move(t, req.body)); } catch (e) { fail(res, e); }
+});
+app.post('/api/tasks/:id/transfer/recover', async (req, res) => {
+  try { if (!req.get('origin')) transfer.peer(req); else if (req.get('x-tb-actor') || req.get('x-taskboard-token')) throw new Error('Only the dashboard can recover a transfer.'); }
+  catch (e) { return fail(res, e); }
+  const t = store.get(req.params.id); if (!t) return res.status(404).end();
+  if (!['status', 'retry-target', 'resume-source'].includes(req.body.action)) return fail(res, 'Choose a transfer recovery action.');
+  try { res.json(await transfer.recover(t, req.body.action)); } catch (e) { fail(res, e); }
+});
+app.post('/api/transfer/check', async (req, res) => {
+  try { transfer.peer(req); res.json({ ...await transfer.targetCheck(req.body.folder), machineId: MACHINE_ID }); } catch (e) { fail(res, e); }
+});
+app.post('/api/transfer/identity', (req, res) => {
+  if (req.get('origin') || req.get('x-taskboard-token') !== TOKEN) return res.status(403).json({ error: 'Server token required.' });
+  res.json({ machineId: MACHINE_ID });
+});
+app.post('/api/transfer/stage', async (req, res) => {
+  try { const source = transfer.peer(req); res.json({ ...await transfer.stage(req.body, source), machineId: MACHINE_ID }); } catch (e) { fail(res, e); }
+});
+app.post('/api/transfer/start', async (req, res) => {
+  try { transfer.peer(req); res.json({ ...await transfer.start(String(req.body.transferId || '')), machineId: MACHINE_ID }); } catch (e) { fail(res, e); }
+});
+app.post('/api/transfer/state', async (req, res) => {
+  try { transfer.peer(req); res.json({ ...await transfer.state(String(req.body.transferId || '')), machineId: MACHINE_ID }); } catch (e) { fail(res, e); }
+});
+app.post('/api/transfer/cancel', async (req, res) => {
+  try { const source = transfer.peer(req); res.json({ ...await transfer.cancel(String(req.body.transferId || ''), source), machineId: MACHINE_ID }); } catch (e) { fail(res, e); }
 });
 
 // ---------- groups ----------

@@ -524,6 +524,8 @@ export async function startTask(n: NewTask): Promise<Task> {
 }
 
 export async function resumeTask(t: Task, force = false): Promise<Task> {
+  if (t.transfer?.direction === 'source') throw new Error('Check the target transfer before resuming the source task.');
+  if (t.transfer?.direction === 'target' && t.transfer.state !== 'starting' && t.transfer.state !== 'started') throw new Error('The transferred task has not been started by its source machine.');
   if (launching.has(t.id)) throw new Error('This task is already starting or moving.');
   // An imported session that is still open in another terminal must be exited there first,
   // otherwise two processes would write to the same conversation.
