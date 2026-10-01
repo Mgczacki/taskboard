@@ -246,3 +246,15 @@ test('after a repair a push needs a force push card that replaces only the old h
   assert.equal(push.isProtectedBranch('task/example', 'master', ['task/example']), true);
   assert.equal(readFileSync(join(main, '.git', 'HEAD'), 'utf8').trim(), 'ref: refs/heads/master');
 });
+
+test('a task branch that equals master after its merge can push master only when the request names master', async () => {
+  const { main, work, task, commit } = setup();
+  commit({ 'a.txt': 'a\n' }, 'A');
+  git(main, 'merge', '--ff-only', 'task/example');
+  assert.equal(git(work, 'rev-parse', 'HEAD'), git(main, 'rev-parse', 'master'));
+  const named = await push.inspectPush(task, 'Push merged master', { branch: 'master' });
+  assert.equal(named.branch, 'master');
+  assert.equal(named.newHead, git(main, 'rev-parse', 'master'));
+  assert.equal((await push.inspectPush(task, 'Push the task branch')).branch, 'task/example');
+  await assert.rejects(push.inspectPush(task, 'Push prod', { branch: 'prod' }), /only this task branch or merged local master/);
+});
