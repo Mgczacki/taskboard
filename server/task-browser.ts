@@ -7,9 +7,12 @@
 // connection to the browser and starts the browser first when it is not running. The key is derived from the
 // Taskboard token, so another local user cannot guess it. The dashboard shows the browser with a screencast
 // (Page.startScreencast) over /ws/browser and sends mouse and key input back with Input.dispatch*Event.
+// Nothing starts a browser when a task starts. chrome-devtools-mcp opens its DevTools connection at the agent's first
+// tool call, so the browser starts then (or when the user starts it on the dashboard). stopIdle() stops a task browser
+// that had no agent connection, no dashboard viewer and no screencast for the time set on the Settings page.
 import { execFileSync, spawn } from 'node:child_process';
 import { createHmac } from 'node:crypto';
-import { cpSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import WebSocket from 'ws';
 import { PORT, ROOT, TB_DIR, TOKEN } from './config.ts';
@@ -19,7 +22,7 @@ export const DIR = join(TB_DIR, 'browsers');
 export const TEMPLATE = 'template';
 const ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,120}$/;
 
-export interface Meta { pid?: number; port?: number; started?: string; tabs?: string[]; suspended?: boolean; stoppedAt?: string; error?: string; copiedFromTemplate?: string; sound?: boolean; muted?: boolean }
+export interface Meta { pid?: number; port?: number; started?: string; startMs?: number; tabs?: string[]; suspended?: boolean; idleStopped?: boolean; stoppedAt?: string; error?: string; copiedFromTemplate?: string; sound?: boolean; muted?: boolean }
 export interface Tab { id: string; title: string; url: string }
 
 const folder = (id: string) => { if (!ID.test(id)) throw new Error('Invalid browser id.'); return join(DIR, id); };
@@ -82,8 +85,10 @@ export function ensure(id: string): Promise<Meta & { ws: string }> {
   const pending = starting.get(id);
   if (pending) return pending;
   const p = (async () => {
+    await stopping.get(id)?.catch(() => {}); // an idle stop that is running ends first, then the browser starts again
     const running = await live(id);
     if (running) return running;
+    const t0 = Date.now();
     const bin = chromePath();
     if (!bin) throw new Error('No Chrome found. Install Google Chrome, or set the Chrome path on the Settings page.');
     const meta = readMeta(id);
@@ -115,13 +120,25 @@ export function ensure(id: string): Promise<Meta & { ws: string }> {
       writeMeta(id, { ...meta, pid: undefined, port: undefined, error: 'Chrome did not start. See chrome.log in the browser folder.' });
       throw new Error(`Chrome did not start for ${id}. See ${join(folder(id), 'chrome.log')}.`);
     }
-    const next = { ...meta, pid: child.pid, port, started: new Date().toISOString(), muted: !meta.sound, suspended: undefined, error: undefined, stoppedAt: undefined };
-    writeMeta(id, next);
+    const next: Meta = { ...meta, pid: child.pid, port, started: new Date().toISOString(), muted: !meta.sound, suspended: undefined, idleStopped: undefined, error: undefined, stoppedAt: undefined };
     if (urls.length) {
-      const blank = (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json() as { id: string; type: string }[]).filter(t => t.type === 'page');
+      // The saved pages open with /json/new. A page that Chrome opens from its command line has an empty address in
+      // puppeteer, and chrome-devtools-mcp then does not list it. So the start page is blank, and it is closed.
+      const list = () => fetch(`http://127.0.0.1:${port}/json/list`).then(r => r.json() as Promise<{ id: string; type: string; url: string }[]>).catch(() => []);
+      const blank = (await list()).filter(t => t.type === 'page').map(t => t.id);
       for (const url of urls) await fetch(`http://127.0.0.1:${port}/json/new?${encodeURIComponent(url)}`, { method: 'PUT' }).catch(() => {});
-      for (const t of blank) await fetch(`http://127.0.0.1:${port}/json/close/${t.id}`).catch(() => {});
+      for (const t of blank) await fetch(`http://127.0.0.1:${port}/json/close/${t}`).catch(() => {});
+      // Chrome closes a page after /json/close returns, and /json/new returns before the page has its address. Wait up
+      // to 5 s for both: an agent that connects while the blank page is still open selects it, loses it and lists none.
+      for (let i = 0; i < 50; i++) {
+        const open = (await list()).filter(t => t.type === 'page');
+        if (!open.some(t => blank.includes(t.id)) && open.filter(t => /^(https?|file):/.test(t.url)).length >= urls.length) break;
+        await new Promise(r => setTimeout(r, 100));
+      }
     }
+    next.startMs = Date.now() - t0;
+    writeMeta(id, next);
+    lastUse.set(id, Date.now());
     changed(id);
     return { ...next, ws: v.webSocketDebuggerUrl };
   })();
@@ -142,8 +159,18 @@ function once(wsUrl: string, method: string, params: object = {}, timeout = 5000
 }
 
 // Stop the browser. The tab addresses are kept, so the next start opens them again. suspended marks a stop by the
-// idle suspend: resume starts the browser again.
-export async function stop(id: string, opts: { suspended?: boolean } = {}): Promise<boolean> {
+// idle suspend of the task: resume starts the browser again. idle marks a stop by stopIdle(): the next use starts it.
+// A start that comes while a stop runs waits for the stop (ensure() reads this map).
+const stopping = new Map<string, Promise<boolean>>();
+export function stop(id: string, opts: { suspended?: boolean; idle?: boolean } = {}): Promise<boolean> {
+  const pending = stopping.get(id);
+  if (pending) return pending;
+  const p = stopNow(id, opts);
+  stopping.set(id, p);
+  p.finally(() => { if (stopping.get(id) === p) stopping.delete(id); }).catch(() => {});
+  return p;
+}
+async function stopNow(id: string, opts: { suspended?: boolean; idle?: boolean }): Promise<boolean> {
   const m = readMeta(id);
   if (!m.pid && !m.port) return false;
   const running = await live(id);
@@ -151,7 +178,7 @@ export async function stop(id: string, opts: { suspended?: boolean } = {}): Prom
   if (running) await once(running.ws, 'Browser.close').catch(() => {});
   for (let i = 0; i < 30 && pidAlive(m.pid); i++) await new Promise(r => setTimeout(r, 100));
   if (m.pid && pidAlive(m.pid)) { try { process.kill(-m.pid, 'SIGKILL'); } catch { try { process.kill(m.pid, 'SIGKILL'); } catch { /* ended */ } } }
-  writeMeta(id, { ...readMeta(id), pid: undefined, port: undefined, tabs: open, stoppedAt: new Date().toISOString(), suspended: opts.suspended || undefined });
+  writeMeta(id, { ...readMeta(id), pid: undefined, port: undefined, tabs: open, stoppedAt: new Date().toISOString(), suspended: opts.suspended || undefined, idleStopped: opts.idle || undefined });
   changed(id);
   return !!running;
 }
@@ -193,15 +220,16 @@ function rssMb(pid?: number): number | null {
   } catch { return null; }
 }
 
-export interface Status { id: string; running: boolean; port?: number; tabs: Tab[]; profile: boolean; copiedFromTemplate?: string; suspended?: boolean; stoppedAt?: string; error?: string; rssMb?: number | null; agents: number; chrome: string | null; sound: boolean; muted: boolean }
+export interface Status { id: string; running: boolean; port?: number; tabs: Tab[]; profile: boolean; copiedFromTemplate?: string; suspended?: boolean; idleStopped?: boolean; idleStopMinutes: number; startMs?: number; started?: string; stoppedAt?: string; error?: string; rssMb?: number | null; agents: number; viewers: number; chrome: string | null; sound: boolean; muted: boolean }
 // a running browser has the mute flag it started with (none for a browser started before this setting existed); a
 // stopped browser gets the saved choice at its next start
 const mutedNow = (m: Meta, running: boolean) => running ? !!m.muted : !m.sound;
 export async function status(id: string): Promise<Status> {
   const m = readMeta(id), running = await live(id);
   return { id, running: !!running, port: running?.port, tabs: running ? await tabs(id) : (m.tabs || []).map((url, i) => ({ id: `saved-${i}`, title: url, url })),
-    profile: existsSync(profileDir(id)), copiedFromTemplate: m.copiedFromTemplate, suspended: m.suspended, stoppedAt: m.stoppedAt, error: m.error,
-    rssMb: running ? rssMb(m.pid) : null, agents: agentConnections.get(id) || 0, chrome: chromePath(), sound: !!m.sound, muted: mutedNow(m, !!running) };
+    profile: existsSync(profileDir(id)), copiedFromTemplate: m.copiedFromTemplate, suspended: m.suspended, idleStopped: m.idleStopped, idleStopMinutes: idleStopMs() / 60000,
+    startMs: m.startMs, started: running ? m.started : undefined, stoppedAt: m.stoppedAt, error: m.error,
+    rssMb: running ? rssMb(m.pid) : null, agents: agentConnections.get(id) || 0, viewers: viewers.get(id) || 0, chrome: chromePath(), sound: !!m.sound, muted: mutedNow(m, !!running) };
 }
 
 export async function openTab(id: string, url: string): Promise<Tab> {
@@ -236,13 +264,57 @@ export const onChange = (fn: (id: string) => void) => { listeners.add(fn); };
 export const agentCount = (id: string) => agentConnections.get(id) || 0;
 const changed = (id: string) => { for (const fn of listeners) try { fn(id); } catch { /* listener failed */ } };
 
-// ---------- agents: DevTools connections forwarded to the task's browser ----------
+// ---------- what uses a browser now, and the stop of a browser that nothing used for a set time ----------
+// agentConnections: open /ws/cdp connections. viewers: open /ws/browser views. screencasts: views that stream a tab.
+// lastUse: when the last of these ended, or when the browser started. stopIdle() reads all four.
 const agentConnections = new Map<string, number>();
+const viewers = new Map<string, number>();
+const screencasts = new Map<string, number>();
+const lastUse = new Map<string, number>();
+const loadedAt = Date.now();
+const count = (m: Map<string, number>, id: string, d: number) => { m.set(id, Math.max(0, (m.get(id) || 0) + d)); lastUse.set(id, Date.now()); changed(id); };
+const inUse = (id: string) => !!(agentConnections.get(id) || viewers.get(id) || screencasts.get(id));
+// The time without use after which a task browser stops (Settings page, in minutes; 0 turns the stop off).
+export function idleStopMs(): number {
+  const min = machine.get().browser?.idleStopMinutes;
+  return (typeof min === 'number' && Number.isFinite(min) && min >= 0 ? min : 10) * 60000;
+}
+// Stop each running task browser that had no agent connection, no viewer and no screencast for idleStopMs(). The
+// open tab addresses are saved, so the next start opens the same pages. The template browser is not stopped here.
+// A browser that was running before this server started gets the full time from the server start.
+export async function stopIdle(now = Date.now()): Promise<string[]> {
+  const ms = idleStopMs(), done: string[] = [];
+  if (!ms) return done;
+  let ids: string[] = [];
+  try { ids = readdirSync(DIR); } catch { return done; }
+  for (const id of ids) {
+    if (id === TEMPLATE || !ID.test(id)) continue;
+    const m = readMeta(id);
+    if (!m.pid || !pidAlive(m.pid)) { lastUse.delete(id); continue; }
+    if (inUse(id) || starting.has(id) || stopping.has(id)) { lastUse.set(id, now); continue; }
+    const since = Math.max(lastUse.get(id) || 0, Date.parse(m.started || '') || 0, loadedAt);
+    if (now - since < ms) continue;
+    lastUse.delete(id);
+    console.log(`${new Date().toISOString()} task browser ${id}: stopped after ${Math.round((now - since) / 60000)} min without an agent connection or a viewer`);
+    done.push(id);
+    await stop(id, { idle: true }).catch(e => console.error(`task browser ${id}: idle stop failed: ${(e as Error).message}`));
+  }
+  return done;
+}
+// Check every 30 s, or more often when the set time is short.
+let idleTimer: NodeJS.Timeout | undefined;
+export function watchIdle() {
+  if (idleTimer) return;
+  const tick = () => { idleTimer = setTimeout(() => { void stopIdle().finally(tick); }, Math.min(30000, Math.max(1000, idleStopMs() / 3 || 30000))); idleTimer.unref(); };
+  tick();
+}
+
+// ---------- agents: DevTools connections forwarded to the task's browser ----------
 export function proxyAgent(client: WebSocket, id: string) {
   const queue: (string | Buffer)[] = [];
   let up: WebSocket | null = null, closed = false;
-  agentConnections.set(id, (agentConnections.get(id) || 0) + 1); changed(id);
-  const done = () => { if (closed) return; closed = true; agentConnections.set(id, Math.max(0, (agentConnections.get(id) || 1) - 1)); changed(id); try { up?.close(); } catch { /* closed */ } try { client.close(); } catch { /* closed */ } };
+  count(agentConnections, id, 1);
+  const done = () => { if (closed) return; closed = true; count(agentConnections, id, -1); try { up?.close(); } catch { /* closed */ } try { client.close(); } catch { /* closed */ } };
   client.on('message', (d, binary) => { const msg = binary ? d as Buffer : d.toString(); if (up?.readyState === WebSocket.OPEN) up.send(msg); else if (queue.length < 1000) queue.push(msg); else done(); });
   client.on('close', done); client.on('error', done);
   ensure(id).then(m => {
@@ -255,9 +327,10 @@ export function proxyAgent(client: WebSocket, id: string) {
 }
 
 // ---------- the dashboard: screencast of one tab, with mouse and key input ----------
-interface PageConn { ws: WebSocket; target: string; next: number; pending: Map<number, (r: any) => void> }
+interface PageConn { ws: WebSocket; target: string; next: number; pending: Map<number, (r: any) => void>; casting?: boolean }
 export function attachViewer(client: WebSocket, id: string, autostart: boolean) {
   let page: PageConn | null = null, active = '', known = new Set<string>(), chosen = false, closed = false;
+  count(viewers, id, 1);
   let size = { w: 1280, h: 800 };
   const send = (m: object) => { if (client.readyState === WebSocket.OPEN && client.bufferedAmount < 4 * 1024 * 1024) client.send(JSON.stringify(m)); };
   const call = (method: string, params: object = {}) => new Promise<any>(resolve => {
@@ -283,13 +356,14 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
         send({ type: 'frame', data: msg.params.data, w: msg.params.metadata.deviceWidth, h: msg.params.metadata.deviceHeight });
       }
     });
-    ws.on('close', () => { if (page === conn) page = null; });
+    ws.on('close', () => { if (page === conn) page = null; if (conn.casting) { conn.casting = false; count(screencasts, id, -1); } });
     ws.on('error', () => {});
     await new Promise(r => ws.once('open', r));
     await fetch(`http://127.0.0.1:${m.port}/json/activate/${target}`).catch(() => {});
     await call('Page.enable');
     await viewport();
     await call('Page.startScreencast', { format: 'jpeg', quality: 70, maxWidth: 1920, maxHeight: 1920, everyNthFrame: 1 });
+    if (ws.readyState === WebSocket.OPEN && !conn.casting) { conn.casting = true; count(screencasts, id, 1); }
     send({ type: 'active', id: target });
   }
   async function poll() {
@@ -309,7 +383,7 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
   }
   const timer = setInterval(() => { void poll(); }, 1000);
   let chosenTimer: NodeJS.Timeout | undefined;
-  client.on('close', () => { closed = true; clearInterval(timer); clearTimeout(chosenTimer); closePage(); });
+  client.on('close', () => { if (closed) return; closed = true; count(viewers, id, -1); clearInterval(timer); clearTimeout(chosenTimer); closePage(); });
   client.on('message', async d => {
     let m: any; try { m = JSON.parse(d.toString()); } catch { return; }
     try {

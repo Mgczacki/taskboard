@@ -256,11 +256,13 @@ const MODES: { value: BrowserMode; label: string }[] = [
   { value: 'only', label: 'Task browser only' },
   { value: 'off', label: 'Off: only the agent\'s own browser tools' },
 ];
-function TaskBrowserSettings({ info, busy, save }: { info: MachineInfo | null; busy: boolean; save: (p: { browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string }) => Promise<void> }) {
+function TaskBrowserSettings({ info, busy, save }: { info: MachineInfo | null; busy: boolean; save: (p: { browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; browserIdleStopMinutes?: number }) => Promise<void> }) {
   const [tpl, setTpl] = useState<BrowserStatus | null>(null);
   const [chrome, setChrome] = useState('');
+  const [idle, setIdle] = useState('');
   const [open, setOpen] = useState(false);
   useEffect(() => { setChrome(info?.settings.browser?.chromePath || ''); }, [info?.settings.browser?.chromePath]);
+  useEffect(() => { setIdle(String(info?.settings.browser?.idleStopMinutes ?? 10)); }, [info?.settings.browser?.idleStopMinutes]);
   useEffect(() => { const load = () => api.browserTemplate().then(setTpl).catch(() => {}); void load(); const t = setInterval(load, 4000); return () => clearInterval(t); }, []);
   const b = info?.settings.browser;
   const check = tpl?.check;
@@ -276,6 +278,11 @@ function TaskBrowserSettings({ info, busy, save }: { info: MachineInfo | null; b
           <input id="chrome-path" value={chrome} onChange={e => setChrome(e.target.value)} placeholder={tpl?.chrome || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'} spellCheck={false} />
           <div className="sub">Empty: the installed Google Chrome. Found now: {check?.chrome || 'no Chrome'}. Node for the MCP server: {check?.node || 'none found (needs Node 20.19 or 22.12 or newer)'}{check && !check.mcp ? '. The MCP server package is missing: run pnpm install.' : ''}.</div>
           <div><button className="btn" disabled={busy || chrome === (b.chromePath || '')} onClick={() => void save({ chromePath: chrome.trim() })}>Save</button></div>
+        </SettingItem>
+        <SettingItem id="browserIdleStop">
+          <label className="opt" htmlFor="browser-idle">Stop an unused task browser after</label>
+          <div><input id="browser-idle" type="number" min={0} max={1440} step={1} style={{ width: '6em' }} value={idle} onChange={e => setIdle(e.target.value)} /> minutes <button className="btn" disabled={busy || idle === '' || Number(idle) === (b.idleStopMinutes ?? 10)} onClick={() => void save({ browserIdleStopMinutes: Number(idle) })}>Save</button></div>
+          <div className="sub">A task browser stops when no agent is connected to it and no one views it on the dashboard for this time. Its pages are saved. The next tool call of the agent starts it again with the same pages, in a few seconds. 0 means never stop. Default: 10.</div>
         </SettingItem>
       </>}
     </SettingGroup>

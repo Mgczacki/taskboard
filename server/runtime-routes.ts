@@ -64,6 +64,10 @@ export function watchResume() {
   });
 }
 
+// A task browser without an agent connection or a dashboard viewer for the time set on the Settings page stops. Its
+// pages are saved. The next tool call of the agent, or a start on the dashboard, starts it again with those pages.
+export const watchBrowserIdle = () => browser.watchIdle();
+
 type Fail = (res: express.Response, e: unknown) => void;
 // Who may change the processes or the browser of a task: the dashboard, tb from the user's own shell (token, no task),
 // the controller, and the task's own agent. Another task's agent may not.
