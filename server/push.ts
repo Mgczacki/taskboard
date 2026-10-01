@@ -1,8 +1,8 @@
-import { execFile, execFileSync } from 'node:child_process';
+import { execFile, execFileSync, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { Task } from './store.ts';
 import * as machine from './machine.ts';
-import { mergeStateForSource } from './task-git.ts';
+import { findBase, mergeStateForSource } from './task-git.ts';
 import { backupPrefix } from './task-repair.ts';
 import { scanHistory } from './task-history.ts';
 import { TB_DIR } from './config.ts';
@@ -17,11 +17,72 @@ const safe = (s: string) => s.replace(/(https?:\/\/)[^/@\s]+@/g, '$1[redacted]@'
 const secretFile = /(^|\/)(\.env(?:\.|$)|id_(?:rsa|dsa|ecdsa|ed25519)$|[^/]*\.(?:pem|key|p8|p12|pfx)$|[^/]*(?:secret|token|credential)[^/]*)/i;
 const secretLine = /^\+(?!\+\+).*(?:-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----|(?:api[_-]?key|access[_-]?token|secret|password|private[_-]?key)\s*[:=]\s*["']?\S{8,}|AKIA[A-Z0-9]{16}|(?:ghp_|github_pat_|sk-)[A-Za-z0-9_-]{12,})/im;
 
+// The push card lists at most this many commits and files. A count gives the rest.
+export const CARD_COMMITS = 50;
+export const CARD_FILES = 20;
+// The quick secret scan reads at most this many bytes of the diff.
+const DIFF_SCAN_BYTES = 64 * 1024 * 1024;
+
+type Commit = { hash: string; subject: string; author: string };
 export interface PushState {
   taskId: string; branch: string; remote: string; remoteUrl: string; oldHead: string | null; newHead: string;
-  fastForward: boolean; forcePush?: boolean; replaced?: { hash: string; subject: string; author: string }[]; commitCount: number; commits: { hash: string; subject: string; author: string }[];
+  base: string; baseSource: string;
+  fastForward: boolean; forcePush?: boolean; replaced?: Commit[]; replacedCount?: number; commitCount: number; commits: Commit[];
   fileCount: number; topFiles: string[]; warnings: string[]; reason: string; thenRelease: boolean;
   needsCard: boolean;
+}
+
+// Runs git and gives each line of its output to `each`, without keeping the output. `each` returns false to stop git.
+// Git also stops after maxBytes of output. The result says whether git stopped early.
+function gitEach(cwd: string, args: string[], each: (line: string) => boolean | void, maxBytes = Infinity): Promise<{ stopped: boolean }> {
+  return new Promise((resolve, reject) => {
+    const child = spawn('git', args, { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    let rest = '', err = '', bytes = 0, stopped = false;
+    const stop = () => { if (!stopped) { stopped = true; child.kill(); } };
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => {
+      if (stopped) return;
+      bytes += Buffer.byteLength(chunk);
+      const lines = (rest + chunk).split('\n');
+      rest = lines.pop() || '';
+      for (const line of lines) if (each(line) === false) { stop(); return; }
+      if (bytes >= maxBytes) stop();
+      else if (rest.length > 1024 * 1024) rest = rest.slice(0, 1024 * 1024);
+    });
+    child.stderr.on('data', d => { if (err.length < 4096) err += d; });
+    child.on('error', reject);
+    child.on('close', code => {
+      if (stopped) return resolve({ stopped: true });
+      if (rest && each(rest) === false) return resolve({ stopped: true });
+      if (code) return reject(new Error(`git ${args[0]} failed: ${err.trim()}`));
+      resolve({ stopped: false });
+    });
+  });
+}
+const parseCommit = (line: string): Commit => { const [hash, subject, author] = line.split('\0'); return { hash, subject, author }; };
+// The first `limit` commits that `revs` selects, and the count of all of them.
+async function listCommits(cwd: string, revs: string[], limit = CARD_COMMITS) {
+  const count = Number(await git(cwd, 'rev-list', '--count', ...revs));
+  const commits = count ? (await git(cwd, 'log', `--max-count=${limit}`, '--format=%H%x00%s%x00%an <%ae>', ...revs)).split('\n').filter(Boolean).map(parseCommit) : [];
+  return { count, commits };
+}
+const more = (n: number, word: string) => n > 0 ? [`and ${n} more ${word}`] : [];
+
+// The text of the approval card for a push.
+export function pushCardDetail(state: PushState): string {
+  const line = (c: Commit) => `${c.hash} ${c.subject} — ${c.author}`;
+  const replacedCount = state.replacedCount ?? state.replaced?.length ?? 0;
+  const force = state.forcePush ? [
+    'FORCE PUSH: Yes. This task changed its branch with tb git repair after an earlier push.',
+    `Approving replaces ${state.oldHead} on ${state.remote}/${state.branch}. Taskboard pushes with --force-with-lease, so the push fails if the remote branch moved.`,
+    `Commits that leave the remote branch: ${replacedCount}`,
+    ...(state.replaced || []).map(line), ...more(replacedCount - (state.replaced?.length || 0), 'commits'), '', ''].join('\n') : '';
+  return force + [
+    `Remote: ${state.remoteUrl}`, `Branch: ${state.branch}`, `Base: ${state.base} (from ${state.baseSource})`,
+    `Range: ${state.oldHead || `(new branch; commits and files are counted from ${state.base})`} -> ${state.newHead}`,
+    `Commits: ${state.commitCount}`, ...state.commits.map(line), ...more(state.commitCount - state.commits.length, 'commits'),
+    `Files changed: ${state.fileCount}`, ...state.topFiles, ...more(state.fileCount - state.topFiles.length, 'files'),
+    `Fast-forward now: ${state.fastForward ? 'Yes' : 'No'}`, 'Warnings:', ...state.warnings].join('\n');
 }
 export interface PushRecord { id: string; at: string; taskId: string; branch: string; remote: string; remoteUrl: string; oldHead: string | null; newHead: string; state: 'pending' | 'succeeded' | 'failed' | 'denied' | 'expired' | 'unknown'; result?: string; approvalId?: string }
 const recordFile = join(TB_DIR, 'pushes.json');
@@ -66,7 +127,7 @@ async function isAncestor(cwd: string, oldHead: string, newHead: string) {
   try { await git(cwd, 'merge-base', '--is-ancestor', oldHead, newHead); return true; } catch { return false; }
 }
 
-export async function inspectPush(task: Task, reason: string, options: { branch?: string; remote?: string; thenRelease?: boolean } = {}): Promise<PushState> {
+export async function inspectPush(task: Task, reason: string, options: { branch?: string; remote?: string; base?: string; thenRelease?: boolean } = {}): Promise<PushState> {
   if (!task.worktree || !task.branch || task.role === 'controller') throw new Error('A task must use its own Git worktree.');
   await mergeStateForSource(task);
   if (realpathSync(await git(task.folder, 'rev-parse', '--show-toplevel')) !== realpathSync(task.folder)) throw new Error('The main checkout changed.');
@@ -75,10 +136,11 @@ export async function inspectPush(task: Task, reason: string, options: { branch?
   const ownBranch = await git(task.cwd, 'branch', '--show-current');
   if (ownBranch !== taskBranch) throw new Error('The task branch changed.');
   const ownHead = await git(task.cwd, 'rev-parse', 'HEAD');
-  const masterHead = await git(task.folder, 'rev-parse', 'refs/heads/master');
+  // A repository without a local master branch can push only the task branch.
+  const masterHead = await git(task.folder, 'rev-parse', '--verify', '--quiet', 'refs/heads/master^{commit}').catch(() => '');
   // A task branch equal to master (for example after tb git rebase following its merge) can push master only when
   // the request names master. Without --branch, such a branch still pushes itself.
-  const merged = await isAncestor(task.cwd, ownHead, masterHead) && (ownHead !== masterHead || options.branch === 'master');
+  const merged = !!masterHead && await isAncestor(task.cwd, ownHead, masterHead) && (ownHead !== masterHead || options.branch === 'master');
   const branch = options.branch || (merged ? 'master' : taskBranch);
   if (branch !== taskBranch && (branch !== 'master' || !merged)) throw new Error('The request can name only this task branch or merged local master.');
   const cwd = branch === 'master' ? task.folder : task.cwd;
@@ -86,49 +148,65 @@ export async function inspectPush(task: Task, reason: string, options: { branch?
   const remote = options.remote || 'origin';
   if (!/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(remote)) throw new Error('Give a configured remote name.');
   const remoteUrl = safe(await git(cwd, 'remote', 'get-url', '--push', remote));
+  const base = await findBase(task, { named: options.base, remote });
   const oldHead = await remoteHead(cwd, remote, branch);
   const newHead = await git(cwd, 'rev-parse', 'HEAD');
   const oldAvailable = oldHead ? await git(cwd, 'cat-file', '-e', `${oldHead}^{commit}`).then(() => true).catch(() => false) : false;
   const fastForward = !oldHead || (oldAvailable && await isAncestor(cwd, oldHead, newHead));
-  const range = oldHead && oldAvailable ? `${oldHead}..${newHead}` : newHead;
-  const raw = await git(cwd, 'log', '--format=%H%x00%s%x00%an <%ae>', range);
-  const commits = raw ? raw.split('\n').map(line => { const [hash, subject, author] = line.split('\0'); return { hash, subject, author }; }) : [];
-  const paths = (oldHead && oldAvailable ? await git(cwd, 'diff', '--name-only', oldHead, newHead) : await git(cwd, 'log', '--format=', '--name-only', newHead)).split('\n').filter(Boolean);
-  const files = [...new Set(paths)];
+  // The card counts commits and files from the remote head. For a new remote branch, or a remote head that is not in
+  // the local repository, it counts them from the base. It never reads the full history of the repository.
+  const revs = oldHead && oldAvailable ? [newHead, '--not', oldHead] : [newHead, '--not', base.ref];
+  const diffRange = oldHead && oldAvailable ? [oldHead, newHead] : [`${base.ref}...${newHead}`];
+  const { count: commitCount, commits } = await listCommits(cwd, revs);
   const warnings: string[] = [];
   const taskAuthor = await git(task.cwd, 'log', '-1', '--format=%an <%ae>', taskBranch);
-  const outsideTask = branch === 'master' ? new Set((await git(cwd, 'rev-list', range, '--not', taskBranch)).split('\n').filter(Boolean)) : new Set<string>();
-  if (commits.some(c => c.author !== taskAuthor ||
-      (/Merge branch ['"]?([^'" ]+)/.test(c.subject) && !c.subject.includes(taskBranch)) ||
-      (outsideTask.has(c.hash) && !c.subject.includes(taskBranch)))) warnings.push('The range contains commits from other tasks or people.');
-  const flaggedFiles = files.filter(f => secretFile.test(f));
-  if (flaggedFiles.length) warnings.push(`Files that look like secrets: ${flaggedFiles.slice(0, 10).join(', ')}`);
-  const diff = oldHead && oldAvailable ? await git(cwd, 'diff', '--no-ext-diff', '--unified=0', oldHead, newHead) : await git(cwd, 'log', '-p', '--format=', newHead);
-  warnings.push(secretLine.test(diff) ? 'The quick diff scan found a line that looks like a secret.' : 'The quick diff scan found no secret pattern.');
+  let otherCommits = false;
+  await gitEach(cwd, ['log', '--format=%H%x00%s%x00%an <%ae>', ...revs], line => {
+    const c = parseCommit(line);
+    if (c.author !== taskAuthor || (/Merge branch ['"]?([^'" ]+)/.test(c.subject) && !c.subject.includes(taskBranch))) { otherCommits = true; return false; }
+  });
+  if (!otherCommits && branch === 'master') await gitEach(cwd, ['log', '--format=%s', ...revs, '--not', taskBranch], subject => {
+    if (!subject.includes(taskBranch)) { otherCommits = true; return false; }
+  });
+  if (otherCommits) warnings.push('The range contains commits from other tasks or people.');
+  const topFiles: string[] = [], flaggedFiles: string[] = [];
+  let fileCount = 0, flaggedCount = 0;
+  await gitEach(cwd, ['diff', '--name-only', ...diffRange], path => {
+    if (!path) return;
+    fileCount++;
+    if (topFiles.length < CARD_FILES) topFiles.push(path);
+    if (secretFile.test(path)) { flaggedCount++; if (flaggedFiles.length < 10) flaggedFiles.push(path); }
+  });
+  if (flaggedCount) warnings.push(`Files that look like secrets: ${flaggedFiles.join(', ')}${flaggedCount > flaggedFiles.length ? `, and ${flaggedCount - flaggedFiles.length} more` : ''}`);
+  let secretFound = false;
+  const scan = await gitEach(cwd, ['diff', '--no-ext-diff', '--unified=0', ...diffRange], line => {
+    if (secretLine.test(line)) { secretFound = true; return false; }
+  }, DIFF_SCAN_BYTES);
+  warnings.push(secretFound ? 'The quick diff scan found a line that looks like a secret.'
+    : scan.stopped ? `The quick diff scan read only the first ${DIFF_SCAN_BYTES / 1024 / 1024} MiB of the diff and found no secret pattern there.`
+    : 'The quick diff scan found no secret pattern.');
   const remoteDefault = await git(cwd, 'ls-remote', '--symref', remote, 'HEAD').catch(() => '');
   const defaultBranch = remoteDefault.match(/^ref:\s+refs\/heads\/([^\s]+)\s+HEAD/m)?.[1];
   // A force push is possible only for this task's own branch after tb git repair: the remote head must be in a
   // backup that tb git repair made for this task. It always needs the user's approval on the push card.
   let forcePush = false;
   let replaced: PushState['replaced'] = [];
+  let replacedCount = 0;
   if (!fastForward && oldHead && oldAvailable && branch === taskBranch && !isProtectedBranch(branch, defaultBranch, machine.get().pushes.protectedBranches)) {
     const backups = (await git(cwd, 'for-each-ref', '--format=%(objectname)', backupPrefix(task))).split('\n').filter(Boolean);
     for (const b of backups) if (await isAncestor(cwd, oldHead, b)) { forcePush = true; break; }
-    if (forcePush) {
-      const gone = await git(cwd, 'log', '--format=%H%x00%s%x00%an <%ae>', `${newHead}..${oldHead}`);
-      replaced = gone ? gone.split('\n').map(line => { const [hash, subject, author] = line.split('\0'); return { hash, subject, author }; }) : [];
-    }
+    if (forcePush) ({ count: replacedCount, commits: replaced } = await listCommits(cwd, [oldHead, '--not', newHead]));
   }
   const history = await scanHistory(cwd, oldHead && oldAvailable ? [newHead, '--not', oldHead] : [newHead, '--not', `--remotes=${remote}`]).catch(() => null);
   if (history) warnings.push(...history.warnings);
   const needsCard = forcePush || pushNeedsCard(taskBranch, branch, remote, remoteUrl, defaultBranch, signedInLogin(), machine.get().pushes);
-  return { taskId: task.id, branch, remote, remoteUrl, oldHead, newHead, fastForward, forcePush, replaced, commitCount: commits.length, commits,
-    fileCount: files.length, topFiles: files.slice(0, 20), warnings, reason: reason.trim(), thenRelease: !!options.thenRelease, needsCard };
+  return { taskId: task.id, branch, remote, remoteUrl, oldHead, newHead, base: base.name, baseSource: base.source, fastForward, forcePush, replaced, replacedCount,
+    commitCount, commits, fileCount, topFiles, warnings, reason: reason.trim(), thenRelease: !!options.thenRelease, needsCard };
 }
 
 export async function runPush(task: Task, expected: PushState): Promise<string> {
   if (!expected.fastForward && !expected.forcePush) throw new Error('The remote branch does not allow a fast-forward push.');
-  const current = await inspectPush(task, expected.reason, { branch: expected.branch, remote: expected.remote, thenRelease: expected.thenRelease });
+  const current = await inspectPush(task, expected.reason, { branch: expected.branch, remote: expected.remote, base: expected.base, thenRelease: expected.thenRelease });
   if (current.newHead !== expected.newHead || current.oldHead !== expected.oldHead || current.remoteUrl !== expected.remoteUrl || current.remote !== expected.remote)
     throw new Error('The branch changed. Ask for a new push request.');
   if (!current.fastForward && !(current.forcePush && expected.forcePush)) throw new Error('The branch changed. Ask for a new push request.');
@@ -136,9 +214,18 @@ export async function runPush(task: Task, expected: PushState): Promise<string> 
   const cwd = expected.branch === 'master' ? task.folder : task.cwd;
   // --force-with-lease replaces the remote branch only while it still points to the head that the card showed
   const lease = expected.forcePush && expected.oldHead ? [`--force-with-lease=refs/heads/${expected.branch}:${expected.oldHead}`] : [];
-  try {
-    const result = await exec('git', ['push', '--porcelain', ...lease, expected.remote, `${expected.newHead}:refs/heads/${expected.branch}`],
-      { cwd, maxBuffer: 1024 * 1024 });
-    return safe(`${result.stdout}\n${result.stderr}`.trim());
-  } catch (e) { throw new Error(safe(String(e))); }
+  // git push can print long messages from the remote. Taskboard keeps the first 64 KiB of each stream, so a long
+  // message cannot turn a finished push into a failed one.
+  const result = await new Promise<{ code: number | null; out: string; err: string }>((resolve, reject) => {
+    const child = spawn('git', ['push', '--porcelain', ...lease, expected.remote, `${expected.newHead}:refs/heads/${expected.branch}`], { cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+    let out = '', err = '';
+    const keep = (text: string, d: Buffer) => text.length < 65536 ? text + d.toString('utf8').slice(0, 65536 - text.length) : text;
+    child.stdout.on('data', d => { out = keep(out, d); });
+    child.stderr.on('data', d => { err = keep(err, d); });
+    child.on('error', reject);
+    child.on('close', code => resolve({ code, out, err }));
+  }).catch(e => { throw new Error(safe(String(e))); });
+  const text = safe(`${result.out}\n${result.err}`.trim());
+  if (result.code !== 0) throw new Error(`git push failed: ${text}`);
+  return text;
 }

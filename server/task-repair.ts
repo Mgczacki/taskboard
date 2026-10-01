@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { promisify } from 'node:util';
 import type { Task } from './store.ts';
-import { mergeStateForSource, rebasing, resolveBase } from './task-git.ts';
+import { findBase, mergeStateForSource, rebasing, recordBase, resolveBase } from './task-git.ts';
 import { historyReport } from './task-history.ts';
 
 // tb git repair rewrites only the task's own branch in its own worktree. Before each change it saves the old head
@@ -43,6 +43,7 @@ export async function squashTask(t: Task, baseName: string, message: string): Pr
   if (!baseName) throw new Error('Give tb git repair --squash a base with --base, for example --base origin/master or --base master.');
   const head = await preflight(t);
   const base = await resolveBase(t, baseName);
+  recordBase(t, base.name);
   const baseHead = await git(t.cwd, 'rev-parse', '--verify', `${base.ref}^{commit}`);
   if (baseHead === head) throw new Error(`The branch has no commits after ${base.name}; nothing to squash.`);
   if (!await isAncestor(t.cwd, baseHead, head)) throw new Error(`The branch does not contain ${base.name}; run tb git rebase ${base.name} first, then tb git repair --squash.`);
@@ -54,13 +55,15 @@ export async function squashTask(t: Task, baseName: string, message: string): Pr
 }
 
 // Removes one commit that only this task branch holds, and replays the later commits.
-export async function dropCommit(t: Task, commitArg: string, baseName = 'master'): Promise<string> {
+// Without a base, it uses local master, or the base that findBase gives when the repository has no master.
+export async function dropCommit(t: Task, commitArg: string, baseName?: string): Promise<string> {
   if (!/^[0-9a-f]{7,64}$/i.test(commitArg)) throw new Error('Give tb git repair --drop a commit hash of 7 to 64 hex characters.');
   const head = await preflight(t);
   const commit = await git(t.cwd, 'rev-parse', '--verify', '--quiet', `${commitArg}^{commit}`).catch(() => '');
   if (!commit) throw new Error(`${commitArg} is not a commit in this repository.`);
   if (!await isAncestor(t.cwd, commit, head)) throw new Error(`${commitArg} is not on ${t.branch}.`);
-  const base = await resolveBase(t, baseName);
+  const base = baseName ? await resolveBase(t, baseName) : await findBase(t, { localFirst: true });
+  if (baseName) recordBase(t, base.name);
   if (await isAncestor(t.cwd, commit, base.ref)) throw new Error(`${commitArg} is already in ${base.name}; tb git repair removes only commits after the base.`);
   const remotes = (await git(t.cwd, 'remote')).split('\n').filter(Boolean);
   const own = new Set([`refs/heads/${t.branch}`, ...remotes.map(r => `refs/remotes/${r}/${t.branch}`)]);
@@ -95,12 +98,15 @@ export async function restoreBackup(t: Task, backupName: string): Promise<string
   if (!target) throw new Error(`${full} does not exist; run tb git repair --list to see the backups.`);
   const name = await backup(t, head);
   await exec('git', ['reset', '--keep', target], { cwd: t.cwd });
-  return result(`Restored ${t.branch} to ${target.slice(0, 12)} from ${full}.`, name, await historyReport(t.cwd, 'refs/heads/master', 'master'));
+  const base = await findBase(t, { localFirst: true }).catch(() => null);
+  const report = base ? await historyReport(t.cwd, base.ref, base.name) : 'No report: Taskboard cannot find the base of this branch. Run tb git check --base BASE.';
+  return result(`Restored ${t.branch} to ${target.slice(0, 12)} from ${full}.`, name, report);
 }
 
-export async function checkTask(t: Task, baseName = 'master'): Promise<string> {
+// Without a base, tb git check uses local master, or the base that findBase gives when the repository has no master.
+export async function checkTask(t: Task, baseName?: string): Promise<string> {
   if (!t.worktree || !t.branch || t.role === 'controller') throw new Error('This task has no worktree branch.');
   await mergeStateForSource(t);
-  const base = await resolveBase(t, baseName);
+  const base = baseName ? await resolveBase(t, baseName) : await findBase(t, { localFirst: true });
   return historyReport(t.cwd, base.ref, base.name);
 }

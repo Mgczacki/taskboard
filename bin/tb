@@ -90,7 +90,11 @@ const HELP = `tb — Taskboard command line
   tb git repair --restore BACKUP | --list
                                      undo a repair with the backup it printed, or list the backups
   tb git check [--base BASE]          list the files your branch changes and warn about large or unsafe files
-  tb git push-request --reason "text" [--branch BRANCH] [--remote REMOTE] [--then-release]
+                                     Without a base, rebase, repair and check use local master. A repository
+                                     without master uses the same base as tb git push-request.
+  tb git push-request --reason "text" [--branch BRANCH] [--remote REMOTE] [--base BASE] [--then-release]
+                                     BASE is master or a remote branch such as origin/prod. Without it, Taskboard
+                                     uses the base from tb git rebase or tb git repair, then origin/HEAD
   tb git push-result ID [--wait]      read the push result
   tb inbox wait [--timeout seconds]  wait until a file arrives in your inbox (uses TASK_ID; default 3600 s);
                                      prints each file's path and sender; exit 0 = files, 2 = timed out
@@ -460,9 +464,9 @@ switch (cmd) {
     }
     else if (rest[0] === 'push-request') {
       if (rest.some(x => /^(--force|--delete|--tags|--mirror|--all)(?:$|[=-])/.test(x))) { console.error('tb git push-request: force pushes, deletions, and tags are not allowed'); process.exit(1); }
-      const reason = flag('--reason', ''); const branch = flag('--branch', undefined); const remote = flag('--remote', 'origin'); const thenRelease = has('--then-release');
+      const reason = flag('--reason', ''); const branch = flag('--branch', undefined); const remote = flag('--remote', 'origin'); const base = flag('--base', undefined); const thenRelease = has('--then-release');
       if (!reason) { console.error('tb git push-request: give --reason'); process.exit(1); }
-      const result = await call('POST', '/api/git/push-request', { reason, branch, remote, thenRelease });
+      const result = await call('POST', '/api/git/push-request', { reason, branch, remote, base, thenRelease });
       console.log(`Push ${result.push.id}: ${result.push.state}. Read it with tb git push-result ${result.push.id} --wait.`);
     } else if (rest[0] === 'push-result') {
       const id = rest[1]; if (!id) { console.error('tb git push-result: give an ID'); process.exit(1); }
