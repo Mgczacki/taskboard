@@ -1,6 +1,7 @@
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { Task } from './store.ts';
+import * as store from './store.ts';
 import * as machine from './machine.ts';
 import { findBase, mergeStateForSource } from './task-git.ts';
 import { backupPrefix } from './task-repair.ts';
@@ -27,7 +28,7 @@ type Commit = { hash: string; subject: string; author: string };
 export interface PushState {
   taskId: string; branch: string; remote: string; remoteUrl: string; oldHead: string | null; newHead: string;
   base: string; baseSource: string;
-  fastForward: boolean; forcePush?: boolean; replaced?: Commit[]; replacedCount?: number; commitCount: number; commits: Commit[];
+  fastForward: boolean; forcePush?: boolean; forceBasis?: string; forceRefusal?: string; replaced?: Commit[]; replacedCount?: number; commitCount: number; commits: Commit[];
   fileCount: number; topFiles: string[]; warnings: string[]; reason: string; thenRelease: boolean;
   needsCard: boolean;
 }
@@ -73,8 +74,10 @@ export function pushCardDetail(state: PushState): string {
   const line = (c: Commit) => `${c.hash} ${c.subject} — ${c.author}`;
   const replacedCount = state.replacedCount ?? state.replaced?.length ?? 0;
   const force = state.forcePush ? [
-    'FORCE PUSH: Yes. This task changed its branch with tb git repair after an earlier push.',
-    `Approving replaces ${state.oldHead} on ${state.remote}/${state.branch}. Taskboard pushes with --force-with-lease, so the push fails if the remote branch moved.`,
+    'FORCE PUSH: Yes. This task rewrote its branch with tb git rebase or tb git repair after an earlier push.',
+    `Approving replaces ${state.oldHead} on ${state.remote}/${state.branch}.`,
+    `Why Taskboard offers a force push: ${state.forceBasis || `${state.oldHead} is in a backup of this task.`}`,
+    `Taskboard pushes with --force-with-lease=refs/heads/${state.branch}:${state.oldHead}. The lease is pinned to the remote head that Taskboard observed, so the push fails if the remote branch moved.`,
     `Commits that leave the remote branch: ${replacedCount}`,
     ...(state.replaced || []).map(line), ...more(replacedCount - (state.replaced?.length || 0), 'commits'), '', ''].join('\n') : '';
   return force + [
@@ -84,7 +87,7 @@ export function pushCardDetail(state: PushState): string {
     `Files changed: ${state.fileCount}`, ...state.topFiles, ...more(state.fileCount - state.topFiles.length, 'files'),
     `Fast-forward now: ${state.fastForward ? 'Yes' : 'No'}`, 'Warnings:', ...state.warnings].join('\n');
 }
-export interface PushRecord { id: string; at: string; taskId: string; branch: string; remote: string; remoteUrl: string; oldHead: string | null; newHead: string; state: 'pending' | 'succeeded' | 'failed' | 'denied' | 'expired' | 'unknown'; result?: string; approvalId?: string }
+export interface PushRecord { id: string; at: string; doneAt?: string; taskId: string; branch: string; remote: string; remoteUrl: string; oldHead: string | null; newHead: string; state: 'pending' | 'succeeded' | 'failed' | 'denied' | 'expired' | 'unknown'; result?: string; approvalId?: string }
 const recordFile = join(TB_DIR, 'pushes.json');
 const records: PushRecord[] = (() => { try { return JSON.parse(readFileSync(recordFile, 'utf8')); } catch { return []; } })();
 export const allPushes = () => records.slice().reverse();
@@ -94,7 +97,11 @@ export function recordPush(state: PushState, id: string, approvalId?: string): P
     remoteUrl: state.remoteUrl, oldHead: state.oldHead, newHead: state.newHead, state: 'pending', approvalId };
   records.push(record); save(); return record;
 }
-export function finishPush(record: PushRecord, state: PushRecord['state'], result: string) { record.state = state; record.result = safe(result); save(); }
+export function finishPush(record: PushRecord, state: PushRecord['state'], result: string) { record.state = state; record.result = safe(result); record.doneAt = new Date().toISOString(); save(); }
+// The heads that Taskboard pushed for a task to one branch of one remote, from pushes.json. Each succeeded push
+// record holds the task, the remote URL, the branch, the pushed head and the time.
+export const pushedHeads = (taskId: string, remoteUrl: string, branch: string) =>
+  records.filter(r => r.state === 'succeeded' && r.taskId === taskId && r.remoteUrl === remoteUrl && r.branch === branch);
 const save = () => writeFileSync(recordFile, JSON.stringify(records, null, 2), { mode: 0o600 });
 function repoName(url: string): string | null {
   const m = url.match(/^(?:https?:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([^/]+)\/([^/?#]+?)(?:\.git)?$/i);
@@ -125,6 +132,33 @@ async function remoteHead(cwd: string, remote: string, branch: string) {
 
 async function isAncestor(cwd: string, oldHead: string, newHead: string) {
   try { await git(cwd, 'merge-base', '--is-ancestor', oldHead, newHead); return true; } catch { return false; }
+}
+
+// A force push replaces commits on the remote branch, so Taskboard offers it only when all of these are true:
+// - the push goes to this task's own branch,
+// - the branch is not protected (master, main, prod, release/*, the remote default branch, or a protected branch in the settings),
+// - no other task uses the same branch in the same repository,
+// - the remote head is a head that Taskboard pushed for this task (pushes.json), or it is in a backup that
+//   tb git rebase or tb git repair made for this task (refs/taskboard-backup/<task id>/).
+// It always needs the user's approval on the push card. The result gives the reason for the card or the refusal.
+async function checkForcePush(task: Task, cwd: string, o: { branch: string; taskBranch: string; remote: string; remoteUrl: string; oldHead: string; oldAvailable: boolean; defaultBranch?: string }):
+  Promise<{ basis: string } | { refusal: string }> {
+  if (o.branch !== o.taskBranch) return { refusal: `the push goes to ${o.branch}, and Taskboard force pushes only the task's own branch ${o.taskBranch}.` };
+  if (isProtectedBranch(o.branch, o.defaultBranch, machine.get().pushes.protectedBranches))
+    return { refusal: `${o.branch} is a protected branch (master, main, prod, release/*, the remote default branch, or a protected branch in the settings).` };
+  const sameRepo = (a: string, b: string) => { try { return realpathSync(a) === realpathSync(b); } catch { return a === b; } };
+  const owner = store.all().find(t => t.id !== task.id && t.role !== 'controller' && t.branch === o.branch && sameRepo(t.folder, task.folder));
+  if (owner) return { refusal: `task #${owner.num} (${owner.title}) also uses the branch ${o.branch}.` };
+  if (!o.oldAvailable) return { refusal: `the remote head ${o.oldHead} is not in the local repository, so Taskboard cannot check it. Someone else may have pushed to the branch.` };
+  const pushed = pushedHeads(task.id, o.remoteUrl, o.branch).filter(r => r.newHead === o.oldHead).pop();
+  if (pushed) return { basis: `Taskboard pushed ${o.oldHead} for this task at ${pushed.doneAt || pushed.at} (push ${pushed.id}).` };
+  const backups = (await git(cwd, 'for-each-ref', '--format=%(objectname) %(refname)', backupPrefix(task))).split('\n').filter(Boolean);
+  for (const line of backups) {
+    const [commit, name] = line.split(' ');
+    if (await isAncestor(cwd, o.oldHead, commit)) return { basis: `${o.oldHead} is in the backup ${name} that tb git rebase or tb git repair made for this task.` };
+  }
+  return { refusal: `both checks failed. Check 1: ${o.oldHead} is not a head that Taskboard pushed for this task to ${o.remote}/${o.branch}. ` +
+    `Check 2: ${o.oldHead} is not in a backup of this task (tb git repair --list shows the backups).` };
 }
 
 export async function inspectPush(task: Task, reason: string, options: { branch?: string; remote?: string; base?: string; thenRelease?: boolean } = {}): Promise<PushState> {
@@ -187,25 +221,25 @@ export async function inspectPush(task: Task, reason: string, options: { branch?
     : 'The quick diff scan found no secret pattern.');
   const remoteDefault = await git(cwd, 'ls-remote', '--symref', remote, 'HEAD').catch(() => '');
   const defaultBranch = remoteDefault.match(/^ref:\s+refs\/heads\/([^\s]+)\s+HEAD/m)?.[1];
-  // A force push is possible only for this task's own branch after tb git repair: the remote head must be in a
-  // backup that tb git repair made for this task. It always needs the user's approval on the push card.
-  let forcePush = false;
+  let forcePush = false, forceBasis: string | undefined, forceRefusal: string | undefined;
   let replaced: PushState['replaced'] = [];
   let replacedCount = 0;
-  if (!fastForward && oldHead && oldAvailable && branch === taskBranch && !isProtectedBranch(branch, defaultBranch, machine.get().pushes.protectedBranches)) {
-    const backups = (await git(cwd, 'for-each-ref', '--format=%(objectname)', backupPrefix(task))).split('\n').filter(Boolean);
-    for (const b of backups) if (await isAncestor(cwd, oldHead, b)) { forcePush = true; break; }
+  if (!fastForward && oldHead) {
+    const check = await checkForcePush(task, cwd, { branch, taskBranch, remote, remoteUrl, oldHead, oldAvailable, defaultBranch });
+    if ('basis' in check) { forcePush = true; forceBasis = check.basis; }
+    else forceRefusal = `The remote branch ${remote}/${branch} is at ${oldHead}, and the local branch does not contain that commit, so a normal push is not a fast-forward. ` +
+      `Taskboard cannot offer a force push: ${check.refusal} Do not try another way to push. Ask the user what to do.`;
     if (forcePush) ({ count: replacedCount, commits: replaced } = await listCommits(cwd, [oldHead, '--not', newHead]));
   }
   const history = await scanHistory(cwd, oldHead && oldAvailable ? [newHead, '--not', oldHead] : [newHead, '--not', `--remotes=${remote}`]).catch(() => null);
   if (history) warnings.push(...history.warnings);
   const needsCard = forcePush || pushNeedsCard(taskBranch, branch, remote, remoteUrl, defaultBranch, signedInLogin(), machine.get().pushes);
-  return { taskId: task.id, branch, remote, remoteUrl, oldHead, newHead, base: base.name, baseSource: base.source, fastForward, forcePush, replaced, replacedCount,
+  return { taskId: task.id, branch, remote, remoteUrl, oldHead, newHead, base: base.name, baseSource: base.source, fastForward, forcePush, forceBasis, forceRefusal, replaced, replacedCount,
     commitCount, commits, fileCount, topFiles, warnings, reason: reason.trim(), thenRelease: !!options.thenRelease, needsCard };
 }
 
 export async function runPush(task: Task, expected: PushState): Promise<string> {
-  if (!expected.fastForward && !expected.forcePush) throw new Error('The remote branch does not allow a fast-forward push.');
+  if (!expected.fastForward && !expected.forcePush) throw new Error(expected.forceRefusal || 'The push is not a fast-forward, and Taskboard cannot offer a force push. Ask the user what to do.');
   const current = await inspectPush(task, expected.reason, { branch: expected.branch, remote: expected.remote, base: expected.base, thenRelease: expected.thenRelease });
   if (current.newHead !== expected.newHead || current.oldHead !== expected.oldHead || current.remoteUrl !== expected.remoteUrl || current.remote !== expected.remote)
     throw new Error('The branch changed. Ask for a new push request.');

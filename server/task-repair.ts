@@ -2,16 +2,17 @@ import { execFile } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { promisify } from 'node:util';
 import type { Task } from './store.ts';
-import { findBase, mergeStateForSource, rebasing, recordBase, resolveBase } from './task-git.ts';
+import { backupPrefix, findBase, mergeStateForSource, rebasing, recordBase, resolveBase, saveBackup } from './task-git.ts';
 import { historyReport } from './task-history.ts';
 
 // tb git repair rewrites only the task's own branch in its own worktree. Before each change it saves the old head
-// in refs/taskboard-backup/<task id>/<time>, so tb git repair --restore can undo the change.
+// in refs/taskboard-backup/<task id>/<time>, so tb git repair --restore can undo the change. tb git rebase saves
+// the same kind of backup, so --list and --restore also show and use the backups of a rebase.
 const exec = promisify(execFile);
 const git = async (cwd: string, ...args: string[]) => (await exec('git', args, { cwd, maxBuffer: 64 * 1024 * 1024 })).stdout.trim();
 const isAncestor = (cwd: string, a: string, b: string) => exec('git', ['merge-base', '--is-ancestor', a, b], { cwd }).then(() => true, () => false);
 const protectedBranch = (branch: string) => /^(master|main|prod)$/i.test(branch) || /^release\//i.test(branch);
-export const backupPrefix = (t: Task) => `refs/taskboard-backup/${t.id}/`;
+export { backupPrefix };
 
 async function preflight(t: Task): Promise<string> {
   if (!t.worktree || !t.branch || t.role === 'controller') throw new Error('This task has no worktree branch; tb git repair works only on a task branch in its own worktree.');
@@ -23,16 +24,7 @@ async function preflight(t: Task): Promise<string> {
   return git(t.cwd, 'rev-parse', 'HEAD');
 }
 
-async function backup(t: Task, head: string): Promise<string> {
-  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
-  for (let n = 0; n < 100; n++) {
-    const name = `${backupPrefix(t)}${stamp}${n ? `-${n}` : ''}`;
-    await exec('git', ['check-ref-format', name]).catch(() => { throw new Error('The task id cannot name a Git ref.'); });
-    try { await exec('git', ['update-ref', '-m', 'taskboard: backup before tb git repair', name, head, ''], { cwd: t.cwd }); return name; }
-    catch { /* the name exists; try the next one */ }
-  }
-  throw new Error('Could not create a backup ref.');
-}
+const backup = (t: Task, head: string) => saveBackup(t, head, 'tb git repair');
 
 const result = (done: string, name: string, report: string) =>
   `${done}\nBackup: ${name}\nUndo: tb git repair --restore ${name}\n\n${report}`;
@@ -85,7 +77,7 @@ export async function dropCommit(t: Task, commitArg: string, baseName?: string):
 export async function listBackups(t: Task): Promise<string> {
   if (!t.worktree || !t.branch) throw new Error('This task has no worktree branch.');
   const refs = await git(t.cwd, 'for-each-ref', '--sort=-refname', '--format=%(refname) %(objectname:short) %(subject)', backupPrefix(t));
-  return refs || 'This task has no backups from tb git repair.';
+  return refs || 'This task has no backups from tb git repair or tb git rebase.';
 }
 
 // Moves the task branch back to one of this task's backups. It first saves the current head as a new backup.

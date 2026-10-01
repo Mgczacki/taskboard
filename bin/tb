@@ -80,7 +80,8 @@ const HELP = `tb — Taskboard command line
   tb git merge-request               ask the user to merge your worktree branch into local master
   tb git commit "<message>"           commit changes in your own worktree
   tb git rebase [BASE]                rebase your own branch onto local master, or onto a remote branch such as
-                                     origin/master or origin/prod (runs git fetch first)
+                                     origin/master or origin/prod (runs git fetch first). It saves the old
+                                     head as a backup before it changes the branch
   tb git rebase --continue            stage resolved conflicts and finish the approved merge
   tb git rebase --abort               stop a rebase in your own worktree
   tb git repair --squash --base BASE -m "<message>"
@@ -88,13 +89,15 @@ const HELP = `tb — Taskboard command line
   tb git repair --drop COMMIT [--base BASE]
                                      remove one commit that only your branch holds
   tb git repair --restore BACKUP | --list
-                                     undo a repair with the backup it printed, or list the backups
+                                     undo a repair or rebase with the backup it printed, or list the backups
   tb git check [--base BASE]          list the files your branch changes and warn about large or unsafe files
                                      Without a base, rebase, repair and check use local master. A repository
                                      without master uses the same base as tb git push-request.
   tb git push-request --reason "text" [--branch BRANCH] [--remote REMOTE] [--base BASE] [--then-release]
                                      BASE is master or a remote branch such as origin/prod. Without it, Taskboard
-                                     uses the base from tb git rebase or tb git repair, then origin/HEAD
+                                     uses the base from tb git rebase or tb git repair, then origin/HEAD.
+                                     After a rebase or repair of a pushed branch, the user can approve a force
+                                     push on the card. The task cannot ask for --force itself
   tb git push-result ID [--wait]      read the push result
   tb inbox wait [--timeout seconds]  wait until a file arrives in your inbox (uses TASK_ID; default 3600 s);
                                      prints each file's path and sender; exit 0 = files, 2 = timed out

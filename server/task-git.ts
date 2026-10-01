@@ -27,6 +27,34 @@ async function withMasterLock<T>(run: () => Promise<T>): Promise<T> {
 
 export interface MergeState { source: string; target: string; branch: string }
 
+// tb git repair and tb git rebase save the old head of the task branch in refs/taskboard-backup/<task id>/<time>
+// before they rewrite the branch. tb git repair --list and --restore read these refs, and tb git push-request
+// offers a force push card when the remote head is in one of them.
+export const backupPrefix = (t: Task) => `refs/taskboard-backup/${t.id}/`;
+export async function saveBackup(t: Task, head: string, command: string): Promise<string> {
+  const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
+  for (let n = 0; n < 100; n++) {
+    const name = `${backupPrefix(t)}${stamp}${n ? `-${n}` : ''}`;
+    await exec('git', ['check-ref-format', name]).catch(() => { throw new Error('The task id cannot name a Git ref.'); });
+    try { await exec('git', ['update-ref', '-m', `taskboard: backup before ${command}`, name, head, ''], { cwd: t.cwd }); return name; }
+    catch { /* the name exists; try the next one */ }
+  }
+  throw new Error('Could not create a backup ref.');
+}
+// The backups of this task that point to a commit, newest first.
+async function backupsAt(t: Task, commit: string): Promise<string[]> {
+  const lines = (await git(t.cwd, 'for-each-ref', '--sort=-refname', '--format=%(objectname) %(refname)', backupPrefix(t))).split('\n');
+  return lines.filter(l => l.startsWith(commit + ' ')).map(l => l.slice(commit.length + 1));
+}
+// The head of the branch before the rebase that is in progress. Git keeps it in rebase-merge/orig-head or rebase-apply/orig-head.
+async function rebaseOrigHead(cwd: string): Promise<string> {
+  for (const dir of ['rebase-merge', 'rebase-apply']) {
+    try { return readFileSync(join(await gitPath(cwd, dir), 'orig-head'), 'utf8').trim(); } catch { /* try the next one */ }
+  }
+  return '';
+}
+const backupLines = (name: string) => `Backup of the old head: ${name}\nUndo: tb git repair --restore ${name}`;
+
 export async function mergeState(t: Task): Promise<MergeState> {
   if (!t.worktree || !t.branch || t.role === 'controller') throw new Error('This task has no worktree branch; start a task in a worktree before running tb git merge-request.');
   if (realpathSync(t.cwd) === realpathSync(t.folder)) throw new Error('This task uses master; start a task in a separate worktree before running tb git merge-request.');
@@ -170,6 +198,7 @@ export async function rebaseTask(t: Task, action: 'start' | 'continue' | 'abort'
   await mergeStateForSource(t, true);
   const active = await rebasing(t.cwd);
   let target: Awaited<ReturnType<typeof resolveBase>> | undefined;
+  let backupName = '';
   if (action === 'abort') {
     if (!active) throw new Error('No rebase is in progress; run tb git rebase to start one.');
     await exec('git', ['rebase', '--abort'], { cwd: t.cwd });
@@ -181,8 +210,19 @@ export async function rebaseTask(t: Task, action: 'start' | 'continue' | 'abort'
     if (await git(t.cwd, 'status', '--porcelain')) throw new Error('The task worktree has local changes; run tb git commit before tb git rebase.');
     target = await resolveBase(t, base || (await findBase(t, { localFirst: true })).name);
     if (base) recordBase(t, target.name);
+    const head = await git(t.cwd, 'rev-parse', 'HEAD');
+    // A rebase that changes the branch first saves the old head, so that tb git repair --restore can undo it and
+    // tb git push-request can offer a force push of the rebased branch.
+    // A rebase changes no commit when the branch already contains the base, or when the base contains the branch.
+    const contains = (a: string, b: string) => exec('git', ['merge-base', '--is-ancestor', a, b], { cwd: t.cwd }).then(() => true, () => false);
+    const rewrites = !await contains(target.ref, head) && !await contains(head, target.ref);
+    if (rewrites) backupName = await saveBackup(t, head, 'tb git rebase');
     try { await exec('git', ['rebase', target.ref], { cwd: t.cwd }); }
-    catch (e) { if (await rebasing(t.cwd)) throw new Error('The rebase has conflicts; resolve them in the task worktree and run tb git rebase --continue.'); throw e; }
+    catch (e) {
+      if (await rebasing(t.cwd)) throw new Error(`The rebase has conflicts; resolve them in the task worktree and run tb git rebase --continue.${backupName ? `\n${backupLines(backupName)}` : ''}`);
+      if (backupName && await git(t.cwd, 'rev-parse', 'HEAD') === head) await exec('git', ['update-ref', '-d', backupName, head], { cwd: t.cwd });
+      throw e;
+    }
   } else {
     if (!active) throw new Error('No rebase is in progress; run tb git rebase to start one.');
     const unmerged = (await git(t.cwd, 'diff', '--name-only', '--diff-filter=U', '-z')).split('\0').filter(Boolean);
@@ -191,16 +231,21 @@ export async function rebaseTask(t: Task, action: 'start' | 'continue' | 'abort'
       catch (e) { if (e instanceof Error && e.message.startsWith('Resolve conflict markers')) throw e; }
     }
     if (unmerged.length) await exec('git', ['add', '-A', '--', ...unmerged], { cwd: t.cwd });
+    // tb git rebase --continue keeps the backup that tb git rebase made, and prints it again.
+    const orig = await rebaseOrigHead(t.cwd);
+    if (orig) backupName = (await backupsAt(t, orig))[0] || '';
     try { await exec('git', ['-c', 'core.editor=true', 'rebase', '--continue'], { cwd: t.cwd }); }
     catch (e) { if (await rebasing(t.cwd)) throw new Error('The rebase still has conflicts; resolve them in the task worktree and run tb git rebase --continue.'); throw e; }
   }
+  const backupText = backupName ? `\n${backupLines(backupName)}` : '';
   const pending = readPending(file);
   if (pending) {
-    try { const result = await withMasterLock(() => finishMerge(t, pending)); clearPending(file); return result; }
+    try { const result = await withMasterLock(() => finishMerge(t, pending)); clearPending(file); return result + backupText; }
     catch (e) { clearPending(file); throw e; }
   }
-  if (target?.remote) return `Rebased ${t.branch} onto ${target.name}.\n\n${await historyReport(t.cwd, target.ref, target.name)}`;
-  return `Rebased ${t.branch} onto local master; run tb git merge-request to request a merge.`;
+  if (target?.remote) return `Rebased ${t.branch} onto ${target.name}.${backupText}\n\n${await historyReport(t.cwd, target.ref, target.name)}`;
+  if (action === 'continue') return `Finished the rebase of ${t.branch}; run tb git merge-request to request a merge.${backupText}`;
+  return `Rebased ${t.branch} onto local master; run tb git merge-request to request a merge.${backupText}`;
 }
 
 async function restoreMaster(t: Task, head: string) {
@@ -225,6 +270,7 @@ export async function mergeTask(t: Task, expected: MergeState, file = pendingPat
     if (JSON.stringify(current) !== JSON.stringify(expected)) throw new Error('The branch or checkout changed after approval; run tb git merge-request again.');
     try { await exec('git', ['merge-base', '--is-ancestor', expected.target, expected.branch], { cwd: t.cwd }); }
     catch {
+      await saveBackup(t, expected.source, 'the rebase of an approved merge');
       try { await exec('git', ['rebase', 'master'], { cwd: t.cwd }); }
       catch (e) {
         if (await rebasing(t.cwd)) {
