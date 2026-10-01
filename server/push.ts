@@ -76,7 +76,9 @@ export async function inspectPush(task: Task, reason: string, options: { branch?
   if (ownBranch !== taskBranch) throw new Error('The task branch changed.');
   const ownHead = await git(task.cwd, 'rev-parse', 'HEAD');
   const masterHead = await git(task.folder, 'rev-parse', 'refs/heads/master');
-  const merged = await isAncestor(task.cwd, ownHead, masterHead) && ownHead !== masterHead;
+  // A task branch equal to master (for example after tb git rebase following its merge) can push master only when
+  // the request names master. Without --branch, such a branch still pushes itself.
+  const merged = await isAncestor(task.cwd, ownHead, masterHead) && (ownHead !== masterHead || options.branch === 'master');
   const branch = options.branch || (merged ? 'master' : taskBranch);
   if (branch !== taskBranch && (branch !== 'master' || !merged)) throw new Error('The request can name only this task branch or merged local master.');
   const cwd = branch === 'master' ? task.folder : task.cwd;
