@@ -1,5 +1,5 @@
-// Taskboard's connection to the A2A Notes service. Taskboard is an ordinary MCP client of that service: it does not
-// import the package, and it uses one client token for each role. The dashboard uses the person token, the controller
+// Taskboard's connection to the A2A Notes service. Taskboard is an ordinary MCP client of that service, with one client
+// token for each role. The dashboard uses the person token, the controller
 // uses the reviewer token, and tasks use the agent token. The service checks each role itself.
 // The settings file is TB_DIR/a2anotes.json (private): { "enabled": true, "url": "http://127.0.0.1:4460/mcp",
 // "tokens": { "person": "a2an_…", "reviewer": "a2an_…", "agent": "a2an_…" } }. It is off when the file is missing.
@@ -49,17 +49,31 @@ export class A2ANotesClient {
   // Calls one tool. A connection failure drops the client, so the next call connects again.
   async call<T = any>(role: Role, tool: string, args: Record<string, unknown> = {}): Promise<T> {
     let result: any;
-    try { result = await (await this.connect(role)).callTool({ name: tool, arguments: args }); }
+    // a scan can run the model checks on several messages: allow five minutes, not the SDK default of one minute
+    try { result = await (await this.connect(role)).callTool({ name: tool, arguments: args }, undefined, { timeout: 300_000 }); }
     catch (error) {
       if (error instanceof A2AError) throw error;
       this.clients.delete(role);
-      throw new A2AError('service_unavailable', 'The A2A Notes service is not reachable.', 'Start it with a2a-notes serve and try again.');
+      throw new A2AError('service_unavailable', 'The A2A Notes service is not reachable.', 'Start it from the Settings page, under Integrations.');
     }
     if (result.isError) {
       const e = result.structuredContent?.error;
       throw new A2AError(e?.code || 'error', e?.reason || result.content?.[0]?.text || 'The A2A Notes service refused the request.', e?.next || '');
     }
     return result.structuredContent as T;
+  }
+
+  // Reads a JSON resource, for example a2anotes://policy.
+  async resource<T = any>(role: Role, uri: string): Promise<T> {
+    try {
+      const result = await (await this.connect(role)).readResource({ uri });
+      const first = result.contents[0] as { text?: string } | undefined;
+      return JSON.parse(first?.text || 'null');
+    } catch (error) {
+      if (error instanceof A2AError) throw error;
+      this.clients.delete(role);
+      throw new A2AError('service_unavailable', 'The A2A Notes service is not reachable.', 'Start it from the Settings page, under Integrations.');
+    }
   }
 
   async close() {

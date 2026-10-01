@@ -2,7 +2,7 @@
 
 This guide covers a new installation for a team member.
 
-Status: checked against this checkout on September 29, 2026. The Slack Inbox feature must be included in the release you install.
+Status: checked against this checkout on October 1, 2026. Messages with other people use A2A Notes, which Taskboard installs.
 
 Taskboard runs one server and one controller on each Mac. Each member connects their own Slack account.
 
@@ -101,123 +101,57 @@ Open `~/Applications/Taskboard.app`. The app uses the same local server as the b
 - Ask for a short description of the project without file changes.
 - Confirm that the task opens and returns a result.
 
-## Connect Slack
+## Connect Slack for messages
+
+Taskboard sends and receives messages with other people through A2A Notes (https://github.com/Mgczacki/a2a-notes). A2A Notes is a separate project. Taskboard installs it and runs it as its own service on your Mac. The recipient does not need Taskboard: a message shows its subject, its text, and a **Get A2A Notes** link in Slack.
 
 Use the live address on port 4317. A page with a Sandbox banner is a separate test installation.
 
-This version uses the team's existing Taskboard app in Sekai. New members do not create another Slack app.
-
-- Open **Settings**.
-- Under **Integrations**, find **Taskboard messages (Slack)**.
-- Select **Connect Slack**.
-- Confirm that Slack shows the Sekai workspace and the Taskboard app.
-- Read the permissions and select **Allow**.
-- Return to Taskboard.
-- Confirm that the card shows **Connected as** followed by your Slack name.
-
-If Slack requires administrator approval, ask your workspace administrator to approve the existing Taskboard app.
-
-Each member must complete their own authorization. Do not copy another person's credentials.
-
-The Slack permissions allow Taskboard to find people, look up an exact email, read direct messages, send messages, upload files, and download files. Member search needs `users:read`. Exact email search needs `users:read.email`.
-
-Taskboard scans direct conversations for Taskboard messages from workspace members. It stores only messages with the Taskboard format.
-
-Existing Slack connections must authorize the new file and email permissions. Disconnect Slack, then connect it again.
-
-Taskboard sends message text to Claude for its separate content check. The checking process cannot use tools.
-
-## Choose a recipient
-
-Open **Sent**. Search for a member in the **To** menu. Taskboard shows up to 10 matches with names, titles, and Slack member IDs. Select one member.
-
-In Terminal, use `tb mail people <text>` to find a member. Use `tb mail search <text>` to find past Taskboard messages. `tb mail draft <name|email|Slack ID> <subject> <body>` accepts a name or exact email. If several members match, choose an ID from the results and try again.
-
-You can prepare a draft for any active member. Taskboard checks the member again before it sends the message.
-
-Taskboard does not send contact requests. The recipient does not need Taskboard to read the Slack preview and use the setup link.
-
-## Test with another member
-
-The sender must connect Slack. The recipient can install Taskboard after the message arrives.
-
-- Open **Sent**.
-- Choose the other member from the **To** menu.
-- Enter a subject and a harmless test message.
-- Select **Save draft for approval**.
-- Wait for the controller's content check.
-- Select **Approve**. Your own drafts wait for your approval in **Sent**.
-- Select **Send approved message**.
-- Ask the other member to read the Slack preview. The message footer links to this setup guide.
-- If they use Taskboard, ask them to open **Messages** and select **Sync Slack and check messages**.
-- Confirm that the message appears in their Inbox after the scan reaches that conversation.
-
-To send a document, choose a TXT, MD, PDF, or DOCX file in Outbox. Taskboard limits each file to 10 MiB.
-
-The recipient's controller reads each incoming file as data. The user approves a reviewed file and chooses a task in Inbox before that task receives it. This applies at every level.
-
-Suspicious files stay in quarantine. Taskboard does not run incoming files.
-
-Taskboard shows the subject and sender above the message body in Slack. The message also names the task or controller that proposed it.
-
-Taskboard sends a body as `message.txt` when its Slack text needs more than 2,500 characters. Slack shares the file in the conversation. The formatted message shows a preview. The body limit is 256 KiB.
-
-To reply, send a new Taskboard message to the sender. A Slack reply does not enter Taskboard Inbox.
-
-Taskboard also polls Slack every 60 seconds while the server runs. Each scan reads at most 25 direct conversations. It can take more than one scan to find a new message.
-
-## Use approval and dismissal
-
-Open **Settings** and find **Messages from other people**. Choose one level for incoming messages and one level for outgoing messages. Level 2 is the default for both.
-
-- Level 1: you approve every message. For an incoming message, the controller proposes a task. You approve the message and the task on the dashboard card.
-- Level 2: the controller approves messages that pass the content check. You approve a message when the check finds a problem or is not sure.
-- Level 3: the controller approves messages on its own. Incoming messages that it routes show as unseen in Inbox until you open them.
-
-The Taskboard server enforces these levels. Agents and the controller cannot change them. A change to a higher level asks you to confirm first.
-
-Add the people that you trust under **Trusted people** on the same page. A message from or to a person who is not on this list always needs your approval.
-
-A message where the check finds prompt injection or malicious content stays in quarantine at every level. No agent receives it. At level 3, an incoming message that asks for permissions or production changes is also held.
-
-The approval cards appear at the top right of the dashboard. **Approve** routes an incoming message to the task on the card, or sends an outgoing draft. **Send back** returns the card with your comment. The controller receives comments about incoming messages. The agent that wrote a draft receives comments about that draft.
-
-**Dismiss** hides an item without accepting it or sending feedback. **Show dismissed** lets you find messages and restore them.
-
-Document reviews appear under **Documents to review**. Use **Dismissed** there to find dismissed documents.
-
-A new document review request shows the document again, even if you dismissed its previous version.
-
-## Try A2A Notes (optional)
-
-A2A Notes sends messages over Slack to people who use Taskboard and to people who do not. It is a separate package from https://github.com/Mgczacki/a2a-notes. Taskboard installs it as a dependency, and it runs as its own service on your Mac. The **Messages** and **Sent** tabs do not change.
-
 1. Open **Settings**. Under **Integrations**, find **A2A Notes (Slack)**.
 2. Select **Set up A2A Notes**. Taskboard does these steps:
-   - It writes the A2A Notes settings in `~/.a2a-notes` with the Taskboard Slack app.
+   - It writes the A2A Notes settings in `~/.a2a-notes` with the team's Taskboard Slack app.
    - It starts the service with the LaunchAgent `com.a2anotes.service`, so the service runs after you sign in to your Mac.
    - It makes one client token for each role and writes them to `~/.taskboard/a2anotes.json`.
-3. Select **Connect Slack** and sign in. Slack returns you to the Settings page.
-4. Read A2A Notes messages on the **Inbox** page, in **A2A Notes**. Each message shows the other person's Slack name and picture.
+   - It sets the message checks to Claude with your controller account.
+3. Select **Connect Slack**. Confirm that Slack shows the Sekai workspace, read the permissions, and select **Allow**. Slack returns you to the Settings page.
+4. Confirm that the card shows **Connected as** followed by your Slack name.
 
-The Taskboard Slack app must list `http://localhost:4460/slack/callback` as a redirect URL. If you set up A2A Notes by hand before, setup finds that service and uses it.
+The Taskboard Slack app must list `http://localhost:4460/slack/callback` as a redirect URL. If Slack requires administrator approval, ask your workspace administrator to approve the Taskboard app. Each member signs in with their own Slack account. Do not copy another person's credentials.
 
-After a Taskboard release with a newer A2A Notes version, the A2A Notes card shows **Restart A2A Notes**. Select it to run the new version.
+After a Taskboard release with a newer A2A Notes version, the card shows **Restart A2A Notes**. After a change of the controller account, it shows **Update A2A Notes**.
 
-The dashboard uses the person token. The controller uses the reviewer token. Tasks use the agent token. Taskboard stores the calling task's ID in each draft's local metadata (`taskboard.task_id`) and never sends it. When a reply arrives, the A2A Notes tab suggests the task that sent the original message. You or the controller still approve before the reply goes to a task. In Terminal, `tb a2a` lists the commands.
+## Send a message
+
+- Open **Inbox**, then **Sent**.
+- Type a name or an email in **To** and choose the person.
+- Enter a subject and one or two sentences for the reader. Select **Create draft**.
+- Wait for the message check. Then select **Approve this version** and **Send**.
+
+In Terminal, a task uses `tb mail draft <to> --subject <text> --context <why> --ask <request>`. `<to>` is a name, an exact email, a Slack member ID, or an A2A Notes address. Add `--file <outbox file>` for a supporting file, or `--agent-file <outbox file>` for a request to the reader's agent. `tb mail` lists all commands.
+
+A task can also send a note to you only: `tb mail submit <subject> <body>`. The note stays on your Mac and shows in **Inbox**, under **Messages**.
+
+Each message shows the other person's Slack name and picture. A reply to a message that a task sent suggests that task.
+
+## Approval levels and cards
+
+Open **Settings** and find **Messages from other people**. Choose one level for incoming messages and one for outgoing messages. Level 2 is the default for both.
+
+- Level 1: you approve every message.
+- Level 2: the controller approves ordinary messages to or from trusted people. You approve a message when the check finds a problem or is not sure.
+- Level 3: the controller also approves trusted messages that the check is unsure about.
+
+A2A Notes enforces these levels. Agents and the controller cannot change them. A change to a higher level asks you to confirm first. Add the people that you trust under **Trusted people** on the same page.
+
+The checks are Claude with no tools and the fixed rules of A2A Notes. A message with prompt injection or malicious content stays in quarantine at every level. A draft with flagged text needs your approval.
+
+The approval cards appear at the top right of the dashboard. **Approve** sends a draft, or approves an incoming message and gives it to the task that the controller proposed. **Remove flagged text** removes the flagged sentences from a draft. **Send back** returns the card with your comment: the agent that wrote a draft receives it, and the controller receives comments about incoming messages.
+
+Document reviews appear under **Documents to review**.
 
 ## If setup fails
 
-- If Inbox is missing, confirm that your installed release includes the Slack Inbox feature.
-- If Slack sign-in expires, return to Inbox and select **Connect Slack** again.
-- If review fails, check your Claude sign-in, then select **Retry controller review**.
-- If a message is missing, select **Sync Slack and check messages**. Allow time for Taskboard to scan older direct conversations.
-- If delivery is uncertain, check Slack before preparing another draft. Taskboard does not resend automatically.
-- If a Slack connection stops working, disconnect it and complete **Connect Slack** again.
-- If Taskboard does not open, inspect `~/.taskboard/server.log`.
-
-Tasks and documents live in `~/AgentVault`. Server settings and credentials live in `~/.taskboard`.
-
-Keep those folders when you update Taskboard. Never share credential files when asking for help.
-
-Next action: choose a workspace member in **Sent** and test delivery.
+- If **Set up A2A Notes** fails, read the message on the card. The service log is `~/.a2a-notes/service.log`.
+- If Slack sign-in expires, select **Connect Slack** on the A2A Notes card again.
+- If a message is missing, select **Check Slack now** in Inbox. A2A Notes scans 40 conversations at a time, so a new message can take more than one scan.
+- If delivery is uncertain, select **Check and send**. A2A Notes looks for the message in Slack before it sends again.

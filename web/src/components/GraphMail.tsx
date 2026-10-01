@@ -1,17 +1,17 @@
-// People and Slack messages on the Graph page. GET /api/mail/graph (server/mail/routes.ts) gives the people and a short
-// record of each message without its text. MessagePanel loads the full message with GET /api/mail/:id only when the
-// user opens a row, and shows the same fields as the Sent tab of the Mail page.
+// People and messages on the Graph page. GET /api/a2anotes/graph (server/a2anotes/routes.ts) gives the people and a
+// short record of each message without its text. MessagePanel loads the full message with GET /api/a2anotes/view/:id
+// only when the user opens a row.
 import { useEffect, useState } from 'react';
 import type { Task } from '../api';
-import { date, inboxState, proposer, request, sentState, type Message } from './Mail';
+import { date, inboxState, proposer, request, sentState, type Message } from './messages';
 
 export interface MailPerson { user: string; name: string; picture: string }
-export interface MailBrief extends Omit<Message, 'body' | 'hash' | 'files'> { person: string; preview: string; files: number }
+export interface MailBrief extends Omit<Message, 'body' | 'hash'> { preview: string }
 export interface MailGraph { people: MailPerson[]; messages: MailBrief[] }
 
 // the state label of a message: the Sent tab label for outgoing messages, else where the incoming message went
 export function briefState(m: MailBrief, tasks: Task[]) {
-  if (m.direction === 'outbox') return sentState({ ...m, body: '', hash: '', files: [] });
+  if (m.direction === 'outbox') return sentState(m);
   if (m.routes.length) return 'Routed to ' + m.routes.map(r => { const t = tasks.find(x => x.id === r.task); return t ? `#${t.num}` : r.task; }).join(', ');
   if (m.rejectedAt) return 'Rejected';
   if (m.approval) return 'Approved, not routed';
@@ -43,7 +43,7 @@ export function MessagePanel({ title, person, sub, note, messages, tasks, onShow
   const sorted = [...messages].sort((a, b) => b.created.localeCompare(a.created));
   const toggle = (id: string) => {
     setOpenId(openId === id ? '' : id);
-    if (openId !== id && !full[id]) request(`/${encodeURIComponent(id)}`).then((m: Message) => setFull(f => ({ ...f, [id]: m }))).catch((e: Error) => setFull(f => ({ ...f, [id]: e.message })));
+    if (openId !== id && !full[id]) request(`/view/${encodeURIComponent(id)}`).then((m: Message) => setFull(f => ({ ...f, [id]: m }))).catch((e: Error) => setFull(f => ({ ...f, [id]: e.message })));
   };
   return <aside className="gpanel" aria-label="Messages">
     <div className="gpanel-head">
@@ -66,15 +66,15 @@ export function MessagePanel({ title, person, sub, note, messages, tasks, onShow
             <dl>
               {f.direction === 'outbox' ? <><dt>Proposed by</dt><dd>{proposer(f, tasks)}</dd></> : <><dt>Sender</dt><dd>{title} ({f.from})</dd></>}
               <dt>Approved by</dt><dd>{f.approval ? `${f.approval.by} · ${date(f.approval.at)}` : 'No approval recorded'}</dd>
-              <dt>Controller check</dt><dd>{f.review ? `${f.review.verdict}. ${f.review.reason}` : 'Not done'}</dd>
+              <dt>Check</dt><dd>{f.review ? `${f.review.verdict}. ${f.review.reason}` : 'Not done'}</dd>
               <dt>State</dt><dd>{f.direction === 'outbox' ? sentState(f) : inboxState(f, tasks)}</dd>
               <dt>Created</dt><dd>{date(f.created)}</dd>
-              {f.sentAt && <><dt>Slack confirmed</dt><dd>{date(f.sentAt)}</dd></>}
+              {f.sentAt && <><dt>Sent</dt><dd>{date(f.sentAt)}</dd></>}
               {f.error && <><dt>Error</dt><dd>{f.error}</dd></>}
             </dl>
             <pre>{f.body}</pre>
-            {!!f.files?.length && <ul>{f.files.map(x => <li key={x.id}>{x.name} ({Math.ceil(x.size / 1024)} KiB)</li>)}</ul>}
-            <a className="glink" href="#inbox">Open in Mail</a>
+            {!!f.files && <p className="empty">{f.files} file{f.files === 1 ? '' : 's'}{f.agentFile ? ` · agent file ${f.agentFile}` : ''}</p>}
+            <a className="glink" href="#inbox">Open in Inbox</a>
           </div>)}
         </div>;
       })}
