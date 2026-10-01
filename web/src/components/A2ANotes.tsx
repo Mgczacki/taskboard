@@ -1,20 +1,25 @@
 // The A2A Notes tab of the Inbox page: a Taskboard view of the A2A Notes service (github.com/Mgczacki/a2a-notes), through
 // /api/a2anotes (server/a2anotes/routes.ts). The dashboard acts as the person. Message text shows as plain text.
+// Setup and Slack sign-in are on the Settings page (web/src/components/Integrations.tsx).
 import { useEffect, useState } from 'react';
 import type { Task } from '../api';
+import { Face } from './GraphMail';
+import '../graph.css';
 
 interface Summary {
   id: string; message_id: string; direction: 'in' | 'out'; state: string; audience: 'person' | 'agent' | 'both'; subject: string; from: string; to: string;
   peer_name?: string; trusted: boolean; check: { verdict: string } | null; body_flags: number | null; approver: 'person' | 'reviewer' | 'nobody';
   approved_by: string | null; created: string; hash: string; allowed_actions: string[]; failure_code?: string; routes: { task: string; at: string }[];
   suggested_task?: { id: string; num: number; title: string; reason: string };
+  // the other person: Slack name and picture from the Graph's store (server/a2anotes/routes.ts peerOf)
+  peer: { address: string; user: string; name: string; picture: string };
 }
 interface Detail extends Summary { body: string; review: { reason: string } | null; body_check: { flags: { reason: string; text: string; code: string }[] } | null;
   agent_file: { name: string; sha256: string } | null; failure?: { code: string; reason: string }; error: string | null }
-interface Setup { installed: boolean; version?: string; configured: boolean; running: boolean; serviceVersion?: string; linked: boolean; updateAvailable: boolean; folder: string; port: number }
-interface Status { enabled: boolean; url?: string; error?: string; setup?: Setup; identity?: { address?: string; name?: string }; connection?: { signed_in: boolean; last_scan_at: string | null; last_error: string | null; stale: boolean; missing_scopes: string[] } }
+export interface Setup { installed: boolean; version?: string; configured: boolean; running: boolean; serviceVersion?: string; linked: boolean; updateAvailable: boolean; folder: string; port: number }
+export interface Status { enabled: boolean; url?: string; error?: string; setup?: Setup; identity?: { address?: string; name?: string }; connection?: { signed_in: boolean; last_scan_at: string | null; last_error: string | null; stale: boolean; missing_scopes: string[] } }
 
-async function request(path: string, body?: unknown) {
+export async function request(path: string, body?: unknown) {
   const response = await fetch('/api/a2anotes' + path, { method: body === undefined ? 'GET' : 'POST', headers: { 'content-type': 'application/json' }, body: body === undefined ? undefined : JSON.stringify(body) });
   const data = await response.json();
   if (!response.ok) throw new Error([data.error || 'Request failed', data.next].filter(Boolean).join(' '));
@@ -38,41 +43,31 @@ export function A2ANotesPanel({ tasks }: { tasks: Task[] }) {
   const show = (id: string) => act(async () => { const d = await request(`/messages/${encodeURIComponent(id)}`); setOpen(o => ({ ...o, [id]: d })); });
 
   if (!status) return <p>Loading A2A Notes…</p>;
-  // Setup starts the A2A Notes service and connects Taskboard to it (server/a2anotes/setup.ts)
-  const runSetup = () => act(() => request('/setup', {}));
-  const signIn = () => act(async () => { const link = await request('/slack-sign-in', {}); location.assign(link.url); });
-  const s = status.setup;
-  if (!status.enabled) return <section className="mail-settings">
-    <p>A2A Notes sends messages between people and their agents over Slack. It runs as its own service on this computer. The Messages and Sent tabs keep working as before.</p>
-    {s && !s.installed ? <p role="alert">A2A Notes is not installed with this Taskboard. Run pnpm install in the Taskboard folder.</p>
-      : <p>Setup starts the service{s?.running ? ' (it is already running)' : ''}, keeps it running after you sign in to this computer, and connects Taskboard to it. Then you connect Slack.</p>}
-    {error && <p role="alert">{error}</p>}
-    <button className="btn" disabled={busy || (!!s && !s.installed)} onClick={runSetup}>{busy ? 'Setting up…' : 'Set up A2A Notes'}</button>
-  </section>;
   const c = status.connection;
+  // without a running and connected service there is nothing to show here: setup and sign-in are on Settings
+  if (!status.enabled || status.error || !c?.signed_in) return <section className="mail-settings">
+    <p>{!status.enabled ? 'A2A Notes is not set up on this Taskboard.' : status.error ? `A2A Notes is not reachable: ${status.error}` : 'A2A Notes is not connected to Slack.'} Set it up and connect Slack on the <a href="#settings">Settings page</a>, under Integrations.</p>
+    <p>A2A Notes sends messages between people and their agents over Slack. The Messages and Sent tabs keep working as before.</p>
+  </section>;
   return <div className="a2a-notes">
     <section className="mail-settings">
-      {status.error ? <p role="alert">{status.error}</p> : <p>{c?.signed_in
-        ? <>Connected as {status.identity?.name} ({status.identity?.address}). Last scan: {c.last_scan_at ? new Date(c.last_scan_at).toLocaleString() : 'never'}{c.stale ? '. The inbox may be out of date.' : '.'}</>
-        : 'A2A Notes is running. Connect Slack to send and receive messages.'}</p>}
-      {c?.last_error && <p role="alert">Last scan error: {c.last_error}</p>}
-      {!!c?.missing_scopes.length && <p role="alert">Missing Slack scopes: {c.missing_scopes.join(', ')}</p>}
-      {s?.updateAvailable && <p>A2A Notes {s.version} is installed. The running service is version {s.serviceVersion}. Restart it to use the new version.</p>}
+      <p>Connected as {status.identity?.name}. Last scan: {c.last_scan_at ? new Date(c.last_scan_at).toLocaleString() : 'never'}{c.stale ? '. The inbox may be out of date.' : '.'} Connection settings are on the <a href="#settings">Settings page</a>.</p>
+      {c.last_error && <p role="alert">Last scan error: {c.last_error}</p>}
       <div className="mail-tabs">
-        {status.error && s && !s.running && <button className="btn" disabled={busy} onClick={runSetup}>{busy ? 'Starting…' : 'Start A2A Notes'}</button>}
-        {s?.updateAvailable && <button className="btn" disabled={busy} onClick={runSetup}>{busy ? 'Restarting…' : 'Restart A2A Notes'}</button>}
-        {!status.error && !c?.signed_in && <button className="btn" disabled={busy} onClick={signIn}>Connect Slack</button>}
-        <button className="btn" disabled={busy || !!status.error} onClick={() => act(async () => { const link = await request('/page-link', {}); window.open(link.url, '_blank', 'noopener'); })}>Open the A2A Notes review page</button>
-        <button className="btn" disabled={busy || !c?.signed_in} onClick={() => act(() => request('/sync', {}))}>{busy ? 'Working…' : 'Check Slack now'}</button>
+        <button className="btn" disabled={busy} onClick={() => act(async () => { const link = await request('/page-link', {}); window.open(link.url, '_blank', 'noopener'); })}>Open the A2A Notes review page</button>
+        <button className="btn" disabled={busy} onClick={() => act(() => request('/sync', {}))}>{busy ? 'Working…' : 'Check Slack now'}</button>
       </div>
     </section>
     {error && <p role="alert">{error}</p>}
     {!messages.length && <p>No A2A Notes messages yet.</p>}
     {messages.map(m => {
       const d = open[m.id];
-      const peer = m.direction === 'in' ? m.from : m.to;
+      const peer = m.peer.address;
       return <article key={m.id} className="mail-item" data-a2a={m.id}>
-        <h3>{m.direction === 'in' ? 'From' : 'To'} {m.peer_name || peer}: {m.subject}</h3>
+        <div className="a2a-head">
+          <Face person={{ user: m.peer.user, name: m.peer.name, picture: m.peer.picture }} size={32} />
+          <div><div className="a2a-who" title={peer}>{m.direction === 'in' ? 'From' : 'To'} {m.peer.name}</div><h3>{m.subject}</h3></div>
+        </div>
         <p className="mail-meta">State: {m.state.replace('_', ' ')}. For: {m.audience}. Check: {m.check?.verdict || m.failure_code || 'none'}. Approver: {m.approver === 'nobody' ? 'nobody (the checks hold it)' : m.approver === 'reviewer' ? 'the controller or you' : 'you'}. {m.trusted ? 'Trusted sender.' : 'Not a trusted sender.'}
           {m.routes.length ? ` Given to ${m.routes.map(r => tasks.find(t => t.id === r.task)?.title || r.task).join(', ')}.` : ''}
           {m.suggested_task && !m.routes.length ? ` ${m.suggested_task.reason}: ${m.suggested_task.title}.` : ''}</p>
@@ -95,7 +90,7 @@ export function A2ANotesPanel({ tasks }: { tasks: Task[] }) {
             </select>
             <button className="btn" disabled={busy || !(destinations[m.id] || m.suggested_task?.id)} onClick={() => act(() => request(`/messages/${m.id}/route`, { task: destinations[m.id] || m.suggested_task?.id }))}>Give to task</button>
           </>}
-          {!m.failure_code && <button className="btn" disabled={busy} onClick={() => act(() => request('/trusted', { address: peer, name: m.peer_name || peer, trusted: !m.trusted }))}>{m.trusted ? 'Stop trusting sender' : 'Trust sender'}</button>}
+          {!m.failure_code && <button className="btn" disabled={busy} onClick={() => act(() => request('/trusted', { address: peer, name: m.peer.name, trusted: !m.trusted }))}>{m.trusted ? 'Stop trusting sender' : 'Trust sender'}</button>}
         </div>
       </article>;
     })}

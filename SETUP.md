@@ -107,13 +107,13 @@ Use the live address on port 4317. A page with a Sandbox banner is a separate te
 
 This version uses the team's existing Taskboard app in Sekai. New members do not create another Slack app.
 
-- Open **Inbox**.
-- Expand **Slack connection and approval settings**.
+- Open **Settings**.
+- Under **Integrations**, find **Taskboard messages (Slack)**.
 - Select **Connect Slack**.
 - Confirm that Slack shows the Sekai workspace and the Taskboard app.
 - Read the permissions and select **Allow**.
 - Return to Taskboard.
-- Confirm that the settings show **Connected as** followed by your Slack name and member ID.
+- Confirm that the card shows **Connected as** followed by your Slack name.
 
 If Slack requires administrator approval, ask your workspace administrator to approve the existing Taskboard app.
 
@@ -192,16 +192,17 @@ A new document review request shows the document again, even if you dismissed it
 
 A2A Notes sends messages over Slack to people who use Taskboard and to people who do not. It is a separate package from https://github.com/Mgczacki/a2a-notes. Taskboard installs it as a dependency, and it runs as its own service on your Mac. The **Messages** and **Sent** tabs do not change.
 
-1. Open **Inbox**, then **A2A Notes**.
+1. Open **Settings**. Under **Integrations**, find **A2A Notes (Slack)**.
 2. Select **Set up A2A Notes**. Taskboard does these steps:
    - It writes the A2A Notes settings in `~/.a2a-notes` with the Taskboard Slack app.
    - It starts the service with the LaunchAgent `com.a2anotes.service`, so the service runs after you sign in to your Mac.
    - It makes one client token for each role and writes them to `~/.taskboard/a2anotes.json`.
-3. Select **Connect Slack** and sign in. Slack returns you to the Taskboard Inbox.
+3. Select **Connect Slack** and sign in. Slack returns you to the Settings page.
+4. Read A2A Notes messages on the **Inbox** page, in **A2A Notes**. Each message shows the other person's Slack name and picture.
 
 The Taskboard Slack app must list `http://localhost:4460/slack/callback` as a redirect URL. If you set up A2A Notes by hand before, setup finds that service and uses it.
 
-After a Taskboard release with a newer A2A Notes version, the tab shows **Restart A2A Notes**. Select it to run the new version.
+After a Taskboard release with a newer A2A Notes version, the A2A Notes card shows **Restart A2A Notes**. Select it to run the new version.
 
 The dashboard uses the person token. The controller uses the reviewer token. Tasks use the agent token. Taskboard stores the calling task's ID in each draft's local metadata (`taskboard.task_id`) and never sends it. When a reply arrives, the A2A Notes tab suggests the task that sent the original message. You or the controller still approve before the reply goes to a task. In Terminal, `tb a2a` lists the commands.
 

@@ -12,7 +12,7 @@ import * as tasks from '../store.ts';
 import * as docs from '../docs.ts';
 import type { Delivery } from '../inbox-delivery.ts';
 import { isControllerToken } from '../mail/auth.ts';
-import { human } from '../mail/routes.ts';
+import { human, slackPerson } from '../mail/routes.ts';
 import { savePrivate } from '../mail/store.ts';
 import { A2AError, A2ANotesClient, readSettings, type Role, type Settings } from './client.ts';
 import { setup, setupState } from './setup.ts';
@@ -58,6 +58,14 @@ export function mountA2ANotes(app: Express, options: { delivery?: A2ADeps; setti
   };
   // An incoming reply to a message that a local task sent: suggest that task. The package links a reply only when it
   // comes from the original recipient. The suggestion does not route anything: routing still needs an approval.
+  // The other person of a message, for the dashboard: the Slack name and the picture from the Graph's store when the
+  // address is in a Slack workspace, else the name that A2A Notes gives, else the address.
+  const peerOf = (m: any) => {
+    const address = m.direction === 'in' ? m.from : m.to;
+    const user = /^slack:[A-Z0-9]+:([UW][A-Z0-9]+)$/.exec(String(address || ''))?.[1];
+    const known = user ? slackPerson(user) : undefined;
+    return { address, user: user || String(address || ''), name: m.peer_name || known?.name || user || String(address || ''), picture: known?.picture || '' };
+  };
   const withSuggestion = (m: any) => {
     const id = m.reply_to_local?.metadata?.['taskboard.task_id'];
     const task = typeof id === 'string' && id !== 'controller' ? tasks.get(id) : undefined;
@@ -127,11 +135,11 @@ export function mountA2ANotes(app: Express, options: { delivery?: A2ADeps; setti
     if (req.query.cursor) args.cursor = String(req.query.cursor);
     const result = await service().call(r, 'a2anotes_list_messages', args);
     const routes = readJson<Record<string, Route[]>>(routesFile, {});
-    return { ...result, messages: result.messages.map((m: any) => ({ ...withSuggestion(m), routes: routes[m.id] || [] })) };
+    return { ...result, messages: result.messages.map((m: any) => ({ ...withSuggestion(m), peer: peerOf(m), routes: routes[m.id] || [] })) };
   }));
   app.get('/api/a2anotes/messages/:id', endpoint(async req => {
     const m = await service().call(need(req, 'person', 'reviewer', 'agent'), 'a2anotes_get_message', { id: req.params.id });
-    return { ...withSuggestion(m), routes: readJson<Record<string, Route[]>>(routesFile, {})[m.id] || [] };
+    return { ...withSuggestion(m), peer: peerOf(m), routes: readJson<Record<string, Route[]>>(routesFile, {})[m.id] || [] };
   }));
   app.post('/api/a2anotes/files', endpoint(async req => {
     const r = need(req, 'person', 'reviewer', 'agent');
@@ -195,8 +203,8 @@ export function mountA2ANotes(app: Express, options: { delivery?: A2ADeps; setti
     if (options.settings) throw new A2AError('not_configured', 'This server has fixed A2A Notes settings.');
     return { setup: await setup(settingsFile, settingsFor) };
   }));
-  // Slack sign-in for the A2A Notes service. After sign-in, Slack returns the browser to the Taskboard Inbox.
-  app.post('/api/a2anotes/slack-sign-in', endpoint(req => service().call(need(req, 'person'), 'a2anotes_slack_sign_in', { return_to: `${URL_BASE}/#inbox` })));
+  // Slack sign-in for the A2A Notes service. After sign-in, Slack returns the browser to the Taskboard Settings page.
+  app.post('/api/a2anotes/slack-sign-in', endpoint(req => service().call(need(req, 'person'), 'a2anotes_slack_sign_in', { return_to: `${URL_BASE}/#settings` })));
   app.post('/api/a2anotes/sync', endpoint(async req => { const r = need(req, 'person', 'reviewer', 'agent'); const status = await service().call(r, 'a2anotes_sync'); await checkIncoming(); return status; }));
 
   // The service scans Slack itself. Taskboard only asks for new held messages that the controller may approve.

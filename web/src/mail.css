@@ -67,3 +67,8 @@
 .mail-diff span { display:block; }
 .mail-diff-removed { background:color-mix(in srgb, var(--st-stopped) 18%, transparent); }
 .mail-diff-added { background:color-mix(in srgb, var(--st-working) 18%, transparent); }
+
+/* A2A Notes message header: the person's picture, name, and the subject (web/src/components/A2ANotes.tsx) */
+.a2a-head { display: flex; align-items: center; gap: 10px; }
+.a2a-head h3 { margin: 0; }
+.a2a-who { font-size: 12.5px; color: var(--dim); }
