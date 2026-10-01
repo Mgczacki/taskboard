@@ -1,7 +1,6 @@
 // A live terminal: xterm.js attached to the task's tmux session through /ws/term.
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
-import { WebglAddon } from '@xterm/addon-webgl';
 import { ClipboardAddon } from '@xterm/addon-clipboard';
 import { Terminal as XTerm } from '@xterm/xterm';
 import type { IBufferRange, ILink } from '@xterm/xterm';
@@ -138,10 +137,8 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
     } }) : null;
     const events: Record<string, unknown>[] = [];
     const log = (k: string, x: Record<string, unknown> = {}) => { events.push({ at: Date.now(), k, ...x }); if (events.length > 300) events.shift(); };
-    // GPU renderer: much faster than the default DOM renderer for fast output. Browsers allow a limited number of
-    // WebGL contexts; when one is lost the terminal falls back to the DOM renderer.
-    let renderer = 'dom';
-    try { const gl = new WebglAddon(); gl.onContextLoss(() => { log('webgl-context-lost'); renderer = 'dom'; gl.dispose(); }); term.loadAddon(gl); renderer = 'webgl'; } catch { /* no WebGL */ }
+    // Use xterm's default renderer. A new WebGL context for each pane mount can leave a live terminal blank.
+    const renderer = 'dom';
     // tmux sends copied text as OSC 52; this puts it on the system clipboard
     term.loadAddon(new ClipboardAddon());
     try { fit.fit(); } catch { /* not visible yet */ }
