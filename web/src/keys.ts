@@ -25,6 +25,8 @@ export const ACTIONS: KeyAction[] = [
   { id: 'triagePrev', ctx: 'triage', label: 'Previous task in triage', keys: ['Ctrl+Alt+ArrowUp'] },
   { id: 'nextView', ctx: 'canvas', label: 'Next view (group tab)', keys: ['Ctrl+Alt+KeyG', 'Ctrl+Alt+Tab', 'Shift+Meta+BracketRight'] },
   { id: 'prevView', ctx: 'canvas', label: 'Previous view (group tab)', keys: ['Ctrl+Alt+Shift+Tab', 'Shift+Meta+BracketLeft'] },
+  { id: 'groupLeft', ctx: 'canvas', label: 'Move the current group tab one place to the left', keys: ['Ctrl+Alt+Shift+ArrowLeft'] },
+  { id: 'groupRight', ctx: 'canvas', label: 'Move the current group tab one place to the right', keys: ['Ctrl+Alt+Shift+ArrowRight'] },
   { id: 'newGroup', ctx: 'canvas', label: 'New group', keys: ['Ctrl+Alt+Shift+KeyG'] },
   { id: 'canvasNewTask', ctx: 'canvas', label: 'New task in this canvas view', keys: ['Ctrl+Alt+KeyT'] },
   { id: 'nextWindow', ctx: 'canvas', label: 'Focus the next window', keys: ['Ctrl+Alt+ArrowRight', 'Ctrl+Alt+ArrowDown'] },

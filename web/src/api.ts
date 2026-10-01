@@ -31,7 +31,7 @@ export interface PushRecord { id: string; at: string; taskId: string; branch: st
 export interface AskItem { q: string; a?: string; state: 'running' | 'done' | 'failed' | 'stopped'; steps: string[]; costUsd?: number; ms?: number; agent?: 'claude' | 'codex'; model: string; account: string; at: string }
 export interface AskThread { sessionId?: string; items: AskItem[] }
 export interface SpinOffExchange { sourceNum: number; question: string; answer: string }
-export interface Group { id: string; name: string; color: string; tasks: string[]; created: string }
+export interface Group { id: string; name: string; color: string; tasks: string[]; created: string; order?: number }
 
 export const STATUS_LABEL: Record<Status, string> = {
   'needs-you': 'Needs you', stopped: 'Stopped', review: 'Needs review', working: 'Working', unread: 'Done · unread',
@@ -153,6 +153,7 @@ export const api = {
   newControllerSession: (when: 'now' | 'after-turn' | 'cancel') => call<Task>('POST', '/api/controller/new-session', { when }),
   createGroup: (name: string, tasks: string[] = []) => call<Group>('POST', '/api/groups', { name, tasks }),
   updateGroup: (id: string, patch: { name?: string; color?: string; tasks?: string[]; add?: string | string[]; remove?: string | string[] }) => call<Group>('PATCH', `/api/groups/${id}`, patch),
+  reorderGroups: (ids: string[]) => call<Group[]>('POST', '/api/groups/order', { ids }),
   moveGroupTask: (taskId: string, fromId: string, toId: string) => call<Group[]>('POST', '/api/groups/move', { taskId, fromId, toId }),
   deleteGroup: (id: string, requireArchived = false) => call<Group>('DELETE', `/api/groups/${id}${requireArchived ? '?requireArchived=1' : ''}`),
   restoreGroup: (g: Group) => call('POST', '/api/groups/restore', g),

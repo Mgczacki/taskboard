@@ -680,6 +680,11 @@ app.post('/api/groups/move', (req, res) => {
   if (![taskId, fromId, toId].every(x => typeof x === 'string' && x)) return fail(res, 'taskId, fromId and toId are required');
   try { res.json(groups.moveTask(taskId, fromId, toId)); } catch (e) { fail(res, e); }
 });
+app.post('/api/groups/order', (req, res) => {
+  const { ids } = req.body;
+  if (!Array.isArray(ids) || !ids.every(x => typeof x === 'string' && x)) return fail(res, 'ids must be a list of group ids');
+  try { res.json(groups.reorder(ids)); } catch (e) { fail(res, e); }
+});
 app.patch('/api/groups/:id', (req, res) => {
   const { name, color, tasks, add, remove } = req.body; const g = groups.get(req.params.id); if (!g) return res.status(404).end();
   let list = tasks ?? g.tasks;
