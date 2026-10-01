@@ -7,7 +7,7 @@ import { api } from '../api';
 const TITLE: Record<RulesKind, string> = { controller: 'Controller rules', task: 'Task session rules' };
 const WHO: Record<RulesKind, string> = {
   controller: 'The controller reads these rules when it starts. A new controller session uses the saved text.',
-  task: 'Every task session that Taskboard starts receives these rules. A resumed conversation keeps the text that it started with. When the rules do not fit on the agent\'s command line, the agent gets a copy in its task folder to read.',
+  task: 'Every task session that Taskboard starts receives these rules. A resumed conversation keeps the text that it started with. When a long first prompt leaves no room on the agent\'s command line, the agent gets a copy of the rules in its task folder to read.',
 };
 
 export function RulesFiles() {

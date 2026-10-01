@@ -10,9 +10,10 @@ export type RulesKind = 'controller' | 'task';
 export const RULES_KINDS: RulesKind[] = ['controller', 'task'];
 export const RULES_DIR = join(TB_DIR, 'rules');
 // tmux refuses a command longer than about 16 KB (observed with tmux 3.7c), and the task rules go on the agent's
-// command line with the other task instructions. agents.ts command uses a copy in the task folder when they do not fit.
+// command line with the other task instructions (about 11.5 KB for a worktree task without rules), so they stay short.
+// agents.ts command uses a copy in the task folder when a long first prompt leaves no room for them.
 // The controller rules go into a file (CLAUDE.md, AGENTS.md).
-export const MAX_RULES_CHARS: Record<RulesKind, number> = { controller: 50_000, task: 6_000 };
+export const MAX_RULES_CHARS: Record<RulesKind, number> = { controller: 50_000, task: 2_000 };
 export const PREVIEW_LINES = 4;
 
 export const isKind = (k: unknown): k is RulesKind => RULES_KINDS.includes(k as RulesKind);

@@ -32,7 +32,7 @@ test('saving writes the rules file in the Taskboard folder and refuses text that
   assert.equal(readFileSync(saved.file, 'utf8'), 'Run the tests.\nWrite short commits.');
   assert.equal(saved.chars, 35);
   assert.ok(saved.updated);
-  assert.throws(() => rules.write('task', 'x'.repeat(rules.MAX_RULES_CHARS.task + 1)), /maximum is 6000/);
+  assert.throws(() => rules.write('task', 'x'.repeat(rules.MAX_RULES_CHARS.task + 1)), /maximum is 2000/);
   assert.equal(rules.read('task'), 'Run the tests.\nWrite short commits.');
   assert.throws(() => rules.write('task', 42), /must be a string/);
   assert.equal(rules.isKind('project'), false);
@@ -71,17 +71,16 @@ test('a new task session receives the current task rules for each agent', () => 
   assert.doesNotMatch(agents.taskInstructions(task('claude', 901)), /user's rules/);
 });
 
-test('task rules that make the command too long for tmux go into a copy in the task folder', { timeout: 30000 }, async () => {
+test('task rules at the maximum length fit, and a long prompt moves them into a copy in the task folder', { timeout: 30000 }, async () => {
   const t = task('claude', 904);
   try {
-    // 1500 characters and a short prompt: the rules fit and go on the command line
-    rules.write('task', 'Rule text. '.repeat(136));
+    // the maximum length and a short prompt: the rules fit and go on the command line
+    rules.write('task', 'Rule text. '.repeat(Math.floor(rules.MAX_RULES_CHARS.task / 11)));
     const short = agents.command(t, 'Do the work.', false);
     assert.ok(Buffer.byteLength(short.join(' ')) <= agents.MAX_COMMAND_BYTES);
     assert.match(short.join(' '), /Rule text\. Rule text\./);
-    // the maximum length and a long prompt: the instructions name the copy, and tmux accepts the command
-    rules.write('task', 'Rule text. '.repeat(Math.floor(rules.MAX_RULES_CHARS.task / 11)));
-    const long = agents.command(t, 'Do the work. '.repeat(200), false);
+    // a long prompt: the instructions name the copy, and tmux accepts the command
+    const long = agents.command(t, 'Do the work. '.repeat(250), false);
     assert.doesNotMatch(long.join(' '), /Rule text\. Rule text\./);
     assert.ok(Buffer.byteLength(long.join(' ')) <= agents.MAX_COMMAND_BYTES);
     const copy = join(store.taskDir(t.id), 'rules.md');
