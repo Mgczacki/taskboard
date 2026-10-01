@@ -58,6 +58,7 @@ const HELP = `tb — Taskboard command line
   tb move <task> --account <id> [--instruction "<text>"]
                                      continue the task on that account, with a handoff when needed
   tb send <task> "<text>"            type text into the agent's terminal and press Enter
+  tb resume <task>                   bring back a parked or archived task; then use tb send
   tb new --agent auto|claude|codex|antigravity --folder <path> [--account <id>] [--model <name>] [--title <t>] [--worktree <branch>|--no-worktree] [--group <name>] "<prompt>"
   tb new --batch <plan.json>         [{ agent, folder, title, prompt, account?, model?, worktree?, group? }, …]
   tb ask spin-off <task> [--answer n] [--title <t>] [--agent claude|codex|antigravity] [--account <id>] [--folder <path>] [--worktree <branch>]
@@ -83,7 +84,7 @@ const HELP = `tb — Taskboard command line
   tb git push-result ID [--wait]      read the push result
   tb inbox wait [--timeout seconds]  wait until a file arrives in your inbox (uses TASK_ID; default 3600 s);
                                      prints each file's path and sender; exit 0 = files, 2 = timed out
-  tb park|archive <task>      park = set aside: off Needs you / Unread until the agent works or finishes again; archive = done
+  tb park|archive <task>             set aside a task or end and archive it
 <task> is a number (12 or #12) or a task id.`;
 
 const [cmd, ...rest] = args;
@@ -355,6 +356,13 @@ switch (cmd) {
     break;
   }
   case 'park': { const t = await task(rest[0]); await call('POST', `/api/tasks/${t.id}/status`, { status: 'parked' }); console.log(`#${t.num} set aside.`); break; }
+  case 'resume': {
+    if (rest.length !== 1 || !rest[0]) { console.error('Usage: tb resume <task>'); process.exit(1); }
+    const t = await task(rest[0]);
+    const resumed = await call('POST', `/api/tasks/${t.id}/status`, { status: 'idle' });
+    console.log(`#${t.num} resumed. Status: ${resumed.status}. Run tb send ${t.num} "<text>" to send an instruction.`);
+    break;
+  }
   // archive = done: ends the agent's session too (otherwise its next turn would bring the task back)
   case 'archive': { const t = await task(rest[0]); await call('POST', `/api/tasks/${t.id}/kill`, {}); console.log(`#${t.num} ended and archived.`); break; }
   default: console.log(HELP);

@@ -569,10 +569,22 @@ app.post('/api/tasks/:id/status', async (req, res) => {
   const s = req.body.status;
   if (!['idle', 'parked', 'archived'].includes(s)) return fail(res, 'status must be idle, parked or archived');
   const t0 = store.get(req.params.id); if (!t0) return res.status(404).end();
+  const controllerResume = req.get('x-tb-actor') === 'controller' && s === 'idle';
+  if (controllerResume && machine.get().permissions.controllerNeedsApproval)
+    return res.status(403).json({ error: 'The controller cannot resume tasks while "The controller may create and manage tasks without asking" is off in Settings.' });
+  if (controllerResume && !['parked', 'archived'].includes(t0.status))
+    return fail(res, `#${t0.num} is ${t0.status}. Only parked or archived tasks can be resumed with tb resume.`);
   await guarded(req, res, `${s === 'archived' ? 'archive' : s === 'parked' ? 'park' : 'unpark'} #${t0.num} ${t0.title}`, '', 'status',
     async () => {
+      if (controllerResume) {
+        const current = store.get(t0.id)!;
+        if (!['parked', 'archived'].includes(current.status)) throw new Error(`#${current.num} is ${current.status}. Only parked or archived tasks can be resumed with tb resume.`);
+        agents.checkResumeAccount(current);
+      }
       if (s === 'archived') { await tmux.killSession(t0.session); await stopTaskSandboxes(t0.id); trimTerminalLog(store.terminalLog(t0.id)); }
-      return view(store.update(t0.id, { status: s, statusSource: `Set at ${new Date().toTimeString().slice(0, 5)}.` })!);
+      const updated = store.update(t0.id, { status: s, statusSource: controllerResume ? 'Resumed by the controller.' : `Set at ${new Date().toTimeString().slice(0, 5)}.` })!;
+      if (controllerResume) store.appendLog(t0.id, { did: 'Task resumed by the controller.', next: 'Send the instruction to the task.' });
+      return view(updated);
     }, () => `#${t0.num} is now ${s}.`);
 });
 app.post('/api/tasks/:id/seen', (req, res) => {

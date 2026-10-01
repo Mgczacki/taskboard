@@ -188,7 +188,7 @@ Use the \`tb\` command (run \`tb\` alone for help). Tasks are numbers like 12 or
 
 ## What you do
 - Answer questions about what each task is doing. Read \`tb list\` and \`tb log <task>\` first; use \`tb tail <task>\` if the log is not enough.
-- Pass the user's instructions to a task with \`tb send <task> "<text>"\`. Quote the user's intent; do not add work they did not ask for.
+- Pass the user's instructions to a task with \`tb send <task> "<text>"\`. If the task is parked or archived, run \`tb resume <task>\` first. Quote the user's intent. Do not add work they did not ask for.
 - Before starting tasks, run \`tb accounts\` to read current usage and routing rules.
 - Follow the user's explicit agent, account, or model choice. Otherwise use the routing rules and current usage.
 - Avoid accounts that are limited, not signed in, or already running their maximum number of tasks. Only the user changes that maximum, on the Accounts page.
@@ -219,8 +219,8 @@ Account rules appear in \`tb accounts\`. Apply them when you choose an account.
 - Pass the user's exact message with \`tb permit approve ID --user-request "<message>"\` for high risk commands.
 - The server checks the risk class. Pushing and releasing keep their own approval cards.
 ${machine.get().permissions.controllerNeedsApproval
-  ? '- Starting agents, typing into other agents, parking and archiving wait for the user\'s Approve / Deny on the dashboard; `tb` prints\n  that it is waiting and returns the answer. That is expected.'
-  : '- You may start, type into, set aside and archive tasks directly with `tb`; the user allowed this in Taskboard\'s Settings. Act only on\n  what the user asked for, and tell them what you did.'}
+  ? '- Starting agents, typing into other agents, parking and archiving wait for the user\'s Approve / Deny on the dashboard; `tb` prints\n  that it is waiting and returns the answer. `tb resume` is off until the user enables direct task management in Settings.'
+  : '- You may start, type into, set aside, archive and resume tasks directly with `tb`. The user allowed this in Taskboard\'s Settings.\n  If a task is parked or archived, run `tb resume <task>` before `tb send <task> "<text>"`. Act only on what the user asked for.'}
 
 ## Account messages
 ${messageRules()}
@@ -531,7 +531,7 @@ export async function resumeTask(t: Task, force = false): Promise<Task> {
   return store.update(t.id, { status: 'idle', statusSource: `Resumed with ${resumeCommand(t.agent)} ${t.sessionId}.` })!;
 }
 
-function checkResumeAccount(t: Task) {
+export function checkResumeAccount(t: Task) {
   const account = accounts.get(t.account) || accounts.defaultFor(t.agent);
   const active = runningOn(account.id) - (['working', 'needs-you', 'unread', 'idle', 'review', 'stopped'].includes(t.status) ? 1 : 0);
   const why = accounts.unavailable(account, active);
@@ -547,7 +547,7 @@ export async function sendTaskText(t: Task, text: string): Promise<{ resumed: bo
   if (delivering.has(t.id)) throw new Error('A message is already being sent to this task.');
   delivering.add(t.id);
   try {
-    if (t.status === 'archived' || t.status === 'parked') throw new Error('This task is archived or set aside. Resume it from the task panel first.');
+    if (t.status === 'archived' || t.status === 'parked') throw new Error('This task is archived or set aside. Run tb resume <task>, then send again.');
     if (t.openElsewhere) throw new Error('This task is open in another terminal. Move it here before sending a message.');
     const sessions = await tmux.listSessions();
     if (!sessions) throw new Error('Could not check the task session. Try again.');

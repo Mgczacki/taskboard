@@ -35,7 +35,7 @@ test('each refusal names its own reason', () => {
   assert.equal(accounts.unavailable(a, 2), 'Account codex-work is at its limit of 2 tasks (raise it on the Accounts page).');
   const inAnHour = Date.now() + 3600000;
   const full = { ...a, usage: { windows: [{ label: '5-hour', usedPct: 100, resetsAt: inAnHour }], at: now, source: 'test' } };
-  assert.match(accounts.unavailable(full, 0)!, /^Account codex-work is at 100% usage until \d\d:\d\d\.$/);
+  assert.match(accounts.unavailable(full, 0)!, /^Account codex-work is at 100% usage until (?:\w{3} \d{1,2} \w{3} )?\d\d:\d\d\.$/);
   const past = { ...full, usage: { ...full.usage, windows: [{ label: '5-hour', usedPct: 100, resetsAt: Date.now() - 1000 }] } };
   assert.equal(accounts.unavailable(past, 0), undefined, 'a window that already reset does not block');
   const limited = { ...a, limited: { at: now, note: 'rate limit reached' } };
