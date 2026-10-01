@@ -11,6 +11,7 @@ export interface Task {
   created: string; updated: string; statusAt: string; statusSource?: string;
   goal?: string; now?: string; ask?: string; stopReason?: string; interrupted?: string; desc: string;
   waitMin: number; attach: string; docs?: { inbox: number; outbox: number }; role?: 'controller'; parent?: string; account?: string; model?: string; machine?: { id: string; name: string }; imported?: string; openElsewhere?: { pid: number; tty: string }; moveWhenDone?: boolean; remoteUrl?: string; restartWhenDone?: boolean; newSessionWhenDone?: boolean; unscrollable?: boolean; tokenEstimate?: number | null;
+  transfer?: { id: string; machine: string; task: string; direction: 'source' | 'target'; state: 'staged' | 'starting' | 'started' | 'failed'; worktreeCreated?: boolean; peerIdentity?: string };
 }
 
 export interface ImportCandidate {
@@ -18,11 +19,26 @@ export interface ImportCandidate {
   updated: string; source?: string; running?: { pid: number; tty: string; exact: boolean };
 }
 
-export interface MachineInfo { role?: 'production' | 'sandbox'; root?: string; machine: string; host: string; url: string; settings: { name: string; routingRules: string; newTaskDefaultAgent: Agent | 'auto'; controller: { autostart: boolean; remoteControl: boolean; dangerouslySkipPermissions: boolean; models: Record<Agent, string> }; permissions: { controllerNeedsApproval: boolean; agentsNeedApproval: boolean; trustWorkspaces: boolean; autoReview: boolean; controllerCanApprovePermits: boolean }; permitFolders: string[]; pushes: { taskBranches: 'run' | 'ask' | 'never'; ownRepositories: string[]; protectedBranches: string[] }; ask: { agent: 'claude' | 'codex'; account: string; model: string }; review: { account: string; model: string }; messages: { incoming: MessageLevel; outgoing: MessageLevel; checkPrivateNotes: boolean }; accounts: { defaultMaxParallel: number } }; controller: null | { agent: string; account?: string; status: string; remoteUrl?: string; label: string } }
+export interface MachineInfo { role?: 'production' | 'sandbox'; root?: string; machine: string; machineId?: string; host: string; url: string; settings: { name: string; routingRules: string; newTaskDefaultAgent: Agent | 'auto'; controller: { autostart: boolean; remoteControl: boolean; dangerouslySkipPermissions: boolean; models: Record<Agent, string> }; permissions: { controllerNeedsApproval: boolean; agentsNeedApproval: boolean; trustWorkspaces: boolean; autoReview: boolean; controllerCanApprovePermits: boolean }; permitFolders: string[]; pushes: { taskBranches: 'run' | 'ask' | 'never'; ownRepositories: string[]; protectedBranches: string[] }; ask: { agent: 'claude' | 'codex'; account: string; model: string }; review: { account: string; model: string }; messages: { incoming: MessageLevel; outgoing: MessageLevel; checkPrivateNotes: boolean }; accounts: { defaultMaxParallel: number } }; controller: null | { agent: string; account?: string; status: string; remoteUrl?: string; label: string } }
 // the user's rules files for the controller and for task sessions (server/rules.ts)
 export type RulesKind = 'controller' | 'task';
 export interface RulesFile { kind: RulesKind; file: string; text: string; chars: number; max: number; updated: string | null; preview: { lines: string[]; more: boolean } }
-export interface Machine { id: string; name: string; url: string; local?: boolean; online: boolean; latency?: number; lastSeen?: string; error?: string; tasks?: number }
+export interface Machine { id: string; name: string; url: string; identity?: string; local?: boolean; online: boolean; latency?: number; lastSeen?: string; error?: string; tasks?: number }
+export async function linkedTaskId(identity: string | undefined, taskId: string): Promise<string | null> {
+  if (!identity) return null;
+  const match = (await call<Machine[]>('GET', '/api/machines')).find(machine => machine.identity === identity);
+  return match ? (match.local ? taskId : `${match.id}~${taskId}`) : null;
+}
+export interface TransferCheck {
+  machine: string; folder: string; fingerprint: string; ready: boolean; issues: string[];
+  source: { root: string; remote: string; branch: string; head: string; changes: string[]; ignored: string[] };
+  target: { root: string; remote: string; branch: string; head: string; changes: string[] };
+  accounts: { id: string; name: string; agent: Agent; signedIn: boolean; unavailable?: string }[];
+  files: { files: { path: string; size: number; hash: string }[]; omitted: string[] };
+  workspace: { files: { path: string; size: number; hash: string }[]; omitted: string[] };
+  transcript: { path: string; size: number; hash: string; available: boolean; reason?: string } | null;
+  bundle: { available: boolean; size?: number; hash?: string; commits?: number; reason?: string } | null;
+}
 export type MessageLevel = 1 | 2 | 3;
 export interface Approval { id: string; actor: string; action: string; summary: string; detail: string; created: string; state: 'pending' | 'running' | 'approved' | 'denied' | 'failed' | 'expired' | 'unknown' | 'returned'; result?: string; returnable?: boolean; payload?: { permitId?: string; pushId?: string; canPermit?: boolean; message?: string; hash?: string; body?: string; quality?: { state: string; flags: { text: string; start: number; end: number; reason: string }[] } } }
 export interface Permit { id: string; taskId: string; taskNum: number; agent: Agent; reason: string; statedRisk?: string; createdAt: string; expiresAt: string; state: string; approvedBy?: string; approvalRule?: string; riskClass?: 'low' | 'high'; controllerRequestText?: string; decisionComment?: string; error?: string; riskFlags: string[]; steps: { command: string; cwd: string; timeoutSeconds: number; network: boolean; state: string; exitCode?: number | null; outputTail?: string; error?: string }[] }
@@ -149,6 +165,10 @@ export const api = {
   // a message card goes back to the controller or to the agent that wrote the draft, with the comment
   giveBack: (id: string, comment: string) => call<Approval>('POST', `/api/approvals/${id}/return`, { comment }),
   moveAccount: (id: string, account: string) => call<Task>('POST', `/api/tasks/${id}/move-account`, { account }),
+  transferMachines: (id: string) => call<{ id: string; name: string; online: boolean }[]>('GET', `/api/tasks/${encodeURIComponent(id)}/transfer/machines`),
+  transferCheck: (id: string, machine: string, folder: string) => call<TransferCheck>('POST', `/api/tasks/${encodeURIComponent(id)}/transfer/check`, { machine, folder }),
+  transferMove: (id: string, body: { machine: string; folder: string; account: string; fingerprint: string; handoffOnly: boolean; useBundle: boolean; includeFiles: boolean; includeWorkspace: boolean; includeTranscript: boolean; stopNow: boolean }) => call<{ id: string; num: number; machine: string; machineIdentity?: string; transferId: string }>('POST', `/api/tasks/${encodeURIComponent(id)}/transfer/move`, body),
+  transferRecover: (id: string, action: 'status' | 'retry-target' | 'resume-source') => call<{ state: string; target?: { id: string; num: number; state: string } }>('POST', `/api/tasks/${encodeURIComponent(id)}/transfer/recover`, { action }),
   startController: () => call<Task>('POST', '/api/controller/start', {}),
   newControllerSession: (when: 'now' | 'after-turn' | 'cancel') => call<Task>('POST', '/api/controller/new-session', { when }),
   createGroup: (name: string, tasks: string[] = []) => call<Group>('POST', '/api/groups', { name, tasks }),

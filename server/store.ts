@@ -1,7 +1,7 @@
 // Tasks are Markdown notes in the vault: ~/AgentVault/tasks/<id>.md (frontmatter = task fields, body = description).
 // Each task also has a folder ~/AgentVault/tasks/<id>/ with log.md (agent-written) and terminal.log (tmux pipe-pane).
 import matter from 'gray-matter';
-import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { TASKS_DIR, TB_DIR } from './config.ts';
 
@@ -46,6 +46,7 @@ export interface Task {
   unscrollable?: boolean;    // running full screen without mouse support (Codex started before --no-alt-screen)
   launchedAs?: string; // controller: the name / Remote Control / agent it was started with (restarted when these change)
   remoteUrl?: string; // controller: its Remote Control address on claude.ai (read from its screen) // take the session over from that terminal as soon as its current turn ends
+  transfer?: { id: string; machine: string; task: string; direction: 'source' | 'target'; state: 'staged' | 'starting' | 'started' | 'failed'; worktreeCreated?: boolean; peerIdentity?: string };
   desc: string;
 }
 
@@ -114,6 +115,15 @@ export function remove(id: string) {
   const dest = join(TB_DIR, 'trash', `${id}-${Date.now()}`);
   mkdirSync(dest, { recursive: true });
   for (const p of [join(TASKS_DIR, id + '.md'), taskDir(id)]) if (existsSync(p)) renameSync(p, join(dest, basename(p)));
+  tasks.delete(id);
+  launchedAt.delete(id);
+  for (const fn of removeListeners) fn(id);
+}
+export function discardStagedTransfer(id: string) {
+  const t = tasks.get(id);
+  if (!t || t.transfer?.direction !== 'target' || !['staged', 'failed'].includes(t.transfer.state)) throw new Error('Only a staged or failed transfer can be discarded.');
+  rmSync(join(TASKS_DIR, id + '.md'), { force: true });
+  rmSync(taskDir(id), { recursive: true, force: true });
   tasks.delete(id);
   launchedAt.delete(id);
   for (const fn of removeListeners) fn(id);

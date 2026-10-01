@@ -250,7 +250,7 @@ export function App() {
         </div>
       </div>
       {selected.size > 0 && <SelectionBar ids={[...selected]} tasks={tasks} groups={groups} clear={() => setSelected(new Set())} newGroup={ids => setGroupPrompt(ids)} toast={toast} />}
-      {open && <TaskPanel key={open.id + (openTab || '')} t={open} tasks={tasks} initialTab={openTab} documentLink={documentLink?.task === open.id && !documentLink.reviewId ? documentLink : null} groups={groups} onClose={() => setOpenId(null)} onCanvas={showOnCanvas} toast={toast} />}
+      {open && <TaskPanel key={open.id + (openTab || '')} t={open} tasks={tasks} initialTab={openTab} documentLink={documentLink?.task === open.id && !documentLink.reviewId ? documentLink : null} groups={groups} onClose={() => setOpenId(null)} onCanvas={showOnCanvas} onOpenTask={setOpenId} toast={toast} />}
       {newOpen && <NewTask groups={groups} initialGroup={page === 'canvas' && view.startsWith('g:') && groups.some(g => g.id === view.slice(2)) ? view.slice(2) : undefined} initialFolder={spinOff?.task.folder} initialMachine={spinOff?.task.machine?.id} spinOff={spinOff?.exchange} onClose={() => { setNewOpen(false); setSpinOff(null); }} onStarted={(id, group, choice) => {
         if (choice) toast(`Auto chose ${choice}.`);
         setNewOpen(false); setSpinOff(null);

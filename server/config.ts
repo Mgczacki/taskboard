@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -26,6 +26,11 @@ const tokenFile = join(TB_DIR, 'token');
 if (!existsSync(tokenFile)) writeFileSync(tokenFile, randomBytes(24).toString('hex'), { mode: 0o600 });
 export const TOKEN = readFileSync(tokenFile, 'utf8').trim();
 export const TOKEN_FILE = tokenFile;
+const machineIdFile = join(TB_DIR, 'machine-id');
+export function machineId() {
+  if (!existsSync(machineIdFile)) writeFileSync(machineIdFile, randomUUID(), { mode: 0o600 });
+  return readFileSync(machineIdFile, 'utf8').trim();
+}
 
 export const HOOK_SCRIPT = join(TB_DIR, 'hooks', 'claude-hook.mjs');
 // The scripts the agents' CLIs run are copied to TB_DIR/hooks at start (see instance.ts), so running agents keep a
