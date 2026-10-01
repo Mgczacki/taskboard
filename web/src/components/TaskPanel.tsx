@@ -53,6 +53,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, initialTab, doc
 
   const act = (p: Promise<unknown>) => p.catch(e => setErr(String(e.message || e)));
   const [confirmRm, setConfirmRm] = useState(false);
+  const [confirmNew, setConfirmNew] = useState(false);
   // the task description starts folded to two lines so the terminal keeps its space
   const [briefOpen, setBriefOpen] = useState(false);
   // details folded away (kept for the next panel too): only the title, status and tabs stay above the terminal
@@ -146,9 +147,18 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, initialTab, doc
               ? <><span>The agent is between turns, so nothing is interrupted. This ends process {t.openElsewhere?.pid} in {t.openElsewhere?.tty} and resumes the conversation here.</span><button className="btn primary" onClick={() => { setConfirmTake(false); act(api.takeover(t.id)); }}>Move it here</button><button className="btn ghost" onClick={() => setConfirmTake(false)}>Cancel</button></>
               : <><span>The agent is in the middle of a turn. Stopping it now cuts that turn off, including any command it is running; the saved conversation is kept.</span><button className="btn primary" onClick={() => { setConfirmTake(false); act(api.takeover(t.id, 'after-turn')); }}>Move it when this turn ends</button><button className="btn danger" onClick={() => { setConfirmTake(false); act(api.takeover(t.id)); }}>Stop it now and move it</button><button className="btn ghost" onClick={() => setConfirmTake(false)}>Cancel</button></>}
         </div>}
+        {t.role === 'controller' && t.newSessionWhenDone && <div className="banner"><span>The controller starts a new session when its current turn ends. The turn is not interrupted.</span><button className="btn ghost" onClick={() => act(api.newControllerSession('cancel'))}>Cancel</button></div>}
+        {t.role === 'controller' && confirmNew && !t.newSessionWhenDone && <div className="banner">
+          <div style={{ flex: '1 1 100%' }}><b>Start the controller in a new session?</b> It starts a new conversation with the current Taskboard instructions and tools. The current conversation stays in {AGENT_NAME[t.agent]}'s history, but the controller does not remember it.</div>
+          {['idle', 'unread', 'suspended', 'stopped', 'archived'].includes(t.status)
+            ? <button className="btn primary" onClick={() => { setConfirmNew(false); act(api.newControllerSession('now')); }}>Start new session</button>
+            : <><button className="btn primary" onClick={() => { setConfirmNew(false); act(api.newControllerSession('after-turn')); }} title="Waits until the controller finishes its current turn">Start it when this turn ends</button><button className="btn danger" onClick={() => { setConfirmNew(false); act(api.newControllerSession('now')); }} title="Cuts off the current turn, including a running command">Stop it now and start</button></>}
+          <button className="btn ghost" onClick={() => setConfirmNew(false)}>Cancel</button>
+        </div>}
         <div className="dr-actions">
           {t.role !== 'controller' && <button className="btn" disabled={moving} onClick={() => setMoveOpen(o => !o)}>Move account…</button>}
           <button className="btn" onClick={() => { navigator.clipboard.writeText(t.attach); setCopied(true); setTimeout(() => setCopied(false), 1500); }} title="Open this agent in iTerm or Terminal">⧉ {copied ? 'Copied' : <>Copy <code>{t.attach}</code></>}</button>
+          {t.role === 'controller' && !t.newSessionWhenDone && <button className="btn" onClick={() => setConfirmNew(o => !o)} title="End this conversation and start the controller in a new one, with the current instructions and tools">New session…</button>}
           <button className="btn" onClick={() => onCanvas(t.id)} title="Open this agent's live terminal as a window on the canvas">⊞ Show on canvas</button>
           {t.status === 'suspended' && <button className="btn primary" onClick={() => act(api.resume(t.id))} title="Start the agent again in tmux and continue its saved conversation">Resume</button>}
           {t.status === 'parked' ? <button className="btn" onClick={() => act(api.setStatus(t.id, 'idle'))} title="Put it back on your lists as Idle">Bring back</button> : <button className="btn" onClick={() => act(api.setStatus(t.id, 'parked'))} title="Take it off Needs you, Unread and triage. The agent is not stopped; the task comes back by itself the next time the agent works or finishes a turn.">Set aside</button>}

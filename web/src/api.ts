@@ -10,7 +10,7 @@ export interface Task {
   cwd: string; folder: string; branch?: string; worktree?: boolean; session: string; sessionId?: string;
   created: string; updated: string; statusAt: string; statusSource?: string;
   goal?: string; now?: string; ask?: string; stopReason?: string; interrupted?: string; desc: string;
-  waitMin: number; attach: string; docs?: { inbox: number; outbox: number }; role?: 'controller'; parent?: string; account?: string; model?: string; machine?: { id: string; name: string }; imported?: string; openElsewhere?: { pid: number; tty: string }; moveWhenDone?: boolean; remoteUrl?: string; restartWhenDone?: boolean; unscrollable?: boolean; tokenEstimate?: number | null;
+  waitMin: number; attach: string; docs?: { inbox: number; outbox: number }; role?: 'controller'; parent?: string; account?: string; model?: string; machine?: { id: string; name: string }; imported?: string; openElsewhere?: { pid: number; tty: string }; moveWhenDone?: boolean; remoteUrl?: string; restartWhenDone?: boolean; newSessionWhenDone?: boolean; unscrollable?: boolean; tokenEstimate?: number | null;
 }
 
 export interface ImportCandidate {
@@ -145,6 +145,7 @@ export const api = {
   giveBack: (id: string, comment: string) => call<Approval>('POST', `/api/approvals/${id}/return`, { comment }),
   moveAccount: (id: string, account: string) => call<Task>('POST', `/api/tasks/${id}/move-account`, { account }),
   startController: () => call<Task>('POST', '/api/controller/start', {}),
+  newControllerSession: (when: 'now' | 'after-turn' | 'cancel') => call<Task>('POST', '/api/controller/new-session', { when }),
   createGroup: (name: string, tasks: string[] = []) => call<Group>('POST', '/api/groups', { name, tasks }),
   updateGroup: (id: string, patch: { name?: string; color?: string; tasks?: string[]; add?: string | string[]; remove?: string | string[] }) => call<Group>('PATCH', `/api/groups/${id}`, patch),
   moveGroupTask: (taskId: string, fromId: string, toId: string) => call<Group[]>('POST', '/api/groups/move', { taskId, fromId, toId }),

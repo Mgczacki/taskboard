@@ -652,6 +652,21 @@ export async function setControllerAccount(toId: string): Promise<Task> {
   return startController();
 }
 
+// Start the controller in a new conversation: it reads the current instructions and tools from the start instead of
+// resuming a long conversation. The old conversation stays in the agent's own history.
+export async function newControllerSession(): Promise<Task> {
+  const t = store.get('controller');
+  if (!t) return startController();
+  await tmux.killSession(t.session);
+  store.update(t.id, {
+    transcript: undefined, sessionId: t.agent === 'claude' ? randomUUID() : undefined,
+    remoteUrl: undefined, newSessionWhenDone: undefined, ask: '', now: '',
+    statusSource: `New session started at ${new Date().toTimeString().slice(0, 5)}.`,
+  });
+  store.appendLog(t.id, { did: 'Controller started in a new session.', next: 'Ask it anything about your agents.' });
+  return startController();
+}
+
 // tmux limits command messages. Keep the full context in the saved file and pass a short reading instruction.
 function handoffPrompt(path: string): string {
   if (!existsSync(path)) throw new Error('The saved handoff file is missing.');

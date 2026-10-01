@@ -543,6 +543,16 @@ app.get('/api/tasks/:id/token-estimate', (req, res) => {
   res.json({ tokens: stats.taskEstimate(t) });
 });
 app.post('/api/controller/start', async (_req, res) => { try { res.json(view(await agents.startController())); } catch (e) { fail(res, e); } });
+// Start the controller in a new conversation, chosen on the dashboard only. when: 'after-turn' waits until its current
+// turn has ended (keepController does it then); 'cancel' undoes that.
+app.post('/api/controller/new-session', async (req, res) => {
+  if (!req.get('origin')) return res.status(403).json({ error: 'A new controller session is started on the dashboard.' });
+  const t = store.get('controller');
+  if (t && req.body.when === 'cancel') return res.json(view(store.update(t.id, { newSessionWhenDone: undefined })!));
+  if (t && req.body.when === 'after-turn' && !['suspended', 'stopped', 'archived'].includes(t.status) && !betweenTurns(t))
+    return res.json(view(store.update(t.id, { newSessionWhenDone: true })!));
+  try { controllerStartedAt = Date.now(); res.json(view(await agents.newControllerSession())); } catch (e) { fail(res, e); }
+});
 // Which account the controller runs on: chosen by you on the dashboard only (not by the controller or tb).
 app.post('/api/controller/account', async (req, res) => {
   if (!req.get('origin')) return res.status(403).json({ error: 'The controller account is chosen on the dashboard.' });
@@ -1041,6 +1051,12 @@ async function keepController(t: store.Task, s?: { dead: boolean }) {
     if (Date.now() - controllerStartedAt < 60000) return;
     controllerStartedAt = Date.now();
     try { await agents.startController(); console.log('controller restarted'); } catch (e) { console.error('controller restart failed', e); }
+    return;
+  }
+  // A new session the user asked for on the dashboard, once the current turn has ended.
+  if (s && !s.dead && t.newSessionWhenDone && betweenTurns(t)) {
+    controllerStartedAt = Date.now();
+    try { await agents.newControllerSession(); console.log('controller started in a new session'); } catch (e) { console.error('controller new session failed', e); }
     return;
   }
   // Restart for a changed name, model, or Remote Control setting between turns.
