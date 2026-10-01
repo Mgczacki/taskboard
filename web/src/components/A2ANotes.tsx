@@ -1,8 +1,9 @@
 // The message lists of the Inbox page, through /api/a2anotes (server/a2anotes/routes.ts) and A2A Notes
 // (github.com/Mgczacki/a2a-notes). The dashboard acts as the person. Message text shows as plain text.
 // Setup and Slack sign-in are on the Settings page (web/src/components/Integrations.tsx).
-import { useEffect, useState } from 'react';
-import type { Task } from '../api';
+import { useEffect, useRef, useState } from 'react';
+import { useStore, type Task } from '../api';
+import { cardControls, loadOrder, messageCardsKey } from '../a2aCard';
 import { Face } from './GraphMail';
 import { FlaggedBody, date, proposer, request } from './messages';
 import '../graph.css';
@@ -23,8 +24,6 @@ export interface Setup { installed: boolean; version?: string; configured: boole
 export interface Status { enabled: boolean; url?: string; error?: string; setup?: Setup; identity?: { address?: string; name?: string }; connection?: { signed_in: boolean; last_scan_at: string | null; last_error: string | null; stale: boolean; missing_scopes: string[] } }
 export { request };
 
-const stateLabel: Record<string, string> = { draft: 'Draft', approved: 'Approved', sending: 'Sending', sent: 'Sent', delivery_uncertain: 'Delivery uncertain', rejected: 'Rejected',
-  held: 'Waiting for approval', failed: 'Could not be read', quarantined: 'Quarantine' };
 const approverLabel = (a: Summary['approver']) => a === 'nobody' ? 'nobody (the checks hold it)' : a === 'reviewer' ? 'the controller or you' : 'you';
 
 // The connection line above a list. Without a running and connected service, it points to Settings.
@@ -48,9 +47,23 @@ export function MessageList({ tasks, direction }: { tasks: Task[]; direction: 'i
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const ok = connected(status);
-  const load = async () => { if (ok) setMessages((await request(`/messages?direction=${direction}`)).messages); };
+  // an approval on a dashboard card changes a message without this page; the list loads again when a card closes
+  const cards = messageCardsKey(useStore().approvals);
+  const order = useRef(loadOrder()).current;
+  const load = async () => {
+    if (!ok) return;
+    const n = order.start();
+    const list = (await request(`/messages?direction=${direction}`)).messages;
+    if (order.latest(n)) setMessages(list);
+  };
   useEffect(() => { void load().catch(e => setError(e.message)); const timer = setInterval(() => { void load().catch(() => {}); }, 10_000); return () => clearInterval(timer); }, [ok, direction]);
-  async function act(fn: () => Promise<unknown>) { setBusy(true); setError(''); try { await fn(); await load(); } catch (e) { setError((e as Error).message); } finally { setBusy(false); } }
+  useEffect(() => { void load().catch(() => {}); }, [cards]);
+  // after an action on a message, an open message text loads again too
+  async function act(fn: () => Promise<unknown>, id?: string) {
+    setBusy(true); setError('');
+    try { await fn(); await load(); if (id && open[id]) setOpen({ ...open, [id]: await request(`/messages/${encodeURIComponent(id)}`) }); }
+    catch (e) { setError((e as Error).message); } finally { setBusy(false); }
+  }
   const show = (id: string) => act(async () => { const d = await request(`/messages/${encodeURIComponent(id)}`); setOpen(o => ({ ...o, [id]: d })); });
 
   if (!status) return <p>Loading messages…</p>;
@@ -71,12 +84,13 @@ export function MessageList({ tasks, direction }: { tasks: Task[]; direction: 'i
     {messages.map(m => {
       const d = open[m.id];
       const by = m.metadata?.['taskboard.proposed_by'];
+      const controls = cardControls(m);
       return <article key={m.id} className="mail-item" data-a2a={m.id}>
         <div className="a2a-head">
           <Face person={{ user: m.peer.user, name: m.peer.name, picture: m.peer.picture }} size={32} />
           <div><div className="a2a-who" title={m.peer.address}>{m.direction === 'in' ? 'From' : 'To'} {m.peer.name}</div><h3>{m.subject}</h3></div>
         </div>
-        <p className="mail-meta">{stateLabel[m.state] || m.state}. For: {m.audience === 'person' ? 'the reader' : m.audience === 'agent' ? "the reader's agent" : 'the reader and the agent'}. Check: {m.check?.verdict || m.failure_code || 'running'}. Approver: {approverLabel(m.approver)}. {m.trusted ? 'Trusted.' : 'Not trusted.'}
+        <p className="mail-meta">{controls.label}. For: {m.audience === 'person' ? 'the reader' : m.audience === 'agent' ? "the reader's agent" : 'the reader and the agent'}. Check: {m.check?.verdict || m.failure_code || 'running'}. Approver: {approverLabel(m.approver)}. {m.trusted ? 'Trusted.' : 'Not trusted.'}
           {m.direction === 'out' && by ? ` Written by ${proposer({ proposedBy: { actor: by === 'user' ? 'user' : by as 'task' | 'controller', task: String(m.metadata?.['taskboard.task_id'] || '') } }, tasks)}.` : ''}
           {m.direction === 'out' && m.body_flags ? ` The message check flagged ${m.body_flags} item(s).` : ''}
           {' '}{date(m.created)}.
@@ -95,15 +109,15 @@ export function MessageList({ tasks, direction }: { tasks: Task[]; direction: 'i
         </>}
         <div className="mail-tabs">
           <button className="btn" disabled={busy} onClick={() => show(m.id)}>{d ? 'Refresh' : 'Show message'}</button>
-          {m.allowed_actions.includes('approve') && <button className="btn" disabled={busy || !d} title={d ? '' : 'Show the message first'} onClick={() => act(() => request(`/messages/${m.id}/approve`, { hash: m.hash, decision: 'approve' }))}>Approve this version</button>}
-          {m.allowed_actions.includes('reject') && <button className="btn" disabled={busy} onClick={() => act(() => request(`/messages/${m.id}/approve`, { hash: m.hash, decision: 'reject' }))}>Reject</button>}
-          {m.direction === 'out' && m.allowed_actions.includes('revise') && !!m.body_flags && d && <button className="btn" disabled={busy} onClick={() => act(() => request(`/messages/${m.id}/remove-flagged`, { hash: m.hash }))}>Remove flagged text</button>}
-          {m.allowed_actions.includes('send') && <button className="btn" disabled={busy} onClick={() => act(() => request(`/messages/${m.id}/send`, { hash: m.hash }))}>{m.state === 'delivery_uncertain' ? 'Check and send' : 'Send'}</button>}
-          {m.allowed_actions.includes('release_to_agent') && <>
+          {controls.approve && <button className="btn" disabled={busy || !d} title={d ? '' : 'Show the message first'} onClick={() => act(() => request(`/messages/${m.id}/approve`, { hash: m.hash, decision: 'approve' }), m.id)}>Approve this version</button>}
+          {controls.reject && <button className="btn" disabled={busy} onClick={() => act(() => request(`/messages/${m.id}/approve`, { hash: m.hash, decision: 'reject' }), m.id)}>Reject</button>}
+          {controls.removeFlagged && d && <button className="btn" disabled={busy} onClick={() => act(() => request(`/messages/${m.id}/remove-flagged`, { hash: m.hash }), m.id)}>Remove flagged text</button>}
+          {controls.send && <button className="btn" disabled={busy} onClick={() => act(() => request(`/messages/${m.id}/send`, { hash: m.hash }), m.id)}>{controls.sendLabel}</button>}
+          {controls.route && <>
             <select className="mail-input" aria-label={`Task for ${m.subject}`} value={destinations[m.id] || m.proposed_route?.task || m.suggested_task?.id || ''} onChange={e => setDestinations(x => ({ ...x, [m.id]: e.target.value }))}>
               <option value="">Choose a task</option>{tasks.filter(t => t.id !== 'controller').map(t => <option key={t.id} value={t.id}>{t.title}</option>)}
             </select>
-            <button className="btn" disabled={busy || !(destinations[m.id] || m.proposed_route?.task || m.suggested_task?.id)} onClick={() => act(() => request(`/messages/${m.id}/route`, { task: destinations[m.id] || m.proposed_route?.task || m.suggested_task?.id }))}>Give to task</button>
+            <button className="btn" disabled={busy || !(destinations[m.id] || m.proposed_route?.task || m.suggested_task?.id)} onClick={() => act(() => request(`/messages/${m.id}/route`, { task: destinations[m.id] || m.proposed_route?.task || m.suggested_task?.id }), m.id)}>Give to task</button>
           </>}
           {!m.failure_code && <button className="btn" disabled={busy} onClick={() => act(() => request('/trusted', { address: m.peer.address, name: m.peer.name, trusted: !m.trusted }))}>{m.trusted ? 'Stop trusting' : 'Trust this person'}</button>}
         </div>
