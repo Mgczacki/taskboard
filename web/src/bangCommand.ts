@@ -1,10 +1,12 @@
 // Finds a "! <command>" that an agent printed for the user, under the pointer, and times the hold that runs it.
-// Agents ask the user to type such a command into the agent prompt (Claude Code runs it as a shell command).
+// Agents ask the user to type such a command into the agent prompt. Claude Code, Codex and Antigravity run it as a
+// shell command.
 // Holding the mouse button on one for HOLD_MS types it into that task's terminal (holdRun.ts, server/type-command.ts).
 //
 // In a terminal, a command is found in two forms:
-// - a run of cells in one color that starts with "!" and has a different color from the cell before it. Claude Code
-//   prints inline code (`! gcloud auth login`) this way, without the backticks, and keeps the color when it wraps.
+// - a run of cells in one color that starts with "!" and has a different color from the cell before it. Claude Code,
+//   Codex and Antigravity print inline code (`! gcloud auth login`) this way, without the backticks. Claude Code
+//   keeps the color when it wraps the code onto the next row.
 // - a row whose text starts with "!" after optional spaces and one list or prompt mark ("⏺", "-", "1.", "$", "❯").
 //   The command runs to the end of the row. A following row continues it when it is indented to the "!" column and
 //   its first word would not have fit on the row above (so the agent wrapped the line there).

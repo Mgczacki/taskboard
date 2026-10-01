@@ -84,8 +84,8 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
       if (event.type === 'click') activeLink();
     };
     for (const type of ['mousedown', 'mouseup', 'click'] as const) el.addEventListener(type, onModifiedMouse, true);
-    // Hold to run (bangCommand.ts): a "! <command>" that the agent printed, typed into this task's Claude Code prompt
-    const holdable = () => !!taskId && !session && !taskId.includes('~') && tasksRef.current.find(t => t.id === taskId)?.agent === 'claude';
+    // Hold to run (bangCommand.ts): a "! <command>" that the agent printed, typed into this task's agent prompt
+    const holdable = () => !!taskId && !session && !taskId.includes('~') && tasksRef.current.some(t => t.id === taskId);
     // buffer rows first to last, with the character and the foreground color of each cell
     const cellRows = (first: number, last: number): CellRow[] => {
       const buffer = term.buffer.active, rows: CellRow[] = [];
