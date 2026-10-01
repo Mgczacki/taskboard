@@ -78,9 +78,13 @@ permits.onChange(p => {
   if (permitNotices.size > 1000) permitNotices.delete(permitNotices.values().next().value!);
   const task = store.get(p.taskId);
   if (!task) return;
-  const lines = [`# Permit ${p.id}`, '', `Task: #${p.taskNum}`, `Result: ${p.state}`, `Approved by: ${p.approvedBy || 'Nobody'}`, '', ...p.steps.map((s, i) => `${i + 1}. ${s.state}: ${s.command}${s.error ? ` (${s.error})` : ''}`), '', `Read the full record with \`tb permit result ${p.id}\`.`];
+  const lines = [`# Permit ${p.id}`, '', `Task: #${p.taskNum}`, `Result: ${p.state}`, `Approved by: ${p.approvedBy || 'Nobody'}`, `Rule: ${p.approvalRule || 'none'}`, `Comment: ${p.decisionComment || 'none'}`, '', ...p.steps.flatMap((s, i) => [`${i + 1}. ${s.state}: ${s.command}`, `Exit code: ${s.exitCode ?? 'none'}`, `Signal: ${s.signal || 'none'}`, 'Output:', '```text', s.outputTail || '', '```']), '', `Read the full record with \`tb permit result ${p.id}\`.`];
   try { docs.uploadSystem(task.id, `permit-${p.id}.md`, lines.join('\n') + '\n'); } catch (e) { console.error('could not send permit result', e); }
+  const wasIdle = ['idle', 'unread', 'suspended', 'needs-you'].includes(task.status);
   store.update(task.id, { status: 'unread', ask: '', statusSource: `Permit ${p.id} ${p.state}. The result is in the task inbox.` });
+  if (wasIdle) void agents.sendTaskText(store.get(task.id)!, permits.notice(p))
+    .then(() => store.update(task.id, { status: 'working', ask: '', statusSource: `Permit ${p.id} result sent to the agent.` }))
+    .catch(e => console.error('could not wake task for permit result', e));
 });
 setInterval(() => {
   for (const p of permits.all()) if (p.state === 'pending' && permits.expire(p)) {
@@ -214,9 +218,9 @@ app.post('/api/approvals/:id/return', async (req, res) => {
   if (!req.get('origin')) return res.status(403).json({ error: 'approvals are decided on the dashboard' });
   try { const a = await approvals.giveBack(req.params.id, String(req.body.comment || '')); a ? res.json(a) : res.status(404).end(); } catch (e) { fail(res, e); }
 });
-function createPermit(task: store.Task, reason: string, steps: permits.StepInput[], refusalId?: string) {
+function createPermit(task: store.Task, reason: string, steps: permits.StepInput[], refusalId?: string, statedRisk = '') {
     const actor = task.id;
-    const p = permits.request(task, reason, steps, refusalId);
+    const p = permits.request(task, reason, steps, refusalId, statedRisk);
     const card = approvals.request({ actor, action: 'permit', summary: `run ${p.steps.length} approved step${p.steps.length === 1 ? '' : 's'}`,
       detail: `Task: #${task.num} ${task.title}\nReason: ${p.reason}\n${p.steps.map((s, i) => `${i + 1}. ${s.command}\n   ${s.cwd} · ${s.timeoutSeconds} s · Network: ${s.network ? 'Yes' : 'No'}`).join('\n')}`,
       payload: { permitId: p.id } }, async () => {
@@ -255,7 +259,7 @@ app.post('/api/permits', (req, res) => {
     }
   }
   try {
-    const p = createPermit(task, req.body.reason, req.body.steps, req.body.refusalId);
+    const p = createPermit(task, req.body.reason, req.body.steps, req.body.refusalId, req.body.risk);
     res.status(202).json({ permit: p });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
@@ -315,10 +319,17 @@ app.post('/api/permits/:id/controller-approve', async (req, res) => {
     return res.status(403).json({ error: 'Only the controller may use this route.' });
   const p = permits.get(req.params.id); const task = p && store.get(p.taskId);
   if (!p || !task) return res.status(404).end();
-  if (!permits.controllerAllowed(p, task, machine.get().permissions.controllerCanApprovePermits))
-    return res.status(403).json({ error: 'This permit needs a user decision.' });
   const requestText = String(req.body.userRequest || '').trim();
-  if (!requestText || requestText.length > 2000) return res.status(400).json({ error: 'Give the user request that asked you to approve this permit.' });
+  if (requestText.length > 2000) return res.status(400).json({ error: 'Keep the user request under 2000 characters.' });
+  const lowRule = permits.controllerRule(p, task, machine.get().permissions.controllerCanApprovePermits);
+  const riskClass = p.riskClass === 'low' && permits.classify(p.steps, task) === 'low' ? 'low' : 'high';
+  if (riskClass === 'low' && !lowRule) return res.status(403).json({ error: 'Settings does not allow controller approval of low-risk commands.' });
+  if (riskClass === 'high') {
+    const controller = store.get('controller');
+    const transcript = controller?.transcript || (controller?.sessionId ? importer.transcriptFor(controller.agent, controller.sessionId, (accounts.get(controller.account) || accounts.defaultFor(controller.agent)).dir) : undefined);
+    if (!permits.explicitControllerRequest(transcript, controller?.agent || '', requestText, p))
+      return res.status(403).json({ error: 'A high-risk command needs the user’s explicit words in the controller chat.' });
+  }
   const card = p.approvalId ? approvals.get(p.approvalId) : undefined;
   if (!card || !approvals.startExternal(card.id)) return res.status(409).json({ error: 'The approval card is no longer pending.' });
   try {

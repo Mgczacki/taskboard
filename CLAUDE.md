@@ -2,7 +2,7 @@
 
 You are probably running as a Taskboard task. The Taskboard server on this machine (port 4317, `~/.taskboard`,
 tmux socket `taskboard`) runs you, the other agents and the controller. If it stops, every agent loses its status
-updates and the user loses the dashboard. Never stop, restart or rebuild it as part of your work; the user does that.
+updates and the user loses the dashboard. Never stop, restart or rebuild it as part of your work. The user does that.
 
 ## Never
 - `pkill` / `killall` by name (`tsx`, `node`, `server/index.ts`, `taskboard`): it can match the real server.
@@ -13,7 +13,9 @@ updates and the user loses the dashboard. Never stop, restart or rebuild it as p
 - `pnpm release` without a release permit from the user's dashboard approval.
 - `launchctl` commands for `com.taskboard.server`.
 
-A PreToolUse hook blocks most of these for Claude Code sessions started by Taskboard; do not work around it.
+A PreToolUse hook blocks most of these for Claude Code sessions started by Taskboard. Do not work around it.
+If a command fails under agent permissions, use `tb suggest "<command>" --why "<reason>" --risk "<risk>"`.
+Do not ask the user to copy a command from chat.
 
 ## Test servers
 Use `pnpm sandbox` (own port, folders and tmux socket, no controller; `pnpm sandbox stop` ends exactly it) or
@@ -25,8 +27,8 @@ The task runs `tb release-request`. The user approves the release card on the da
 The task then runs `pnpm release` within two minutes. The approval allows one release command for that task.
 Only the user runs `pnpm rollback`.
 
-The manual equivalent, if you need it — every test server gets its own port, folders and tmux socket, runs in the
-background, and is stopped by its own pid:
+The manual steps below start a test server with its own port, folders and tmux socket.
+Stop the test server with its own process id.
 
 ```sh
 S=<your scratch folder>; mkdir -p $S/vault $S/tbdir

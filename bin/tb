@@ -70,8 +70,10 @@ const HELP = `tb — Taskboard command line
   tb release-request                 ask the user to allow one Taskboard release on the dashboard
   tb permit request --reason "text" --command "program args" [--cwd PATH] [--timeout 30] [--network]
   tb permit request --reason "text" --steps steps.json
+  tb suggest "program args" --why "reason" [--cwd PATH] [--risk "risk"] [--timeout 30]
+  tb suggest --steps steps.json --why "reason" [--risk "risk"]
   tb permit result ID [--wait] | tb permit list
-  tb permit approve ID --user-request "the user's exact request"   controller only
+  tb permit approve ID [--user-request "the user's chat message"]   controller only
   tb git merge-request               ask the user to merge your worktree branch into local master
   tb git commit "<message>"           commit changes in your own worktree
   tb git rebase                       rebase your own branch onto local master
@@ -287,12 +289,14 @@ switch (cmd) {
     await call('POST', '/api/release/request', {});
     break;
   }
+  case 'suggest':
   case 'permit': {
-    const action = rest[0];
+    const action = args[0] === 'suggest' ? 'request' : rest[0];
     if (action === 'request') {
       if (!process.env.TASK_ID || process.env.TASK_ID === 'controller') { console.error('tb permit request: run this inside a task'); process.exit(1); }
-      const reason = flag('--reason');
-      const command = flag('--command');
+      const reason = flag('--why') || flag('--reason');
+      const command = args[0] === 'suggest' ? (flag('--command') || (rest[0]?.startsWith('--') ? undefined : rest[0])) : flag('--command');
+      const risk = flag('--risk') || '';
       const cwd = flag('--cwd');
       const timeout = flag('--timeout');
       const stepsFile = flag('--steps');
@@ -300,7 +304,7 @@ switch (cmd) {
       if (!reason || (!!command === !!stepsFile)) { console.error('tb permit request: give --reason and exactly one of --command or --steps'); process.exit(1); }
       if (stepsFile && (cwd || timeout || network)) { console.error('tb permit request: set the directory, timeout, and network flag in each step'); process.exit(1); }
       const steps = stepsFile ? JSON.parse(readFileSync(resolve(stepsFile), 'utf8')).steps : [{ command, ...(cwd ? { cwd: resolve(cwd) } : {}), ...(timeout ? { timeoutSeconds: Number(timeout) } : {}), network }];
-      const result = await call('POST', '/api/permits', { reason, steps });
+      const result = await call('POST', '/api/permits', { reason, steps, risk });
       if (result.push) console.log(`${result.message} Push ${result.push.id}: ${result.push.state}. Read it with tb git push-result ${result.push.id} --wait.`);
       else if (result.permit) console.log(`Permit ${result.permit.id} waits on the dashboard. Read it with tb permit result ${result.permit.id} --wait.`);
       else console.log('This needs a release request: run tb release-request. The release card was decided.');
@@ -320,7 +324,7 @@ switch (cmd) {
     else if (action === 'approve') {
       if (process.env.TASK_ID !== 'controller') { console.error('tb permit approve: controller only'); process.exit(1); }
       const userRequest = flag('--user-request');
-      if (!rest[1] || !userRequest) { console.error('tb permit approve ID --user-request "text"'); process.exit(1); }
+      if (!rest[1]) { console.error('tb permit approve ID [--user-request "the user chat message for high risk"]'); process.exit(1); }
       console.log(JSON.stringify(await call('POST', `/api/permits/${encodeURIComponent(rest[1])}/controller-approve`, { userRequest }), null, 2));
     } else { console.error('tb permit request | result | list | approve'); process.exit(1); }
     break;
