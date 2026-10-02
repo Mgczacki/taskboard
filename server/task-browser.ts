@@ -779,7 +779,15 @@ function answerDialog(id: string, target: string, accept: boolean, promptText?: 
 
 // ---------- the dashboard: screencast of one tab, with mouse and key input ----------
 const FRAME_BACKLOG = 512 * 1024;
-interface PageConn { ws: WebSocket; target: string; next: number; pending: Map<number, (r: any) => void>; casting?: boolean }
+// JPEG quality of the screencast: QUALITY_FAST while frames come less than FAST_GAP_MS apart (scroll, video,
+// animation), QUALITY_STILL when no frame came for STILL_MS, so text is sharp while the page does not move. At 1000 x
+// 684 px a scroll frame of the test page of scripts/browser-speed.mjs is 53 KB at quality 50 and 69 KB at quality 70. The quality does not change the CPU time
+// of Chrome. Chrome refuses a second Page.startScreencast, so a change of quality stops the screencast and starts it
+// again, and Chrome sends a frame within about 10 ms of the start.
+const QUALITY_FAST = 50, QUALITY_STILL = 80, FAST_GAP_MS = 150, STILL_MS = 300;
+// quality: the quality of the screencast that runs or that the last queued start asks for. chain: the starts and stops
+// of this page's screencast, one at a time.
+interface PageConn { ws: WebSocket; target: string; next: number; pending: Map<number, (r: any) => void>; casting?: boolean; quality: number; chain: Promise<void>; lastFrame: number; stillTimer?: NodeJS.Timeout }
 export function attachViewer(client: WebSocket, id: string, autostart: boolean) {
   let page: PageConn | null = null, active = '', known = new Set<string>(), chosen = false, closed = false;
   let frameW = 0, frameH = 0, lastFrame = 0;
@@ -812,7 +820,7 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     // view must show that tab to show its question
     send({ type: 'active', id: target });
     const ws = new WebSocket(t.webSocketDebuggerUrl, { perMessageDeflate: false, maxPayload: 64 * 1024 * 1024 });
-    const conn: PageConn = { ws, target, next: 0, pending: new Map() };
+    const conn: PageConn = { ws, target, next: 0, pending: new Map(), quality: QUALITY_STILL, chain: Promise.resolve(), lastFrame: 0 };
     page = conn;
     ws.on('message', d => {
       const msg = JSON.parse(d.toString());
@@ -825,6 +833,11 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
       else if (msg.method === 'Page.navigatedWithinDocument' && frame === mainFrame) void navState();
       if (msg.method === 'Page.screencastFrame') {
         ws.send(JSON.stringify({ id: ++conn.next, method: 'Page.screencastFrameAck', params: { sessionId: msg.params.sessionId } }));
+        const now = Date.now();
+        if (now - conn.lastFrame < FAST_GAP_MS && conn.quality !== QUALITY_FAST) cast(conn, QUALITY_FAST);
+        conn.lastFrame = now;
+        clearTimeout(conn.stillTimer);
+        if (conn.quality === QUALITY_FAST) conn.stillTimer = setTimeout(() => cast(conn, QUALITY_STILL), STILL_MS);
         // A frame goes as one binary message (the JPEG bytes), after a 'frameSize' message when the size changes.
         // A frame is dropped while the view still has 512 KB to receive, so a slow connection shows the newest frame
         // a little later instead of every old frame in a queue.
@@ -836,7 +849,7 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
         client.send(jpeg);
       }
     });
-    ws.on('close', () => { if (page === conn) page = null; if (conn.casting) { conn.casting = false; count(screencasts, id, -1); } });
+    ws.on('close', () => { clearTimeout(conn.stillTimer); if (page === conn) page = null; if (conn.casting) { conn.casting = false; count(screencasts, id, -1); } });
     ws.on('error', () => {});
     await new Promise(r => ws.once('open', r));
     await fetch(`http://127.0.0.1:${m.port}/json/activate/${target}`).catch(() => {});
@@ -845,9 +858,20 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     mainFrame = tree?.frameTree?.frame?.id || ''; loading = false;
     await navState();
     await viewport();
-    await call('Page.startScreencast', { format: 'jpeg', quality: 70, maxWidth: 1920, maxHeight: 1920, everyNthFrame: 1 });
-    if (ws.readyState === WebSocket.OPEN && !conn.casting) { conn.casting = true; count(screencasts, id, 1); }
+    cast(conn, QUALITY_STILL);
+    await conn.chain;
     send({ type: 'active', id: target });
+  }
+  // Start the screencast of this page at this quality, or stop it (null). A screencast that runs stops first.
+  function cast(conn: PageConn, quality: number | null) {
+    if (quality !== null) conn.quality = quality;
+    conn.chain = conn.chain.then(async () => {
+      if (page !== conn) return;
+      if (conn.casting) await call('Page.stopScreencast');
+      if (quality !== null && page === conn) await call('Page.startScreencast', { format: 'jpeg', quality, maxWidth: 1920, maxHeight: 1920, everyNthFrame: 1 });
+      const on = quality !== null && page === conn && conn.ws.readyState === WebSocket.OPEN;
+      if (on !== !!conn.casting) { conn.casting = on; count(screencasts, id, on ? 1 : -1); }
+    });
   }
   const dialogChanged = () => { void poll(); };
   // Polls can overlap (the timer, the view's messages and dialog changes start them). A poll can wait in open() for a
