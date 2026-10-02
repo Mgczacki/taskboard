@@ -11,13 +11,20 @@
 //   restart of the Mac; opens at login by default
 // - no title bar: the window buttons appear when the pointer is near the top edge, and hide again after
 // - New Window (⌘N), New Window for a group, in the File menu, the Dock menu and the menu-bar item
+// - window see-through while the controller view is open (Settings, off at first)
 const { app, BrowserWindow, Menu, Tray, globalShortcut, ipcMain, nativeImage, screen, shell } = require('electron');
 const { readFileSync, writeFileSync } = require('node:fs');
 const { homedir } = require('node:os');
 const { join } = require('node:path');
 
-const SERVER = 'http://127.0.0.1:4317';
-const TOKEN_FILE = join(homedir(), '.taskboard', 'token');
+// A test app shows a test Taskboard (TASKBOARD_APP_SERVER, TASKBOARD_APP_TOKEN) and keeps its windows in its own data
+// folder (TASKBOARD_APP_DATA). It does not register the global shortcut or the login item, so the installed app is not
+// changed. TASKBOARD_APP_DEBUG_PORT opens the DevTools protocol on that port for the browser tests.
+const TEST_SERVER = process.env.TASKBOARD_APP_SERVER || '';
+const SERVER = TEST_SERVER || 'http://127.0.0.1:4317';
+const TOKEN_FILE = process.env.TASKBOARD_APP_TOKEN || join(homedir(), '.taskboard', 'token');
+if (process.env.TASKBOARD_APP_DATA) app.setPath('userData', process.env.TASKBOARD_APP_DATA);
+if (process.env.TASKBOARD_APP_DEBUG_PORT) app.commandLine.appendSwitch('remote-debugging-port', process.env.TASKBOARD_APP_DEBUG_PORT);
 const ATTN = ['needs-you', 'stopped', 'review'];   // same as web/src/api.ts ATTN
 const STATUS_WORDS = { 'needs-you': 'needs you', stopped: 'stopped', review: 'review' };
 
@@ -93,6 +100,11 @@ function track(w) {
   // the page moved (another view, a task opened): remember its address, not the waiting page's
   const nav = (_e, url) => { if (sameOrigin(url)) { targets.set(w, url); saveSession(); } };
   w.webContents.on('did-navigate', nav); w.webContents.on('did-navigate-in-page', nav);
+  // a new page in the main frame starts opaque (window see-through, below); in-page and frame loads do not count
+  w.webContents.on('did-start-navigation', (e, _url, inPlace, mainFrame) => {
+    const main = e.isMainFrame ?? mainFrame, same = e.isSameDocument ?? inPlace;
+    if (main && !same && !w.isDestroyed() && w.getOpacity() !== 1) w.setOpacity(1);
+  });
   // the server went away (restart, release) or the page failed: waiting page, which the poll replaces when it is back
   w.webContents.on('did-fail-load', (_e, code, _d, url) => { if (code !== -3 && sameOrigin(url)) w.loadFile(OFFLINE); });
   w.webContents.on('render-process-gone', () => setTimeout(() => loadInto(w, targets.get(w) || `${SERVER}/`), 1000));
@@ -129,6 +141,12 @@ function openWindow(url, size, saved) {
 }
 const newWindow = view => openWindow(view ? `${SERVER}/?solo=1#canvas:${encodeURIComponent(view)}` : `${SERVER}/`);
 ipcMain.on('new-window', (_e, view) => newWindow(view));
+// Window see-through (Settings): the page asks for an opacity while its controller view is open, and 1 when it closes.
+// A reload or a new page starts opaque again (track below).
+ipcMain.on('window-opacity', (e, v) => {
+  const w = BrowserWindow.fromWebContents(e.sender);
+  if (w && !w.isDestroyed() && Number.isFinite(v)) w.setOpacity(Math.min(1, Math.max(0.4, v)));
+});
 
 // Reopen the windows of the last session (the main one first), or one main window the first time.
 function restoreSession() {
@@ -275,9 +293,9 @@ app.whenReady().then(() => {
   icon.setTemplateImage(true);
   tray = new Tray(icon);
   tray.on('click', () => tray.popUpContextMenu());
-  if (!globalShortcut.register(settings.shortcut, toggle)) console.error(`Shortcut ${settings.shortcut} is taken by another app; change "shortcut" in ${settingsFile()}`);
+  if (!TEST_SERVER && !globalShortcut.register(settings.shortcut, toggle)) console.error(`Shortcut ${settings.shortcut} is taken by another app; change "shortcut" in ${settingsFile()}`);
   // open at login by default (the windows come back after a restart of the Mac); the menu-bar menu can turn it off
-  if (settings.loginDefaultApplied !== true) { app.setLoginItemSettings({ openAtLogin: true }); settings.loginDefaultApplied = true; saveSettings(); }
+  if (!TEST_SERVER && settings.loginDefaultApplied !== true) { app.setLoginItemSettings({ openAtLogin: true }); settings.loginDefaultApplied = true; saveSettings(); }
   serverUp = false;
   serverAnswers().then(up => { serverUp = up; restoreSession(); });
   poll(); setInterval(poll, 3000);

@@ -36,29 +36,34 @@ export const parseHex = (s: string): RGBA => {
 // read(name) gives a CSS custom property as a colour, or null when the theme does not set it. alpha below 1 makes the
 // background see-through (the controller view, controllerView.ts). The DOM renderer paints theme.background as the CSS
 // background of the viewport, so an alpha colour works there. Cursor text and inverted text keep the opaque colour.
-export function buildTerminalTheme(read: (name: string) => RGBA | null, alpha = 1): { theme: ITheme; minimumContrastRatio: number; light: boolean } {
-  const bg = read('--term-bg') || [10, 12, 15, 255];
+// tint 'page' (the see-through controller terminal, controllerView.ts) draws the terminal in the page colours: --bg
+// behind the text and --text for it. The ANSI palette then follows the page background.
+export function buildTerminalTheme(read: (name: string) => RGBA | null, alpha = 1, tint: 'panel' | 'page' = 'panel'): { theme: ITheme; minimumContrastRatio: number; light: boolean } {
+  const page = tint === 'page' && !!read('--bg');
+  const bg = (page ? read('--bg') : read('--term-bg')) || [10, 12, 15, 255];
   const light = luminance(bg) > 0.4;
   const pick = (name: string, fallback: string) => { const c = read(name); return c ? hex(c) : fallback; };
   const palette = light ? LIGHT_ANSI : DARK_ANSI;
   const theme: ITheme = {
     background: hex([bg[0], bg[1], bg[2], Math.round(Math.min(1, Math.max(0, alpha)) * 255)]),
-    foreground: pick('--term-fg', light ? '#1f2328' : '#d6dae0'),
-    cursor: pick('--term-cursor', light ? '#1f2328' : '#e6edf3'),
+    foreground: pick(page ? '--text' : '--term-fg', light ? '#1f2328' : '#d6dae0'),
+    cursor: pick(page ? '--text' : '--term-cursor', light ? '#1f2328' : '#e6edf3'),
     cursorAccent: hex([bg[0], bg[1], bg[2], 255]),
     selectionBackground: pick('--term-selection', light ? '#b6d3ff' : '#3a4a6a'),
   };
+  // the page tint: the page text colour at 25% over the page background, so the selection shows in every theme
+  if (page) theme.selectionBackground = hex(blend(read('--text') || (light ? [31, 35, 40, 255] : [230, 237, 243, 255]), bg, 0.25));
   for (const n of ANSI_NAMES) theme[n] = pick(cssName(n), palette[n]);
   // Agents choose colours for a dark background (white text, light grey hints). On a light background xterm.js
   // darkens any text colour that has less than 4.5:1 contrast with the cell behind it (WCAG AA for text).
   // xterm.js compares with the opaque background. A see-through light terminal over a darker page (the grey bay of
   // Flight strips) shows a darker background, so ask for more contrast: 5.4:1 at alpha 0.7.
-  return { theme, minimumContrastRatio: light ? 4.5 + 3 * (1 - Math.min(1, alpha)) : 1, light };
+  return { theme, minimumContrastRatio: light ? Math.min(7, 4.5 + 3 * (1 - Math.min(1, alpha))) : 1, light };
 }
 
 // Resolve a custom property to RGBA through a hidden element and a 1-pixel canvas, so color-mix() and named colours work.
 let probe: HTMLElement | null = null, ctx: CanvasRenderingContext2D | null = null;
-function readColor(name: string): RGBA | null {
+export function readColor(name: string): RGBA | null {
   const raw = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
   if (!raw) return null;
   if (!probe) { probe = document.createElement('span'); probe.style.display = 'none'; document.body.appendChild(probe); }
@@ -69,4 +74,4 @@ function readColor(name: string): RGBA | null {
   const d = ctx.getImageData(0, 0, 1, 1).data;
   return [d[0], d[1], d[2], d[3]];
 }
-export const readTerminalTheme = (alpha = 1) => buildTerminalTheme(readColor, alpha);
+export const readTerminalTheme = (alpha = 1, tint: 'panel' | 'page' = 'panel') => buildTerminalTheme(readColor, alpha, tint);

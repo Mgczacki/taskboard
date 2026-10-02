@@ -24,6 +24,10 @@ export const ACTIONS: KeyAction[] = [
   { id: 'needsView', ctx: 'app', label: 'Canvas view “Needs you + unread”', keys: ['Ctrl+Alt+KeyU'] },
   { id: 'nextStyle', ctx: 'app', label: 'Next style', keys: ['Ctrl+Alt+KeyY'] },
   { id: 'keysHelp', ctx: 'app', label: 'List of keyboard shortcuts', keys: ['Meta+Slash'] },
+  // the see-through controller terminal (controllerView.ts); they work in the terminal too, as every ⌃⌥ key
+  { id: 'glassMore', ctx: 'app', label: 'Controller terminal: more see-through (one step of 5%)', keys: ['Ctrl+Alt+Equal'] },
+  { id: 'glassLess', ctx: 'app', label: 'Controller terminal: less see-through (one step of 5%)', keys: ['Ctrl+Alt+Minus'] },
+  { id: 'glassToggle', ctx: 'app', label: 'Controller terminal: switch between the saved see-through value and Off', keys: ['Ctrl+Alt+KeyO'] },
   { id: 'triageNext', ctx: 'triage', label: 'Next task in triage', keys: ['Ctrl+Alt+ArrowDown'] },
   { id: 'triagePrev', ctx: 'triage', label: 'Previous task in triage', keys: ['Ctrl+Alt+ArrowUp'] },
   { id: 'nextView', ctx: 'canvas', label: 'Next view (group tab)', keys: ['Ctrl+Alt+KeyG', 'Ctrl+Alt+Tab', 'Shift+Meta+BracketRight'] },

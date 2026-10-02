@@ -95,7 +95,8 @@ export const SECTIONS: SectionDef[] = [
       { id: 'confirmEnd', label: 'Ask before ⏻ in a window header ends and archives the task', words: 'end archive confirm power' },
     ] },
     { id: 'controllerView', title: 'Controller view', settings: [
-      { id: 'controllerGlass', label: 'Transparency of the controller terminal', words: 'transparent see-through glass blur opacity background' },
+      { id: 'controllerGlass', label: 'See-through controller terminal', words: 'transparent transparency see-through glass ghost blur opacity background text strength shadow outline bold tint contrast slider presets' },
+      { id: 'windowSee', label: 'Window see-through while the controller view is open', words: 'transparent translucent window desktop opacity see-through app' },
       { id: 'taskThinBar', label: 'Fold the header of normal tasks to a thin bar too', words: 'collapse collapsed header compact bar' },
     ] },
     { id: 'updates', title: 'Updates', settings: [

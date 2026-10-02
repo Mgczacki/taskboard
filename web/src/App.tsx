@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 
 import type { Group, SpinOffExchange, Task } from './api';
 import { ATTN, api, fmtWait, setViewing, useStore } from './api';
 import { ACTIONS, CTX_NAME, fmtCombo, hit, hitIn, inBrowser, keyLabel, keysOf, keysText, useKeymap } from './keys';
+import { stepGlass, toggleGlass } from './controllerView';
 import { Canvas, openInWindow, viewName } from './components/Canvas';
 import { Import } from './components/Import';
 import { NewTask } from './components/NewTask';
@@ -210,6 +211,9 @@ export function App() {
       if (hit(e, 'triage')) return act(() => setTriage(x => !x));
       if (hit(e, 'needsView')) return act(() => { if (!SOLO) { setView('needs'); setPage('canvas'); } });
       if (hit(e, 'keysHelp')) return act(() => setKeysHelp(x => !x));
+      if (hit(e, 'glassMore')) return act(() => stepGlass(1));
+      if (hit(e, 'glassLess')) return act(() => stepGlass(-1));
+      if (hit(e, 'glassToggle')) return act(() => toggleGlass());
       if ((e.target as HTMLElement)?.closest?.('input,textarea,select,[contenteditable=true],.xterm') || inBrowser(e)) return;
       if (e.key === 'Escape') { if (keysHelp) setKeysHelp(false); else if (triage) setTriage(false); else if (openId) setOpenId(null); else if (selected.size) setSelected(new Set()); }
     };
