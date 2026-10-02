@@ -1,7 +1,7 @@
 // The Integrations section of the Settings page: one card for each sign-in that Taskboard uses. A new integration
 // adds its own card here. The Inbox shows the messages and links here when a connection is missing.
 import { useEffect, useState } from 'react';
-import { request as a2aRequest, type Status } from './A2ANotes';
+import { request as a2aRequest, ServiceVersion, type Status } from './A2ANotes';
 import { SettingGroup, SettingItem } from './SettingsLayout';
 
 function useAction(load: () => Promise<void>) {
@@ -30,7 +30,7 @@ function A2ANotesCard() {
       {s && !s.installed && <div role="alert">A2A Notes is not installed with this Taskboard. Run pnpm install in the Taskboard folder.</div>}
       {c?.last_error && <div role="alert">Last scan error: {c.last_error}</div>}
       {!!c?.missing_scopes.length && <div role="alert">Missing Slack scopes: {c.missing_scopes.join(', ')}</div>}
-      {s?.updateAvailable && <div>Version {s.version} is installed. The running service is version {s.serviceVersion}. Restart it to use the new version.</div>}
+      <ServiceVersion setup={s} />
       {status.enabled && s && <div className="sub">Message checks: {s.checks === 'model' ? 'Claude with the controller account, and the fixed rules.' : 'the fixed rules only. Claude checks need the claude program and a Claude controller account.'}</div>}
       {status.enabled && s?.checksOutdated && <div>The message check settings changed (for example the controller account). Update A2A Notes to use them.</div>}
       {!status.enabled && s?.installed && <div className="sub">Setup writes the A2A Notes settings in {s.folder}, starts the service{s.running ? ' (it is already running)' : ''}, keeps it running after you sign in to this computer, and connects Taskboard to it.</div>}

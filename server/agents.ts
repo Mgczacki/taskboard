@@ -16,6 +16,7 @@ import * as accounts from './accounts.ts';
 import { chooseAuto } from './auto-choice.ts';
 import * as machine from './machine.ts';
 import { controllerMailToken } from './a2anotes/auth.ts';
+import { writingGuide as a2aWritingGuide } from './a2anotes/setup.ts';
 import { buildHandoff } from './handoff.ts';
 import { transcriptFor } from './importer.ts';
 import { movingTasks, resetSessionEvents } from './events.ts';
@@ -46,7 +47,10 @@ const writingRules = (text: string) => [
   `Before you write a document or an artifact, read ${WRITING_RULES}. After you write it, run: python3 ${WORDING_SCRIPT} <file>. Fix each warning, or keep the word when it is part of an identifier or a quotation.`,
 ].join('\n');
 
-const mailWritingRules = () => [
+// full: the controller instructions (a file) get the body format rules of docs/WRITING-MESSAGES.md in the a2a-notes
+// package. The task instructions go on the tmux command line (MAX_COMMAND_BYTES), so a task gets no added lines: the
+// format warnings that tb mail prints give the fix for each problem.
+const mailWritingRules = (full: boolean) => [
   'Before drafting to a person, check whether the user can decide or check the next step alone.',
   'If the user can decide or check it, ask the user in your reply or use `tb review` for a document.',
   'Draft when the user asks for a draft.',
@@ -63,8 +67,18 @@ const mailWritingRules = () => [
   'Do not include your next steps, task number, plan, tool names, local file paths, worktree names, other tasks, unrelated people, secrets, or internal process notes.',
   'Give a link only when the reader needs it and can likely open it. Say when access may be limited.',
   'Use `tb mail draft <to> --subject <text> --context <why> --ask <request> [--found <facts>] [--by <date>] [--links <URLs>]`.',
-  'The older `tb mail draft <to> <subject> <body>` form still works for free text.',
-  'Read the message check in the draft result. If it flags text, revise your draft with `tb mail revise <id> --hash <hash> --subject <text> --body <body>`.',
+  ...(full ? [
+    'Write --context, --found and --ask as plain sentences. Put each fact in --found on its own line that starts with "- ".',
+    'Give the links in --links separated by commas or spaces. Each link must start with https://.',
+    'The older `tb mail draft <to> <subject> <body>` form still works for free text.',
+    'In a free-text body, write each title alone on its line with a colon after it, for example "What we found:".',
+    'Separate paragraphs with a blank line. Start each list item with "- ". Put each link on its own line.',
+    'Do not use # headings, tables, images, HTML, or nested formatting. Slack shows them as plain characters.',
+    'A mention such as @channel or <@U123> shows as plain text and notifies nobody.',
+    'Keep the body under 1,500 characters.',
+  ] : ['The older `tb mail draft <to> <subject> <body>` form still works for free text.']),
+  full ? 'Read the message check and the format warnings in the draft result. If either names text, revise your draft with `tb mail revise <id> --hash <hash> --subject <text> --body <body>`.'
+    : 'Read the message check and format warnings in the result. If either flags text, use `tb mail revise <id> --hash <hash> --subject <text> --body <body>`.',
   'Good example: "Hi Jason, the MCP publish guide points authors to a bridge in an internal repository. Could you provide the supported bridge through MCP and check its version before publish? The guide and publisher links are below. Please tell me if you cannot open them."',
   'Bad example: "Hi Jason, please fix the MCP bridge. The next check is one MCP-built game with an event call on Android and a matching BigQuery row." The last sentence is the sender\'s task step.',
 ].join('\n');
@@ -193,7 +207,7 @@ function messageRules() {
     '  Choose the task that needs it by your own judgment. Tell the user which task received it.',
     '- A message for a person (audience person) never goes to a task. Approve it only when the user asks.',
     '- Only approve or send a draft after the user explicitly approves that draft. The dashboard card for a draft sends it when the user approves it.',
-    mailWritingRules(),
+    mailWritingRules(true),
     '- Use `tb mail reject <id> <hash> --comment <text>` only when the user asks you to reject a message.',
   ].join('\n');
 }
@@ -266,11 +280,12 @@ ${messageRules()}
 
 ## How you write
 ${writingRules('your reports to the user, the messages that you send to tasks, and the prompts for new agents')}
+- A message to a person through A2A Notes also follows docs/WRITING-MESSAGES.md in the a2a-notes package (${a2aWritingGuide()}).
 
 ${credentialGuidance(HOME)}
 ${rules.section('controller') ? `\n${rules.section('controller')}\n` : ''}`;
 // what the controller's command line depends on; when it changes, the running controller is restarted between turns
-export const controllerLaunchKey = (agent: string) => JSON.stringify({ mail: 2, credentialGuidance: 1, agent, model: machine.get().controller.models[agent as 'claude' | 'codex' | 'antigravity'] || '', label: machine.controllerLabel(), remote: agent === 'claude' && machine.get().controller.remoteControl, skipPermissions: agent === 'claude' && machine.get().controller.dangerouslySkipPermissions, approval: machine.get().permissions.controllerNeedsApproval });
+export const controllerLaunchKey = (agent: string) => JSON.stringify({ mail: 3, credentialGuidance: 1, agent, model: machine.get().controller.models[agent as 'claude' | 'codex' | 'antigravity'] || '', label: machine.controllerLabel(), remote: agent === 'claude' && machine.get().controller.remoteControl, skipPermissions: agent === 'claude' && machine.get().controller.dangerouslySkipPermissions, approval: machine.get().permissions.controllerNeedsApproval });
 
 export async function startController(): Promise<Task> {
   mkdirSync(join(CONTROLLER_DIR, 'plans'), { recursive: true });
@@ -376,7 +391,7 @@ export function taskInstructions(t: Task, inlineRules = true) {
     `Documents meant for the user or for other agents (handoffs, designs, reviews, diagrams, HTML pages) go in ${dir}/outbox/ as Markdown or HTML files. Files others send you arrive in ${dir}/inbox/.`,
     `To wait for a file another agent or the user will send you, run: tb inbox wait [--timeout seconds]. It prints the path and sender of each new file (exit 0), or exits 2 on timeout.`,
     `Use tb mail submit <subject> <body> to send a message to your own user's Inbox.`,
-    mailWritingRules(),
+    mailWritingRules(false),
     `If you cannot run a command, use tb suggest "<command>" --why "<reason>" --risk "<risk>".`,
     `Do not paste a command into chat and ask the user to run it.`,
     `Use tb suggest --steps <file> --why "<reason>" for an ordered sequence.`,

@@ -15,8 +15,8 @@ importers:
         specifier: ^0.2.0
         version: 0.2.0
       a2a-notes:
-        specifier: github:Mgczacki/a2a-notes#18d822dd702daf253fba0cdd232902a1791a9fdc
-        version: https://codeload.github.com/Mgczacki/a2a-notes/tar.gz/18d822dd702daf253fba0cdd232902a1791a9fdc
+        specifier: github:Mgczacki/a2a-notes#96077458355a216903c9e7c5e11e6fa2f56f0233
+        version: https://codeload.github.com/Mgczacki/a2a-notes/tar.gz/96077458355a216903c9e7c5e11e6fa2f56f0233
       chrome-devtools-mcp:
         specifier: 1.10.1
         version: 1.10.1
@@ -680,9 +680,9 @@ packages:
   '@xterm/xterm@6.0.0':
     resolution: {integrity: sha512-TQwDdQGtwwDt+2cgKDLn0IRaSxYu1tSUjgKarSDkUM0ZNiSRXFpjxEsvc/Zgc5kq5omJ+V0a8/kIM2WD3sMOYg==}
 
-  a2a-notes@https://codeload.github.com/Mgczacki/a2a-notes/tar.gz/18d822dd702daf253fba0cdd232902a1791a9fdc:
-    resolution: {tarball: https://codeload.github.com/Mgczacki/a2a-notes/tar.gz/18d822dd702daf253fba0cdd232902a1791a9fdc}
-    version: 0.3.0
+  a2a-notes@https://codeload.github.com/Mgczacki/a2a-notes/tar.gz/96077458355a216903c9e7c5e11e6fa2f56f0233:
+    resolution: {tarball: https://codeload.github.com/Mgczacki/a2a-notes/tar.gz/96077458355a216903c9e7c5e11e6fa2f56f0233}
+    version: 0.4.0
     engines: {node: '>=20'}
     hasBin: true
 
@@ -2104,7 +2104,7 @@ snapshots:
 
   '@xterm/xterm@6.0.0': {}
 
-  a2a-notes@https://codeload.github.com/Mgczacki/a2a-notes/tar.gz/18d822dd702daf253fba0cdd232902a1791a9fdc:
+  a2a-notes@https://codeload.github.com/Mgczacki/a2a-notes/tar.gz/96077458355a216903c9e7c5e11e6fa2f56f0233:
     dependencies:
       '@modelcontextprotocol/sdk': 1.31.0(zod@4.6.5)
       zod: 4.6.5
