@@ -96,8 +96,8 @@ test('keys typed in the view reach the page, and copy returns the selected text'
   const value = async (js: string) => (await cdp(pageWs, 'Runtime.evaluate', { expression: js, returnByValue: true })).result.value;
   await value('q.focus(), q.setSelectionRange(0, 5)');
   client.emit('message', JSON.stringify({ type: 'copy' }));
-  await until(() => sent.some(m => m.type === 'copy'), 'the view gets the copied text');
-  assert.equal(sent.find(m => m.type === 'copy').text, 'hello');
+  await until(() => sent.some(m => m.type === 'copied'), 'the view gets the copied text');
+  assert.equal(sent.find(m => m.type === 'copied').text, 'hello');
   await value('q.value = "", q.focus()');
   for (const k of ['c', 'n', 't']) {
     const code = 'Key' + k.toUpperCase(), keyCode = k.toUpperCase().charCodeAt(0);
@@ -115,8 +115,8 @@ test('keys typed in the view reach the page, and copy returns the selected text'
   assert.equal(selected, 'cnt', '⌘A selects all');
   sent.length = 0;
   client.emit('message', JSON.stringify({ type: 'copy', cut: true }));
-  await until(() => sent.some(m => m.type === 'copy'), 'the view gets the cut text');
-  assert.equal(sent.find(m => m.type === 'copy').text, 'cnt');
+  await until(() => sent.some(m => m.type === 'copied'), 'the view gets the cut text');
+  assert.equal(sent.find(m => m.type === 'copied').text, 'cnt');
   let left = 'cnt';
   for (let i = 0; i < 50 && left !== ''; i++) { left = await value('q.value'); await new Promise(r => setTimeout(r, 100)); }
   assert.equal(left, '', '⌘X deletes the selection');
