@@ -6,7 +6,7 @@ import type { Group, SpinOffExchange, Task } from '../api';
 import { ATTN, STATUS_LABEL, api, confirmEnd, useStore } from '../api';
 import { AgentChip, Dot, MachineChip, WhereChip } from './ui';
 import { Terminal, terminalDebugRecord } from './Terminal';
-import { TaskPending } from './PendingCard';
+import { PendingMarker } from './PendingCard';
 import { hit as key, hitIn, inBrowser, keyLabel, keysText, useKeymap } from '../keys';
 import { AskPanel } from './Ask';
 import { archiveAll, archiveAndDelete, archivePlan, restoreAll, restoreGroupAndTasks, type ArchiveResult, type ArchiveTarget } from '../groupArchive';
@@ -474,7 +474,7 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
           <div key={t.id} data-win={t.id} className={`win ${t.status} ${t.link?.state === 'superseded' ? 'superseded' : ''} ${focused === t.id ? 'focus' : ''} ${selected.has(t.id) ? 'selected' : ''} ${tileDrag?.id === t.id ? 'dragging' : ''} ${tileSlotClass(i)} ${layout === 'rows' ? 'vslot' : ''}`} style={{ order: i, ...(layout === 'grid' && !maxId ? { gridColumn: `span ${i < tileCount - lastRow ? lastRow : gridCols}` } : {}) }} onMouseDown={() => { setFocused(t.id); if (t.status === 'unread') api.seen(t.id); }}>
             <div className="wh" onPointerDown={e => startDrag(e, t.id)} onDoubleClick={() => setMaxId(m => m ? null : t.id)}>
               <span className="grip" title={`Drag to move this window between two others, or onto a group tab. Move it one place: ${keysText('windowEarlier')} / ${keysText('windowLater')}`}>⠿</span><span className="ix">{i + 1}</span><LinkPorts t={t} tasks={tasks} onGo={goTask} side="left" /><Dot s={t.status} /><span className="n">#{t.num}</span><span className="ti">{t.title}</span><LinkPorts t={t} tasks={tasks} onGo={goTask} side="right" />
-              <span className={`st st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} /><RuntimeButton t={t} small onOpen={tab => openPanel(t.id, tab)} />
+              <PendingMarker taskId={t.id} small><span className={`st st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span></PendingMarker><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} /><RuntimeButton t={t} small onOpen={tab => openPanel(t.id, tab)} />
               {ending === t.id ? <><span className="sel-warn">End & archive?</span><button className="b" onClick={() => endTask(t)}>Yes, end it</button><button className="b" onClick={() => setEnding(null)}>Cancel</button></> : <>
               {(t.status === 'suspended' || t.openElsewhere) && <button className="b" onClick={() => openPanel(t.id)}>{t.openElsewhere ? 'Options…' : 'Resume…'}</button>}
               {canRun(t) && !t.openElsewhere && t.status !== 'suspended' && !held(t.id).terminal && !held(t.id).browser && (sp => <>
@@ -497,7 +497,6 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
               // the terminal stays the last child, so opening or closing the browser does not mount it again
               : <>{splitOf(t.id).open && canRun(t) && !held(t.id).browser && <div className="wb-browser"><BrowserView id={t.id} title={`#${t.num} ${t.title}`} autostart={startHere.current.has(t.id)} /></div>}
                 <Terminal taskId={t.id} fontSize={font[t.id] || 13} onFocus={() => setFocused(t.id)} /></>}</div>
-            <TaskPending taskId={t.id} compact openTask={id => openPanel(id)} toast={toast} />
           </div>
         ))}
       </div>

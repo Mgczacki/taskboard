@@ -3,9 +3,10 @@
 //   - approval cards (server/approvals.ts): permits, pushes, releases and the other approvals, with their own rules
 //   - tasks that need you, stopped or wait for a review with no card (the former Triage list)
 // The views All, Agent questions, Permits, Push and release, and Answered filter this one list.
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import type { Agent, Approval, PendingItem, Task } from '../api';
 import { ATTN, AGENT_NAME, api, fmtWait, useStore } from '../api';
+import { SHOW_EVENT } from '../stack';
 import { ApprovalCard } from './ApprovalCard';
 import { KIND_LABEL, PendingCard } from './PendingCard';
 import { Terminal } from './Terminal';
@@ -38,6 +39,13 @@ export function WaitingPage({ tasks, allTasks, openTask, openController, toast }
   const [showTerm, setShowTerm] = useState(() => { try { return localStorage.getItem('tb-waiting-term') !== 'off'; } catch { return true; } });
   useEffect(() => { try { localStorage.setItem('tb-waiting-term', showTerm ? 'on' : 'off'); } catch { /* storage off */ } }, [showTerm]);
   const all = useMemo(() => waitingRows(tasks, approvals, pending), [tasks, approvals, pending]);
+  // the notification stack is off on this page: a marker button in the task panel selects the task's card here
+  const latest = useRef(all); latest.current = all;
+  useEffect(() => {
+    const on = (e: Event) => { const r = latest.current.find(x => x.item && x.taskId === (e as CustomEvent<string>).detail); if (r) { setView('all'); setAgent('any'); setSel(r.id); } };
+    window.addEventListener(SHOW_EVENT, on);
+    return () => window.removeEventListener(SHOW_EVENT, on);
+  }, []);
   const done: Row[] = answered.map(i => ({ id: `p:${i.id}`, at: i.answer?.at || i.createdAt, taskId: i.taskId, agent: i.agent, title: `#${i.taskNum} ${i.taskTitle}`, question: i.question, kind: KIND_LABEL[i.kind], item: i, done: true }));
   const test: Record<View, (r: Row) => boolean> = {
     all: () => true, questions: r => !!r.item, answered: () => true,
