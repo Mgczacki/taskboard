@@ -764,7 +764,9 @@ const delivering = new Set<string>();
 export const blockingQuestion = /Usage limit reached[\s\S]*Request increase|Approaching rate limits[\s\S]*Keep current model|trust this folder|Do you trust the (files|contents)|Select login method|Please log in|Sign in with ChatGPT|Update available[\s\S]*(Update now|Skip)|approval requested|Allow this action|Approve this tool|\d\.\s*(Update|Upgrade|Install)( now|\s+v?\d)|\(runs `[^`]*(curl|wget)[^`]*\|[^`]*sh\b|install\.sh\b/i;
 
 // Resume before typing into a task whose tmux session has ended.
-export async function sendTaskText(t: Task, text: string): Promise<{ resumed: boolean; submitted: boolean; warning?: string }> {
+// answer: the text answers the question at the end of the last turn. The caller (pending.ts typeAnswer) checked that
+// the "needs you" status is that question, so only the screen check of deliverText applies.
+export async function sendTaskText(t: Task, text: string, opts: { answer?: boolean } = {}): Promise<{ resumed: boolean; submitted: boolean; warning?: string }> {
   const empty = textError(text); if (empty) throw new Error(empty);
   if (delivering.has(t.id)) throw new NotTyped('Another message is being typed into this task now.', 'busy');
   delivering.add(t.id);
@@ -799,7 +801,7 @@ export async function sendTaskText(t: Task, text: string): Promise<{ resumed: bo
     // nothing. Two reasons leave the input box empty: the agent waits in a tb command for an approval card on the
     // dashboard (the controller often does), or a command was refused. Then deliverText reads the screen.
     const current = store.get(t.id)!;
-    if (current.status === 'needs-you' && !/^Waiting for your approval on the dashboard\.| refused a tool call at /.test(current.statusSource || ''))
+    if (current.status === 'needs-you' && !opts.answer && !/^Waiting for your approval on the dashboard\.| refused a tool call at /.test(current.statusSource || ''))
       throw new NotTyped(`${agentName(t.agent)} in #${t.num} asks a question in its terminal${current.ask ? ` (${current.ask.slice(0, 120)})` : ''}.`, 'question');
     const r = await deliverText(current, text);
     return { resumed, ...r };

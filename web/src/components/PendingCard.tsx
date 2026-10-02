@@ -53,6 +53,8 @@ export function PendingCard({ item, compact, openTask, toast }: { item: PendingI
       // the setting was turned on in another window: read it again and show the confirm step
       const o = item.options.find(x => x.key === body.option);
       if (o?.risk && !body.confirm && /confirm step/.test(message)) { void loadConfirmRisk(); setConfirm(o); setAck(false); }
+      // the server removed the card: the toast shows why after the card is gone
+      else if (/^This card is out of date/.test(message)) { setError(message); toast(`#${item.taskNum}: ${message}`); }
       else setError(message);
     }
     finally { setBusy(false); }
@@ -73,6 +75,9 @@ export function PendingCard({ item, compact, openTask, toast }: { item: PendingI
     void send({ option: 'form', text: JSON.stringify(answers) });
   };
   const selectedRisky = item.options.find(o => o.selected && o.risk);
+  // one failure shows once: the server keeps it in item.result, and the click that failed gets the same text
+  const failure = item.state === 'pending' && item.result ? item.result : error;
+  const terminalStep = failure === item.result && item.needsTerminal;
 
   return <div className={`pcard kind-${item.kind} ${item.state} ${compact ? 'compact' : ''}`} data-pending={item.id}>
     <div className="pc-h">
@@ -122,8 +127,7 @@ export function PendingCard({ item, compact, openTask, toast }: { item: PendingI
         <button className="btn ghost" onClick={() => setGroupOn(false)}>Split into single answers</button>
       </div>}
     </div>}
-    {item.result && item.state === 'pending' && <div className="pc-note bad">{item.result}</div>}
-    {error && <div className="pc-note bad" role="alert">{error}</div>}
+    {failure && !busy && <div className="pc-note bad" role="alert">{failure}{terminalStep && <> <button className="btn ghost pc-link" onClick={() => openTask(item.taskId)}>Open terminal</button></>}</div>}
     {busy && <div className="pc-note info">Sending…</div>}
     <div className="pc-f">
       <button className="btn ghost" onClick={() => openTask(item.taskId)}>Open terminal</button>
