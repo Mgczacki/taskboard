@@ -3,7 +3,7 @@ import { promisify } from 'node:util';
 import type { Task } from './store.ts';
 import * as store from './store.ts';
 import * as machine from './machine.ts';
-import { findBase, mergeStateForSource } from './task-git.ts';
+import { findBase, mergeStateForSource, scopeHint } from './task-git.ts';
 import { backupPrefix } from './task-repair.ts';
 import { scanHistory } from './task-history.ts';
 import { TB_DIR } from './config.ts';
@@ -147,7 +147,10 @@ async function checkForcePush(task: Task, cwd: string, o: { branch: string; task
   if (isProtectedBranch(o.branch, o.defaultBranch, machine.get().pushes.protectedBranches))
     return { refusal: `${o.branch} is a protected branch (master, main, prod, release/*, the remote default branch, or a protected branch in the settings).` };
   const sameRepo = (a: string, b: string) => { try { return realpathSync(a) === realpathSync(b); } catch { return a === b; } };
-  const owner = store.all().find(t => t.id !== task.id && t.role !== 'controller' && t.branch === o.branch && sameRepo(t.folder, task.folder));
+  // the main branch of each other task, and the branches of the worktrees that other tasks and this task attached
+  const owner = store.all().find(t => t.role !== 'controller' && (
+    (t.id !== task.id && t.branch === o.branch && sameRepo(t.folder, task.folder)) ||
+    (t.scopes || []).some(s => s.kind === 'worktree' && s.branch === o.branch && !!s.repo && sameRepo(s.repo, task.folder) && !(t.id === task.id && s.name === task.scopeKey))));
   if (owner) return { refusal: `task #${owner.num} (${owner.title}) also uses the branch ${o.branch}.` };
   if (!o.oldAvailable) return { refusal: `the remote head ${o.oldHead} is not in the local repository, so Taskboard cannot check it. Someone else may have pushed to the branch.` };
   const pushed = pushedHeads(task.id, o.remoteUrl, o.branch).filter(r => r.newHead === o.oldHead).pop();
@@ -162,7 +165,7 @@ async function checkForcePush(task: Task, cwd: string, o: { branch: string; task
 }
 
 export async function inspectPush(task: Task, reason: string, options: { branch?: string; remote?: string; base?: string; thenRelease?: boolean } = {}): Promise<PushState> {
-  if (!task.worktree || !task.branch || task.role === 'controller') throw new Error('A task must use its own Git worktree.');
+  if (!task.worktree || !task.branch || task.role === 'controller') throw new Error(`A task must use its own Git worktree. ${scopeHint}`);
   await mergeStateForSource(task);
   if (realpathSync(await git(task.folder, 'rev-parse', '--show-toplevel')) !== realpathSync(task.folder)) throw new Error('The main checkout changed.');
   const taskBranch = task.branch;

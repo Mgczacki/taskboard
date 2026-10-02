@@ -7,6 +7,8 @@ import type { Task } from './store.ts';
 import * as store from './store.ts';
 import * as machine from './machine.ts';
 import * as taskGit from './task-git.ts';
+import { scopeHint } from './task-git.ts';
+import { taskWorktrees, worktreeScopes } from './scopes.ts';
 
 export type StepState = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 export type PermitState = 'pending' | 'running' | 'succeeded' | 'failed' | 'denied' | 'expired' | 'unknown';
@@ -97,7 +99,10 @@ function hardRule(argv: string[], task?: Task) {
   if (/^mcp__[^\s/]+$/.test(argv[0])) throw new Error('An MCP tool call cannot run from a shell permit. Do not retry this command. Use an allowed path or ask the user to do this step.');
   if (/^(sudo|su|ssh|scp|sftp|vi|vim|nano|less|more|top|htop)$/.test(bin) || (/^(bash|sh|zsh|python|python3|node)$/.test(bin) && argv.includes('-i'))) throw new Error('Interactive commands cannot run from a permit.');
   if (bin === 'tb' || bin === 'taskboard') throw new Error('A permit cannot run another Taskboard command.');
-  if (bin === 'git' && argv.slice(1).some(x => /^(add|commit|rebase|merge|reset|checkout|switch|push|pull|cherry-pick|revert|worktree|update-ref|stash|branch|tag)$/.test(x)) && !allowedTaskGit(argv) && !(task && allowedSharedGit(argv, task))) throw new Error('Use the task Git commands for changes to Git refs.');
+  if (bin === 'git' && argv.slice(1).some(x => /^(add|commit|rebase|merge|reset|checkout|switch|push|pull|cherry-pick|revert|worktree|update-ref|stash|branch|tag)$/.test(x)) && !allowedTaskGit(argv) && !(task && allowedSharedGit(argv, task)))
+    throw new Error(argv.includes('worktree') || (task && !task.worktree)
+      ? `Use the task Git commands for changes to Git refs. A permit cannot create a worktree. ${scopeHint}`
+      : 'Use the task Git commands for changes to Git refs.');
   if (/\bgit\s+push\b|\bgh\s+(repo|pr|api)\b/.test(text)) throw new Error('A GitHub write needs a separate user decision.');
   if (/\b(pnpm|npm|yarn)\b.*\b(release|rollback)\b|scripts\/release\.mjs|scripts\/rollback\.mjs/.test(text)) throw new Error('A release or rollback needs its own rule.');
   if (/scripts\/restart\.mjs/.test(text)) throw new Error('A restart of Taskboard needs the user.');
@@ -144,10 +149,10 @@ function scriptHash(argv: string[], cwd: string, roots: string[]): string | unde
 export function validate(task: Task, inputs: StepInput[]): { steps: PermitStep[]; riskFlags: string[] } {
   if (!Array.isArray(inputs) || inputs.length < 1 || inputs.length > 8) throw new Error('Give one through eight steps.');
   if (task.role === 'controller') throw new Error('The controller cannot request a permit for itself.');
-  const roots = [task.cwd, join(VAULT, 'tasks', task.id), ...machine.get().permitFolders].filter(existsSync).map(p => realpathSync(p));
+  const roots = [task.cwd, join(VAULT, 'tasks', task.id), ...worktreeScopes(task).map(s => s.path), ...machine.get().permitFolders].filter(existsSync).map(p => realpathSync(p));
   if (unsafeRoot(realpathSync(task.cwd))) throw new Error('The task folder contains protected Taskboard files.');
   if (machine.get().permitFolders.some(p => !existsSync(p) || unsafeRoot(realpathSync(p)))) throw new Error('An extra folder contains protected Taskboard files.');
-  const otherWorktrees = store.all().filter(t => t.id !== task.id && t.worktree && existsSync(t.cwd)).map(t => realpathSync(t.cwd));
+  const otherWorktrees = taskWorktrees().filter(w => w.task.id !== task.id && existsSync(w.path)).map(w => w.path);
   if (roots.some(root => otherWorktrees.some(other => inside(root, other) || inside(other, root)))) throw new Error('The allowed folders overlap another task worktree.');
   const steps = inputs.map(input => {
     if (input.continueOnFailure) throw new Error('Steps must stop after a failure.');
@@ -202,6 +207,12 @@ export const controllerAllowed = (p: Permit, task: Task, enabled: boolean) => !!
 export function explicitControllerRequest(transcript: string | undefined, agent: string, words: string, p: Permit): boolean {
   if (!transcript || !words.trim() || words.length > 2000 || !/\b(approve|run)\b/i.test(words)) return false;
   if (!p.steps.every(s => words.includes(s.command) || words.includes(p.id))) return false;
+  return userWrote(transcript, agent, words);
+}
+// True when one user message in the controller transcript is exactly these words. Text that a tool returned, a task
+// log or a mail is not a user message, so it does not count.
+export function userWrote(transcript: string | undefined, agent: string, words: string): boolean {
+  if (!transcript || !words.trim() || words.length > 2000) return false;
   let content = '';
   try { content = readFileSync(transcript, 'utf8').slice(-4 * 1024 * 1024); } catch { return false; }
   for (const line of content.split('\n')) {

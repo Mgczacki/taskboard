@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { realpathSync } from 'node:fs';
 import { promisify } from 'node:util';
 import type { Task } from './store.ts';
-import { backupPrefix, findBase, mergeStateForSource, rebasing, recordBase, resolveBase, saveBackup } from './task-git.ts';
+import { backupPrefix, findBase, scopeHint, mergeStateForSource, rebasing, recordBase, resolveBase, saveBackup } from './task-git.ts';
 import { historyReport } from './task-history.ts';
 
 // tb git repair rewrites only the task's own branch in its own worktree. Before each change it saves the old head
@@ -15,7 +15,7 @@ const protectedBranch = (branch: string) => /^(master|main|prod)$/i.test(branch)
 export { backupPrefix };
 
 async function preflight(t: Task): Promise<string> {
-  if (!t.worktree || !t.branch || t.role === 'controller') throw new Error('This task has no worktree branch; tb git repair works only on a task branch in its own worktree.');
+  if (!t.worktree || !t.branch || t.role === 'controller') throw new Error(`This task has no worktree branch; tb git repair works only on a task branch in its own worktree. ${scopeHint}`);
   if (realpathSync(t.cwd) === realpathSync(t.folder)) throw new Error('This task uses the main checkout; tb git repair works only in a separate task worktree.');
   if (protectedBranch(t.branch)) throw new Error(`tb git repair does not change ${t.branch}.`);
   if (await rebasing(t.cwd)) throw new Error('The task has an unfinished rebase; run tb git rebase --continue or tb git rebase --abort first.');
@@ -75,7 +75,7 @@ export async function dropCommit(t: Task, commitArg: string, baseName?: string):
 }
 
 export async function listBackups(t: Task): Promise<string> {
-  if (!t.worktree || !t.branch) throw new Error('This task has no worktree branch.');
+  if (!t.worktree || !t.branch) throw new Error(`This task has no worktree branch. ${scopeHint}`);
   const refs = await git(t.cwd, 'for-each-ref', '--sort=-refname', '--format=%(refname) %(objectname:short) %(subject)', backupPrefix(t));
   return refs || 'This task has no backups from tb git repair or tb git rebase.';
 }
@@ -97,7 +97,7 @@ export async function restoreBackup(t: Task, backupName: string): Promise<string
 
 // Without a base, tb git check uses local master, or the base that findBase gives when the repository has no master.
 export async function checkTask(t: Task, baseName?: string): Promise<string> {
-  if (!t.worktree || !t.branch || t.role === 'controller') throw new Error('This task has no worktree branch.');
+  if (!t.worktree || !t.branch || t.role === 'controller') throw new Error(`This task has no worktree branch. ${scopeHint}`);
   await mergeStateForSource(t);
   const base = baseName ? await resolveBase(t, baseName) : await findBase(t, { localFirst: true });
   return historyReport(t.cwd, base.ref, base.name);

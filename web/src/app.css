@@ -446,7 +446,7 @@ body.in-app.app-buttons .app:not(:has(.rail)) .top { padding-left: 84px; }
 .ask-in textarea { flex: 1; min-width: 0; width: auto; resize: none; font: 12.5px var(--sans); }
 
 /* task panel with its details folded: title, status line and tabs only */
-.dr-head.compact > .dr-meta, .dr-head.compact > .ctx, .dr-head.compact > .dr-actions, .dr-head.compact > .banner { display: none; }
+.dr-head.compact > .dr-meta, .dr-head.compact > .dr-scopes, .dr-head.compact > .ctx, .dr-head.compact > .dr-actions, .dr-head.compact > .banner { display: none; }
 /* Taskboard was updated and automatic reload is off */
 .update-bar { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 60; display: flex; gap: 10px; align-items: center; padding: 8px 12px; border-radius: 10px; background: var(--bg2); border: 1px solid var(--accent); box-shadow: 0 6px 24px rgba(0,0,0,.4); font-size: 13px; }
 /* Settings: keyboard shortcuts */
@@ -619,3 +619,8 @@ table.keyset .keycell { text-align: right; white-space: normal; }
 .rtl-act .btn { margin-left: 4px; padding: 2px 8px; font-size: 12px; }
 .rtl-table a { color: var(--accent); }
 .sub.warn { color: var(--st-needs); }
+
+/* the attached worktrees and read folders of a task (TaskPanel ScopeList) */
+.dr-scopes { display: flex; flex-direction: column; gap: 4px; margin: 4px 0; }
+.scope-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 11.5px; color: var(--muted); min-width: 0; }
+.scope-row .mono { font-family: var(--mono); overflow-wrap: anywhere; }
