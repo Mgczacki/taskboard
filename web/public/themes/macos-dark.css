@@ -126,7 +126,7 @@ html[data-theme="macos-dark"] {
   & .dr-status.unread { background: rgba(48,209,88,.12); }
   & .dr-status.stopped { background: rgba(255,69,58,.13); }
   & .dr-status.review { background: rgba(191,90,242,.13); }
-  & .tabs { background: rgba(0,0,0,.28); border-radius: 7px; padding: 2px; width: max-content; margin-bottom: 10px; box-shadow: inset 0 0 0 .5px rgba(255,255,255,.08); }
+  & .tabs { background: rgba(0,0,0,.28); border-radius: 7px; padding: 2px; width: max-content; max-width: 100%; margin-bottom: 10px; box-shadow: inset 0 0 0 .5px rgba(255,255,255,.08); }
   & .tabs button { border: 0; border-radius: 5px; padding: 3px 12px; color: var(--text); }
   & .tabs button.on { background: #636366; color: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.45); }
   & .tabs button .n { color: #b8b8bd; }
@@ -171,6 +171,8 @@ html[data-theme="macos-dark"] {
       radial-gradient(circle at 6px 6px, #ff5f57 5.5px, transparent 6px),
       radial-gradient(circle at 26px 6px, #febc2e 5.5px, transparent 6px),
       radial-gradient(circle at 46px 6px, #28c840 5.5px, transparent 6px); }
+  /* a narrow window header (Canvas.tsx) needs the room for its ⋯ button */
+  & .wh.narrow::before { display: none; }
   & .win:not(.focus) .wh::before { background:
       radial-gradient(circle at 6px 6px, #5a5a5c 5.5px, transparent 6px),
       radial-gradient(circle at 26px 6px, #5a5a5c 5.5px, transparent 6px),

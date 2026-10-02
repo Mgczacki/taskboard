@@ -23,10 +23,15 @@ import { countText, sumCounts } from '../runtimeText';
 import { LinkPorts } from './Links';
 import { linkOrder, showLinkedWork } from '../links';
 import { GROUP_HINT, HIDE_TITLE, canHide, hiddenHere, hide, unhide, type HiddenByView } from '../hideWindow';
+import { fitToolbar, sameFit, type Fit } from '../toolbarFit';
+import { PopMenu } from './PopMenu';
 
 type Layout = 'columns' | 'grid' | 'rows';
 const MINW = 640;
 const PER_PAGE = ['off', 2, 3, 4, 6, 8] as const;
+const LAYOUT_NAME: Record<Layout, string> = { columns: 'Columns', grid: 'Grid', rows: 'Rows' };
+// the layout buttons of a tight toolbar (toolbarFit.ts): a square with vertical lines, with both, with horizontal lines
+const LAYOUT_ICON: Record<Layout, string> = { columns: '▥', grid: '▦', rows: '▤' };
 const GESTURE_GAP = 150;  // ms without a wheel event that ends one trackpad swipe
 const AXIS_LOCK = 8;      // px a swipe moves before it is locked to one axis
 const PAGE_SWIPE = 60;    // px a horizontal swipe moves before it changes the page
@@ -70,6 +75,14 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
   const [page, setPage] = useState(() => Number(localStorage.getItem(lk('page'))) || 0);
   // the browsers and processes of this view's tasks (GroupRuntime), shown above the windows
   const [runtimeOpen, setRuntimeOpen] = useState(false);
+  // the toolbar: the items in its More menu (toolbarFit.ts), their measured widths, and the width of the toolbar
+  const [toolFit, setToolFit] = useState<Fit>({ overflow: [], tight: false });
+  const [moreOpen, setMoreOpen] = useState(false);
+  const closeMore = useCallback(() => setMoreOpen(false), []);
+  const [toolWidth, setToolWidth] = useState(0);
+  const toolRef = useRef<HTMLDivElement>(null), moreBtn = useRef<HTMLButtonElement>(null), addBtn = useRef<HTMLButtonElement>(null);
+  const toolWidths = useRef({ full: new Map<string, number>(), tight: new Map<string, number>() });
+  useEffect(() => { const el = toolRef.current; if (!el) return; const ro = new ResizeObserver(() => setToolWidth(el.clientWidth)); ro.observe(el); return () => ro.disconnect(); }, []);
   const [focused, setFocused] = useState<string | null>(null);
   const [maxId, setMaxId] = useState<string | null>(null);
   const [font, setFont] = useState<Record<string, number>>({});
@@ -280,9 +293,16 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
   // focus mode: the tabs and toolbar come back while the pointer is at the top edge
   useEffect(() => {
     if (!focusMode) { setReveal(false); return; }
-    const on = (e: MouseEvent) => { if (e.clientY < 6) setReveal(true); else if (e.clientY > 110 && !menu) setReveal(false); };
+    // They go away when the pointer is 30 px below the bottom of the toolbar. The toolbar's height is measured: a fixed
+    // limit (110 px before) hid a toolbar of two or more rows while the pointer moved to its lower rows.
+    const on = (e: MouseEvent) => {
+      if (e.clientY < 6) { setReveal(true); return; }
+      if (menu || moreOpen) return;
+      const bottom = toolRef.current?.getBoundingClientRect().bottom || 0;
+      if (e.clientY > Math.max(bottom, 40) + 30) setReveal(false);
+    };
     addEventListener('mousemove', on); return () => removeEventListener('mousemove', on);
-  }, [focusMode, menu]);
+  }, [focusMode, menu, moreOpen]);
 
   // Drag a window by its header (the ⠿ handle shows where) to move it. Two kinds of drop:
   // - between two windows: the window moves to that position in this view. Its groups do not change.
@@ -417,9 +437,72 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
   const focusedTask = tasks.find(t => t.id === focused);
   const waiting = (list: string[]) => list.filter(id => ATTN.includes(tasks.find(t => t.id === id)?.status as Task['status'])).length;
 
+  // The toolbar items in a fixed order. keep: how long an item stays in the toolbar when the width is short
+  // (toolbarFit.ts). 0: it never moves to the More menu. end: the item comes after the window count text, at the right.
+  // menu: the item in the More menu when it differs from the item in the toolbar.
+  const tight = toolFit.tight;
+  const runtimeText = countText(sumCounts(runtimeCounts, runtimeTasks.map(t => t.id)));
+  const toolbar: { k: string; name: string; keep: number; end?: boolean; node: React.ReactNode; menu?: React.ReactNode }[] = [];
+  if (solo) toolbar.push({ k: 'name', name: 'View name', keep: 0, node: <span className="solo-name">{viewName(view, groups, tasks)}</span> });
+  toolbar.push({ k: 'new', name: 'New task', keep: 0, node: <button className="btn primary" onClick={newTask} title={`New task (${keysText('canvasNewTask')})`}>{tight ? '＋ New' : '＋ New task'} {!tight && keyLabel('canvasNewTask') && <kbd>{keyLabel('canvasNewTask')}</kbd>}</button> });
+  if (!solo) toolbar.push({ k: 'window', name: 'New window', keep: 1, node: <button className="btn" onClick={() => openInWindow(view)} title="Open this view in its own browser window">↗ New window</button> });
+  toolbar.push({ k: 'add', name: 'Add window', keep: 7, node: <button ref={addBtn} className="btn" aria-haspopup="true" aria-expanded={menu === 'add'} onClick={() => { setMoreOpen(false); setMenu(m => m === 'add' ? null : 'add'); }}>＋ Add window</button> });
+  toolbar.push({ k: 'layout', name: 'Layout', keep: 0, node: <div className="seg" role="group" aria-label="Layout">{(['columns', 'grid', 'rows'] as Layout[]).map(l => <button key={l} className={layout === l ? 'on' : ''} aria-pressed={layout === l} onClick={() => setLayout(l)} title={LAYOUT_NAME[l]} aria-label={LAYOUT_NAME[l]}>{tight ? LAYOUT_ICON[l] : LAYOUT_NAME[l]}</button>)}</div> });
+  if (wins.some(t => t.link)) toolbar.push({ k: 'order', name: 'Order', keep: 2, node: <><span className="lbl">Order</span><div className="seg"><button className={order === 'saved' ? 'on' : ''} aria-pressed={order === 'saved'} onClick={() => setOrder('saved')} title="The order you set by moving windows">Saved</button><button className={order === 'links' ? 'on' : ''} aria-pressed={order === 'links'} onClick={() => setOrder('links')} title="Each task after the tasks that block it, and a replaced task after the task that replaces it. A move by hand goes back to Saved.">Links</button></div></> });
+  if (layout === 'columns' && !per) toolbar.push({ k: 'visible', name: 'Visible', keep: 3, node: <><span className="lbl">Visible</span><div className="seg">{(['auto', 2, 3, 4, 5] as const).map(v => <button key={v} className={visible === v ? 'on' : ''} aria-pressed={visible === v} onClick={() => setVisible(v)}>{v === 'auto' ? 'Auto' : v}</button>)}</div></> });
+  toolbar.push({ k: 'perpage', name: 'Per page', keep: 6, node: <><span className="lbl">Per page</span><div className="seg">{PER_PAGE.map(v => <button key={v} className={perPage === v ? 'on' : ''} aria-pressed={perPage === v} onClick={() => { setPerPage(v); setPage(0); }} title={v === 'off' ? 'Show every window' : `Show ${v} windows at a time`}>{v === 'off' ? 'Off' : v}</button>)}</div></> });
+  if (per > 0 && pageCount > 1) {
+    const pageText = `Page ${pg + 1} of ${pageCount}, windows ${pg * per + 1}–${Math.min(wins.length, (pg + 1) * per)} of ${wins.length}`;
+    toolbar.push({ k: 'pager', name: 'Pages', keep: 0, node: <div className="pager">
+      <button className="btn" disabled={pg === 0} onClick={() => turnPage(-1)} title={`Previous page (${keysText('prevPage')})`} aria-label="Previous page">‹{(!tight || needBefore > 0) && <span className="pw" style={needBefore > 0 ? undefined : { visibility: 'hidden' }}>● {needBefore}</span>}</button>
+      <span className="lbl" title={pageText}>{tight ? `${pg + 1}/${pageCount}` : <>Page {pg + 1}/{pageCount} · windows {pg * per + 1}–{Math.min(wins.length, (pg + 1) * per)} of {wins.length}</>}</span>
+      <button className="btn" disabled={pg === pageCount - 1} onClick={() => turnPage(1)} title={`Next page (${keysText('nextPage')})`} aria-label="Next page">{(!tight || needAfter > 0) && <span className="pw" style={needAfter > 0 ? undefined : { visibility: 'hidden' }}>● {needAfter}</span>}›</button>
+    </div> });
+    // hidden, not removed, when nothing waits, so its width does not change the toolbar; in the More menu only when something waits
+    const needBtn = <button className="btn pneed" style={needBefore + needAfter > 0 ? undefined : { visibility: 'hidden' }} onClick={() => { const t = nextNeedy(); if (t) focus(t.id); }} title={`Go to the next window on another page that needs you (${keysText('nextNeedy')})`}>● {needBefore + needAfter} need you on other pages</button>;
+    toolbar.push({ k: 'need', name: 'Need you on other pages', keep: 8, node: needBtn, menu: needBefore + needAfter > 0 ? needBtn : <span className="lbl">Nothing on other pages needs you.</span> });
+  }
+  if (newInSmart > 0) toolbar.push({ k: 'fresh', name: 'New windows', keep: 8, node: <button className="btn" onClick={() => { setFrozen(liveSet()); }} title="Windows never appear on their own while you work">{newInSmart} new · refresh</button> });
+  if (hiddenIds.length > 0) toolbar.push({ k: 'hidden', name: 'Show hidden', keep: 5, node: <button className="btn" onClick={() => setHiddenBy(h => unhide(h, view))} title="Show the windows that you hid in this view">Show hidden ({hiddenIds.length})</button> });
+  if (suspendedHere.length > 0) toolbar.push({ k: 'resume', name: 'Resume', keep: 5, end: true, node: <button className="btn" title={`Not running: ${suspendedHere.map(t => '#' + t.num + ' ' + t.title).join(', ')}. Resume starts their agents again and continues their conversations.`} onClick={() => suspendedHere.forEach(t => api.resume(t.id).catch(() => {}))}>{suspendedHere.length} suspended · Resume</button> });
+  toolbar.push({ k: 'runtime', name: 'Browsers & processes', keep: 4, end: true, node: <button className={`btn ${runtimeOpen ? 'on' : ''}`} onClick={() => setRuntimeOpen(o => !o)} title={`The browsers and processes of the tasks in this view, with their memory. Each task owns its own.${runtimeText ? ` Running now: ${runtimeText}.` : ''}`}>Browsers & processes{runtimeText && <span className="rtb-total">{runtimeText}</span>}</button> });
+  toolbar.push({ k: 'focus', name: 'Focus mode', keep: 2, end: true, node: <button className="btn" onClick={() => setFocusMode(!focusMode)} title={`Focus mode (${keysText('focusMode')})`}>Focus mode {keyLabel('focusMode') && <kbd>{keyLabel('focusMode')}</kbd>}</button> });
+  const inMore = (k: string) => toolFit.overflow.includes(k);
+  // the group tab row: which ends have tabs scrolled out of sight
+  const tabsRef = useRef<HTMLDivElement>(null);
+  const [tabEnds, setTabEnds] = useState({ left: false, right: false });
+  const tabEdges = useCallback(() => {
+    const el = tabsRef.current; if (!el) return;
+    const left = el.scrollLeft > 2, right = el.scrollLeft + el.clientWidth < el.scrollWidth - 2;
+    setTabEnds(e => e.left === left && e.right === right ? e : { left, right });
+  }, []);
+  const scrollTabs = (d: number) => tabsRef.current?.scrollBy({ left: d * Math.max(120, tabsRef.current.clientWidth * 0.7), behavior: 'smooth' });
+  useEffect(() => { const el = tabsRef.current; if (!el) return; const ro = new ResizeObserver(tabEdges); ro.observe(el); return () => ro.disconnect(); }, [tabEdges, solo]);
+  // the tab of the view in front comes into sight, and the arrows follow a change of the tabs
+  useLayoutEffect(() => { tabsRef.current?.querySelector('.gtab.on')?.scrollIntoView({ block: 'nearest', inline: 'nearest' }); tabEdges(); }, [view, groups.length, tabEdges]);
+  // Measure the items in the toolbar before the paint and move items to the More menu, or back, when the width changes
+  // (the ResizeObserver above) or when an item comes, goes or changes its text. The widths of the items in the menu are
+  // the widths they had in the toolbar. Items that never move are measured with their full texts while the toolbar is
+  // not tight, and the toolbar uses those widths to decide when it is no longer tight.
+  const toolSig = [toolbar.map(x => x.k).join(), toolWidth, wins.length, hiddenIds.length, newInSmart, suspendedHere.length, pg, pageCount, needBefore, needAfter, runtimeText, solo && viewName(view, groups, tasks)].join('|');
+  useLayoutEffect(() => {
+    const el = toolRef.current; if (!el) return;
+    const seen = toolFit.tight ? toolWidths.current.tight : toolWidths.current.full;
+    for (const c of el.querySelectorAll<HTMLElement>(':scope > [data-k]')) seen.set(c.dataset.k!, c.getBoundingClientRect().width);
+    const cs = getComputedStyle(el);
+    const avail = el.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+    // the width of "More ▾" also while the toolbar is tight and shows "⋯": with two widths the decision went back and forth
+    if (moreBtn.current && !toolFit.tight) toolWidths.current.full.set('more', moreBtn.current.getBoundingClientRect().width);
+    const moreW = toolWidths.current.full.get('more') || 72;
+    const items = toolbar.map(x => ({ k: x.k, keep: x.keep, w: toolWidths.current.full.get(x.k) ?? toolWidths.current.tight.get(x.k) ?? 0 }));
+    const next = fitToolbar(items, avail, parseFloat(cs.columnGap) || 8, moreW);
+    if (!sameFit(next, toolFit)) setToolFit(next);
+    if (!next.overflow.length && moreOpen) setMoreOpen(false);
+  }, [toolSig, toolFit]); // eslint-disable-line react-hooks/exhaustive-deps
+
   return (
     <div className={`canvas ${focusMode ? 'focus-mode' : ''} ${reveal ? 'reveal' : ''}`}>
-      {!solo && <div className="gtabs">
+      {!solo && <div className="gtabs-wrap"><div className="gtabs" ref={tabsRef} onScroll={tabEdges}>
         {groups.map((g, i) => { const l = g.tasks.filter(id => live(tasks.find(t => t.id === id))); const w = waiting(l); return (
           <div key={g.id} data-drop={'g:' + g.id} data-group-tab={g.id} className={`gtab ${view === 'g:' + g.id ? 'on' : ''} ${dropClass('g:' + g.id)} ${tabDrag?.id === g.id ? 'dragging' : ''} ${slotClass(i)}`} style={{ '--gc': g.color } as React.CSSProperties}
             onPointerDown={e => startTabDrag(e, g.id)}
@@ -438,34 +521,28 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
           <div key={v} className={`gtab smart ${view === v ? 'on' : ''}`} onClick={() => setView(v)} title={v === 'needs' ? `Shortcut: ${keysText('needsView')}` : undefined}><span className="gdot" /><span className="gname">{viewName(v, groups, tasks)}</span><span className="gn">{l.length}</span></div>); })}
         {view.startsWith('t:') && <div className="gtab on smart"><span className="gdot" /><span className="gname">{viewName(view, groups, tasks)}</span></div>}
         <div className="gtab newg" onClick={() => setMenu('new')} title={`New group (${keysText('newGroup')})`}>＋ New group</div>
+      </div>
+        {/* the tab row scrolls sideways; an arrow with a fade shows at each end that has more tabs past it */}
+        {tabEnds.left && <button className="gscroll l" onClick={() => scrollTabs(-1)} aria-label="Show the tabs to the left" title="More tabs to the left">‹</button>}
+        {tabEnds.right && <button className="gscroll r" onClick={() => scrollTabs(1)} aria-label="Show the tabs to the right" title="More tabs to the right">›</button>}
       </div>}
-      <div className="ctool">
-        {solo && <span className="solo-name">{viewName(view, groups, tasks)}</span>}
-        <button className="btn primary" onClick={newTask} title={`New task (${keysText('canvasNewTask')})`}>＋ New task {keyLabel('canvasNewTask') && <kbd>{keyLabel('canvasNewTask')}</kbd>}</button>
-        {!solo && <button className="btn" onClick={() => openInWindow(view)} title="Open this view in its own browser window">↗ New window</button>}
-        <div style={{ position: 'relative' }}>
-          <button className="btn" onClick={() => setMenu(m => m === 'add' ? null : 'add')}>＋ Add window</button>
-          {menu === 'add' && <div className="menu" onMouseLeave={() => setMenu(null)}><div className="mh">{group ? `Add to “${group.name}”` : 'Show here'}</div>{off.length ? off.map(t => <div className="mi" key={t.id} onClick={() => { addToView(t.id); setMenu(null); setTimeout(() => focus(t.id), 80); }}><Dot s={t.status} />#{t.num} {t.title}</div>) : <div className="mi">Every live task is already here.</div>}</div>}
-        </div>
-        <div className="seg">{(['columns', 'grid', 'rows'] as Layout[]).map(l => <button key={l} className={layout === l ? 'on' : ''} onClick={() => setLayout(l)}>{l[0].toUpperCase() + l.slice(1)}</button>)}</div>
-        {wins.some(t => t.link) && <><span className="lbl">Order</span><div className="seg"><button className={order === 'saved' ? 'on' : ''} onClick={() => setOrder('saved')} title="The order you set by moving windows">Saved</button><button className={order === 'links' ? 'on' : ''} onClick={() => setOrder('links')} title="Each task after the tasks that block it, and a replaced task after the task that replaces it. A move by hand goes back to Saved.">Links</button></div></>}
-        {layout === 'columns' && !per && <><span className="lbl">Visible</span><div className="seg">{(['auto', 2, 3, 4, 5] as const).map(v => <button key={v} className={visible === v ? 'on' : ''} onClick={() => setVisible(v)}>{v === 'auto' ? 'Auto' : v}</button>)}</div></>}
-        <span className="lbl">Per page</span><div className="seg">{PER_PAGE.map(v => <button key={v} className={perPage === v ? 'on' : ''} onClick={() => { setPerPage(v); setPage(0); }} title={v === 'off' ? 'Show every window' : `Show ${v} windows at a time`}>{v === 'off' ? 'Off' : v}</button>)}</div>
-        {per > 0 && pageCount > 1 && <div className="pager">
-          <button className="btn" disabled={pg === 0} onClick={() => turnPage(-1)} title={`Previous page (${keysText('prevPage')})`}>‹<span className="pw" style={needBefore > 0 ? undefined : { visibility: 'hidden' }}>● {needBefore}</span></button>
-          <span className="lbl" title={`Page ${pg + 1} of ${pageCount}`}>Page {pg + 1}/{pageCount} · windows {pg * per + 1}–{Math.min(wins.length, (pg + 1) * per)} of {wins.length}</span>
-          <button className="btn" disabled={pg === pageCount - 1} onClick={() => turnPage(1)} title={`Next page (${keysText('nextPage')})`}><span className="pw" style={needAfter > 0 ? undefined : { visibility: 'hidden' }}>● {needAfter}</span>›</button>
-          {/* hidden, not removed, when nothing waits: the toolbar wraps, and a new line would shrink every terminal below it */}
-          <button className="btn pneed" style={needBefore + needAfter > 0 ? undefined : { visibility: 'hidden' }} onClick={() => { const t = nextNeedy(); if (t) focus(t.id); }} title={`Go to the next window on another page that needs you (${keysText('nextNeedy')})`}>● {needBefore + needAfter} need you on other pages</button>
-        </div>}
-        {newInSmart > 0 && <button className="btn" onClick={() => { setFrozen(liveSet()); }} title="Windows never appear on their own while you work">{newInSmart} new · refresh</button>}
-        {hiddenIds.length > 0 && <button className="btn" onClick={() => setHiddenBy(h => unhide(h, view))} title="Show the windows that you hid in this view">Show hidden ({hiddenIds.length})</button>}
+      <div className={`ctool ${toolFit.tight ? 'tight' : ''}`} ref={toolRef} data-overflow={toolFit.overflow.join(',')}>
+        {toolbar.filter(x => !x.end && !inMore(x.k)).map(x => <div key={x.k} className="ct-i" data-k={x.k}>{x.node}</div>)}
         {/* also the spacer: its width starts at 0, so the text that a click on a window adds never wraps the toolbar */}
         <span className="lbl ctool-count">{per && pageCount > 1 ? '' : `${wins.length} windows`}{focusedTask ? `${per && pageCount > 1 ? '' : ' · '}typing into #${focusedTask.num}` : ''}</span>
-        {suspendedHere.length > 0 && <button className="btn" title={`Not running: ${suspendedHere.map(t => '#' + t.num + ' ' + t.title).join(', ')}. Resume starts their agents again and continues their conversations.`} onClick={() => suspendedHere.forEach(t => api.resume(t.id).catch(() => {}))}>{suspendedHere.length} suspended · Resume</button>}
-        {(() => { const n = countText(sumCounts(runtimeCounts, runtimeTasks.map(t => t.id))); return (
-          <button className={`btn ${runtimeOpen ? 'on' : ''}`} onClick={() => setRuntimeOpen(o => !o)} title={`The browsers and processes of the tasks in this view, with their memory. Each task owns its own.${n ? ` Running now: ${n}.` : ''}`}>Browsers & processes{n && <span className="rtb-total">{n}</span>}</button>); })()}
-        <button className="btn" onClick={() => setFocusMode(!focusMode)} title={`Focus mode (${keysText('focusMode')})`}>Focus mode {keyLabel('focusMode') && <kbd>{keyLabel('focusMode')}</kbd>}</button>
+        {toolbar.filter(x => x.end && !inMore(x.k)).map(x => <div key={x.k} className="ct-i" data-k={x.k}>{x.node}</div>)}
+        {toolFit.overflow.length > 0 && <div className="ct-more">
+          <button ref={moreBtn} className={`btn ${moreOpen ? 'on' : ''}`} aria-haspopup="true" aria-expanded={moreOpen} onClick={() => { setMenu(null); setMoreOpen(o => !o); }} title={`More toolbar buttons: ${toolbar.filter(x => inMore(x.k)).map(x => x.name).join(', ')}`}>{toolFit.tight ? '⋯' : 'More ▾'}</button>
+          {moreOpen && <PopMenu anchor={moreBtn.current} close={closeMore} className="more-pop" label="More toolbar buttons">
+            {/* a click on an action closes the menu; a click on a set of choices (Order, Visible, Per page) keeps it open */}
+            <div onClick={e => { if (!(e.target as HTMLElement).closest('.seg')) closeMore(); }}>
+              {toolbar.filter(x => inMore(x.k)).map(x => <div key={x.k} className="more-row" data-k={x.k}>{x.menu ?? x.node}</div>)}
+            </div>
+          </PopMenu>}
+        </div>}
+        {menu === 'add' && <PopMenu anchor={inMore('add') ? moreBtn.current : addBtn.current} close={() => setMenu(null)} className="add-pop" label={group ? `Add to “${group.name}”` : 'Show here'}>
+          <div className="mh">{group ? `Add to “${group.name}”` : 'Show here'}</div>{off.length ? off.map(t => <button className="mi" key={t.id} onClick={() => { addToView(t.id); setMenu(null); setTimeout(() => focus(t.id), 80); }}><Dot s={t.status} />#{t.num} {t.title}</button>) : <div className="mi">Every live task is already here.</div>}
+        </PopMenu>}
       </div>
       {menu === 'new' && <NewGroupMenu tasks={tasks} onScreen={ids} selected={[...selected].filter(id => tasks.some(t => t.id === id))} close={() => setMenu(null)} done={g => { clearSel(); setMenu(null); setView('g:' + g.id); toast(`Group “${g.name}” created`); }} />}
       {menu && typeof menu === 'object' && <GroupMenu g={groups.find(x => x.id === menu.group)!} archiveCount={(g => g ? archivePlan(g, groups, tasks).targets.length : 0)(groups.find(x => x.id === menu.group))} onArchiveAll={(g, deleteGroup) => { setMenu(null); setArchiving({ group: { ...g, tasks: [...g.tasks] }, deleteGroup }); }} close={() => setMenu(null)} onDeleted={g => { if (view === 'g:' + g.id) setView('live'); toast(`Deleted “${g.name}”. Its tasks keep running.`, { label: 'Undo', fn: () => { api.restoreGroup(g); setView('g:' + g.id); } }); }} />}
@@ -505,23 +582,47 @@ interface WinProps {
 const CanvasWin = memo(function CanvasWin({ t, i, act, linkTasks, cls, span, ending, asking, maxed, splitOpen, splitSide, heldTerminal, heldBrowser, font, hideButton }: WinProps) {
   const a = () => act.current!;
   const sp: Split = { open: splitOpen, side: splitSide };
+  // The buttons of the header. A window too narrow for all of them shows ⋯ in their place, and they show in its menu
+  // with the agent and runtime chips. narrow starts when the header's content is wider than the header (scrollWidth),
+  // and ends when the header is again as wide as that content was.
+  const showBrowser = canRun(t) && !t.openElsewhere && t.status !== 'suspended' && !heldTerminal && !heldBrowser;
+  const acts: { k: string; icon: React.ReactNode; text: string; title: string; on?: boolean; aria?: string; fn: () => void }[] = [];
+  if (showBrowser) {
+    acts.push({ k: 'browser', icon: '🌐', text: sp.open ? 'Close the browser here' : 'Show the browser here', on: sp.open, title: sp.open ? 'Close the browser here and show only the terminal. The browser keeps running.' : 'Open the browser of this task here, above a smaller terminal. A stopped browser starts.', fn: () => a().toggleBrowser(t.id) });
+    if (sp.open) acts.push({ k: 'side', icon: sp.side === 'bottom' ? '◨' : '⬓', text: sp.side === 'bottom' ? 'Terminal at the right side' : 'Terminal in a strip below', title: sp.side === 'bottom' ? 'Put the terminal at the right side of the browser' : 'Put the terminal in a strip below the browser', fn: () => a().setSplit(t.id, { ...sp, side: sp.side === 'bottom' ? 'side' : 'bottom' }) });
+  }
+  acts.push({ k: 'btw', icon: 'BTW', text: 'Side question', on: asking, title: 'BTW: ask a separate agent a side question about this session. The running agent does not see it.', aria: 'BTW: side question about this session', fn: () => a().toggleAsk(t.id) });
+  acts.push({ k: 'max', icon: maxed ? '⤡' : '⤢', text: maxed ? 'Restore the size' : 'Maximize', title: `Maximize (${keysText('maximize')})`, fn: () => a().toggleMax(t.id) });
+  acts.push({ k: 'panel', icon: '☰', text: 'Task panel', title: 'Task panel', fn: () => a().openPanel(t.id) });
+  acts.push({ k: 'debug', icon: '⚙', text: 'Copy the terminal debug record', title: 'Copy the terminal debug record: recent output sizes and escape sequences, without text. Use it when the terminal stops drawing.', fn: () => a().copyDebugRecord(t) });
+  if (t.role !== 'controller') acts.push({ k: 'end', icon: '⏻', text: 'End & archive', title: t.openElsewhere ? 'End & archive: archives the task; the session in the other terminal keeps running' : 'End & archive: ends the tmux session and archives the task', fn: () => confirmEnd() ? a().setEnding(t.id) : a().endTask(t) });
+  if (hideButton) acts.push({ k: 'hide', icon: <EyeOff />, text: 'Hide from this view', title: `${HIDE_TITLE} Shortcut: ${keysText('removeWindow')}.`, aria: 'Hide from this view', fn: () => a().hideWindow(t.id) });
+  const head = useRef<HTMLDivElement>(null), moreRef = useRef<HTMLButtonElement>(null), fullW = useRef(0);
+  const [narrow, setNarrow] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
+  const closeMenu = useCallback(() => setMenuOpen(false), []);
+  const fitHead = useRef(() => {});
+  fitHead.current = () => {
+    const el = head.current; if (!el) return;
+    if (!narrow) { if (el.scrollWidth > el.clientWidth + 1) { fullW.current = el.scrollWidth; setNarrow(true); } }
+    else if (el.clientWidth >= fullW.current) { setNarrow(false); setMenuOpen(false); }
+  };
+  useLayoutEffect(() => fitHead.current());
+  useEffect(() => { const el = head.current; if (!el) return; const ro = new ResizeObserver(() => fitHead.current()); ro.observe(el); return () => ro.disconnect(); }, []);
   return (
     <div data-win={t.id} className={cls} style={{ order: i, ...(span ? { gridColumn: `span ${span}` } : {}) }} onMouseDown={() => { a().focus(t.id); if (t.status === 'unread') api.seen(t.id); }}>
-      <div className="wh" onPointerDown={e => a().startDrag(e, t.id)} onDoubleClick={() => a().toggleMax(t.id)}>
+      <div ref={head} className={`wh ${narrow ? 'narrow' : ''}`} onPointerDown={e => a().startDrag(e, t.id)} onDoubleClick={() => a().toggleMax(t.id)}>
         <span className="grip" title={`Drag to move this window between two others, or onto a group tab. Move it one place: ${keysText('windowEarlier')} / ${keysText('windowLater')}`}>⠿</span><span className="ix">{i + 1}</span><LinkPorts t={t} tasks={linkTasks} onGo={id => a().goTask(id)} side="left" /><Dot s={t.status} /><span className="n">#{t.num}</span><span className="ti">{t.title}</span><LinkPorts t={t} tasks={linkTasks} onGo={id => a().goTask(id)} side="right" />
-        <PendingMarker taskId={t.id} small><span className={`st st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span></PendingMarker><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} /><RuntimeButton t={t} small onOpen={tab => a().openPanel(t.id, tab)} />
+        <PendingMarker taskId={t.id} small><span className={`st st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span></PendingMarker>
+        {!narrow && <><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} /><RuntimeButton t={t} small onOpen={tab => a().openPanel(t.id, tab)} /></>}
         {ending ? <><span className="sel-warn">End & archive?</span><button className="b" onClick={() => a().endTask(t)}>Yes, end it</button><button className="b" onClick={() => a().setEnding(null)}>Cancel</button></> : <>
         {(t.status === 'suspended' || t.openElsewhere) && <button className="b" onClick={() => a().openPanel(t.id)}>{t.openElsewhere ? 'Options…' : 'Resume…'}</button>}
-        {canRun(t) && !t.openElsewhere && t.status !== 'suspended' && !heldTerminal && !heldBrowser && <>
-          <button className={`b ${sp.open ? 'on' : ''}`} onClick={() => a().toggleBrowser(t.id)} title={sp.open ? 'Close the browser here and show only the terminal. The browser keeps running.' : 'Open the browser of this task here, above a smaller terminal. A stopped browser starts.'}>🌐</button>
-          {sp.open && <button className="b" onClick={() => a().setSplit(t.id, { ...sp, side: sp.side === 'bottom' ? 'side' : 'bottom' })} title={sp.side === 'bottom' ? 'Put the terminal at the right side of the browser' : 'Put the terminal in a strip below the browser'}>{sp.side === 'bottom' ? '◨' : '⬓'}</button>}
-        </>}
-        <button className={`b ${asking ? 'on' : ''}`} title="BTW: ask a separate agent a side question about this session. The running agent does not see it." aria-label="BTW: side question about this session" onClick={() => a().toggleAsk(t.id)}>BTW</button>
-        <button className="b" title={`Maximize (${keysText('maximize')})`} onClick={() => a().toggleMax(t.id)}>{maxed ? '⤡' : '⤢'}</button>
-        <button className="b" title="Task panel" onClick={() => a().openPanel(t.id)}>☰</button>
-        <button className="b" title="Copy the terminal debug record: recent output sizes and escape sequences, without text. Use it when the terminal stops drawing." onClick={() => a().copyDebugRecord(t)}>⚙</button>
-        {t.role !== 'controller' && <button className="b" title={t.openElsewhere ? 'End & archive: archives the task; the session in the other terminal keeps running' : 'End & archive: ends the tmux session and archives the task'} onClick={() => confirmEnd() ? a().setEnding(t.id) : a().endTask(t)}>⏻</button>}
-        {hideButton && <button className="b" title={`${HIDE_TITLE} Shortcut: ${keysText('removeWindow')}.`} aria-label="Hide from this view" onClick={() => a().hideWindow(t.id)}><EyeOff /></button>}</>}
+        {!narrow ? acts.map(x => <button key={x.k} className={`b ${x.on ? 'on' : ''}`} title={x.title} aria-label={x.aria} onClick={x.fn}>{x.icon}</button>)
+          : <button ref={moreRef} className={`b wmore ${menuOpen ? 'on' : ''}`} aria-haspopup="true" aria-expanded={menuOpen} aria-label="Window menu" title={`The buttons of this window: ${acts.map(x => x.text).join(', ')}`} onClick={() => setMenuOpen(o => !o)}>⋯</button>}
+        {narrow && menuOpen && <PopMenu anchor={moreRef.current} close={closeMenu} className="wmenu" label={`Window #${t.num}`}>
+          <div className="wmenu-chips"><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} /><RuntimeButton t={t} small onOpen={tab => { setMenuOpen(false); a().openPanel(t.id, tab); }} /></div>
+          {acts.map(x => <button key={x.k} className={`mi ${x.on ? 'on' : ''}`} title={x.title} aria-label={x.aria} onClick={() => { setMenuOpen(false); x.fn(); }}><span className="mi-ico">{x.icon}</span>{x.text}</button>)}
+        </PopMenu>}</>}
       </div>
       {t.restartWhenDone && t.restartFor && <div className="win-note" title={t.restartWait}>{t.restartOverdue ? t.restartWait : `Waiting for the end of the turn ${t.restartFor}.`}{t.restartOverdue && <button className="b" onClick={() => api.restart(t.id, 'now').catch(e => a().toast(String(e.message || e)))}>Restart now</button>}</div>}
       {t.restartFailed && <div className="win-note bad">The restart failed: {t.restartFailed}<button className="b" onClick={() => api.resume(t.id).catch(e => a().toast(String(e.message || e)))}>Try again</button></div>}
