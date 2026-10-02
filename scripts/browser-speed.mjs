@@ -128,13 +128,17 @@ function probe() {
   P.frameStart = 0; P.inRaf = false; const nextFrame = [];
   const raf = window.requestAnimationFrame.bind(window);
   window.requestAnimationFrame = cb => raf(t => { P.inRaf = true; try { cb(t); } finally { P.inRaf = false; } });
-  (function loop() { raf(() => { P.frameStart = performance.now(); for (const c of nextFrame.splice(0)) c.t = P.frameStart; loop(); }); })();
+  // frames: display frames (animation frames) of the page. shown: display frames that got at least one new draw of
+  // the view, so draws between two display frames count once.
+  P.frames = 0; P.shown = 0; let drewSince = false;
+  (function loop() { raf(() => { P.frameStart = performance.now(); P.frames++; if (drewSince) { P.shown++; drewSince = false; } for (const c of nextFrame.splice(0)) c.t = P.frameStart; loop(); }); })();
   const draw = CanvasRenderingContext2D.prototype.drawImage;
   CanvasRenderingContext2D.prototype.drawImage = function (...a) {
     const t0 = performance.now(); const r = draw.apply(this, a); const t1 = performance.now();
     const c = this.canvas;
     if (c.closest?.('.bw-screen')) {
       P.draws.push({ t: t1, ms: t1 - t0, w: c.width, h: c.height });
+      if (P.inRaf) P.shown++; else drewSince = true;
       if (P.arm) for (const [k, fx, fy] of POINTS) {
         const col = read(this, fx, fy);
         if (P.last[k] !== undefined && P.last[k] !== col) { const c = { k, t: P.inRaf ? P.frameStart : Infinity }; P.changes.push(c); if (!P.inRaf) nextFrame.push(c); }
@@ -196,7 +200,7 @@ try {
       await sleep(2000);
       const rect = await evaluate(`(() => { const r = document.querySelector('.bw-screen canvas').getBoundingClientRect(); return { x: r.left, y: r.top, w: r.width, h: r.height }; })()`);
       const at = (fx, fy) => [rect.x + rect.w * fx, rect.y + rect.h * fy];
-      const reset = () => evaluate('(() => { const P = window.__bs; P.draws = []; P.decodes = []; P.changes = []; P.inputs = []; P.last = {}; })()');
+      const reset = () => evaluate('(() => { const P = window.__bs; P.draws = []; P.decodes = []; P.changes = []; P.inputs = []; P.last = {}; P.frames = 0; P.shown = 0; })()');
       const res = { load, width: W, loadavg: r1(loadavg()[0]), canvasCss: [Math.round(rect.w), Math.round(rect.h)] };
 
       // click, key and scroll: input to the first changed frame
@@ -237,10 +241,10 @@ try {
         await sleep(300);
         const wall = (performance.now() - w0) / 1000;
         const c1 = await rendererCpu(), s1 = cpuOf(server.pid), t1c = cpuOf(templatePid(), true);
-        const P = await evaluate('(() => { const P = window.__bs; return { draws: P.draws, decodes: P.decodes }; })()');
+        const P = await evaluate('(() => { const P = window.__bs; return { draws: P.draws, decodes: P.decodes, frames: P.frames, shown: P.shown }; })()');
         const bytes = P.decodes.reduce((a, d) => a + d.size, 0);
         return {
-          receivedFps: r1(P.decodes.length / wall), drawnFps: r1(P.draws.length / wall),
+          receivedFps: r1(P.decodes.length / wall), drawnFps: r1(P.draws.length / wall), pageFps: r1(P.frames / wall), shownFps: r1(P.shown / wall),
           kbPerFrame: r1(P.decodes.length ? bytes / P.decodes.length / 1024 : null), kbPerSec: r1(bytes / wall / 1024),
           frame: P.draws.length ? `${P.draws.at(-1).w}x${P.draws.at(-1).h}` : '',
           decodeMs: r1(median(P.decodes.map(d => d.ms))), decodeP90: r1(pct(P.decodes.map(d => d.ms), 0.9)), drawMs: r1(median(P.draws.map(d => d.ms))),
