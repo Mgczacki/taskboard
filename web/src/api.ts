@@ -223,8 +223,7 @@ export const api = {
   runtime: (ids: string[]) => call<RuntimeList>('GET', `/api/runtime?tasks=${ids.map(encodeURIComponent).join(',')}`),
   browser: (id: string) => call<BrowserStatus>('GET', `/api/tasks/${encodeURIComponent(id)}/browser`),
   browserAction: (id: string, action: 'start' | 'stop' | 'reset') => call<BrowserStatus>('POST', `/api/tasks/${encodeURIComponent(id)}/browser/${action}`, {}),
-  // POST …/browser/sound: 409 when an agent is connected and force is not set
-  browserSound: (id: string, on: boolean, force = false) => call<BrowserStatus & { restarted: boolean }>('POST', id === 'template' ? '/api/browser-template/sound' : `/api/tasks/${encodeURIComponent(id)}/browser/sound`, { on, force }),
+  browserSound: (id: string, on: boolean) => call<BrowserStatus & { restarted: boolean }>('POST', id === 'template' ? '/api/browser-template/sound' : `/api/tasks/${encodeURIComponent(id)}/browser/sound`, { on }),
   browserTemplate: () => call<BrowserStatus>('GET', '/api/browser-template'),
   browserTemplateAction: (action: 'start' | 'stop') => call<BrowserStatus>('POST', `/api/browser-template/${action}`, {}),
   getUi: () => call<Record<string, unknown>>('GET', '/api/ui'),

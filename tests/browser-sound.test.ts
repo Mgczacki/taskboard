@@ -1,11 +1,14 @@
-// The sound switch of a task browser (setSound in server/task-browser.ts) with a real headless Chrome in a temporary
-// Taskboard folder: a first start is muted (--mute-audio), the switch restarts a running browser with its tabs, an
-// agent connection needs force, and the saved choice holds over a stop, an idle suspend and a resume. The route test
-// runs a test server with its own port, folders and tmux socket. Skipped when Chrome is not installed.
+// The sound switch of a task browser (setSound and muteTabs in server/task-browser.ts) with a real headless Chrome in a
+// temporary Taskboard folder. The test reads the mute state of each tab from Chrome (chrome.tabs in the sound
+// extension). Checks: a first start is muted; the switch changes a running browser at once, without a restart, with
+// its tabs and its agent connection; a new page, a reload, a popup and a new start of the extension keep the state;
+// the saved choice holds over a stop, a suspend and a resume; a Chrome that cannot load the extension starts with
+// --mute-audio. The route test runs a test server with its own port, folders and tmux socket. Skipped when Chrome is
+// not installed.
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -19,103 +22,188 @@ process.env.TASKBOARD_TMUX_SOCKET = `tb-sound-${process.pid}`;
 mkdirSync(process.env.TASKBOARD_DIR);
 writeFileSync(join(root, 'state', 'machine.json'), JSON.stringify({ name: 'sound-test', controller: { autostart: false, remoteControl: false } }));
 const browser = await import('../server/task-browser.ts');
+const machine = await import('../server/machine.ts');
 const skip = browser.chromePath() ? false : 'Chrome is not installed';
-after(async () => { for (const id of ['template', 's1', 's2']) await browser.stop(id).catch(() => {}); });
+after(async () => { for (const id of ['template', 's1', 's3']) await browser.stop(id).catch(() => {}); });
 
 const sleep = (ms: number) => new Promise(r => setTimeout(r, ms));
 // the command line of the browser's main Chrome process
 const args = (id: string) => execFileSync('ps', ['-o', 'command=', '-p', String(browser.readMeta(id).pid)], { encoding: 'utf8' });
-const mutedArg = (id: string) => args(id).includes('--mute-audio');
-async function evaluate(wsUrl: string, expression: string): Promise<any> {
-  const ws = new WebSocket(wsUrl); await new Promise(r => ws.once('open', r));
-  const r = await new Promise<any>(resolve => { ws.on('message', d => { const m = JSON.parse(d.toString()); if (m.id === 1) resolve(m.result); }); ws.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression, awaitPromise: true, userGesture: true, returnByValue: true } })); });
-  ws.close(); return r?.result?.value;
+
+// A DevTools connection to the browser of this id.
+async function connect(id: string) {
+  const v = await (await fetch(`http://127.0.0.1:${browser.readMeta(id).port}/json/version`)).json() as { webSocketDebuggerUrl: string };
+  const ws = new WebSocket(v.webSocketDebuggerUrl, { perMessageDeflate: false });
+  await new Promise((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
+  let next = 0;
+  const waiting = new Map<number, (m: any) => void>();
+  ws.on('message', d => { const m = JSON.parse(d.toString()); if (m.id && waiting.has(m.id)) { waiting.get(m.id)!(m); waiting.delete(m.id); } });
+  const call = (method: string, params: object = {}, sessionId?: string) => new Promise<any>((resolve, reject) => {
+    const n = ++next; waiting.set(n, m => m.error ? reject(new Error(`${method}: ${m.error.message}`)) : resolve(m.result));
+    ws.send(JSON.stringify({ id: n, method, params, ...(sessionId ? { sessionId } : {}) }));
+  });
+  const evaluate = async (expression: string, sessionId: string) => {
+    const r = await call('Runtime.evaluate', { expression, awaitPromise: true, userGesture: true, returnByValue: true }, sessionId);
+    if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
+    return r.result.value;
+  };
+  return { call, evaluate, close: () => ws.close() };
 }
-async function tabUrls(id: string, want: number) {
-  let urls: string[] = [];
-  for (let i = 0; i < 50 && urls.length !== want; i++) { urls = (await browser.tabs(id)).map(t => t.url).filter(u => u.startsWith('file:')); await sleep(100); }
-  return urls;
+// The mute state of each tab, as Chrome reports it to the sound extension: { url: muted }. reload loads the extension
+// again first, as muteTabs does when Chrome stopped the idle service worker.
+const EXT_DIR = join(process.env.TASKBOARD_DIR!, 'browser-extension');
+async function mutes(id: string, reload = false): Promise<Record<string, boolean>> {
+  const c = await connect(id);
+  try {
+    const worker = async (ext: string) => (await c.call('Target.getTargets')).targetInfos.find((t: { type: string; url: string }) => t.type === 'service_worker' && t.url.startsWith(`chrome-extension://${ext}/`));
+    let ext = (await c.call('Extensions.getExtensions')).extensions.find((e: { path: string }) => e.path === EXT_DIR)?.id as string;
+    if (reload || !ext || !(await worker(ext))) {
+      ext = (await c.call('Extensions.loadUnpacked', { path: EXT_DIR })).id;
+      await sleep(1000); // the old service worker ends
+    }
+    // a tab that opened a moment ago can wait for its tabs.onCreated handler
+    await sleep(300);
+    for (let i = 0; ; i++) {
+      try {
+        const { sessionId } = await c.call('Target.attachToTarget', { targetId: (await worker(ext))?.targetId, flatten: true });
+        const list = await c.evaluate('chrome.tabs.query({}).then(ts => ts.map(t => [t.url || t.pendingUrl, !!t.mutedInfo?.muted]))', sessionId) as [string, boolean][];
+        return Object.fromEntries(list);
+      } catch (e) { if (i > 50) throw e; await sleep(100); }
+    }
+  } finally { c.close(); }
 }
+const allMuted = async (id: string, want: boolean) => {
+  const m = await mutes(id);
+  assert.ok(Object.keys(m).length > 0, 'the browser has tabs');
+  assert.deepEqual(Object.entries(m).filter(([, v]) => v !== want), [], `every tab is ${want ? 'muted' : 'not muted'}`);
+  return m;
+};
+// Run an expression in the page of the tab with this id.
+async function inPage(id: string, tabId: string, expression: string) {
+  const c = await connect(id);
+  try {
+    const { sessionId } = await c.call('Target.attachToTarget', { targetId: tabId, flatten: true });
+    return await c.evaluate(expression, sessionId);
+  } finally { c.close(); }
+}
+const tabIds = async (id: string) => (await browser.tabs(id)).map(t => t.id).sort();
+const page = (name: string) => { const f = join(root, `${name}.html`); writeFileSync(f, `<title>${name}</title>`); return `file://${f}`; };
 
 test('a first start is muted, for a task browser and for the template', { skip, timeout: 60000 }, async () => {
   await browser.ensure(browser.TEMPLATE);
-  assert.ok(mutedArg(browser.TEMPLATE), 'the template starts with --mute-audio');
+  await allMuted(browser.TEMPLATE, true);
   await browser.stop(browser.TEMPLATE);
   await browser.ensure('s1');
-  assert.ok(mutedArg('s1'), 'a task browser starts with --mute-audio');
+  assert.equal(args('s1').includes('--mute-audio'), false, 'the mute comes from the tabs, not from a start flag');
+  await allMuted('s1', true);
   const s = await browser.status('s1');
   assert.equal(s.muted, true); assert.equal(s.sound, false);
   assert.equal(browser.readMeta('s1').muted, true);
 });
 
-// macOS: Chrome takes the "Playing audio" sleep assertion only while a page that is not muted sends sound. This plays
-// a quiet tone in the muted browser only, so the test sends no sound to the speakers.
-test('a muted browser plays a tone without a "Playing audio" assertion', { skip: skip || (process.platform !== 'darwin' && 'macOS only'), timeout: 30000 }, async () => {
-  const page = join(root, 'tone.html');
-  writeFileSync(page, '<script>window.play = async () => { const c = new AudioContext(), o = c.createOscillator(), g = c.createGain(); g.gain.value = 0.02; o.connect(g).connect(c.destination); o.start(); o.stop(c.currentTime + 3); await c.resume(); return c.state; };</script>');
-  const t = await browser.openTab('s1', `file://${page}`);
-  await sleep(500);
-  const target = (await (await fetch(`http://127.0.0.1:${browser.readMeta('s1').port}/json/list`)).json() as { id: string; webSocketDebuggerUrl: string }[]).find(x => x.id === t.id)!;
-  assert.equal(await evaluate(target.webSocketDebuggerUrl, 'play()'), 'running', 'the page plays the tone');
-  await sleep(1500);
-  const pid = browser.readMeta('s1').pid;
-  const lines = execFileSync('pmset', ['-g', 'assertions'], { encoding: 'utf8' }).split('\n').filter(l => l.includes(`pid ${pid}(`) && l.includes('Playing audio'));
-  assert.deepEqual(lines, []);
-  await browser.closeTab('s1', t.id);
-});
-
-test('the switch restarts a running browser with its tabs, and needs force while an agent is connected', { skip, timeout: 90000 }, async () => {
-  const page = join(root, 'kept.html'); writeFileSync(page, '<title>kept</title>');
-  await browser.openTab('s1', `file://${page}`);
-  const pid = browser.readMeta('s1').pid;
+test('the switch changes a running browser at once: no restart, the tabs and the agent connection stay', { skip, timeout: 90000 }, async () => {
+  const kept = page('kept');
+  await browser.openTab('s1', kept);
+  const pid = browser.readMeta('s1').pid, before = await tabIds('s1');
 
   // a DevTools connection of an agent, through the Taskboard server's forwarding code
   const agent = Object.assign(new EventEmitter(), { readyState: WebSocket.OPEN, send() {}, close() {} }) as unknown as WebSocket;
   browser.proxyAgent(agent, 's1');
   assert.equal(browser.agentCount('s1'), 1);
-  await assert.rejects(browser.setSound('s1', true), browser.AgentConnected);
-  assert.equal(browser.readMeta('s1').sound, undefined, 'a refused change saves nothing');
-  assert.equal(browser.readMeta('s1').pid, pid, 'a refused change does not restart');
 
-  const r = await browser.setSound('s1', true, { force: true });
-  (agent as unknown as EventEmitter).emit('close');
-  assert.equal(r.restarted, true);
-  assert.notEqual(browser.readMeta('s1').pid, pid);
-  assert.equal(mutedArg('s1'), false, 'sound on: no --mute-audio');
+  const r = await browser.setSound('s1', true);
+  assert.equal(r.restarted, false);
+  assert.equal(browser.readMeta('s1').pid, pid, 'the same Chrome process');
+  assert.deepEqual(await tabIds('s1'), before, 'the same tabs');
+  assert.equal(browser.agentCount('s1'), 1, 'the agent connection stays open');
+  assert.equal((await allMuted('s1', false))[kept], false);
   const s = await browser.status('s1');
   assert.equal(s.sound, true); assert.equal(s.muted, false);
-  assert.deepEqual(await tabUrls('s1', 1), [`file://${page}`], 'the restart opens the tab again');
+
+  assert.equal((await browser.setSound('s1', false)).restarted, false);
+  assert.equal(browser.readMeta('s1').pid, pid);
+  assert.deepEqual(await tabIds('s1'), before);
+  await allMuted('s1', true);
+  assert.equal((await browser.status('s1')).muted, true);
+  assert.equal(browser.agentCount('s1'), 1);
+  (agent as unknown as EventEmitter).emit('close');
 
   // the same choice again changes nothing
-  assert.equal((await browser.setSound('s1', true)).restarted, false);
-  await browser.setSound('s1', false);
-  assert.ok(mutedArg('s1'), 'muted again');
-  assert.equal((await browser.status('s1')).muted, true);
+  assert.equal((await browser.setSound('s1', false)).restarted, false);
+  await allMuted('s1', true);
 });
 
-test('the saved choice holds over a stop, a suspend and a resume, and a new browser is muted', { skip, timeout: 90000 }, async () => {
-  // a stopped browser saves the choice without a start
+test('a new page, a reload, a popup and a new start of the extension keep the state', { skip, timeout: 90000 }, async () => {
+  for (const on of [true, false]) {
+    await browser.setSound('s1', on);
+    const t = await browser.openTab('s1', page(`new-${on}`));
+    assert.equal((await mutes('s1'))[t.url], !on, 'a new page');
+    await inPage('s1', t.id, 'location.reload(), 1');
+    await sleep(500);
+    assert.equal((await mutes('s1'))[t.url], !on, 'a reload');
+    const popup = page(`popup-${on}`);
+    await inPage('s1', t.id, `window.open(${JSON.stringify(popup)}, '_blank', 'popup') ? 1 : 0`);
+    await sleep(500);
+    assert.equal((await mutes('s1'))[popup], !on, 'a popup');
+    // a new start of the extension (muteTabs loads it again after Chrome stopped its idle service worker)
+    const after = await mutes('s1', true);
+    assert.deepEqual(Object.entries(after).filter(([, v]) => v !== !on), [], 'a new start of the extension');
+    assert.equal((await browser.setSound('s1', on)).restarted, false);
+    await allMuted('s1', !on);
+  }
+});
+
+test('the saved choice holds over a stop, a suspend and a resume, and a new browser is muted', { skip, timeout: 120000 }, async () => {
+  await browser.setSound('s1', true);
   await browser.stop('s1');
-  assert.equal((await browser.setSound('s1', true)).restarted, false);
   assert.equal(await browser.isRunning('s1'), false);
   assert.equal((await browser.status('s1')).muted, false, 'a stopped browser shows the sound of its next start');
   assert.equal(JSON.parse(readFileSync(join(browser.DIR, 's1', 'browser.json'), 'utf8')).sound, true, 'browser.json keeps the choice');
   await browser.ensure('s1');
-  assert.equal(mutedArg('s1'), false);
+  await allMuted('s1', false);
   await browser.stop('s1', { suspended: true });
   await browser.ensure('s1');
-  assert.equal(mutedArg('s1'), false, 'the resume keeps sound on');
+  await allMuted('s1', false);
+
+  // a stopped browser saves the choice without a start
+  await browser.stop('s1');
+  assert.equal((await browser.setSound('s1', false)).restarted, false);
+  assert.equal(await browser.isRunning('s1'), false);
+  await browser.ensure('s1');
+  await allMuted('s1', true);
 
   // a reset from the template keeps the choice of the task
+  await browser.setSound('s1', true);
   await browser.resetFromTemplate('s1');
   await browser.ensure('s1');
-  assert.equal(mutedArg('s1'), false);
+  await allMuted('s1', false);
 
   // a removed browser starts muted again, like a browser that starts for the first time
   await browser.remove('s1');
   await browser.ensure('s1');
-  assert.ok(mutedArg('s1'));
+  await allMuted('s1', true);
   await browser.stop('s1');
+});
+
+test('a Chrome that cannot load the extension starts with --mute-audio, and the switch restarts it', { skip, timeout: 90000 }, async () => {
+  // a Chrome program that cannot load extensions
+  const wrapper = join(root, 'chrome-without-extensions.sh');
+  writeFileSync(wrapper, `#!/bin/sh\nexec ${JSON.stringify(browser.chromePath())} --disable-extensions "$@"\n`);
+  chmodSync(wrapper, 0o755);
+  machine.update({ chromePath: wrapper });
+  try {
+    assert.equal(browser.chromePath(), wrapper);
+    await browser.ensure('s3');
+    assert.ok(args('s3').includes('--mute-audio'));
+    assert.equal(browser.readMeta('s3').muteFlag, true);
+    const pid = browser.readMeta('s3').pid;
+    assert.equal((await browser.setSound('s3', true)).restarted, true);
+    assert.notEqual(browser.readMeta('s3').pid, pid);
+    assert.equal(args('s3').includes('--mute-audio'), false);
+    assert.equal((await browser.status('s3')).muted, false);
+    assert.equal((await browser.setSound('s3', false)).restarted, true);
+    assert.ok(args('s3').includes('--mute-audio'));
+  } finally { await browser.stop('s3').catch(() => {}); machine.update({ chromePath: '' }); }
 });
 
 test('only the dashboard changes the sound', { skip, timeout: 60000 }, async () => {

@@ -17,7 +17,7 @@ import { mb } from '../runtimeText';
 import { hit, keyLabel, keysText, useKeymap } from '../keys';
 
 // ---------- which browsers are popped out ----------
-// Pop out opens the view in its own window (/?browser=<id>, BrowserWindowPage below; an app window in the Mac app).
+// Pop out opens the view in its own window (/?browser=<id>, BrowserWindowPage below; an app window in the desktop app).
 // The windows of this browser tell each other on the BroadcastChannel 'tb-browser-windows' which browsers have a
 // window: 'open' and 'closed' from the browser window, 'who' from a page that starts, 'close' to ask a window to close.
 // When the browser blocks the window, the view opens in a floating panel inside the page instead.
@@ -44,7 +44,7 @@ export function popOutBrowser(id: string, title: string, sub = '', autostart = f
   if (popped.has(id)) return;
   const q = new URLSearchParams({ browser: id, title, ...(sub ? { sub } : {}), ...(autostart ? { start: '1' } : {}) });
   const w = window.open(`/?${q}`, `tb-browser-${id}`, `popup,width=${Math.min(1280, screen.availWidth)},height=${Math.min(900, screen.availHeight)}`);
-  // the Mac app opens its own window and window.open returns null; a plain browser returns null when it blocks the window
+  // the desktop app opens its own window and window.open returns null; a plain browser returns null when it blocks the window
   if (w || isApp()) { popped.set(id, askClose(id)); notify(); return; }
   floatInPage(id, title, sub, autostart);
 }
@@ -310,7 +310,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate }: { id: st
         : 'Opening this tab does not start it. It starts when the agent uses it, or when you start it.'}</p>
       {!archived && <div className="bw-actions">
         <button className="btn primary" onClick={startNow}>{isTemplate ? 'Open the template browser' : 'Start the browser'}</button>
-        <SoundSwitch id={id} muted={muted} running={false} agents={0} labeled onDone={s => { setState(s); setMuted(s.muted); }} onError={setErr} />
+        <SoundSwitch id={id} muted={muted} labeled onChange={setMuted} onDone={s => { setState(s); setMuted(s.muted); }} onError={setErr} />
       </div>}
       {!!state?.tabs.length && <div className="bw-saved">
         <div className="bw-saved-h">Opens at the next start</div>
@@ -357,7 +357,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate }: { id: st
           {keyLabel('browserLeave') && <span className="bw-chip bw-leave" title={`While the focus is in this browser, every key goes to the page, also ⌘ and ⌃ keys. Press ${keysText('browserLeave')} to give the keys back to Taskboard.`}><kbd>{keyLabel('browserLeave')}</kbd> leaves</span>}
           {agents > 0 && <span className="bw-chip agent" title="An agent is connected to this browser through its task-browser tools"><i />Agent</span>}
           {!isTemplate && <BrowserMemory id={id} />}
-          <SoundSwitch id={id} muted={muted} running agents={agents} onDone={s => setMuted(s.muted)} onError={setErr} />
+          <SoundSwitch id={id} muted={muted} onChange={setMuted} onDone={s => setMuted(s.muted)} onError={setErr} />
           {!floating && <button className="bw-ib" onClick={() => popOutBrowser(id, title || (isTemplate ? 'Template browser' : 'Task browser'), isTemplate ? 'Sign in here. New task browsers copy this profile.' : '')} aria-label="Pop out" title="Show the browser in its own window"><Icon d={I.popout} /></button>}
           <button className="bw-ib danger" onClick={() => send({ type: 'stop' })} aria-label={isTemplate ? 'Close the template browser' : 'Stop the browser'} title={isTemplate ? 'Close the template browser. New task browsers can copy it only when it is closed.' : 'Stop the browser. Its pages open again at the next start.'}><Icon d={I.power} /></button>
         </div>
@@ -397,34 +397,23 @@ function BrowserMemory({ id }: { id: string }) {
   return memMb === null ? null : <span className="bw-chip" title="Memory of all Chrome processes of this browser, counted like Activity Monitor does (footprint). The server reads it at most every 15 s.">{mb(memMb)}</span>;
 }
 
-// Sound on or off for this browser (setSound in server/task-browser.ts). Chrome reads --mute-audio only at start, so a
-// running browser restarts and opens its tabs again. The restart ends an agent's connection, so the user confirms it.
-function SoundSwitch({ id, muted, running, agents, labeled = false, onDone, onError }: { id: string; muted: boolean | null; running: boolean; agents: number; labeled?: boolean; onDone: (s: BrowserStatus) => void; onError: (m: string) => void }) {
+// Sound on or off for this browser (setSound in server/task-browser.ts). A running browser changes at once and keeps
+// its tabs; a stopped browser gets the choice at its next start. The switch shows the new state at the click, and
+// the server's answer (or an error) sets the state it really has.
+function SoundSwitch({ id, muted, labeled = false, onChange, onDone, onError }: { id: string; muted: boolean | null; labeled?: boolean; onChange: (muted: boolean) => void; onDone: (s: BrowserStatus) => void; onError: (m: string) => void }) {
   const [busy, setBusy] = useState(false);
   if (muted === null) return null;
-  const on = muted; // the click turns the sound on when the browser is muted
-  const agentNote = (n: number) => `An agent is connected to this browser (${n}). The restart ends its connection, and the agent must connect again.`;
   const toggle = async () => {
-    const restart = `The browser restarts to ${on ? 'turn the sound on' : 'mute it'}. Its tabs open again.${on ? ' The sound plays on the speakers of this Mac, not in the dashboard.' : ''}`;
-    if (running && !confirm(agents ? `${restart}\n\n${agentNote(agents)}` : restart)) return;
-    setBusy(true);
-    try {
-      let force = running && agents > 0;
-      for (;;) {
-        try { onDone(await api.browserSound(id, on, force)); break; }
-        catch (e) {
-          // an agent connected after the view showed its count: ask again
-          if (!force && /agent is connected/i.test(String((e as Error).message)) && confirm(`${restart}\n\n${agentNote(1)}`)) { force = true; continue; }
-          throw e;
-        }
-      }
-    } catch (e) { onError(String((e as Error).message || e)); } finally { setBusy(false); }
+    const on = muted; // the click turns the sound on when it is off
+    onChange(!on); setBusy(true);
+    try { onDone(await api.browserSound(id, on)); }
+    catch (e) { onChange(on); onError(String((e as Error).message || e)); } finally { setBusy(false); }
   };
-  const title = muted ? `Muted. Click to turn the sound on${running ? ' (the browser restarts and keeps its tabs)' : ' at the next start'}. Sound plays on the speakers of this Mac, not in the dashboard.` : `Sound on. Click to mute${running ? ' (the browser restarts and keeps its tabs)' : ' at the next start'}.`;
-  const label = busy ? (running ? 'Restarting…' : 'Saving…') : muted ? 'Muted' : 'Sound on';
+  const title = muted ? 'Sound is off. Click to turn the sound on.' : 'Sound is on. Click to turn the sound off.';
+  const label = muted ? 'Sound off' : 'Sound on';
   return (
     <button className={`${labeled ? 'btn' : 'bw-ib'} bw-sound ${muted ? '' : 'on'}`} onClick={toggle} disabled={busy} aria-pressed={!muted} aria-label={label} title={title}>
-      {busy ? <span className="bw-spin" /> : <Icon d={muted ? I.muted : I.sound} />}{labeled && <span>{label}</span>}
+      <Icon d={muted ? I.muted : I.sound} />{labeled && <span>{label}</span>}
     </button>
   );
 }

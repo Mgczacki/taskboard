@@ -2,7 +2,7 @@
 // Each browser has its own profile folder, ~/.taskboard/browsers/<task id>/profile, and a debugging port that Chrome
 // picks (--remote-debugging-port=0) and writes to DevToolsActivePort in that folder. browser.json next to it records
 // the process id, the port and, after a stop, the open tab addresses (so a resume opens the same pages). It also
-// records sound: a browser starts with --mute-audio until the user turns its sound on (setSound).
+// records sound: the tabs of a browser are muted until the user turns its sound on (setSound, muteTabs).
 // Agents reach their task's browser through the Taskboard server: /ws/cdp/<task id>?key=<key> forwards the DevTools
 // connection to the browser and starts the browser first when it is not running. The key is derived from the
 // Taskboard token, so another local user cannot guess it. The dashboard shows the browser with a screencast
@@ -13,7 +13,7 @@
 // page. It closes the agent connections first: chrome-devtools-mcp connects again at the agent's next tool call.
 import { execFileSync, spawn } from 'node:child_process';
 import { createHmac } from 'node:crypto';
-import { cpSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import WebSocket from 'ws';
 import { PORT, ROOT, TB_DIR, TOKEN } from './config.ts';
@@ -24,7 +24,9 @@ export const DIR = join(TB_DIR, 'browsers');
 export const TEMPLATE = 'template';
 const ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,120}$/;
 
-export interface Meta { pid?: number; port?: number; started?: string; startMs?: number; tabs?: string[]; suspended?: boolean; idleStopped?: boolean; stoppedAt?: string; error?: string; copiedFromTemplate?: string; sound?: boolean; muted?: boolean; sharp?: boolean }
+// sound: the user's choice for this browser. muted: the state of the running browser. muteFlag: the running browser
+// started with --mute-audio because the sound extension did not load (see muteTabs).
+export interface Meta { pid?: number; port?: number; started?: string; startMs?: number; tabs?: string[]; suspended?: boolean; idleStopped?: boolean; stoppedAt?: string; error?: string; copiedFromTemplate?: string; sound?: boolean; muted?: boolean; muteFlag?: boolean; sharp?: boolean }
 export interface Tab { id: string; title: string; url: string; faviconUrl?: string }
 
 const folder = (id: string) => { if (!ID.test(id)) throw new Error('Invalid browser id.'); return join(DIR, id); };
@@ -54,7 +56,7 @@ async function version(port: number, timeout = 3000): Promise<{ webSocketDebugge
 async function live(id: string): Promise<(Meta & { ws: string }) | null> {
   const m = readMeta(id);
   if (!m.port || !pidAlive(m.pid)) return null;
-  // a busy Mac can answer slowly: ask twice before treating a live process as not running (a second Chrome on the
+  // a busy computer can answer slowly: ask twice before treating a live process as not running (a second Chrome on the
   // same profile would hand over to the first one and exit)
   const v = await version(m.port) || await version(m.port);
   return v ? { ...m, ws: v.webSocketDebuggerUrl } : null;
@@ -105,31 +107,46 @@ export function ensure(id: string): Promise<Meta & { ws: string }> {
     }
     mkdirSync(profileDir(id), { recursive: true });
     const portFile = join(profileDir(id), 'DevToolsActivePort');
-    rmSync(portFile, { force: true });
     const urls = (meta.tabs || []).filter(u => /^(https?|file):/.test(u)).slice(0, 20);
     const sharp = !!machine.get().browser?.sharp;
-    const args = ['--headless=new', `--user-data-dir=${profileDir(id)}`, '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1',
-      '--no-first-run', '--no-default-browser-check', '--hide-crash-restore-bubble', '--window-size=1280,800', '--disable-features=Translate,MediaRouter',
-      ...(meta.sound ? [] : ['--mute-audio']), // headless Chrome plays on the Mac's speakers, so sound is off until the user turns it on
-      // Settings → Task browsers → Sharp view: only this start flag makes screencast frames larger than the CSS size
-      ...(sharp ? ['--force-device-scale-factor=2'] : []),
-      'about:blank']; // headless Chrome takes one start page; the saved pages open below
-    const log = openSync(join(folder(id), 'chrome.log'), 'a');
-    const child = spawn(bin, args, { detached: true, stdio: ['ignore', log, log] });
-    child.unref();
-    let port = 0;
-    for (let i = 0; i < 300 && !port; i++) { // up to 30 s: a busy Mac can take more than 15 s to start Chrome
-      await new Promise(r => setTimeout(r, 100));
-      if (child.exitCode !== null) break;
-      try { port = Number(readFileSync(portFile, 'utf8').split('\n')[0]) || 0; } catch { /* not yet */ }
+    const launch = async (muteFlag: boolean) => {
+      rmSync(portFile, { force: true });
+      const args = ['--headless=new', `--user-data-dir=${profileDir(id)}`, '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1',
+        '--no-first-run', '--no-default-browser-check', '--hide-crash-restore-bubble', '--window-size=1280,800', '--disable-features=Translate,MediaRouter',
+        // some Chrome versions allow Extensions.loadUnpacked (the sound extension, muteTabs) only with this flag
+        '--enable-unsafe-extension-debugging',
+        ...(muteFlag ? ['--mute-audio'] : []),
+        // Settings → Task browsers → Sharp view: only this start flag makes screencast frames larger than the CSS size
+        ...(sharp ? ['--force-device-scale-factor=2'] : []),
+        'about:blank']; // headless Chrome takes one start page; the saved pages open below
+      const log = openSync(join(folder(id), 'chrome.log'), 'a');
+      const child = spawn(bin, args, { detached: true, stdio: ['ignore', log, log] });
+      child.unref();
+      let port = 0;
+      for (let i = 0; i < 300 && !port; i++) { // up to 30 s: a busy computer can take more than 15 s to start Chrome
+        await new Promise(r => setTimeout(r, 100));
+        if (child.exitCode !== null) break;
+        try { port = Number(readFileSync(portFile, 'utf8').split('\n')[0]) || 0; } catch { /* not yet */ }
+      }
+      const v = port ? await version(port) : null;
+      if (!v) {
+        try { process.kill(-child.pid!, 'SIGKILL'); } catch { /* ended */ }
+        writeMeta(id, { ...meta, pid: undefined, port: undefined, error: 'Chrome did not start. See chrome.log in the browser folder.' });
+        throw new Error(`Chrome did not start for ${id}. See ${join(folder(id), 'chrome.log')}.`);
+      }
+      return { pid: child.pid!, port, ws: v.webSocketDebuggerUrl };
+    };
+    // The tabs are muted before the saved pages open. The choice is read again here: the user can change it while
+    // Chrome starts. When the extension does not load (a Chrome without Extensions.loadUnpacked), a browser that must be
+    // muted starts again with --mute-audio, and the switch then restarts it (setSound).
+    let b = await launch(false), muted = !readMeta(id).sound, muteFlag = false;
+    try { await muteTabs(b.ws, muted); } catch (e) {
+      console.error(`task browser ${id}: the sound extension did not load: ${(e as Error).message}`);
+      if (muted) { await closeChrome(b.ws, b.pid); b = await launch(muteFlag = true); }
     }
-    const v = port ? await version(port) : null;
-    if (!v) {
-      try { process.kill(-child.pid!, 'SIGKILL'); } catch { /* ended */ }
-      writeMeta(id, { ...meta, pid: undefined, port: undefined, error: 'Chrome did not start. See chrome.log in the browser folder.' });
-      throw new Error(`Chrome did not start for ${id}. See ${join(folder(id), 'chrome.log')}.`);
-    }
-    const next: Meta = { ...meta, pid: child.pid, port, started: new Date().toISOString(), muted: !meta.sound, sharp: sharp || undefined, suspended: undefined, idleStopped: undefined, error: undefined, stoppedAt: undefined };
+    const port = b.port;
+    const next: Meta = { ...meta, pid: b.pid, port, started: new Date().toISOString(), muted, muteFlag: muteFlag || undefined, sharp: sharp || undefined, suspended: undefined, idleStopped: undefined, error: undefined, stoppedAt: undefined };
+    const v = { webSocketDebuggerUrl: b.ws };
     if (urls.length) await openSaved(port, v.webSocketDebuggerUrl, urls);
     next.startMs = Date.now() - t0;
     writeMeta(id, next);
@@ -207,27 +224,125 @@ async function stopNow(id: string, opts: { suspended?: boolean; idle?: boolean }
   // a busy Chrome can answer slowly: wait up to 5 s, and keep the saved pages when it does not answer
   const listed = running ? await pageList(running.port!, 5000) : null;
   const open = listed ? listed.map(t => t.url).filter(u => /^(https?|file):/.test(u)) : m.tabs;
-  if (running) await once(running.ws, 'Browser.close').catch(() => {});
-  // Chrome writes cookies to disk when it closes: wait up to 10 s before the kill, so a busy Chrome keeps its sign-ins
-  for (let i = 0; i < 100 && pidAlive(m.pid); i++) await new Promise(r => setTimeout(r, 100));
-  if (m.pid && pidAlive(m.pid)) { try { process.kill(-m.pid, 'SIGKILL'); } catch { try { process.kill(m.pid, 'SIGKILL'); } catch { /* ended */ } } }
+  await closeChrome(running?.ws, m.pid);
   writeMeta(id, { ...readMeta(id), pid: undefined, port: undefined, tabs: open, stoppedAt: new Date().toISOString(), suspended: opts.suspended || undefined, idleStopped: opts.idle || undefined });
   changed(id);
   return !!running;
 }
 
-// Turn the sound of one browser on or off. Chrome reads --mute-audio only at start, and the DevTools protocol has no
-// command that mutes or unmutes, so a running browser restarts (stop keeps its tabs, the start opens them again).
-// The restart ends the agents' DevTools connections, so it needs force while an agent is connected.
-export class AgentConnected extends Error {}
-export async function setSound(id: string, on: boolean, opts: { force?: boolean } = {}): Promise<{ restarted: boolean }> {
+// Close Chrome with Browser.close. Chrome writes cookies to disk when it closes: wait up to 10 s before the kill, so a
+// busy Chrome keeps its sign-ins.
+async function closeChrome(ws: string | undefined, pid: number | undefined) {
+  if (ws) await once(ws, 'Browser.close').catch(() => {});
+  for (let i = 0; i < 100 && pidAlive(pid); i++) await new Promise(r => setTimeout(r, 100));
+  if (pid && pidAlive(pid)) { try { process.kill(-pid, 'SIGKILL'); } catch { try { process.kill(pid, 'SIGKILL'); } catch { /* ended */ } } }
+}
+
+// ---------- sound: Chrome's own tab mute, set by a small extension ----------
+// The DevTools protocol has no command that mutes a tab, and --mute-audio works only from the start of Chrome. An
+// extension can mute a tab with chrome.tabs.update({ muted }), the same mute as the speaker icon of a tab in Chrome.
+// Chrome keeps that mute over reloads and navigations, and it covers every frame of the tab (also frames from another
+// site) and every kind of sound (audio and video elements, Web Audio). A muted tab sends no sound out of Chrome.
+// Each browser loads the extension below at every start (ensure), from one folder in the Taskboard folder, so the
+// extension has the same id in every browser and after every release. Chrome does not keep it over a restart.
+// The extension saves the state in chrome.storage.local and mutes each new tab (a popup too) at tabs.onCreated. The
+// server sets the state with setMuted() in the extension's service worker. Chrome stops an idle service worker after
+// about 30 s, so muteTabs() then loads the extension again to start it. A tab keeps its mute over that new load.
+const EXT_DIR = join(TB_DIR, 'browser-extension');
+const EXT_FILES: Record<string, string> = {
+  'manifest.json': JSON.stringify({ manifest_version: 3, name: 'Taskboard sound', version: '1', description: 'Mutes or unmutes the tabs of this browser for the Taskboard sound switch.', permissions: ['tabs', 'storage'], background: { service_worker: 'background.js' } }, null, 2),
+  'background.js': `// Taskboard: the sound switch of this browser. The Taskboard server calls setMuted() over DevTools.
+let muted = null;
+const stored = chrome.storage.local.get('muted');
+async function want() { if (muted === null) { const m = (await stored).muted !== false; if (muted === null) muted = m; } return muted; }
+// one change at a time, so the last call wins
+let chain = Promise.resolve();
+const run = fn => (chain = chain.then(fn, fn));
+const set = (tab, m) => !!tab.mutedInfo?.muted === m ? null : chrome.tabs.update(tab.id, { muted: m }).catch(() => null);
+const apply = () => run(async () => { const m = await want(); await Promise.all((await chrome.tabs.query({})).map(t => set(t, m))); });
+chrome.tabs.onCreated.addListener(tab => run(async () => { await set(tab, await want()); }));
+chrome.tabs.onReplaced.addListener(apply);
+chrome.runtime.onStartup.addListener(apply);
+chrome.runtime.onInstalled.addListener(apply);
+globalThis.setMuted = async m => {
+  muted = !!m;
+  await chrome.storage.local.set({ muted });
+  await apply();
+  return (await chrome.tabs.query({})).every(t => !!t.mutedInfo?.muted === muted);
+};
+apply();
+`,
+};
+function writeExtension() {
+  mkdirSync(EXT_DIR, { recursive: true });
+  for (const [name, text] of Object.entries(EXT_FILES)) {
+    const f = join(EXT_DIR, name);
+    if (!existsSync(f) || readFileSync(f, 'utf8') !== text) writeFileSync(f, text);
+  }
+}
+// Load the sound extension into a running browser and mute or unmute all its tabs. Throws when it cannot.
+async function muteTabs(browserWs: string, muted: boolean) {
+  writeExtension();
+  const ws = new WebSocket(browserWs, { perMessageDeflate: false });
+  let next = 0;
+  const waiting = new Map<number, (m: any) => void>();
+  ws.on('message', d => { const m = JSON.parse(d.toString()); if (m.id && waiting.has(m.id)) { waiting.get(m.id)!(m); waiting.delete(m.id); } });
+  // a closed connection (also by the 10 s limit below) ends each call that waits
+  ws.on('close', () => { for (const fn of waiting.values()) fn({ error: { message: 'The connection to Chrome closed.' } }); waiting.clear(); });
+  const call = (method: string, params: object = {}, sessionId?: string) => new Promise<any>((resolve, reject) => {
+    if (ws.readyState !== WebSocket.OPEN) return reject(new Error('The connection to Chrome closed.'));
+    const n = ++next; waiting.set(n, m => m.error ? reject(new Error(`${method}: ${m.error.message}`)) : resolve(m.result));
+    ws.send(JSON.stringify({ id: n, method, params, ...(sessionId ? { sessionId } : {}) }));
+  });
+  const timer = setTimeout(() => ws.terminate(), 10000);
+  try {
+    await new Promise((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); ws.once('close', () => reject(new Error('The connection to Chrome closed.'))); });
+    // The extension is loaded when it is missing or its service worker is not running. A load of a loaded extension
+    // starts a new service worker, and Chrome can list the old one for a moment: a failed call tries again.
+    let ext = ((await call('Extensions.getExtensions').catch(() => null))?.extensions as { id: string; path: string }[] | undefined)?.find(e => e.path === EXT_DIR || e.path === realpathSync(EXT_DIR))?.id;
+    let loaded = false, failed: Error | null = null;
+    for (let i = 0; i < 50; i++) {
+      const worker = ext && ((await call('Target.getTargets')).targetInfos as { targetId: string; type: string; url: string }[]).find(t => t.type === 'service_worker' && t.url.startsWith(`chrome-extension://${ext}/`));
+      if (!worker && !loaded) { ext = (await call('Extensions.loadUnpacked', { path: EXT_DIR })).id; loaded = true; continue; }
+      if (worker) {
+        try {
+          const { sessionId } = await call('Target.attachToTarget', { targetId: worker.targetId, flatten: true });
+          const r = await call('Runtime.evaluate', { expression: `setMuted(${muted})`, awaitPromise: true, returnByValue: true }, sessionId);
+          if (r.exceptionDetails) throw new Error(r.exceptionDetails.exception?.description || r.exceptionDetails.text);
+          await call('Target.detachFromTarget', { sessionId }).catch(() => {});
+          return;
+        } catch (e) { failed = e as Error; loaded = false; } // the worker can stop at this moment: load it again
+      }
+      await new Promise(r => setTimeout(r, 100));
+    }
+    throw failed || new Error('The sound extension did not start.');
+  } finally { clearTimeout(timer); ws.close(); }
+}
+
+// Turn the sound of one browser on or off. A running browser changes at once (muteTabs), with its tabs and its agent
+// connections. A stopped browser gets the choice at its next start. Only a browser that started with --mute-audio
+// (muteFlag) restarts: stop keeps its tabs, and the start opens them again. Calls for one browser run one at a time.
+const soundCalls = new Map<string, Promise<{ restarted: boolean }>>();
+export function setSound(id: string, on: boolean): Promise<{ restarted: boolean }> {
   folder(id);
-  const running = await live(id);
-  const restart = !!running && !!running.muted === on;
-  if (restart && agentCount(id) && !opts.force) throw new AgentConnected('An agent is connected to this browser. The restart ends its connection.');
+  const p = (soundCalls.get(id) || Promise.resolve()).catch(() => {}).then(() => setSoundNow(id, on));
+  soundCalls.set(id, p);
+  p.finally(() => { if (soundCalls.get(id) === p) soundCalls.delete(id); }).catch(() => {});
+  return p;
+}
+async function setSoundNow(id: string, on: boolean): Promise<{ restarted: boolean }> {
+  await starting.get(id)?.catch(() => {}); // a start that runs reads the choice when it ends
   writeMeta(id, { ...readMeta(id), sound: on || undefined });
-  if (restart) { await stop(id); await ensure(id); } else changed(id);
-  return { restarted: restart };
+  const running = await live(id);
+  if (!running || !!running.muted === !on) { changed(id); return { restarted: false }; }
+  if (!running.muteFlag) {
+    // muted is written first, so a dashboard view that asks in the meantime shows the new state
+    writeMeta(id, { ...readMeta(id), muted: !on });
+    try { await muteTabs(running.ws, !on); changed(id); return { restarted: false }; }
+    catch (e) { console.error(`task browser ${id}: the sound extension did not answer: ${(e as Error).message}`); }
+  }
+  await stop(id); await ensure(id);
+  return { restarted: true };
 }
 
 // Copy the template again: the task browser loses its own sign-ins and gets the template's.
@@ -245,7 +360,7 @@ export async function resetFromTemplate(id: string) {
 export async function remove(id: string) { await stop(id).catch(() => {}); rmSync(folder(id), { recursive: true, force: true }); }
 
 export interface Status { id: string; running: boolean; port?: number; tabs: Tab[]; profile: boolean; copiedFromTemplate?: string; suspended?: boolean; idleStopped?: boolean; idleStopMinutes: number; startMs?: number; started?: string; stoppedAt?: string; error?: string; memMb?: number | null; rssMb?: number | null; agents: number; viewers: number; chrome: string | null; sound: boolean; muted: boolean; sharp: boolean }
-// a running browser has the mute flag it started with (none for a browser started before this setting existed); a
+// a running browser has the state that muteTabs set (none for a browser started before this setting existed); a
 // stopped browser gets the saved choice at its next start
 const mutedNow = (m: Meta, running: boolean) => running ? !!m.muted : !m.sound;
 export async function status(id: string): Promise<Status> {
@@ -459,7 +574,7 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
       else if (m.type === 'key') await key(m);
       else if (m.type === 'text' && typeof m.text === 'string') await call('Input.insertText', { text: m.text.slice(0, 100000) });
       else if (m.type === 'copy') {
-        // the selected text of the page, or of the focused text field; the dashboard puts it on the Mac's clipboard
+        // the selected text of the page, or of the focused text field; the dashboard puts it on the clipboard
         const r = await call('Runtime.evaluate', { returnByValue: true, expression: COPY });
         send({ type: 'copied', peek: !!m.peek, text: typeof r?.result?.value === 'string' ? r.result.value : '' });
         if (m.cut && !m.peek) await call('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'x', code: 'KeyX', windowsVirtualKeyCode: 88, modifiers: 4, commands: ['cut'] });
@@ -497,7 +612,7 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
 const COPY = `(() => { const a = document.activeElement;
   if (a && (a.tagName === 'TEXTAREA' || (a.tagName === 'INPUT' && a.type !== 'password')) && typeof a.selectionStart === 'number') return a.value.slice(a.selectionStart, a.selectionEnd);
   return String(getSelection() || ''); })()`;
-// Chrome on macOS runs editing shortcuts as commands. A key event from DevTools carries no command by itself, so
+// Chrome runs some editing shortcuts as commands. A key event from DevTools carries no command by itself, so
 // Cmd+A, Cmd+Z, Option+Arrow and the other usual text shortcuts would do nothing in the page without this list.
 // Modifier bits: 1 Alt, 2 Ctrl, 4 Meta, 8 Shift.
 export function editCommands(key: string, mod: number): string[] {

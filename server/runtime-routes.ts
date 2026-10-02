@@ -139,12 +139,11 @@ export function mount(app: express.Express, fail: Fail) {
     if (t.status === 'archived') return fail(res, 'The task is archived.');
     try { res.json(await browser.openTab(t.id, String(req.body?.url || 'about:blank'))); } catch (e) { fail(res, e); }
   });
-  // sound on or off for one browser (task or template): only the dashboard changes it. 409 asks the user to confirm a
-  // restart that ends an agent's connection; the dashboard sends force then.
+  // sound on or off for one browser (task or template): only the dashboard changes it
   const sound = async (req: express.Request, res: express.Response, id: string) => {
     if (!dashboardOnly(req)) return res.status(403).json({ error: 'The sound of a browser is changed on the dashboard.' });
-    try { const r = await browser.setSound(id, req.body?.on === true, { force: req.body?.force === true }); res.json({ ...(await browser.status(id)), restarted: r.restarted }); }
-    catch (e) { if (e instanceof browser.AgentConnected) res.status(409).json({ error: e.message, agents: browser.agentCount(id) }); else fail(res, e); }
+    try { const r = await browser.setSound(id, req.body?.on === true); res.json({ ...(await browser.status(id)), restarted: r.restarted }); }
+    catch (e) { fail(res, e); }
   };
   app.post('/api/tasks/:id/browser/sound', async (req, res) => { const t = task(req, res); if (t) await sound(req, res, t.id); });
   app.post('/api/browser-template/sound', (req, res) => sound(req, res, browser.TEMPLATE));
