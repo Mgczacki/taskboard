@@ -114,11 +114,18 @@ export function attach(ws: WebSocket, session: string, cols: number, rows: numbe
       env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' } as Record<string, string>,
     });
   } catch (e) {
-    // for example no free pseudo-terminal: this terminal tries again (terminalSocket.ts); the server keeps running
+    // node-pty throws "posix_spawnp failed." when it cannot open a pseudo-terminal (all kern.tty.ptmx_max are in use,
+    // or no free file descriptor) or cannot start its spawn-helper (no process slot or memory). This terminal tries
+    // again (code 1013, terminalSocket.ts); the server keeps running.
     console.error(`${new Date().toISOString()} could not attach a terminal to ${session}: ${(e as Error).message}`);
+    control({ ws } as Viewer, { t: 'error', message: `The server could not open a terminal: ${(e as Error).message}`, retry: true });
     ws.close(1013, 'could not open a terminal');
     return;
   }
+  const spawnedAt = Date.now();
+  // true once the tmux attach ended or the browser terminal closed: no write or resize reaches the pseudo-terminal
+  // after that. A write to a closed one fails with EIO or EBADF, which node-pty logs as "Unhandled pty write error".
+  let ended = false;
   const me: Viewer = { cols, rows, usedAt: Date.now(), ws, pid: p.pid, lastOut: Date.now(), healedAt: 0 };
   if (!viewers.has(session)) viewers.set(session, new Set());
   viewers.get(session)!.add(me);
@@ -133,15 +140,24 @@ export function attach(ws: WebSocket, session: string, cols: number, rows: numbe
     if (ws.bufferedAmount > 1_048_576) ws.close(1013, 'terminal client is too slow');
     else ws.send(buf);
   } buf = ''; };
-  p.onData(d => { me.lastOut = Date.now(); buf += d; if (buf.length > 65536) { if (timer) clearTimeout(timer); flush(); } else if (!timer) timer = setTimeout(flush, 8); });
-  p.onExit(() => { if (ws.readyState === ws.OPEN) ws.close(4000, 'detached'); });
+  const onData = p.onData(d => { me.lastOut = Date.now(); buf += d; if (buf.length > 65536) { if (timer) clearTimeout(timer); flush(); } else if (!timer) timer = setTimeout(flush, 8); });
+  const onExit = p.onExit(() => {
+    ended = true;
+    if (timer) { clearTimeout(timer); flush(); }
+    if (ws.readyState !== ws.OPEN) return;
+    // tmux attach ends at once when the session does not exist. Code 4001 makes the terminal wait 10 s before it tries
+    // again. With 1.5 s between tries, one open tab for an ended session (task-25 on 2026-09-30) started about 485
+    // attaches in 16 minutes, and each leaked a pseudo-terminal until the server crashed.
+    if (Date.now() - spawnedAt < 2000) ws.close(4001, 'the tmux session is not running');
+    else ws.close(4000, 'detached');
+  });
   ws.on('message', (raw, isBinary) => {
     const s = raw.toString();
     // control messages start with a NUL byte followed by JSON; anything else is keyboard input
     if (!isBinary && s.charCodeAt(0) === 0) {
       try {
         const m = JSON.parse(s.slice(1));
-        if (m.t === 'resize') { quiet(session); me.cols = m.cols; me.rows = m.rows; p.resize(Math.max(20, me.cols), Math.max(5, me.rows)); sizeWindow(session); }
+        if (m.t === 'resize') { quiet(session); me.cols = m.cols; me.rows = m.rows; if (!ended) p.resize(Math.max(20, me.cols), Math.max(5, me.rows)); sizeWindow(session); }
         if (m.t === 'focus') use(session, me);
         if ((m.t === 'paste' || m.t === 'live') && tmuxSync('display-message', '-p', '-t', '=' + session + ':', '#{pane_mode}').trim() === 'copy-mode')
           tmuxSync('send-keys', '-X', '-t', '=' + session + ':', 'cancel');
@@ -154,9 +170,12 @@ export function attach(ws: WebSocket, session: string, cols: number, rows: numbe
     // typing counts as using this terminal (only a change of terminal resizes the window); mouse events arrive here too
     w.lastInput = Date.now();
     if (sizedBy.get(session) !== me) use(session, me); else me.usedAt = Date.now();
-    p.write(s);
+    if (!ended) p.write(s);
   });
   ws.on('close', () => {
+    ended = true;
+    if (timer) { clearTimeout(timer); timer = null; buf = ''; }
+    onData.dispose(); onExit.dispose();
     try { p.kill(); } catch { /* already gone */ }
     viewers.get(session)?.delete(me);
     if (!viewers.get(session)?.size) { clearInterval(w.timer); watches.delete(session); viewers.delete(session); quietUntil.delete(session); }

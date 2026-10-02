@@ -59,3 +59,35 @@ test('an unknown task does not reconnect', t => {
   assert.equal(f.sockets.length, 1);
   f.connection.dispose();
 });
+
+test('after a server restart the terminal tries again at 250 ms, then waits longer each time', t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const f = fixture();
+  f.sockets[0].onopen();
+  t.mock.timers.tick(60000); // a connection that lasted a minute
+  f.sockets[0].onclose({ code: 1006 });
+  t.mock.timers.tick(249);
+  assert.equal(f.sockets.length, 1);
+  t.mock.timers.tick(1);
+  assert.equal(f.sockets.length, 2);
+  f.sockets[1].onclose({ code: 1006 });
+  t.mock.timers.tick(499);
+  assert.equal(f.sockets.length, 2);
+  t.mock.timers.tick(1);
+  assert.equal(f.sockets.length, 3);
+  for (let i = 3; i < 8; i++) { f.sockets[i - 1].onclose({ code: 1006 }); t.mock.timers.tick(4000); }
+  assert.equal(f.sockets.length, 8); // the wait stops growing at 4 s
+  f.connection.dispose();
+});
+
+test('a terminal for a tmux session that is not running waits 10 s before the next attach', t => {
+  t.mock.timers.enable({ apis: ['setTimeout', 'Date'] });
+  const f = fixture();
+  f.sockets[0].onopen();
+  f.sockets[0].onclose({ code: 4001 });
+  t.mock.timers.tick(9999);
+  assert.equal(f.sockets.length, 1);
+  t.mock.timers.tick(1);
+  assert.equal(f.sockets.length, 2);
+  f.connection.dispose();
+});

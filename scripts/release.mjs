@@ -70,12 +70,12 @@ if (args.includes('--no-switch')) { log(`Built ${dir}. Switch to it later with: 
 const previous = currentRelease();
 switchTo(dir);
 log(`~/.taskboard/app → ${id}. Restarting the Taskboard server…`);
-const info = await restartProduction();
+const info = await restartProduction('release', `release ${id}`);
 if (info && info.root && info.root.includes(id) && (log(`Release ${id} answers (process ${info.pid}); watching it for 60 s…`), await staysUp(info.pid))) {
   log(`Taskboard is running release ${id} (process ${info.pid}).`);
 } else {
   log('The new release did not answer. Switching back.');
-  if (previous) { switchTo(join(RELEASES, previous)); const back = await restartProduction(); log(back ? `Back on ${previous}.` : 'The previous release did not answer either; check ~/.taskboard/server.log.'); }
+  if (previous) { switchTo(join(RELEASES, previous)); const back = await restartProduction('rollback', `back to ${previous} after release ${id} did not answer`); log(back ? `Back on ${previous}.` : 'The previous release did not answer either; check ~/.taskboard/server.log.'); }
   process.exit(1);
 }
 

@@ -20,6 +20,19 @@ test('ten terminals that open and end leave no descriptor behind', { timeout: 30
   assert.equal(devices(), start);
 });
 
+// node-pty 1.1.0 leaves the slave side and a kqueue open for each spawn. spawnPty closes the slave side; the kqueue is
+// still left (server/pty-spawn.ts), so at most one descriptor per spawn may remain.
+test('twenty terminals leave at most one descriptor each, not two', { timeout: 30000 }, async () => {
+  const all = () => readdirSync('/dev/fd').length;
+  const start = all();
+  for (let i = 0; i < 20; i++) {
+    const p = spawnPty('/bin/sh', ['-c', 'exit 0'], { cols: 80, rows: 24 });
+    await new Promise<void>(resolve => p.onExit(() => resolve()));
+  }
+  await new Promise(resolve => setTimeout(resolve, 300));
+  assert.ok(all() - start <= 20, `${all() - start} descriptors left after 20 spawns`);
+});
+
 test('input reaches the program and the size is set', { timeout: 10000 }, async () => {
   const p = spawnPty('/bin/sh', ['-c', 'stty size; read line; echo "got $line"'], { cols: 91, rows: 33 });
   let out = '';

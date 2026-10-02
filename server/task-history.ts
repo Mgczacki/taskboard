@@ -13,6 +13,7 @@ function gitInput(cwd: string, args: string[], input: string): Promise<string> {
     child.stderr.on('data', d => { err += d; });
     child.on('error', reject);
     child.on('close', code => code ? reject(new Error(err.trim() || `git ${args[0]} failed`)) : resolve(out));
+    child.stdin.on('error', () => { /* EPIPE when git ends first; 'close' reports it */ });
     child.stdin.end(input);
   });
 }

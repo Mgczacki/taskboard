@@ -27,7 +27,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
-import { APP, LAUNCHD_LABEL, PROD_URL, TB_DIR, alive, ensureDir, freePort, launchdLoaded, readJson, sleep, startServer, waitForInfo, writeJson } from './lib.mjs';
+import { APP, LAUNCHD_LABEL, PROD_URL, TB_DIR, alive, announceStop, ensureDir, freePort, launchdLoaded, readJson, sleep, startServer, waitForInfo, writeJson } from './lib.mjs';
 
 const CHECKOUT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -116,6 +116,7 @@ export async function restartTaskboard(o) {
 
   // 4. stop and start
   const oldPid = before?.pid;
+  announceStop(o.tbDir, 'manual', 'restart from the dashboard or tb restart');
   if (o.launchd) {
     log(`Restarting the login service ${LAUNCHD_LABEL}…`);
     try { o.kickstart(); } catch (e) { return done({ ok: false, code: 1, oldPid, message: `launchctl kickstart failed: ${e.message}. The server may still run as process ${oldPid}.` }); }
