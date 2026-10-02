@@ -40,6 +40,7 @@ export interface Task {
   model?: string;          // model selected for this task
   role?: 'controller';     // the controller agent is a task with this role; it is kept out of the task lists
   parent?: string;         // task id that started this one (the controller)
+  links?: TaskLink[];      // links from this task to other tasks (server/links.ts); the other direction is computed
   imported?: string;       // where the session came from, when it was imported
   openElsewhere?: { pid: number; tty: string }; // imported while still open in another terminal
   moveWhenDone?: boolean;
@@ -55,6 +56,16 @@ export interface Task {
   scopeKey?: string;
   transfer?: { id: string; machine: string; task: string; direction: 'source' | 'target'; state: 'staged' | 'starting' | 'started' | 'failed'; worktreeCreated?: boolean; peerIdentity?: string };
   desc: string;
+}
+
+// One link from a task to another task (server/links.ts). kind, read from the task that holds the link:
+// dependsOn: this task is blocked by `to` · replaces: this task replaces `to` (folded: the work of `to` went into this
+// task) · followUpOf: this task continues `to` · relatedTo: both tasks are about the same subject.
+export type LinkKind = 'dependsOn' | 'replaces' | 'followUpOf' | 'relatedTo';
+export interface LinkActor { actor: 'user' | 'controller' | 'task' | 'taskboard'; task?: string }
+export interface TaskLink {
+  id: string; kind: LinkKind; to: string; note?: string; folded?: boolean; at: string; by: LinkActor;
+  doneAt?: string; doneBy?: LinkActor; doneNote?: string; // dependsOn only: set by tb dep done
 }
 
 // One approved scope of a task. kind 'worktree': a linked worktree on a new branch in repo (the main checkout).

@@ -10,7 +10,7 @@ export interface Task {
   cwd: string; folder: string; branch?: string; worktree?: boolean; session: string; sessionId?: string;
   created: string; updated: string; statusAt: string; statusSource?: string;
   goal?: string; now?: string; ask?: string; stopReason?: string; interrupted?: string; desc: string;
-  waitMin: number; attach: string; docs?: { inbox: number; outbox: number }; role?: 'controller'; parent?: string; account?: string; model?: string; machine?: { id: string; name: string }; imported?: string; openElsewhere?: { pid: number; tty: string }; moveWhenDone?: boolean; remoteUrl?: string; restartWhenDone?: boolean; newSessionWhenDone?: boolean; unscrollable?: boolean; tokenEstimate?: number | null;
+  waitMin: number; attach: string; docs?: { inbox: number; outbox: number }; role?: 'controller'; parent?: string; links?: TaskLink[]; link?: LinkInfo; account?: string; model?: string; machine?: { id: string; name: string }; imported?: string; openElsewhere?: { pid: number; tty: string }; moveWhenDone?: boolean; remoteUrl?: string; restartWhenDone?: boolean; newSessionWhenDone?: boolean; unscrollable?: boolean; tokenEstimate?: number | null;
   scopes?: Scope[];
   // messages that Taskboard could not type into the agent yet (server/message-queue.ts), and inbox notices not delivered yet
   queue?: QueuedMessage[];
@@ -72,6 +72,11 @@ export const STATUS_LABEL: Record<Status, string> = {
   'needs-you': 'Needs you', stopped: 'Stopped', review: 'Needs review', working: 'Working', unread: 'Done · unread',
   idle: 'Idle', suspended: 'Suspended', parked: 'Set aside', archived: 'Archived',
 };
+// Links between tasks (server/links.ts). links: the links this task holds. link: the computed summary in both directions.
+export type LinkKind = 'dependsOn' | 'replaces' | 'followUpOf' | 'relatedTo';
+export interface LinkActor { actor: 'user' | 'controller' | 'task' | 'taskboard'; task?: string }
+export interface TaskLink { id: string; kind: LinkKind; to: string; note?: string; folded?: boolean; at: string; by: LinkActor; doneAt?: string; doneBy?: LinkActor; doneNote?: string }
+export interface LinkInfo { state?: 'done' | 'superseded' | 'blocked' | 'ready'; blockedBy?: string[]; waitedOnBy?: string[]; replacedBy?: string; count: number }
 export const ORDER: Status[] = ['needs-you', 'stopped', 'review', 'unread', 'working', 'idle', 'suspended', 'parked', 'archived'];
 export const ATTN: Status[] = ['needs-you', 'stopped', 'review'];
 
