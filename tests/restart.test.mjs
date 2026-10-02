@@ -56,9 +56,9 @@ test('the text says first what a restart does and asks only when work stops', ()
   const quiet = describeImpact({ sessions: [{ num: 1, title: 'a', status: 'working' }], stops: [], notes: [], tmuxStops: false }, true);
   assert.equal(quiet.mustConfirm, false);
   assert.match(quiet.lines[0], /1 agent session keeps running in tmux/);
-  const loud = describeImpact({ sessions: [], stops: [{ num: 4, title: 'Docs', what: 'the answer to the running Ask question is lost' }], notes: [], tmuxStops: false }, true);
+  const loud = describeImpact({ sessions: [], stops: [{ num: 4, title: 'Docs', what: 'the answer to the running BTW question is lost' }], notes: [], tmuxStops: false }, true);
   assert.equal(loud.mustConfirm, true);
-  assert.ok(loud.lines.includes('  - #4 Docs: the answer to the running Ask question is lost'));
+  assert.ok(loud.lines.includes('  - #4 Docs: the answer to the running BTW question is lost'));
   assert.equal(describeImpact({ sessions: [{ num: 1, title: 'a', status: 'working' }], stops: [], notes: [], tmuxStops: true, tmuxPid: 9 }, true).mustConfirm, true);
 });
 

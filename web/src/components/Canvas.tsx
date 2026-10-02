@@ -85,7 +85,7 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
   useEffect(() => setPendingTiles(null), [saved, savedOrder, view]);
   const [ending, setEnding] = useState<string | null>(null); // the window whose header asks "End & archive?"
   const [archiving, setArchiving] = useState<{ group: Group; deleteGroup: boolean } | null>(null);
-  const [asking, setAsking] = useState<Set<string>>(new Set()); // tiles with the Ask panel open
+  const [asking, setAsking] = useState<Set<string>>(new Set()); // tiles with the Ask panel (labeled BTW) open
   // The browser of a task inside its window (browserSplit.ts), saved for each task. Only a click on 🌐 starts a stopped
   // browser: a window that opens with the browser shown from an earlier visit waits for the Start button.
   const [splits, setSplits] = useState<Record<string, Split>>({});
@@ -453,7 +453,7 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
                 <button className={`b ${sp.open ? 'on' : ''}`} onClick={() => toggleBrowser(t.id)} title={sp.open ? 'Close the browser here and show only the terminal. The browser keeps running.' : 'Open the browser of this task here, above a smaller terminal. A stopped browser starts.'}>🌐</button>
                 {sp.open && <button className="b" onClick={() => setSplit(t.id, { ...sp, side: sp.side === 'bottom' ? 'side' : 'bottom' })} title={sp.side === 'bottom' ? 'Put the terminal at the right side of the browser' : 'Put the terminal in a strip below the browser'}>{sp.side === 'bottom' ? '◨' : '⬓'}</button>}
               </>)(splitOf(t.id))}
-              <button className={`b ${asking.has(t.id) ? 'on' : ''}`} title="Ask a separate agent about this session. This agent does not see the question." onClick={() => toggleAsk(t.id)}>?</button>
+              <button className={`b ${asking.has(t.id) ? 'on' : ''}`} title="BTW: ask a separate agent a side question about this session. The running agent does not see it." aria-label="BTW: side question about this session" onClick={() => toggleAsk(t.id)}>BTW</button>
               <button className="b" title={`Maximize (${keysText('maximize')})`} onClick={() => setMaxId(m => m ? null : t.id)}>{maxId === t.id ? '⤡' : '⤢'}</button>
               <button className="b" title="Task panel" onClick={() => openPanel(t.id)}>☰</button>
               <button className="b" title="Copy the terminal debug record: recent output sizes and escape sequences, without text. Use it when the terminal stops drawing." onClick={() => copyDebugRecord(t)}>⚙</button>

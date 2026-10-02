@@ -55,7 +55,7 @@ sh scripts/install-launchd.sh    # once: run the release as a login service that
   changes, with the Vite interface.
 - **Restart the real one:** `~/.taskboard/bin/tb restart` in a terminal, or **Settings → Taskboard server → Restart
   Taskboard** on the dashboard. It starts the installed release again and builds nothing. It first prints what a
-  restart does to running tasks and asks for confirmation when work would stop (for example a running Ask answer). It
+  restart does to running tasks and asks for confirmation when work would stop (for example a running BTW answer). It
   checks that the installed code starts, restarts the server (with launchd: `launchctl kickstart -k`), and waits until
   the new server answers. If the new server does not answer, it prints the error and `~/.taskboard/server.log`.
   `--yes` skips the question. The controller's `tb restart` puts an Approve card on the dashboard. Tasks cannot restart.

@@ -157,7 +157,7 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
                   <div className="sub">Claude Code and Codex use these choices when they start or resume. Antigravity uses the current review choice for each tool call. Taskboard keeps the command guard on.</div>
                 </>}
               </SettingGroup>
-              <SettingGroup section="sessions" id="ask" title="Questions about a session" help={<>The <b>?</b> button asks a separate agent about a session. It reads the terminal and transcript. The session's own agent does not see the question. Claude Code questions have a $0.50 limit. Codex questions use the selected account's usage.</>}>
+              <SettingGroup section="sessions" id="ask" title="BTW: side questions about a session" help={<>The <b>BTW</b> button in a Canvas window asks a separate agent a side question about a session. It reads the terminal and transcript. The session's own agent does not see the question. Claude Code questions have a $0.50 limit. Codex questions use the selected account's usage.</>}>
                 {info && <>
                   <SettingItem id="askAgent"><label className="opt">Agent <select disabled={busy} value={info.settings.ask.agent} onChange={e => save({ askAgent: e.target.value as 'claude' | 'codex' })}>
                     <option value="claude">Claude Code</option><option value="codex">Codex</option><option value="antigravity" disabled>Antigravity (read-only access not verified)</option>
@@ -166,7 +166,7 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
                   <SettingItem id="askModel">{info.settings.ask.agent === 'claude'
                     ? <label className="opt">Model <select disabled={busy} value={info.settings.ask.model} onChange={e => save({ askModel: e.target.value })}>{['sonnet', 'haiku', 'opus'].map(m => <option key={m} value={m}>{m[0].toUpperCase() + m.slice(1)}</option>)}</select></label>
                     : <label className="opt">Model <input key={info.settings.ask.agent + info.settings.ask.account} disabled={busy} defaultValue={info.settings.ask.model} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} onBlur={e => { const model = e.target.value.trim(); if (model && model !== info.settings.ask.model) save({ askModel: model }); }} /></label>}</SettingItem>
-                  <div className="sub">Antigravity does not offer a verified read-only Ask process with MCP servers disabled.</div>
+                  <div className="sub">Antigravity does not offer a verified read-only BTW process with MCP servers disabled.</div>
                 </>}
               </SettingGroup>
             </SettingSection>
