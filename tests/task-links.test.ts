@@ -121,3 +121,37 @@ test('the actor comes from x-tb-actor: none is the user', () => {
   assert.deepEqual(links.actorFrom(t.id), { actor: 'task', task: t.id });
   assert.throws(() => links.actorFrom('nobody'), /Unknown task/);
 });
+
+test('tb new links: a task can link the task it starts, but cannot start one with --replaces', () => {
+  const starter = task('starter'), target = task('target');
+  const by = { actor: 'task' as const, task: starter.id };
+  assert.throws(() => links.planStart([{ kind: 'replaces', to: target.id }], by), /cannot start a task with --replaces/);
+  const planned = links.planStart([{ kind: 'dependsOn', to: String(target.num) }, { kind: 'followUpOf', to: `#${starter.num}` }], by);
+  assert.match(planned[0].line, new RegExp(`depends on #${target.num}`));
+  const fresh = task('started by starter', { parent: starter.id });
+  assert.deepEqual(links.addAtStart(fresh.id, planned, by), []);
+  assert.equal(links.state(store.get(fresh.id)!), 'blocked');
+  assert.equal(store.get(fresh.id)!.links![0].by.task, starter.id);
+  assert.throws(() => links.planStart([{ kind: 'nope', to: target.id }], user), /link type/);
+  assert.deepEqual(links.planStart(undefined, user), []);
+});
+
+test('the summary of a linked set gives counts, the longest chain in work order and what waits for you', () => {
+  const a = task('first'), b = task('second'), c = task('third', { status: 'needs-you', ask: 'Review the draft.' });
+  const old = task('replaced'), lone = task('lone');
+  links.add(b.id, { kind: 'dependsOn', to: a.id }, user);
+  links.add(c.id, { kind: 'dependsOn', to: b.id }, user);
+  links.add(a.id, { kind: 'replaces', to: old.id }, user);
+  const { sets, unlinked } = links.setsFor([c.id, lone.id]);
+  assert.equal(unlinked, 1);
+  assert.equal(sets.length, 1);
+  const s = sets[0];
+  assert.deepEqual(s.chain, [a.id, b.id, c.id]);
+  assert.equal(s.counts.waitsForYou, 1);
+  assert.equal(s.counts.blocked, 2);
+  assert.equal(s.counts.replaced, 1);
+  assert.deepEqual(s.waiting[0].blockedBy, [b.id]);
+  assert.equal(s.replaced[0].by, a.id);
+  // one task alone still gives its own set
+  assert.equal(links.setsFor([lone.id]).sets.length, 1);
+});

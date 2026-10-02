@@ -755,13 +755,16 @@ app.post('/api/tasks', async (req, res) => {
   try {
     const { title, desc, agent, folder, worktree, branch, parent, account, model } = req.body;
     if (!title || !folder || !['claude', 'codex', 'antigravity', 'auto'].includes(agent)) throw new Error('title, folder and agent are required');
-    const prompt = req.body.spinOff ? spinOffPrompt(req.body.spinOff) : (desc || title);
+    const startBy = links.actorFrom(req.get('x-tb-actor'));
+    const startLinks = links.planStart(req.body.links, startBy);
+    const prompt = (req.body.spinOff ? spinOffPrompt(req.body.spinOff) : (desc || title)) + (startLinks.length ? '\n\n' + startLinks.map(l => l.line).join('\n') : '');
     const images = agents.checkImages(req.body.images);
     await guarded(req, res, `start “${title}” (${agent === 'auto' ? 'Auto' : agents.agentName(agent)})`, `Folder: ${folder} · worktree: ${worktree === false ? 'no' : worktree === true ? 'yes' : 'automatic'}${branch ? ` · branch ${branch}` : ''}\nAccount: ${account && account !== 'auto' ? account : 'automatic'}\nModel: ${model || 'agent default'}\nPrompt: ${prompt}${images.length ? `\nImages: ${images.length} attached` : ''}`, 'new',
       async () => {
         const t = await agents.startTask({ title, desc: prompt, agent, folder, worktree, branch, parent, account, model, images });
         if (req.body.group) { const g = groups.all().find(x => x.name === req.body.group || x.id === req.body.group) || groups.create(String(req.body.group)); groups.update(g.id, { tasks: [...g.tasks, t.id] }); }
-        return view(t);
+        const linkProblems = links.addAtStart(t.id, startLinks, startBy);
+        return { ...view(store.get(t.id) || t), ...(linkProblems.length ? { linkProblems } : {}) };
       }, (t: any) => `Started #${t.num} ${t.title} with ${t.agent} on ${t.account} in ${t.cwd}${req.body.group ? ` (group ${req.body.group})` : ''}`);
   } catch (e) { fail(res, e); }
 });
@@ -1053,6 +1056,15 @@ app.post('/api/open-local-file', (req, res) => {
 });
 // Links between tasks (server/links.ts). x-tb-actor tells who adds a link: no header is the user.
 app.get('/api/links', (_req, res) => res.json(links.all()));
+// The linked sets of a task (?task=) or of a group (?group= name or id), with counts, the longest chain and what waits.
+app.get('/api/links/sets', (req, res) => {
+  try {
+    if (req.query.task) return res.json(links.setsFor([links.resolve(String(req.query.task)).id]));
+    const g = groups.all().find(x => x.id === req.query.group || x.name === req.query.group);
+    if (!g) throw new Error(`No group ${req.query.group ?? ''}.`);
+    res.json({ group: { id: g.id, name: g.name }, ...links.setsFor(g.tasks) });
+  } catch (e) { fail(res, e); }
+});
 app.get('/api/tasks/:id/links', (req, res) => { try { res.json(links.detail(req.params.id)); } catch (e) { res.status(404).json({ error: e instanceof Error ? e.message : String(e) }); } });
 app.post('/api/tasks/:id/links', (req, res) => {
   try {

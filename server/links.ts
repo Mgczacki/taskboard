@@ -142,13 +142,14 @@ function tell(taskId: string, name: string, text: string) {
 
 export interface NewLink { kind: LinkKind; to: string; note?: string; folded?: boolean }
 
-export function add(fromRef: string, input: NewLink, by: LinkActor): TaskLink {
+// atStart: the link goes on a task that the caller starts now (tb new --after and the like), so a task may add it.
+export function add(fromRef: string, input: NewLink, by: LinkActor, opts: { atStart?: boolean } = {}): TaskLink {
   const from = resolve(fromRef), to = resolve(input.to);
   const kind = input.kind;
   if (!KINDS.includes(kind)) throw new Error(`The link type must be one of: ${KINDS.join(', ')}.`);
   if (from.id === to.id) throw new Error('A task cannot have a link to itself.');
   if (by.actor === 'task') {
-    if (by.task !== from.id) throw new Error(`A task can add links only on itself. Ask the controller or the user to add a link on #${from.num}.`);
+    if (by.task !== from.id && !opts.atStart) throw new Error(`A task can add links only on itself. Ask the controller or the user to add a link on #${from.num}.`);
     if (kind === 'replaces') throw new Error('A task cannot add a replaces link, because it parks the other task. Tell the user or the controller.');
   }
   if (input.folded && kind !== 'replaces') throw new Error('--folded goes only with a replaces link.');
@@ -249,4 +250,83 @@ export function start() {
     }
   });
   store.onTaskRemoved(id => lastStatus.delete(id));
+}
+
+// tb new --after / --replaces / --follows / --related: checks the links before the task starts, and gives the lines
+// for the prompt of the new task. The links are added with addAtStart once the task exists.
+const START_LINE: Record<LinkKind, (t: Task) => string> = {
+  dependsOn: t => `This task depends on #${t.num} (${t.title}). Taskboard tells you in your inbox when #${t.num} is done.`,
+  replaces: t => `This task replaces #${t.num} (${t.title}). Read its log and outbox before you start. Taskboard parks #${t.num}.`,
+  followUpOf: t => `This task continues the work of #${t.num} (${t.title}). Read its log and outbox before you start.`,
+  relatedTo: t => `This task is related to #${t.num} (${t.title}).`,
+};
+export function planStart(input: unknown, by: LinkActor): { kind: LinkKind; to: string; folded?: boolean; line: string }[] {
+  if (input === undefined || input === null) return [];
+  if (!Array.isArray(input)) throw new Error('links must be a list of { kind, to }.');
+  return input.map((x: any) => {
+    const kind = x?.kind as LinkKind;
+    if (!KINDS.includes(kind)) throw new Error(`The link type must be one of: ${KINDS.join(', ')}.`);
+    if (kind === 'replaces' && by.actor === 'task') throw new Error('A task cannot start a task with --replaces, because it parks the other task. Tell the user or the controller.');
+    const t = resolve(String(x?.to ?? ''));
+    return { kind, to: t.id, ...(x?.folded === true && kind === 'replaces' ? { folded: true } : {}), line: START_LINE[kind](t) };
+  });
+}
+export function addAtStart(newId: string, planned: { kind: LinkKind; to: string; folded?: boolean }[], by: LinkActor): string[] {
+  const problems: string[] = [];
+  for (const p of planned) {
+    try { add(newId, { kind: p.kind, to: p.to, folded: p.folded }, by, { atStart: true }); }
+    catch (e) { problems.push(e instanceof Error ? e.message : String(e)); }
+  }
+  return problems;
+}
+
+// One linked set as the overview and tb deps --all show it.
+const WAITS: Task['status'][] = ['needs-you', 'stopped', 'review'];
+export function summary(ids: string[]) {
+  const tasks = ids.map(id => store.get(id)).filter((t): t is Task => !!t);
+  const brief = (t: Task) => ({ id: t.id, num: t.num, title: t.title, status: t.status, state: state(t), ...(t.ask ? { ask: t.ask } : {}), ...(t.groups?.length ? { groups: t.groups } : {}) });
+  const open = (t: Task) => t.status !== 'archived' && !replacedBy(t.id);
+  // longest chain of open dependsOn links, in the order of the work: the first task must finish first
+  const blockers = (t: Task) => (t.links || []).filter(l => l.kind === 'dependsOn' && !depDone(l)).map(l => store.get(current(l.to))).filter((x): x is Task => !!x && open(x));
+  const memo = new Map<string, string[]>();
+  const chainTo = (t: Task, seen = new Set<string>()): string[] => {
+    if (memo.has(t.id)) return memo.get(t.id)!;
+    if (seen.has(t.id)) return [t.id];
+    seen.add(t.id);
+    const best = blockers(t).map(b => chainTo(b, seen)).sort((a, b) => b.length - a.length)[0] || [];
+    const c = [...best, t.id]; memo.set(t.id, c); return c;
+  };
+  const chain = tasks.filter(open).map(t => chainTo(t)).sort((a, b) => b.length - a.length)[0] || [];
+  const replaced = tasks.filter(t => replacedBy(t.id));
+  return {
+    tasks: tasks.map(brief),
+    counts: {
+      waitsForYou: tasks.filter(t => open(t) && WAITS.includes(t.status)).length,
+      blocked: tasks.filter(t => open(t) && state(t) === 'blocked').length,
+      working: tasks.filter(t => open(t) && t.status === 'working').length,
+      replaced: replaced.length,
+      archived: tasks.filter(t => t.status === 'archived' && !replacedBy(t.id)).length,
+      other: tasks.filter(t => open(t) && !WAITS.includes(t.status) && t.status !== 'working').length,
+    },
+    chain: chain.length > 1 ? chain : [],
+    waiting: tasks.filter(t => open(t) && WAITS.includes(t.status)).map(t => ({ ...brief(t), blockedBy: blockers(t).map(b => b.id) })),
+    replaced: replaced.map(t => ({ ...brief(t), by: replacedBy(t.id)! })),
+    links: tasks.flatMap(t => (t.links || []).map(l => ({ from: t.id, ...l, ...(l.kind === 'dependsOn' ? { done: depDone(l) } : {}) }))),
+  };
+}
+
+// The linked sets for a start: one task gives its own set; a list of tasks (a group) gives each set that contains one
+// of them. Tasks of the list that have no links and no task parent or child are counted, not listed.
+export function setsFor(ids: string[]) {
+  const sets: string[][] = [];
+  const placed = new Set<string>();
+  let unlinked = 0;
+  for (const id of ids) {
+    if (placed.has(id) || !store.get(id)) continue;
+    const set = linkedSet(id);
+    set.forEach(x => placed.add(x));
+    if (set.length === 1 && ids.length > 1) { unlinked++; continue; }
+    sets.push(set);
+  }
+  return { sets: sets.map(summary), unlinked };
 }
