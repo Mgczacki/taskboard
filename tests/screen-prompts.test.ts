@@ -76,7 +76,8 @@ test('Claude Code trust dialog: no digits, "No, exit" is selected and risky', ()
   assert.equal(p.options[0].risk, 'exits');
   assert.equal(p.options[0].key, undefined);
   assert.equal(p.selected, 0);
-  assert.equal(p.details.title, '/private/tmp/scratch/cc');
+  assert.equal(p.details.cwd, '/private/tmp/scratch/cc');
+  assert.equal(p.question, 'Is this a project you created or one you trust?');
 });
 
 test('Claude Code AskUserQuestion on the screen is shown, not answered by keys', () => {
@@ -158,5 +159,6 @@ test('riskOf', () => {
   assert.equal(riskOf('Update now (runs `curl | sh`)'), 'installs');
   assert.equal(riskOf('Yes (y)', 'Request increase?'), 'spends');
   assert.equal(riskOf('No, exit'), 'exits');
+  assert.equal(riskOf('Yes, and don’t ask again for: touch *'), 'wide-access');
   assert.equal(riskOf('Skip'), undefined);
 });

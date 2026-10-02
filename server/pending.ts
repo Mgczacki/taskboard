@@ -39,7 +39,7 @@ export interface PendingItem {
 }
 
 type Action = { via: 'hook'; output: (text: string) => unknown } | { via: 'keys'; index: number; expect?: string } | { via: 'prompt' };
-interface Live { item: PendingItem; actions: Map<string, Action>; textAction?: Action; resolve?: (output: unknown) => void; signature: string }
+interface Live { item: PendingItem; actions: Map<string, Action>; textAction?: Action; resolve?: (output: unknown) => void; signature: string; hook?: { tool: string; input: string } }
 
 export interface Io {
   capture: (session: string) => Promise<string>;
@@ -83,11 +83,13 @@ function add(t: Task, base: Omit<PendingItem, 'id' | 'taskId' | 'taskNum' | 'tas
 }
 
 // ---------- Claude Code PermissionRequest hook ----------
+// the words of option 2 on the screen, from the permission_suggestions of the hook input
+const MODE_NAME: Record<string, string> = { acceptEdits: 'accept edits', bypassPermissions: 'bypass permissions', plan: 'plan', default: 'default' };
 const describeSuggestion = (s: any): string => {
-  if (s?.type === 'addRules') return (s.rules || []).map((r: any) => r.ruleContent ? `${r.toolName}(${r.ruleContent})` : r.toolName).join(', ');
-  if (s?.type === 'addDirectories') return `access to ${(s.directories || []).join(', ')}`;
-  if (s?.type === 'setMode') return `${s.mode} mode`;
-  return String(s?.type || 'a rule');
+  if (s?.type === 'addRules') return `always allow ${(s.rules || []).map((r: any) => r.ruleContent ? `${r.toolName}(${r.ruleContent})` : r.toolName).join(', ')}`;
+  if (s?.type === 'addDirectories') return `always allow access to ${(s.directories || []).join(', ')}`;
+  if (s?.type === 'setMode') return `switch to ${MODE_NAME[s.mode] || s.mode} mode for this session`;
+  return `add ${String(s?.type || 'a rule')}`;
 };
 const decision = (d: object) => ({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: d } });
 const DENIED = 'The user denied this on the Taskboard Waiting page.';
@@ -130,11 +132,11 @@ export function holdClaude(t: Task, input: any, closed: (fn: () => void) => void
       if (suggestions.length) actions.set('always', { via: 'hook', output: () => decision({ behavior: 'allow', updatedPermissions: suggestions }) });
       actions.set('no', { via: 'hook', output: text => decision({ behavior: 'deny', message: text.trim() || DENIED }) });
       const command = tool === 'Bash' ? String(ti.command || '') : String(ti.file_path || ti.url || ti.path || ti.pattern || '') || undefined;
-      base = { kind: 'command', source: 'claude-hook', question: tool === 'Bash' ? `Bash command: ${ti.description || 'run a command'}` : `${tool}${ti.description ? `: ${ti.description}` : ''}`, answerable: true,
+      base = { kind: 'command', source: 'claude-hook', question: tool === 'Bash' ? `Bash command: ${ti.description || 'run a command'}` : ti.description ? `${tool}: ${ti.description}` : ti.file_path ? `${tool} ${String(ti.file_path).split('/').pop()}` : `Use ${tool}`, answerable: true,
         details: { command, cwd: input.cwd, title: tool },
         options: [
           { key: 'once', label: '1. Yes', send: 'hook: allow (this call only)' },
-          ...(suggestions.length ? [{ key: 'always', label: `2. Yes, and always allow ${suggestions.map(describeSuggestion).join('; ')}`, send: 'hook: allow and add the rule', risk: 'wide-access' as Risk }] : []),
+          ...(suggestions.length ? [{ key: 'always', label: `2. Yes, and ${suggestions.map(describeSuggestion).join(', and ')}`, send: 'hook: allow and add the rule', risk: 'wide-access' as Risk }] : []),
           { key: 'no', label: `${suggestions.length ? 3 : 2}. No`, send: 'hook: deny with your message', deny: true },
         ],
         text: { mode: 'deny', placeholder: 'Optional: tell the agent why, or what to do instead. Sent with "No".', send: 'with "No"' } };
@@ -142,9 +144,20 @@ export function holdClaude(t: Task, input: any, closed: (fn: () => void) => void
     let done = false;
     const finish = (out: unknown) => { if (done) return; done = true; clearTimeout(timer); resolve(out); };
     const l = add(t, base, actions, textAction, finish);
+    l.hook = { tool, input: JSON.stringify(ti) };
     const timer = setTimeout(() => { if (live.has(l.item.id)) close(l, 'gone', 'Taskboard stopped waiting for the hook. The dialog stays in the terminal.'); finish(undefined); }, maxMs);
     closed(() => { if (live.has(l.item.id) && l.item.state === 'pending') close(l, 'gone', 'The agent closed this question: it was answered in the terminal, or the hook timed out.'); finish(undefined); });
   });
+}
+
+// Claude Code stops the hook when the user answers "No" in the terminal, but not after "Yes" (observed with 2.1.287):
+// the hook keeps running, and Claude Code shows the next permission dialog only after it ends. So a held hook is
+// released (no decision) when its tool ran (PostToolUse with the same tool and input), or when the turn moved on.
+export function releaseClaude(taskId: string, ran?: { tool_name?: string; tool_input?: unknown }) {
+  const held = [...live.values()].filter(l => l.item.taskId === taskId && l.hook && l.item.state === 'pending');
+  const pick = ran ? (held.filter(l => l.hook!.tool === ran.tool_name && l.hook!.input === JSON.stringify(ran.tool_input || {}))
+    .concat(held.filter(l => l.hook!.tool === ran.tool_name)).slice(0, 1)) : held;
+  for (const l of pick) close(l, 'gone', ran ? 'Answered in the terminal: the tool ran.' : 'The agent moved on: answered in the terminal.');
 }
 
 // ---------- screen prompts and end-of-turn questions ----------

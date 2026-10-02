@@ -48,7 +48,7 @@ export function WaitingPage({ tasks, allTasks, openTask, openController, toast }
   const cur = rows.find(r => r.id === sel) || rows[0];
   const risky = all.filter(r => r.risky).length;
   return <div className="waiting">
-    <div className="wt-head"><div><div className="sub">{all.length ? `${all.length} item${all.length === 1 ? '' : 's'} wait on you · oldest first${risky ? ` · ${risky} with a risky option` : ''}` : 'Nothing waits on you.'}</div></div>
+    <div className="wt-head"><div><div className="sub">{all.length ? `${all.length === 1 ? '1 item waits' : `${all.length} items wait`} on you · oldest first${risky ? ` · ${risky} with a risky option` : ''}` : 'Nothing waits on you.'}</div></div>
       <span className="pc-sp" /><label className="opt"><input type="checkbox" checked={showTerm} onChange={e => setShowTerm(e.target.checked)} /> Show the terminal below the card</label></div>
     <div className="wt-tabs">{VIEWS.map(([v, label]) => <button key={v} className={`wt-tab ${view === v ? 'on' : ''}`} onClick={() => { setView(v); setSel(null); }}>{label}<span className="n">{v === 'answered' ? done.length : all.filter(test[v]).length}</span></button>)}</div>
     <div className="wt-filters">{(['any', 'claude', 'codex', 'antigravity'] as const).map(a => <button key={a} className={`chip wt-chip ${agent === a ? 'on' : ''}`} onClick={() => { setAgent(a); setSel(null); }}>{a === 'any' ? 'All agents' : AGENT_NAME[a]}</button>)}

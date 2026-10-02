@@ -140,3 +140,15 @@ test('controller rules', () => {
   assert.equal(pending.controllerRule({ ...cmd, details: { command: 'rm -rf x' } }, { option: 'once' }, { ok: true }, false), 'explicit user request');
   assert.throws(() => pending.controllerRule({ ...cmd, kind: 'dialog', name: 'claude-trust' }, { option: 'once' }, { ok: true }, true), /trust/);
 });
+
+test('a held hook is released when its tool ran (the user said Yes in the terminal) or the turn moved on', async () => {
+  const t = task('k', 11);
+  const a = pending.holdClaude(t, { tool_name: 'Bash', tool_input: { command: 'ls' } }, () => {}, 60_000);
+  const b = pending.holdClaude(t, { tool_name: 'Edit', tool_input: { file_path: '/x' } }, () => {}, 60_000);
+  pending.releaseClaude('k', { tool_name: 'Bash', tool_input: { command: 'ls' } });
+  assert.equal(await a, undefined);
+  assert.equal(pending.list().filter(i => i.taskId === 'k').length, 1);
+  pending.releaseClaude('k');
+  assert.equal(await b, undefined);
+  assert.equal(pending.list().filter(i => i.taskId === 'k').length, 0);
+});

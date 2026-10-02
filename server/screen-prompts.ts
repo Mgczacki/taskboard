@@ -15,7 +15,7 @@ export interface ScreenPrompt {
   options: ScreenOption[];
   selected: number;          // index of the highlighted option, -1 when none is highlighted
   answerable: boolean;       // false: the card shows the screen and "Open terminal" only
-  details: { command?: string; reason?: string; title?: string; plan?: string };
+  details: { command?: string; reason?: string; title?: string; plan?: string; cwd?: string };
   hash: string;              // name, question, options and command; the highlight is not part of it
   excerpt: string;           // the rows that the card shows
 }
@@ -26,7 +26,7 @@ const SOLID = /^\s*[─━]{20,}\s*$/;
 const DASHED = /^\s*[╌┄]{20,}\s*$/;
 
 export function riskOf(label: string, question = ''): Risk | undefined {
-  if (/always allow|don't ask again|do not ask again|and always|allow all\b/i.test(label)) return 'wide-access';
+  if (/always allow|don['’]t ask again|do not ask again|and always|allow all\b|switch to accept edits/i.test(label)) return 'wide-access';
   if (/\b(update now|install|upgrade)\b|\bcurl\b|\bwget\b|\|\s*(ba|z)?sh\b/i.test(label)) return 'installs';
   if (/request (a limit )?increase|add credits|buy credits/i.test(label) || (/request (a limit )?increase\?/i.test(question) && /^yes\b/i.test(label))) return 'spends';
   if (/^(no, exit|quit|exit)$/i.test(label.trim())) return 'exits';
@@ -132,7 +132,8 @@ export function parsePrompt(agent: PromptAgent, screen: string): ScreenPrompt | 
     if (trust >= 0) {
       const block = plainBlock(rows, trust);
       const path = rows.slice(Math.max(0, trust - 4), trust).map(r => r.trim()).find(r => r.startsWith('/') || r.startsWith('~'));
-      if (block) return make('claude-trust', 'dialog', rows[trust].trim().replace(/^Quick safety check:\s*/, ''), block, { title: path }, excerptOf(rows, trust - 3, block.end + 1));
+      const question = rows[trust].trim().replace(/^Quick safety check:\s*/, '').replace(/\?.*$/, '?');
+      if (block) return make('claude-trust', 'dialog', question, block, { cwd: path }, excerptOf(rows, trust - 3, block.end + 1));
     }
     if (/Enter to select · ↑\/↓ to navigate/.test(text) && /[☐☒✔]/.test(text)) {
       const q = questionAbove(rows, rows.length);

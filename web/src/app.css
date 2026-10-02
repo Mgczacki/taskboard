@@ -774,7 +774,8 @@ table.keyset .keycell { text-align: right; white-space: normal; }
 .pc-note.info { border-color: var(--accent); background: var(--accent-bg); }
 .pc-f { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; border-top: 1px solid var(--line); padding-top: 6px; }
 .pcard.compact { gap: 6px; padding: 8px 10px; }
-.pcard.compact .pc-opt { padding: 4px 8px; }
+.pcard.compact .pc-opt { padding: 4px 8px; grid-template-columns: minmax(0, 1fr); gap: 2px; }
+.pcard.compact .pc-send { text-align: left; max-width: none; }
 .pc-dock { display: grid; gap: 8px; margin: 8px 0; }
 .win > .pc-dock { margin: 0; padding: 6px; border-top: 1px solid var(--line2); background: var(--bg2); max-height: 55%; overflow: auto; flex: none; }
 .pc-confirm { width: 560px; }
