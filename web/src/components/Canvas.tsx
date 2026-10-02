@@ -456,8 +456,8 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
         </div>}
         {newInSmart > 0 && <button className="btn" onClick={() => { setFrozen(liveSet()); }} title="Windows never appear on their own while you work">{newInSmart} new · refresh</button>}
         {hiddenIds.length > 0 && <button className="btn" onClick={() => setHiddenBy(h => unhide(h, view))} title="Show the windows that you hid in this view">Show hidden ({hiddenIds.length})</button>}
-        <span className="sp" />
-        <span className="lbl">{per && pageCount > 1 ? '' : `${wins.length} windows`}{focusedTask ? `${per && pageCount > 1 ? '' : ' · '}typing into #${focusedTask.num}` : ''}</span>
+        {/* also the spacer: its width starts at 0, so the text that a click on a window adds never wraps the toolbar */}
+        <span className="lbl ctool-count">{per && pageCount > 1 ? '' : `${wins.length} windows`}{focusedTask ? `${per && pageCount > 1 ? '' : ' · '}typing into #${focusedTask.num}` : ''}</span>
         {suspendedHere.length > 0 && <button className="btn" title={`Not running: ${suspendedHere.map(t => '#' + t.num + ' ' + t.title).join(', ')}. Resume starts their agents again and continues their conversations.`} onClick={() => suspendedHere.forEach(t => api.resume(t.id).catch(() => {}))}>{suspendedHere.length} suspended · Resume</button>}
         {(() => { const n = countText(sumCounts(runtimeCounts, runtimeTasks.map(t => t.id))); return (
           <button className={`btn ${runtimeOpen ? 'on' : ''}`} onClick={() => setRuntimeOpen(o => !o)} title={`The browsers and processes of the tasks in this view, with their memory. Each task owns its own.${n ? ` Running now: ${n}.` : ''}`}>Browsers & processes{n && <span className="rtb-total">{n}</span>}</button>); })()}
