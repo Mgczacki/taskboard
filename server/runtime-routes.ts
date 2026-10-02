@@ -64,7 +64,7 @@ export function watchResume() {
   });
 }
 
-// A task browser without an agent connection or a dashboard viewer for the time set on the Settings page stops. Its
+// A task browser without an agent command or a dashboard viewer for the time set on the Settings page stops. Its
 // pages are saved. The next tool call of the agent, or a start on the dashboard, starts it again with those pages.
 export const watchBrowserIdle = () => browser.watchIdle();
 

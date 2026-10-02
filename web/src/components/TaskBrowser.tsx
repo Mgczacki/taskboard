@@ -136,7 +136,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate }: { id: st
     <div className="bw-empty">
       {archived ? <p>The task is archived. Its browser is closed. The profile is kept until the task is removed.</p>
         : <p>{isTemplate ? 'The template browser is closed.' : state?.suspended ? 'The browser was closed when the task was suspended. It opens again when the task resumes.'
-          : state?.idleStopped ? `The browser was stopped ${state.stoppedAt ? `at ${new Date(state.stoppedAt).toLocaleTimeString()} ` : ''}because no agent was connected and no one viewed it for ${state.idleStopMinutes} minutes. It starts again when the agent uses it, or when you start it.`
+          : state?.idleStopped ? `The browser was stopped ${state.stoppedAt ? `at ${new Date(state.stoppedAt).toLocaleTimeString()} ` : ''}because no agent used it and no one viewed it for ${state.idleStopMinutes} minutes. It starts again when the agent uses it, or when you start it.`
           : 'The browser is not running. Opening this tab does not start it. It starts when the agent uses it, or when you start it.'}</p>}
       {!archived && <div><button className="btn primary" onClick={startNow}>{isTemplate ? 'Open the template browser' : 'Start the browser'}</button> <SoundSwitch id={id} muted={muted} running={false} agents={0} onDone={s => { setState(s); setMuted(s.muted); }} onError={setErr} /></div>}
       {!!state?.tabs.length && <div className="bw-saved"><b>Pages that open at the next start</b>{state.tabs.map(t => <div key={t.id} className="sub">{t.url}</div>)}</div>}

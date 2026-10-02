@@ -9,7 +9,8 @@
 // (Page.startScreencast) over /ws/browser and sends mouse and key input back with Input.dispatch*Event.
 // Nothing starts a browser when a task starts. chrome-devtools-mcp opens its DevTools connection at the agent's first
 // tool call, so the browser starts then (or when the user starts it on the dashboard). stopIdle() stops a task browser
-// that had no agent connection, no dashboard viewer and no screencast for the time set on the Settings page.
+// that got no command from an agent and had no dashboard viewer and no screencast for the time set on the Settings
+// page. It closes the agent connections first: chrome-devtools-mcp connects again at the agent's next tool call.
 import { execFileSync, spawn } from 'node:child_process';
 import { createHmac } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -63,10 +64,14 @@ const templateOpen = () => { const m = readMeta(TEMPLATE); return !!m.port && pi
 
 export async function tabs(id: string): Promise<Tab[]> {
   const m = await live(id); if (!m) return [];
+  return await pageList(m.port!) || [];
+}
+// The pages of a running browser, or null when Chrome does not answer in `timeout` ms.
+async function pageList(port: number, timeout = 1500): Promise<Tab[] | null> {
   try {
-    const list = await (await fetch(`http://127.0.0.1:${m.port}/json/list`, { signal: AbortSignal.timeout(1500) })).json() as { id: string; type: string; title: string; url: string }[];
+    const list = await (await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(timeout) })).json() as { id: string; type: string; title: string; url: string }[];
     return list.filter(t => t.type === 'page').map(t => ({ id: t.id, title: t.title, url: t.url }));
-  } catch { return []; }
+  } catch { return null; }
 }
 
 // Copy the template profile, without the files that lock a running profile and without caches.
@@ -121,21 +126,7 @@ export function ensure(id: string): Promise<Meta & { ws: string }> {
       throw new Error(`Chrome did not start for ${id}. See ${join(folder(id), 'chrome.log')}.`);
     }
     const next: Meta = { ...meta, pid: child.pid, port, started: new Date().toISOString(), muted: !meta.sound, suspended: undefined, idleStopped: undefined, error: undefined, stoppedAt: undefined };
-    if (urls.length) {
-      // The saved pages open with /json/new. A page that Chrome opens from its command line has an empty address in
-      // puppeteer, and chrome-devtools-mcp then does not list it. So the start page is blank, and it is closed.
-      const list = () => fetch(`http://127.0.0.1:${port}/json/list`).then(r => r.json() as Promise<{ id: string; type: string; url: string }[]>).catch(() => []);
-      const blank = (await list()).filter(t => t.type === 'page').map(t => t.id);
-      for (const url of urls) await fetch(`http://127.0.0.1:${port}/json/new?${encodeURIComponent(url)}`, { method: 'PUT' }).catch(() => {});
-      for (const t of blank) await fetch(`http://127.0.0.1:${port}/json/close/${t}`).catch(() => {});
-      // Chrome closes a page after /json/close returns, and /json/new returns before the page has its address. Wait up
-      // to 5 s for both: an agent that connects while the blank page is still open selects it, loses it and lists none.
-      for (let i = 0; i < 50; i++) {
-        const open = (await list()).filter(t => t.type === 'page');
-        if (!open.some(t => blank.includes(t.id)) && open.filter(t => /^(https?|file):/.test(t.url)).length >= urls.length) break;
-        await new Promise(r => setTimeout(r, 100));
-      }
-    }
+    if (urls.length) await openSaved(port, v.webSocketDebuggerUrl, urls);
     next.startMs = Date.now() - t0;
     writeMeta(id, next);
     lastUse.set(id, Date.now());
@@ -145,6 +136,41 @@ export function ensure(id: string): Promise<Meta & { ws: string }> {
   starting.set(id, p);
   p.finally(() => starting.delete(id)).catch(() => {});
   return p;
+}
+
+// Open the saved pages in a browser that just started, then close its blank start page. Each page is created blank,
+// and this connection attaches to it before it navigates, then waits up to 10 s for its load event. A DevTools client
+// that attaches to a page while its navigation commits can see that page at about:blank for good, and
+// chrome-devtools-mcp then lists no pages. So the agent's connection, which waits for ensure(), finds loaded pages.
+// Chrome closes a page after /json/close returns, so this waits until the blank page is gone (an agent would select it).
+async function openSaved(port: number, browserWs: string, urls: string[]) {
+  const list = () => fetch(`http://127.0.0.1:${port}/json/list`).then(r => r.json() as Promise<{ id: string; type: string }[]>).catch(() => []);
+  const blank = (await list()).filter(t => t.type === 'page').map(t => t.id);
+  const ws = new WebSocket(browserWs, { perMessageDeflate: false });
+  let next = 0;
+  const waiting = new Map<number, (m: any) => void>(), events = new Set<(m: any) => void>();
+  ws.on('message', d => { const m = JSON.parse(d.toString()); if (m.id && waiting.has(m.id)) { waiting.get(m.id)!(m); waiting.delete(m.id); } else for (const fn of events) fn(m); });
+  const call = (method: string, params: object = {}, sessionId?: string) => new Promise<any>((resolve, reject) => {
+    const n = ++next; waiting.set(n, m => m.error ? reject(new Error(m.error.message)) : resolve(m.result));
+    ws.send(JSON.stringify({ id: n, method, params, ...(sessionId ? { sessionId } : {}) }));
+  });
+  try {
+    await new Promise((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
+    await Promise.all(urls.map(async url => {
+      const { targetId } = await call('Target.createTarget', { url: 'about:blank' });
+      const { sessionId } = await call('Target.attachToTarget', { targetId, flatten: true });
+      await call('Page.enable', {}, sessionId);
+      const loaded = new Promise<void>(resolve => {
+        const fn = (m: any) => { if (m.sessionId === sessionId && m.method === 'Page.loadEventFired') { events.delete(fn); resolve(); } };
+        events.add(fn); setTimeout(() => { events.delete(fn); resolve(); }, 10000);
+      });
+      await call('Page.navigate', { url }, sessionId).catch(() => {});
+      await loaded;
+      await call('Target.detachFromTarget', { sessionId }).catch(() => {});
+    }));
+  } catch { /* the pages that opened stay open; the agent can open the others */ } finally { ws.close(); }
+  for (const t of blank) await fetch(`http://127.0.0.1:${port}/json/close/${t}`).catch(() => {});
+  for (let i = 0; i < 50 && (await list()).some(t => blank.includes(t.id)); i++) await new Promise(r => setTimeout(r, 100));
 }
 
 // One DevTools command over a new connection (for the few calls that are not on a long-lived connection).
@@ -174,7 +200,9 @@ async function stopNow(id: string, opts: { suspended?: boolean; idle?: boolean }
   const m = readMeta(id);
   if (!m.pid && !m.port) return false;
   const running = await live(id);
-  const open = running ? (await tabs(id)).map(t => t.url).filter(u => /^(https?|file):/.test(u)) : m.tabs;
+  // a busy Chrome can answer slowly: wait up to 5 s, and keep the saved pages when it does not answer
+  const listed = running ? await pageList(running.port!, 5000) : null;
+  const open = listed ? listed.map(t => t.url).filter(u => /^(https?|file):/.test(u)) : m.tabs;
   if (running) await once(running.ws, 'Browser.close').catch(() => {});
   for (let i = 0; i < 30 && pidAlive(m.pid); i++) await new Promise(r => setTimeout(r, 100));
   if (m.pid && pidAlive(m.pid)) { try { process.kill(-m.pid, 'SIGKILL'); } catch { try { process.kill(m.pid, 'SIGKILL'); } catch { /* ended */ } } }
@@ -229,7 +257,7 @@ export async function status(id: string): Promise<Status> {
   return { id, running: !!running, port: running?.port, tabs: running ? await tabs(id) : (m.tabs || []).map((url, i) => ({ id: `saved-${i}`, title: url, url })),
     profile: existsSync(profileDir(id)), copiedFromTemplate: m.copiedFromTemplate, suspended: m.suspended, idleStopped: m.idleStopped, idleStopMinutes: idleStopMs() / 60000,
     startMs: m.startMs, started: running ? m.started : undefined, stoppedAt: m.stoppedAt, error: m.error,
-    rssMb: running ? rssMb(m.pid) : null, agents: agentConnections.get(id) || 0, viewers: viewers.get(id) || 0, chrome: chromePath(), sound: !!m.sound, muted: mutedNow(m, !!running) };
+    rssMb: running ? rssMb(m.pid) : null, agents: agentCount(id), viewers: viewers.get(id) || 0, chrome: chromePath(), sound: !!m.sound, muted: mutedNow(m, !!running) };
 }
 
 export async function openTab(id: string, url: string): Promise<Tab> {
@@ -261,26 +289,30 @@ export async function shot(id: string): Promise<Buffer | null> {
 
 const listeners = new Set<(id: string) => void>();
 export const onChange = (fn: (id: string) => void) => { listeners.add(fn); };
-export const agentCount = (id: string) => agentConnections.get(id) || 0;
 const changed = (id: string) => { for (const fn of listeners) try { fn(id); } catch { /* listener failed */ } };
 
 // ---------- what uses a browser now, and the stop of a browser that nothing used for a set time ----------
-// agentConnections: open /ws/cdp connections. viewers: open /ws/browser views. screencasts: views that stream a tab.
-// lastUse: when the last of these ended, or when the browser started. stopIdle() reads all four.
-const agentConnections = new Map<string, number>();
+// agentConnections: open /ws/cdp connections, each with the time of its last command from the agent and a function that
+// closes it. viewers: open /ws/browser views. screencasts: views that stream a tab. lastUse: when the last connection or
+// view ended, or when the browser started. stopIdle() reads all four.
+interface AgentConn { last: number; close: () => void }
+const agentConnections = new Map<string, Set<AgentConn>>();
+export const agentCount = (id: string) => agentConnections.get(id)?.size || 0;
 const viewers = new Map<string, number>();
 const screencasts = new Map<string, number>();
 const lastUse = new Map<string, number>();
 const loadedAt = Date.now();
 const count = (m: Map<string, number>, id: string, d: number) => { m.set(id, Math.max(0, (m.get(id) || 0) + d)); lastUse.set(id, Date.now()); changed(id); };
-const inUse = (id: string) => !!(agentConnections.get(id) || viewers.get(id) || screencasts.get(id));
+const viewed = (id: string) => !!(viewers.get(id) || screencasts.get(id));
 // The time without use after which a task browser stops (Settings page, in minutes; 0 turns the stop off).
 export function idleStopMs(): number {
   const min = machine.get().browser?.idleStopMinutes;
   return (typeof min === 'number' && Number.isFinite(min) && min >= 0 ? min : 10) * 60000;
 }
-// Stop each running task browser that had no agent connection, no viewer and no screencast for idleStopMs(). The
-// open tab addresses are saved, so the next start opens the same pages. The template browser is not stopped here.
+// Stop each running task browser that got no agent command and had no viewer and no screencast for idleStopMs(). An
+// open agent connection that sent no command for that time does not keep the browser: chrome-devtools-mcp keeps its
+// connection open until the agent session ends. The open tab addresses are saved, so the next start opens the same
+// pages. The template browser is not stopped here.
 // A browser that was running before this server started gets the full time from the server start.
 export async function stopIdle(now = Date.now()): Promise<string[]> {
   const ms = idleStopMs(), done: string[] = [];
@@ -291,12 +323,14 @@ export async function stopIdle(now = Date.now()): Promise<string[]> {
     if (id === TEMPLATE || !ID.test(id)) continue;
     const m = readMeta(id);
     if (!m.pid || !pidAlive(m.pid)) { lastUse.delete(id); continue; }
-    if (inUse(id) || starting.has(id) || stopping.has(id)) { lastUse.set(id, now); continue; }
-    const since = Math.max(lastUse.get(id) || 0, Date.parse(m.started || '') || 0, loadedAt);
+    if (viewed(id) || starting.has(id) || stopping.has(id)) { lastUse.set(id, now); continue; }
+    const conns = [...(agentConnections.get(id) || [])];
+    const since = Math.max(lastUse.get(id) || 0, Date.parse(m.started || '') || 0, loadedAt, ...conns.map(c => c.last));
     if (now - since < ms) continue;
     lastUse.delete(id);
-    console.log(`${new Date().toISOString()} task browser ${id}: stopped after ${Math.round((now - since) / 60000)} min without an agent connection or a viewer`);
+    console.log(`${new Date().toISOString()} task browser ${id}: stopped after ${Math.round((now - since) / 60000)} min without an agent command or a viewer (${conns.length} quiet agent connection(s) closed)`);
     done.push(id);
+    for (const c of conns) c.close(); // stop() below runs before the agent's next tool call, and ensure() waits for it
     await stop(id, { idle: true }).catch(e => console.error(`task browser ${id}: idle stop failed: ${(e as Error).message}`));
   }
   return done;
@@ -313,9 +347,12 @@ export function watchIdle() {
 export function proxyAgent(client: WebSocket, id: string) {
   const queue: (string | Buffer)[] = [];
   let up: WebSocket | null = null, closed = false;
-  count(agentConnections, id, 1);
-  const done = () => { if (closed) return; closed = true; count(agentConnections, id, -1); try { up?.close(); } catch { /* closed */ } try { client.close(); } catch { /* closed */ } };
-  client.on('message', (d, binary) => { const msg = binary ? d as Buffer : d.toString(); if (up?.readyState === WebSocket.OPEN) up.send(msg); else if (queue.length < 1000) queue.push(msg); else done(); });
+  const conn: AgentConn = { last: Date.now(), close: () => done() };
+  let set = agentConnections.get(id);
+  if (!set) agentConnections.set(id, set = new Set());
+  set.add(conn); lastUse.set(id, Date.now()); changed(id);
+  const done = () => { if (closed) return; closed = true; set.delete(conn); lastUse.set(id, Date.now()); changed(id); try { up?.close(); } catch { /* closed */ } try { client.close(); } catch { /* closed */ } };
+  client.on('message', (d, binary) => { conn.last = Date.now(); const msg = binary ? d as Buffer : d.toString(); if (up?.readyState === WebSocket.OPEN) up.send(msg); else if (queue.length < 1000) queue.push(msg); else done(); });
   client.on('close', done); client.on('error', done);
   ensure(id).then(m => {
     if (closed) return;
@@ -374,7 +411,7 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     const fresh = list.filter(t => !known.has(t.id));
     const first = !known.size;
     known = new Set(list.map(t => t.id));
-    send({ type: 'tabs', tabs: list, active, agents: agentConnections.get(id) || 0, muted: mutedNow(readMeta(id), true) });
+    send({ type: 'tabs', tabs: list, active, agents: agentCount(id), muted: mutedNow(readMeta(id), true) });
     // follow the agent: a tab that opens later becomes the shown tab, unless the user picked a tab in the last minute
     let target = active;
     if (!list.some(t => t.id === active)) target = list[0]?.id || '';

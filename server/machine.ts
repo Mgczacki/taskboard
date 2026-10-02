@@ -26,7 +26,7 @@ export interface MachineSettings {
   // keep their own maximum until the user applies this value to all accounts
   accounts: { defaultMaxParallel: number };
   // the browser for each task (server/task-browser.ts); chromePath empty means the installed Google Chrome;
-  // idleStopMinutes: a task browser without an agent connection or a viewer for this time stops (0: never)
+  // idleStopMinutes: a task browser without an agent command or a viewer for this time stops (0: never)
   browser: { claude: BrowserMode; codex: BrowserMode; chromePath: string; idleStopMinutes: number };
 }
 

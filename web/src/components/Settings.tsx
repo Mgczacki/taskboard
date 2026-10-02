@@ -282,7 +282,7 @@ function TaskBrowserSettings({ info, busy, save }: { info: MachineInfo | null; b
         <SettingItem id="browserIdleStop">
           <label className="opt" htmlFor="browser-idle">Stop an unused task browser after</label>
           <div><input id="browser-idle" type="number" min={0} max={1440} step={1} style={{ width: '6em' }} value={idle} onChange={e => setIdle(e.target.value)} /> minutes <button className="btn" disabled={busy || idle === '' || Number(idle) === (b.idleStopMinutes ?? 10)} onClick={() => void save({ browserIdleStopMinutes: Number(idle) })}>Save</button></div>
-          <div className="sub">A task browser stops when no agent is connected to it and no one views it on the dashboard for this time. Its pages are saved. The next tool call of the agent starts it again with the same pages, in a few seconds. 0 means never stop. Default: 10.</div>
+          <div className="sub">A task browser stops when no agent sends it a command and no one views it on the dashboard for this time. Its pages are saved. The next tool call of the agent starts it again with the same pages, in a few seconds. 0 means never stop. Default: 10.</div>
         </SettingItem>
       </>}
     </SettingGroup>

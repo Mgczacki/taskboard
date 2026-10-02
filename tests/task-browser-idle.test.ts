@@ -1,7 +1,8 @@
 // When a task browser runs: a test Taskboard server (own port, folders and tmux socket) with one Claude Code task, and
 // the real chrome-devtools-mcp server that the task's agent gets, driven over stdio as Claude Code and Codex drive it.
-// Checked: no browser at task start or after the MCP handshake, a start at the first tool call, no idle stop while an
-// agent connection or a dashboard viewer is open, the idle stop after the set time, and a restart with the same pages.
+// Checked: no browser at task start or after the MCP handshake, a start at the first tool call, no idle stop while the
+// agent sends commands or a dashboard viewer is open, the idle stop of a browser whose agent connection is quiet, and a
+// restart with the same pages.
 // The idle time is 0.05 minutes (3 s), so the test takes about a minute. Skipped when Chrome or the MCP server is missing.
 import { execFileSync, spawn, type ChildProcess } from 'node:child_process';
 import { createHmac } from 'node:crypto';
@@ -108,15 +109,13 @@ class Mcp {
   }
   close() { if (this.proc.exitCode === null) this.proc.kill(); }
 }
-// The agent's first list_pages after a start with saved pages. Taskboard reopens the pages in Chrome (the tests check
-// status().tabs). chrome-devtools-mcp sometimes lists none of them, without an error: in about 1 of 4 runs here, more
-// often on a busy Mac. chrome-devtools-mcp leaves out a page whose puppeteer address is empty, and puppeteer alone gave
-// an empty address to a page that Chrome opened from its command line. That is a likely cause, not a confirmed one.
-// So the test requires no error and logs what the agent saw.
+// The agent's first list_pages after a start with saved pages must show them. ensure() waits until each saved page has
+// committed its navigation. Before that wait, an agent that attached during the commit sometimes listed no pages: the
+// page target kept reporting about:blank to DevTools after the page had loaded.
 async function firstList(agent: Mcp, url: string) {
   const r = await agent.call('list_pages');
   assert.equal(r.error, false, r.text);
-  if (!r.text.includes(url)) console.log(`list_pages did not show the reopened page: ${JSON.stringify(r.text)}`);
+  assert.ok(r.text.includes(url), `list_pages shows the reopened page: ${r.text}`);
   return r;
 }
 const closed = (c: Mcp) => new Promise<void>(r => { if (c.proc.exitCode !== null) r(); else c.proc.once('exit', () => r()); });
@@ -146,35 +145,45 @@ test('no browser starts at task start or at the MCP handshake; the first tool ca
   await until('the page is open', async () => (await status()).tabs.some(t => t.url === pageUrl), 20000);
 });
 
-test('no idle stop while an agent connection or a dashboard viewer is open; then the idle stop saves the pages', { skip, timeout: 120000 }, async () => {
+test('no idle stop while the agent sends commands or a viewer is open; a quiet agent connection does not keep the browser', { skip, timeout: 120000 }, async () => {
   const agent = clients[0];
-  await sleep(6000); // twice the idle time
-  assert.equal((await status()).running, true, 'an open agent connection keeps the browser');
+  for (const end = Date.now() + 6000; Date.now() < end;) { assert.equal((await agent.call('list_pages')).error, false); await sleep(1000); } // twice the idle time
+  assert.equal((await status()).running, true, 'an agent that sends commands keeps the browser');
   const viewer = new WebSocket(`ws://127.0.0.1:${port}/ws/browser?id=${ID}&token=${token}`);
   await new Promise((resolve, reject) => { viewer.once('open', resolve); viewer.once('error', reject); });
-  agent.close(); await closed(agent);
-  await until('the agent connection closed', async () => (await status()).agents === 0, 10000);
-  assert.equal((await status()).viewers, 1);
   await sleep(6000);
-  assert.equal((await status()).running, true, 'an open viewer (with its screencast) keeps the browser');
+  const s1 = await status();
+  assert.equal(s1.running, true, 'an open viewer (with its screencast) keeps the browser');
+  assert.equal(s1.agents, 1);
   viewer.close();
-  // Chrome closes first; browser.json gets idleStopped when the process has ended
+  // the agent stays connected and sends nothing. Chrome closes first; browser.json gets idleStopped when the process ended
   await until('the idle stop', async () => { const x = await status(); return !x.running && x.idleStopped === true; }, 15000);
   const s = await status();
+  assert.equal(s.agents, 0, 'Taskboard closed the quiet agent connection');
+  assert.equal(agent.proc.exitCode, null, 'the MCP server still runs');
   assert.ok(s.tabs.some(t => t.url === pageUrl), `the open page was saved: ${JSON.stringify(s.tabs)}`);
   assert.equal(chromeForTask(), false, 'no Chrome process is left');
 });
 
-test('the next tool call starts the browser again with the same pages, without an error', { skip, timeout: 120000 }, async () => {
-  const agent = new Mcp();
-  await agent.start();
+test('the same agent\'s next tool call starts the browser again with the same pages, without an error', { skip, timeout: 120000 }, async () => {
+  const agent = clients[0];
   const t0 = Date.now();
   await firstList(agent, pageUrl);
   console.log(`first tool call after the idle stop: ${Date.now() - t0} ms (Chrome start ${(await status()).startMs} ms)`);
   const s = await status();
   assert.equal(s.running, true);
+  assert.equal(s.agents, 1);
   assert.deepEqual(s.tabs.map(t => t.url), [pageUrl], 'Chrome has the same page again, and no blank start page');
   assert.equal(s.idleStopped, undefined);
+});
+
+test('a new agent session after an idle stop starts the browser again with the same pages', { skip, timeout: 120000 }, async () => {
+  clients[0].close(); await closed(clients[0]);
+  await until('the idle stop', async () => (await status()).idleStopped === true, 15000);
+  const agent = new Mcp();
+  await agent.start();
+  await firstList(agent, pageUrl);
+  assert.deepEqual((await status()).tabs.map(t => t.url), [pageUrl]);
 });
 
 test('a stop while an agent is connected: the same MCP server reconnects at its next tool call, without an error', { skip, timeout: 120000 }, async () => {
