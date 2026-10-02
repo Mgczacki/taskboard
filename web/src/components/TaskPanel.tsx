@@ -4,7 +4,7 @@ import type { Group, Task } from '../api';
 import { AGENT_NAME, STATUS_LABEL, api, fmtWait, linkedTaskId, shortPath } from '../api';
 import { AgentChip, ByController, Dot, MachineChip, ThreeLines, WhereChip } from './ui';
 import { Terminal } from './Terminal';
-import { TaskPending } from './PendingCard';
+import { PendingMarker } from './PendingCard';
 import { DocsTab } from './Docs';
 import { LinksSection } from './Links';
 import { hasFiles, uploadAll } from '../drop';
@@ -117,7 +117,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
       <div className={`dr-head ${compact && !thin ? 'compact' : ''} ${thin ? 'thin' : ''} ${collapsed ? 'collapsed' : ''}`}>
         {thin && <div className="dr-bar">
           <span className="num">#{t.num}</span><b className="dr-bar-t">{isCtl ? 'controller' : t.title}</b>
-          <Dot s={t.status} /><span className={`st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span>
+          <Dot s={t.status} /><PendingMarker taskId={t.id} small><span className={`st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span></PendingMarker>
           {collapsed && attention && <button className="dr-bar-attn" onClick={() => setCollapsed(false)} title={t.ask || 'Open the header to see what the task waits for'}>waiting {fmtWait(t.waitMin)}</button>}
           {collapsed && t.ask && !attention && <button className="dr-bar-attn" onClick={() => setCollapsed(false)} title={t.ask}>question</button>}
           <span className="tabs-sp" />
@@ -136,8 +136,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
             <option value="">＋ Add to group…</option>{groups.filter(g => !g.tasks.includes(t.id)).map(g => <option key={g.id} value={g.id}>{g.name}</option>)}<option value="__new">New group…</option>
           </select>
         </div>
-        <div className={`dr-status ${t.status}`}><Dot s={t.status} /><div title={t.statusSource}><span className={`st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span>{['needs-you', 'stopped', 'review'].includes(t.status) && <span className="waitchip">waiting {fmtWait(t.waitMin)}</span>} · {t.statusSource}</div></div>
-        <TaskPending taskId={t.id} openTask={onOpenTask} toast={toast} />
+        <div className={`dr-status ${t.status}`}><Dot s={t.status} /><div title={t.statusSource}><span className={`st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span>{['needs-you', 'stopped', 'review'].includes(t.status) && <span className="waitchip">waiting {fmtWait(t.waitMin)}</span>} · {t.statusSource}</div>{!thin && <PendingMarker taskId={t.id} />}</div>
         <div className="ctx"><ThreeLines t={t} fixed />
           {since && !since.first && (since.entries.length > 0 || since.files.length > 0 || since.commits.length > 0) && <div className="since">
             <div className="since-h" onClick={() => setSinceOpen(o => !o)} style={{ cursor: 'pointer' }}>Since you last looked <span>{fmtWait(Math.round((Date.now() - Date.parse(since.since)) / 60000))} ago · {sinceOpen ? 'hide' : 'show'}</span></div>

@@ -308,7 +308,7 @@ export function App() {
       {addMachine && <AddMachine close={() => setAddMachine(false)} />}
       {linked && <LinkedWork q={linked} tasks={tasks} close={() => setLinked(null)} onGo={id => setOpenId(id)} />}
       {triage && <Triage queue={queue} tasks={tasks} close={() => setTriage(false)} open={id => { setTriage(false); setOpenId(id); }} />}
-      {page !== 'waiting' && <NoticeStack approvals={approvals.filter(a => (page !== 'permits' || a.action !== 'permit') && (a.state === 'pending' || (a.action === 'permit' && a.state === 'running')))} pending={pending.filter(i => i.taskId !== openId)} allTasks={allTasks} setOpenId={setOpenId} openController={openController} toast={toast} showAll={() => go('waiting')} />}
+      {page !== 'waiting' && <NoticeStack approvals={approvals.filter(a => (page !== 'permits' || a.action !== 'permit') && (a.state === 'pending' || (a.action === 'permit' && a.state === 'running')))} pending={pending} allTasks={allTasks} setOpenId={setOpenId} openController={openController} toast={toast} showAll={() => go('waiting')} />}
       <div className="toasts"><HoldCard tasks={allTasks} />{toasts.map(t => <ToastNotice key={t.id} toast={t} dismiss={() => setToasts(x => x.filter(y => y.id !== t.id))} />)}</div>
     </div>
   );

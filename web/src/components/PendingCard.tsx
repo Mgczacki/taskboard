@@ -1,10 +1,11 @@
-// The card for a question or dialog that a task waits on (server/pending.ts). The same card shows on the Waiting page,
-// in the notification stack, in the task panel and (short form) in a Canvas window. Each answer shows what Taskboard
-// sends. A risky option (installs software, gives wide access, asks for credit, ends the session) opens a confirm
+// The card for a question or dialog that a task waits on (server/pending.ts). The card shows on the Waiting page and
+// (short form) in the notification stack. Canvas windows and the task panel show only PendingMarker. Each answer shows
+// what Taskboard sends. A risky option (installs software, gives wide access, asks for credit, ends the session) opens a confirm
 // step first; the server refuses it without that step.
-import { useState } from 'react';
+import { useState, type ReactNode } from 'react';
 import type { PendingItem, PendingOption, PendingRisk } from '../api';
 import { api, fmtWait, useStore } from '../api';
+import { showInStack } from '../stack';
 import { AgentChip } from './ui';
 
 export const KIND_LABEL: Record<PendingItem['kind'], string> = {
@@ -134,10 +135,18 @@ export function PendingCard({ item, compact, openTask, toast }: { item: PendingI
   </div>;
 }
 
-// The open cards of one task, for the task panel and the Canvas window.
-export function TaskPending({ taskId, compact, openTask, toast }: { taskId: string; compact?: boolean; openTask: (id: string) => void; toast: (s: string) => void }) {
+// The marker for the open cards of one task, in a Canvas window header and in the task panel. It is one button in a
+// row that is already there, so the terminal does not move. With children (the status label of a Canvas window
+// header or of the thin panel bar), the marker makes that label the button and adds no width. Without children it
+// shows "Answer". The button brings the card to the front of the notification stack (or selects it on the Waiting
+// page), where the user answers it.
+export function PendingMarker({ taskId, small, children }: { taskId: string; small?: boolean; children?: ReactNode }) {
   const { pending } = useStore();
   const items = pending.filter(i => i.taskId === taskId);
-  if (!items.length) return null;
-  return <div className={`pc-dock ${compact ? 'compact' : ''}`}>{items.map(i => <PendingCard key={i.id} item={i} compact={compact} openTask={openTask} toast={toast} />)}</div>;
+  if (!items.length) return <>{children}</>;
+  const q = items[0].question.replace(/\s+/g, ' ').trim();
+  return <button className={`${small ? 'b' : 'btn'} pc-mark ${children ? 'label' : ''}`} onClick={e => { e.stopPropagation(); showInStack(taskId); }} onPointerDown={e => e.stopPropagation()}
+    title={`Waiting: ${q}${items.length > 1 ? ` (and ${items.length - 1} more)` : ''}\nOpens the card in the notification stack.`}>
+    {children || <><span className="dot needs-you" />Answer</>}{items.length > 1 ? ` (${items.length})` : ''}
+  </button>;
 }
