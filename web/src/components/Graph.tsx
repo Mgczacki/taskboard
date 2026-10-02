@@ -16,7 +16,7 @@ import type { Group, Status, Task } from '../api';
 import { AGENT_NAME, ATTN, ORDER, STATUS_LABEL, fmtWait } from '../api';
 import '../graph.css';
 import { Dot } from './ui';
-import { hit } from '../keys';
+import { hit, inBrowser } from '../keys';
 import { Face, MessagePanel, type MailBrief, type MailGraph, type MailPerson } from './GraphMail';
 
 type Tab = 'terminal' | 'log' | 'docs';
@@ -345,11 +345,11 @@ export function GraphView({ tasks, groups, open }: Props) {
 
   const zoomAt = (k: number, mx: number, my: number) => setTf(t => { k = Math.max(0.35, Math.min(2, k)); return { k, x: mx - (mx - t.x) * k / t.k, y: my - (my - t.y) * k / t.k }; });
 
-  // keyboard: F (keys.ts: graphFit) fits, arrows move the selection, Enter opens it
+  // keyboard: ⌃⌥F (keys.ts: graphFit) fits, arrows move the selection, Enter opens it
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
       const tgt = e.target as HTMLElement;
-      if (tgt?.closest?.('input,textarea,select,[contenteditable=true],.xterm,.modal')) return;
+      if (tgt?.closest?.('input,textarea,select,[contenteditable=true],.xterm,.modal') || inBrowser(e)) return;
       if (document.querySelector('.drawer.open, .scrim.open, .triage.open')) return;
       if (e.key === 'Escape' && panel) { e.preventDefault(); setPanel(null); return; }
       if (tgt?.closest?.('.gpanel, button')) return;

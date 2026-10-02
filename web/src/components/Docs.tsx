@@ -10,6 +10,7 @@ import type { Task } from '../api';
 import { api, fmtWait } from '../api';
 import type { DocumentLink } from '../documentLinks';
 import { decorateDocument } from '../documentContent';
+import { inBrowser } from '../keys';
 
 export interface DocInfo { name: string; path: string; kind: 'md' | 'html' | 'other'; size: number; mtime: string; from?: { task: string; num: number; title: string; at: string }; sentTo?: { task: string; num: number; at: string }[]; pending?: boolean }
 // files of tasks on another machine are fetched through this server (?machine=)
@@ -96,7 +97,7 @@ function FloatWin({ title, sub, path, close, host, body }: { title: string; sub:
     const up = () => { removeEventListener('pointermove', mv); removeEventListener('pointerup', up); host.classList.remove('moving'); };
     addEventListener('pointermove', mv); addEventListener('pointerup', up);
   };
-  useEffect(() => { const k = (e: KeyboardEvent) => { if (e.key === 'Escape' && host.style.zIndex === String(z)) close(); }; addEventListener('keydown', k); return () => removeEventListener('keydown', k); }, []);
+  useEffect(() => { const k = (e: KeyboardEvent) => { if (e.key === 'Escape' && host.style.zIndex === String(z) && !inBrowser(e)) close(); }; addEventListener('keydown', k); return () => removeEventListener('keydown', k); }, []);
   return (
     <>
       <div className="fw-h" onPointerDown={drag} onDoubleClick={() => host.classList.toggle('big')} onMouseDown={() => { host.style.zIndex = String(++z); }}>

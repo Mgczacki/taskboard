@@ -4,7 +4,7 @@
 // What the app adds to the web dashboard:
 // - a Dock badge and a menu-bar item with the number of tasks waiting on you; the menu lists them, a click opens one
 // - a system-wide shortcut that shows or hides the window (default Control-Option-Command-T)
-// - its own menus, which leave Taskboard's shortcuts (⌘K, ⌘S, N, C, T…) to the page
+// - its own menus, which leave Taskboard's shortcuts (⌘K, ⌘S, ⌘/, ⌃⌥ keys) to the page
 // - pop-out group windows as app windows; links to other sites open in your browser
 // - a waiting page while the server does not answer, which reconnects by itself
 // - every open window (where it is, and where you are in it) comes back after quitting, a Taskboard update or a

@@ -93,6 +93,15 @@
 .win.vslot.slot-before { box-shadow: 0 -6px 0 0 var(--accent); }
 .win.vslot.slot-after { box-shadow: 0 6px 0 0 var(--accent); }
 .win .wb .xterm-box { flex: 1; }
+/* the browser of the task in its window (Canvas.tsx, browserSplit.ts): the browser takes most of the window and the
+   terminal gets a strip at the bottom or a column at the right side */
+.win .wb.split.bottom { flex-direction: column; }
+.win .wb-browser { display: flex; flex: 1 1 70%; min-width: 0; min-height: 0; }
+.win .wb-browser > .bw-empty { flex: 1; overflow: auto; }
+.win .wb.split.bottom .wb-browser { border-bottom: 1px solid var(--line2); }
+.win .wb.split.side .wb-browser { border-right: 1px solid var(--line2); }
+.win .wb.split.bottom > .xterm-box { flex: 0 0 30%; min-height: 120px; }
+.win .wb.split.side > .xterm-box { flex: 0 0 32%; min-width: 220px; }
 
 .emptyview { margin: 12vh auto; max-width: 520px; text-align: center; color: var(--muted); }
 .emptyview h2 { color: var(--text); font-size: 18px; }
@@ -524,6 +533,10 @@ table.keyset .keycell { text-align: right; white-space: normal; }
 
 .bw-screen { flex: 1; min-height: 120px; position: relative; overflow: hidden; background: var(--bg); outline: none; cursor: default; }
 .bw-screen.framed { background: #fff; }
+.bw-window { display: flex; flex-direction: column; height: 100vh; background: var(--panel); }
+.bw-window-h { display: flex; gap: 10px; align-items: baseline; padding: 6px 10px; border-bottom: 1px solid var(--line); font-size: 12.5px; flex: none; }
+.bw-chip.bw-leave kbd { font: inherit; }
+.bw.kb .bw-chip.bw-leave { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
 .bw-screen:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
 .bw-screen img { display: block; width: 100%; height: 100%; object-fit: fill; user-select: none; }
 .bw-screen img:not([src]) { visibility: hidden; }

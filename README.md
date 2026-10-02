@@ -83,10 +83,10 @@ window. It contains no server: the server keeps running under launchd, and quitt
   `~/Library/Application Support/taskboard-desktop/settings.json`.
 - No title bar: the window buttons appear when the pointer is near the top edge. Drag the window by its top bar or
   the top of the sidebar.
-- File → New Task (⌘T) opens the New task dialog, also while a terminal has the keyboard (in a browser, use N).
+- File → New Task (⌘T) opens the New task dialog, also while a terminal has the keyboard (in a browser, use ⌃⌥T).
 - New windows: File → New Window (⌘N), New Window for Group (one canvas tab on its own), New Canvas Window (⇧⌘N);
   the same in the Dock icon's right-click menu and the menu-bar item. Window lists all open windows.
-- Taskboard's own shortcuts (⌘K, ⌘S, N, C, T, ?) reach the page. Pop-out group windows open as app windows. Links to
+- Taskboard's own shortcuts (⌘K, ⌘S, ⌘/, ⌃⌥ keys) reach the page. Pop-out group windows open as app windows. Links to
   other sites open in your browser. While the server does not answer, a waiting page reconnects by itself.
 - Rebuild and reinstall: `pnpm app` (or `cd desktop && pnpm build && pnpm install-app`). (Electron's own download script needs
   Node 22. On Node 20 the Electron binary was downloaded by hand and checked against its published SHA-256.)
@@ -116,9 +116,13 @@ Agents that work on Taskboard itself run inside the real one, so the setup keeps
 | Inbox | Messages with other people (A2A Notes), notes from your tasks, and documents to review. The Sent tab shows drafts and sent messages. |
 | Accounts | Settings folders per account, sign-in, limit marks, and limit resets (only you can use them). |
 
-Keys (press `?` in the app for the full list; change them on the Settings page): `⌘K` (Command-K) controller, also from inside
-a terminal · `N` new task · `C` controller · `T` or `⌃⌥Q` triage (everything waiting on you, longest first) · `⌃⌥U` canvas view Needs you + unread · `⌘S` hide the sidebar.
-Keys with ⌘ or ⌃ work everywhere, also inside a terminal. Single letters work when the cursor is not in a terminal or text field. On the canvas: `⌃⌥←→` focus, `⌃⌥↩` maximize, `⌃⌥L` layout, `⌃⌥F` focus mode (Esc or the button
+Keys (press `⌘/` in the app for the full list; change them on the Settings page): `⌘K` or `⌃⌥K` controller, also from inside
+a terminal · `⌘T` (Mac app) or `⌃⌥T` new task · `⌃⌥Q` triage (everything waiting on you, longest first) · `⌃⌥U` canvas view Needs you + unread · `⌘S` hide the sidebar.
+Every default key has ⌘, ⌃ or ⌥ in it, so typing a letter never runs a shortcut. Keys with ⌘ or ⌃ work everywhere, also inside a terminal.
+You can add a single-letter key on the Settings page. It works only when the cursor is not in a terminal, a text field or the task browser.
+Review page: `⌃⌥↓` / `⌃⌥↑` next / previous document, `⌃⌥C` comment on the selected text, `⌃⌥A` accept, `⌘↩` send. Graph page: `⌃⌥F` fits the graph.
+Task browser: while the focus is in it, every key goes to the page, also ⌘ and ⌃ keys. `⌃⌥Esc` gives the keys back to Taskboard.
+`⌘C` copies the selected text of the page, and `⌘V` pastes into it. On the canvas: `⌃⌥←→` focus, `⌃⌥↩` maximize, `⌃⌥L` layout, `⌃⌥F` focus mode (Esc or the button
 bottom-right exits), `⌃⌥G` / `⌃⌥⇥` / `⌘⇧]` next view, `⌃⌥⇧⇥` / `⌘⇧[` previous view, `⌃⌥⇧G` new group, `⌃⌥N` next waiting, `⌃⌥.` / `⌃⌥,` text size, `⌃⌥W` remove window, `⌃⌥⇧,` / `⌃⌥⇧.` move the focused window one place left / right, `⌃⌥PageUp` / `⌃⌥PageDown` (or `⌃⌥[` / `⌃⌥]`) previous / next page.
 A sideways swipe (or Shift + wheel) over a terminal scrolls the canvas, or turns one page when **Per page** is on.
 **Per page** sets the most tiles on a page. Tiles grow to fill a page with fewer tasks in Columns, Grid, and Rows.
@@ -227,8 +231,10 @@ A move between windows never changes a task's groups. A new task goes after the 
   `~/.taskboard/browsers/<task>/profile`. The first start copies the template profile, so sign in once in the template
   browser (Settings → Task browsers). Agents use it through the MCP server `task-browser` (`chrome-devtools-mcp`,
   connected through `ws://127.0.0.1:4317/ws/cdp/<task>?key=…`), which starts the browser when it is first used.
-  The task panel's Browser tab shows the active tab as a screencast with mouse and key input, and Pop out shows it in a
-  floating window. Canvas → Browsers & processes shows a small still frame of each running task browser. `tb browser open <url>` and `$BROWSER`
+  The task panel's Browser tab shows the active tab as a screencast with mouse and key input, and Pop out shows it in its own
+  window (an app window in the Mac app). In a Canvas window, 🌐 shows the browser of that task in the window, with the terminal in a strip
+  at the bottom (◨ moves the terminal to the right side, ⬓ moves it back). A click on 🌐 starts a stopped browser, and a
+  second click shows the terminal only again. Each task keeps its own choice in this app or browser. Canvas → Browsers & processes shows a small still frame of each running task browser. `tb browser open <url>` and `$BROWSER`
   open a page in it. Archive and the idle suspend close the browser. Resume opens it again with the same pages.
   Settings → Task browsers chooses, for Claude Code and Codex, the task browser together with the shared Chrome
   extension, the task browser only (`--no-chrome` / `--disable browser_use_external`), or off.

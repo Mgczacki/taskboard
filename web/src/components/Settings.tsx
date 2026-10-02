@@ -328,7 +328,7 @@ function KeySettings({ query }: { query: string }) {
   const test = matcher(query);
   const rows = test && !test(settingText('keyboardShortcuts')) ? ACTIONS.filter(a => test(`${CTX_NAME[a.ctx]} ${a.label}`)) : ACTIONS;
   let last = '';
-  return <SettingGroup section="keys" id="keys" help="Keys with ⌘ or ⌃ work everywhere, also while you type in a terminal. Every ⌃⌥ key goes to Taskboard and not to the terminal. A key without ⌘ or ⌃ works only when the cursor is not in a terminal or a text field. Saved for this app or browser.">
+  return <SettingGroup section="keys" id="keys" help="Keys with ⌘ or ⌃ work everywhere, also while you type in a terminal. Every ⌃⌥ key goes to Taskboard and not to the terminal. No default key is a single key without ⌘, ⌃ or ⌥, because such a key can run by accident. You can add one: it works only when the cursor is not in a terminal, a text field or the task browser. In the task browser every key goes to the page, except the key that leaves the browser. Saved for this app or browser.">
     <SettingItem id="keyboardShortcuts">
       <div className="set-scroll"><table className="keys keyset"><tbody>{rows.map(a => {
         const head = CTX_NAME[a.ctx] !== last; last = CTX_NAME[a.ctx];
