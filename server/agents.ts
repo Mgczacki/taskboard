@@ -403,6 +403,8 @@ function scopeLines(t: Task): string[] {
   const lines = [t.worktree ? 'To change another repository, run `tb scope request worktree`. Run `tb scope` for its options and for read access to one more folder.'
     : 'This task has no Git worktree, so Taskboard blocks Git writes. To change a repository, run `tb scope request worktree --repo <main checkout> --base <remote branch or commit> --branch <new branch> --reason "<why>"`. ' +
       'The user approves it on the dashboard. Run `tb scope` for read access to one more folder.'];
+  // an approved worktree reaches the agent only after a restart, which Taskboard does by itself (index.ts applyScope)
+  lines.push('If tb scope request says the session restarts, end your turn. Do not wait for the controller.');
   for (const s of worktrees) lines.push(`Attached worktree ${s.name}: branch ${s.branch} in ${s.path}, from ${s.base}. Do not change its main checkout ${s.repo}. ` +
     `Add --worktree ${s.name} to the tb git commands${!t.worktree && worktrees.length === 1 ? ', or leave it out' : ''}.`);
   for (const s of (t.scopes || []).filter(x => x.kind === 'read')) lines.push(`You may read the folder ${s.path}. Do not write there.`);

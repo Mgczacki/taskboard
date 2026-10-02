@@ -171,6 +171,13 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
         {dropMsg && <div className="banner">{dropMsg} <button className="btn ghost" onClick={() => setDropMsg('')}>OK</button></div>}
         {err && <div className="banner stopped">{err}{err.startsWith('Still open') && <button className="btn" onClick={() => { setErr(''); act(api.resume(t.id, true)); }} title="Only if you are sure the other terminal is not using this conversation">Resume here anyway</button>}<button className="btn ghost" onClick={() => setErr('')}>Dismiss</button></div>}
         {t.imported && t.status === 'suspended' && !err && <div className="banner">Imported: {t.imported}.</div>}
+        {/* a restart that gives the agent a new scope (server/index.ts applyScope), and a restart that failed */}
+        {t.restartWhenDone && t.restartFor && <div className="banner">
+          <div style={{ flex: '1 1 100%' }}><b>Restart pending.</b> {t.restartWait || `Waiting for the end of the turn ${t.restartFor}.`} The restart resumes the same conversation.</div>
+          {t.restartOverdue && <button className="btn primary" onClick={() => act(api.restart(t.id, 'now'))} title="Ends the current turn, including a running command. The saved conversation is kept.">Restart now</button>}
+          <button className="btn ghost" onClick={() => act(api.restart(t.id, 'cancel'))} title="The agent gets the new folder at the next start of this session">Cancel the restart</button>
+        </div>}
+        {t.restartFailed && <div className="banner stopped"><span><b>The restart failed.</b> {t.restartFailed}</span><button className="btn" onClick={() => act(api.resume(t.id))}>Try again</button></div>}
         {t.unscrollable && !t.openElsewhere && <div className="banner">
           <div style={{ flex: '1 1 100%' }}><b>This terminal cannot be scrolled.</b> {t.agent === 'codex' ? 'This Codex session was started in full-screen mode, which keeps its history to itself.' : 'The program runs full screen without mouse support.'} Restarting it continues the same conversation{t.agent === 'codex' ? ' in inline mode, which the mouse wheel scrolls' : ''}. Until then, Ctrl+T in Codex opens its transcript, which you can scroll with the arrow keys.</div>
           {t.restartWhenDone ? <><span>It restarts when the current turn ends. The agent is not interrupted.</span><button className="btn ghost" onClick={() => act(api.restart(t.id, 'cancel'))}>Cancel</button></>
