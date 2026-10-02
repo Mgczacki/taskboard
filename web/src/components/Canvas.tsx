@@ -226,9 +226,12 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
   // ones included. This listener runs first (capture phase). It locks each swipe to the axis it starts on: a vertical
   // swipe goes on to the terminal, a horizontal one scrolls the canvas (or, with pages, turns one page) and never
   // reaches the terminal. Shift + a vertical mouse wheel counts as horizontal.
+  // A wheel over a task browser (data-tb-browser, keys.ts BROWSER_AREA) goes to the page in every direction: a page
+  // can scroll sideways, and this listener took sideways swipes and Shift + wheel from it (task 201).
   const gesture = useRef({ last: -1e9, axis: null as null | 'x' | 'y', dx: 0, dy: 0, moved: 0, paged: false });
   const onWheel = useRef<(e: WheelEvent) => void>(() => {});
   onWheel.current = e => {
+    if (inBrowser(e)) return;
     const g = gesture.current;
     if (e.timeStamp - g.last > GESTURE_GAP) Object.assign(g, { axis: null, dx: 0, dy: 0, moved: 0, paged: false });
     g.last = e.timeStamp;

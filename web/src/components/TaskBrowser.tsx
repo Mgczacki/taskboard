@@ -13,16 +13,18 @@
 // Keys with Cmd: L focuses the address, R reloads, [ and ] go back and forward, V pastes, C and X copy. The other keys
 // go to the page, except Cmd pressed alone. Copy: after a mouse-up or a selection key the view asks the page for its selection ("copy" with
 // peek, answered by "copied") and keeps it, so the browser's own copy event can put it on the clipboard at once.
+// The wheel scrolls the page under the pointer: pixels, lines and pages, Shift for sideways (browserWheel.ts).
 // Keys: the view carries data-tb-browser (keys.ts BROWSER_AREA), so no Taskboard key runs while the focus is in it and
 // every key goes to the page. The one exception is browserLeave (⌃⌥Esc by default), which moves the focus back to
 // Taskboard: to the terminal of the same Canvas window or task panel when there is one.
-import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { BrowserStatus, BrowserTab } from '../api';
 import { api } from '../api';
 import { mb } from '../runtimeText';
 import { countMessage } from '../perfStats';
 import { hit, keyLabel, keysText, useKeymap } from '../keys';
+import { wheelBatch } from '../browserWheel';
 import { SigninDialog, SigninNote, useSharing, type SigninMode } from './BrowserSignins';
 
 // ---------- which browsers are popped out ----------
@@ -271,7 +273,8 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
     return { x: Math.round((e.clientX - r.left) * frameSize.current.w / r.width), y: Math.round((e.clientY - r.top) * frameSize.current.h / r.height) };
   };
   // Moves go out at most once for each animation frame (the newest position). A press, a release or the wheel first
-  // sends the waiting move, so the page gets the events in the order the user made them.
+  // sends the waiting move (and a press or a release the waiting wheel), so the page gets the events in the order the
+  // user made them.
   const pendingMove = useRef<{ msg: object; raf: number } | null>(null);
   const flushMove = () => { const p = pendingMove.current; if (!p) return; cancelAnimationFrame(p.raf); pendingMove.current = null; send(p.msg); };
   const mouse = (event: string, e: React.MouseEvent, clickCount = 0) => {
@@ -282,15 +285,23 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
       else pendingMove.current = { msg, raf: requestAnimationFrame(flushMove) };
       return;
     }
-    flushMove(); send(msg);
+    wheel.flush(); flushMove(); send(msg);
   };
-  useEffect(() => () => { if (pendingMove.current) cancelAnimationFrame(pendingMove.current.raf); }, []);
-  useEffect(() => {
-    const el = screen.current; if (!el) return;
-    const wheel = (e: WheelEvent) => { e.preventDefault(); flushMove(); if (canvas.current) send({ type: 'mouse', event: 'mouseWheel', ...point(e), dx: e.deltaX, dy: e.deltaY, modifiers: MOD(e) }); };
-    el.addEventListener('wheel', wheel, { passive: false });
-    return () => el.removeEventListener('wheel', wheel);
-  }, [running]);
+  // The wheel: one message for each animation frame with the sum of the deltas in pixels (browserWheel.ts).
+  const wheelRef = useRef<ReturnType<typeof wheelBatch> | null>(null);
+  const wheel = wheelRef.current ??= wheelBatch(m => { flushMove(); send(m); });
+  useEffect(() => () => { if (pendingMove.current) cancelAnimationFrame(pendingMove.current.raf); wheel.stop(); }, []);
+  // The wheel listener is not passive (React's onWheel is), so it can stop the dashboard from scrolling. A callback ref
+  // puts it on each bw-screen element that React creates, whatever made React create it. (It was an effect that ran
+  // again only when `running` changed.)
+  const onWheel = useRef<(e: WheelEvent) => void>(() => {});
+  onWheel.current = e => { e.preventDefault(); if (canvas.current) wheel.add(e, point(e), MOD(e), frameSize.current); };
+  const [wheelListener] = useState(() => (e: WheelEvent) => onWheel.current(e));
+  const screenRef = useCallback((el: HTMLDivElement | null) => {
+    screen.current?.removeEventListener('wheel', wheelListener);
+    screen.current = el;
+    el?.addEventListener('wheel', wheelListener, { passive: false });
+  }, [wheelListener]);
   const back = () => send({ type: 'nav', action: 'back' });
   const forward = () => send({ type: 'nav', action: 'forward' });
   const reload = () => send({ type: 'nav', action: nav.loading ? 'stop' : 'reload' });
@@ -493,7 +504,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
       </div>}
       {err && <div className="banner">{err} <button className="btn ghost" onClick={() => setErr('')}>OK</button></div>}
       {signinParts}
-      <div className={`bw-screen ${framed ? 'framed' : ''}`} ref={screen} tabIndex={0}
+      <div className={`bw-screen ${framed ? 'framed' : ''}`} ref={screenRef} tabIndex={0}
         onMouseDown={e => { screen.current?.focus(); mouse('mousePressed', e, e.detail || 1); }}
         onMouseUp={e => { mouse('mouseReleased', e, e.detail || 1); peek(); }}
         onMouseMove={e => mouse('mouseMoved', e)}
