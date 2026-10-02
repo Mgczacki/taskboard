@@ -1,9 +1,9 @@
 // Dashboard approval cards (server/approvals.ts, actions mail-out and mail-in) for A2A Notes messages that wait on you.
 // The Waiting page and the notification stack show them as Message cards (web/src/components/MessageCard.tsx), and
 // `tb pending list` shows them to the controller (list() below). A card has one stage:
-//   - draft: a draft that a task or the controller wrote, with approver person or reviewer. The controller rules let
-//     the controller approve a draft only when you approve it in its chat, so the draft waits on you either way.
-//     Approve and send approves the exact hash (a2anotes_approve) and sends it (a2anotes_send).
+//   - draft: a draft that a task or the controller wrote, with approver person. A draft with approver reviewer goes
+//     to the controller and has no card. Approve and send approves the exact hash (a2anotes_approve) and sends it
+//     (a2anotes_send).
 //   - checking: the same draft while the checks run. A2A Notes gives it approver nobody until they finish, so the card
 //     has no Approve. It offers Run the check again.
 //   - held: the safety check holds the draft (verdict quarantine). Nobody can approve it. Send back tells the task.
@@ -63,7 +63,8 @@ export function a2aCards(deps: CardDeps) {
       const by = m.metadata?.['taskboard.proposed_by'];
       if (by !== 'task' && by !== 'controller') return null;
       if (m.state === 'draft') {
-        if (m.approver === 'person' || m.approver === 'reviewer') return `draft:${m.hash}:${m.body_flags}`;
+        // approver reviewer: the controller handles the draft (tellController), so it gets no card for you
+        if (m.approver === 'person') return `draft:${m.hash}:${m.body_flags}`;
         if (m.approver === 'nobody' && !m.check && !m.failure_code) return `checking:${m.hash}`;
         if (m.approver === 'nobody' && m.check?.verdict === 'quarantine') return `held:${m.hash}`;
         return null;

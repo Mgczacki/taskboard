@@ -191,3 +191,13 @@ test('a failed send says why on the card and to the task, and Send again sends i
   assert.equal((await call('user', `/messages/${d.id}`)).data.state, 'sent');
   assert.ok(existsSync(join(process.env.TASKBOARD_VAULT!, 'tasks', 'writer', 'log.md')));
 });
+
+test('a draft that the controller may approve (approver reviewer) gets no card for the user', async () => {
+  assert.equal((await call('user', '/trusted', { address: alex, name: 'Alex B', trusted: true })).status, 200);
+  try {
+    const d = await draft('Trusted', 'Hi Alex, the plan is ready. Please read it by Friday.');
+    assert.equal(d.approver, 'reviewer', JSON.stringify(d));
+    assert.equal(await card(d.id), undefined);
+    assert.equal(adapter.cards.list().some(m => m.message === d.id), false);
+  } finally { await call('user', '/trusted', { address: alex, trusted: false }); }
+});
