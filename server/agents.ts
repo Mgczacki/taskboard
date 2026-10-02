@@ -393,11 +393,7 @@ export function taskInstructions(t: Task, inlineRules = true) {
 // When a task records links to other tasks (server/links.ts). Only the user and the controller add replaces links.
 function linkLines(t: Task): string[] {
   if (t.role === 'controller') return [];
-  return [
-    `If your work needs code or a result from another task, run tb dep add ${t.num} --on <task> --note "<what you need>". Taskboard tells you in your inbox when that task is done.`,
-    `If you continue the work of another task, run tb dep add ${t.num} --follows <task>. If your work is about the same subject as another task, run tb dep add ${t.num} --related <task>.`,
-    `If you think that your task replaces another task, tell the user. Do not add that link yourself. Run tb deps ${t.num} to see your links.`,
-  ];
+  return [`Link your task to others: tb dep add ${t.num} --on <task> (you need its work), --follows <task> (you continue it) or --related <task>. Run tb deps ${t.num}. Do not add --replaces: tell the user.`];
 }
 
 // The scope requests (server/scopes.ts) and the worktrees and folders that the user approved for this task.
