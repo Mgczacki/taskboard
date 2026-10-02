@@ -2,13 +2,15 @@
 // front. Canvas windows and the task panel show only a one-line marker for a question (PendingMarker in
 // PendingCard.tsx). Its button calls showInStack, NoticeStack and the Waiting page listen for the event.
 import type { Approval, PendingItem } from './api';
+import { sortTime } from './messageCard';
 
 export type StackEntry = { id: string; at: string; approval?: Approval; item?: PendingItem };
 
 // approval cards and question cards, oldest first
 export function stackEntries(approvals: Approval[], pending: PendingItem[]): StackEntry[] {
   return [
-    ...approvals.map(a => ({ id: `a:${a.id}`, at: a.created, approval: a })),
+    // a Message card keeps the place of its message when a new version of the draft replaces it
+    ...approvals.map(a => ({ id: `a:${a.id}`, at: sortTime(a), approval: a })),
     ...pending.map(i => ({ id: `p:${i.id}`, at: i.createdAt, item: i })),
   ].sort((x, y) => x.at.localeCompare(y.at));
 }
