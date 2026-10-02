@@ -35,7 +35,7 @@ export interface PendingItem {
   result?: string;
   answer?: { by: 'user' | 'controller'; label: string; sent: string; at: string; rule?: string; tasks?: number[] };
   repeats?: { count: number; lastAnswer: string };
-  sameIn?: { id: string; taskNum: number }[];
+  sameIn?: { id: string; taskId: string; taskNum: number }[];
 }
 
 type Action = { via: 'hook'; output: (text: string) => unknown } | { via: 'keys'; index: number; expect?: string } | { via: 'prompt' };
@@ -201,7 +201,7 @@ export function list(): PendingItem[] {
   const open = [...live.values()];
   for (const l of open) {
     const same = open.filter(o => o !== l && o.item.state === 'pending' && o.signature === l.signature && o.item.answerable);
-    l.item.sameIn = same.length && l.item.answerable ? same.map(o => ({ id: o.item.id, taskNum: o.item.taskNum })) : undefined;
+    l.item.sameIn = same.length && l.item.answerable ? same.map(o => ({ id: o.item.id, taskId: o.item.taskId, taskNum: o.item.taskNum })) : undefined;
   }
   return open.map(l => l.item).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
