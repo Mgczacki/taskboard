@@ -10,7 +10,7 @@ import { TaskPending } from './PendingCard';
 import { hit as key, hitIn, inBrowser, keyLabel, keysText, useKeymap } from '../keys';
 import { AskPanel } from './Ask';
 import { archiveAll, archiveAndDelete, archivePlan, restoreAll, restoreGroupAndTasks, type ArchiveResult, type ArchiveTarget } from '../groupArchive';
-import { dropHint, planCanvasTabDrop, planUngroup, type DropPlan } from '../groupMove';
+import { dropHint, planCanvasTabDrop, type DropPlan } from '../groupMove';
 import { runGroupChange } from '../groupActions';
 import { inOrder, moveBy, moveToSlot, slotAt, slotHint } from '../groupOrder';
 import { orderKey, renderOrder, slotNear, tileHint, withSavedOrder } from '../tileOrder';
@@ -22,6 +22,7 @@ import { readSplit, writeSplit, type Split } from '../browserSplit';
 import { countText, sumCounts } from '../runtimeText';
 import { LinkPorts } from './Links';
 import { linkOrder, showLinkedWork } from '../links';
+import { GROUP_HINT, HIDE_TITLE, canHide, hiddenHere, hide, unhide, type HiddenByView } from '../hideWindow';
 
 type Layout = 'columns' | 'grid' | 'rows';
 const MINW = 640;
@@ -30,6 +31,10 @@ const GESTURE_GAP = 150;  // ms without a wheel event that ends one trackpad swi
 const AXIS_LOCK = 8;      // px a swipe moves before it is locked to one axis
 const PAGE_SWIPE = 60;    // px a horizontal swipe moves before it changes the page
 const GCOLORS = ['#e3b341', '#58a6ff', '#3fb950', '#db61a2', '#a371f7', '#f78166', '#2dd4bf', '#8b949e'];
+// the hidden windows of each view (hideWindow.ts) for the life of the page: a reload shows them again
+let sessionHidden: HiddenByView = {};
+// an eye with a slash: Hide is not Close, so the button does not use ✕
+const EyeOff = () => <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" aria-hidden="true" style={{ verticalAlign: '-2px' }}><path d="M1.5 8s2.4-4.5 6.5-4.5S14.5 8 14.5 8 12.1 12.5 8 12.5 1.5 8 1.5 8z" /><circle cx="8" cy="8" r="2" /><path d="M2.5 13.5l11-11" /></svg>;
 const UNGROUPED_COLOR = '#6e7681'; // a gray that is not in GCOLORS, so no group has the same colour
 
 // view ids: g:<group id> · ungrouped · needs · live · t:<id,id,...>
@@ -71,7 +76,9 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
   const [menu, setMenu] = useState<null | 'add' | 'new' | { group: string }>(null);
   const [frozen, setFrozen] = useState<string[] | null>(null);     // status-based views do not move windows on their own
   const [extra, setExtra] = useState<string[]>([]);
-  const [hidden, setHidden] = useState<string[]>([]);              // ungrouped tasks removed from the Ungrouped view with ✕
+  // windows hidden with the Hide button, by view (hideWindow.ts); sessionHidden keeps them when the Canvas page closes
+  const [hiddenBy, setHiddenBy] = useState<HiddenByView>(() => sessionHidden);
+  useEffect(() => { sessionHidden = hiddenBy; }, [hiddenBy]);
   const [dropTab, setDropTab] = useState<{ key: string; refused?: string } | null>(null); // the tab under a dragged window: g:<id> or ungrouped
   const [reveal, setReveal] = useState(false);
   // Dragging a group tab: the dragged group and the slot (gap between two tabs) under the pointer (groupOrder.ts).
@@ -114,7 +121,7 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
   const W = measuredW ?? 1200;
   useKeymap();
 
-  useEffect(() => { setOrder(localStorage.getItem(lk('order')) === 'links' ? 'links' : 'saved'); setLayout((localStorage.getItem(lk('layout')) as Layout) || 'columns'); const v = localStorage.getItem(lk('visible')); setVisible(v && v !== 'auto' ? Number(v) : 'auto'); const pp = localStorage.getItem(lk('perpage')); setPerPage(pp && pp !== 'off' ? Number(pp) : 'off'); setPage(Number(localStorage.getItem(lk('page'))) || 0); setFrozen(null); setExtra([]); setHidden([]); setMaxId(null); setFocused(null); }, [view]);
+  useEffect(() => { setOrder(localStorage.getItem(lk('order')) === 'links' ? 'links' : 'saved'); setLayout((localStorage.getItem(lk('layout')) as Layout) || 'columns'); const v = localStorage.getItem(lk('visible')); setVisible(v && v !== 'auto' ? Number(v) : 'auto'); const pp = localStorage.getItem(lk('perpage')); setPerPage(pp && pp !== 'off' ? Number(pp) : 'off'); setPage(Number(localStorage.getItem(lk('page'))) || 0); setFrozen(null); setExtra([]); setMaxId(null); setFocused(null); }, [view]);
   useEffect(() => { localStorage.setItem(lk('order'), order); localStorage.setItem(lk('layout'), layout); localStorage.setItem(lk('visible'), String(visible)); localStorage.setItem(lk('perpage'), String(perPage)); localStorage.setItem(lk('page'), String(page)); }, [order, layout, visible, perPage, page, view]);
   useLayoutEffect(() => { setW(stage.current?.clientWidth || 1200); }, []);
   useEffect(() => { const ro = new ResizeObserver(() => setW(stage.current?.clientWidth || 1200)); if (stage.current) ro.observe(stage.current); return () => ro.disconnect(); }, []);
@@ -125,15 +132,18 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
   useEffect(() => { if ((view === 'needs' || view === 'live') && !frozen && tasks.length) setFrozen(liveSet()); }, [view, frozen, tasks.length, liveSet]);
   const group = view.startsWith('g:') ? groups.find(g => g.id === view.slice(2)) : undefined;
   const ungrouped = useMemo(() => { const inGroup = new Set(groups.flatMap(g => g.tasks)); return tasks.filter(t => !inGroup.has(t.id)).map(t => t.id); }, [tasks, groups]);
-  const ids = useMemo(() => {
-    let base: string[] = view.startsWith('g:') ? (group?.tasks || []) : view.startsWith('t:') ? view.slice(2).split(',') : view === 'ungrouped' ? ungrouped.filter(id => !hidden.includes(id)) : (frozen || []);
+  // every window of the view, with the hidden ones; ids leaves out the hidden ones
+  const allIds = useMemo(() => {
+    let base: string[] = view.startsWith('g:') ? (group?.tasks || []) : view.startsWith('t:') ? view.slice(2).split(',') : view === 'ungrouped' ? ungrouped : (frozen || []);
     base = [...base, ...extra.filter(x => !base.includes(x))];
     // a group view shows the order of the group's tasks list; the other views have their own saved order
     const key = orderKey(view);
     if (key) base = withSavedOrder(base, savedOrder[key]);
     if (pendingTiles?.view === view) base = withSavedOrder(base, pendingTiles.ids);
     return base.filter(id => live(tasks.find(t => t.id === id)));
-  }, [view, group, ungrouped, hidden, frozen, extra, tasks, savedOrder, pendingTiles]);
+  }, [view, group, ungrouped, frozen, extra, tasks, savedOrder, pendingTiles]);
+  const hiddenIds = useMemo(() => hiddenHere(hiddenBy, view, allIds), [hiddenBy, view, allIds]);
+  const ids = useMemo(() => allIds.filter(id => !hiddenIds.includes(id)), [allIds, hiddenIds]);
   const suspendedHere = (view.startsWith('g:') ? (group?.tasks || []) : view.startsWith('t:') ? view.slice(2).split(',') : view === 'ungrouped' ? ungrouped : []).map(id => tasks.find(t => t.id === id)).filter((t): t is Task => !!t && t.status === 'suspended');
   const newInSmart = (view === 'needs' || view === 'live') && frozen ? liveSet().filter(x => !frozen.includes(x)).length : 0;
 
@@ -165,13 +175,9 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
     : layout === 'grid' ? { gridTemplateColumns: `repeat(${gridTracks}, 1fr)` }
     : { gridTemplateRows: `repeat(${tileCount || 1}, minmax(160px, 1fr))`, overflowY: 'auto' };
 
-  const addToView = (id: string) => { if (group) api.updateGroup(group.id, { add: id }); else { setExtra(e => [...e, id]); setHidden(h => h.filter(x => x !== id)); } };
-  const removeFromView = (id: string) => {
-    if (group) { const p = planUngroup(id, tasks.find(t => t.id === id)?.num ?? '?', groups, group.id); if ('change' in p) runGroupChange(p.change, toast); }
-    else if (view === 'ungrouped') { setHidden(h => [...h, id]); setExtra(e => e.filter(x => x !== id)); }
-    else if (view.startsWith('t:')) setView('t:' + view.slice(2).split(',').filter(x => x !== id).join(','));
-    else { setFrozen(f => (f || []).filter(x => x !== id)); setExtra(e => e.filter(x => x !== id)); }
-  };
+  const addToView = (id: string) => { if (group) api.updateGroup(group.id, { add: id }); else { setExtra(e => [...e, id]); setHiddenBy(h => unhide(h, view, id)); } };
+  // the Hide button and the removeWindow shortcut: no group changes; in a group view the shortcut only shows how to drag
+  const hideWindow = (id: string) => { if (canHide(view)) setHiddenBy(h => hide(h, view, id)); else toast(GROUP_HINT); };
   // the tile header's ⚙: copies this task's terminal debug record (Terminal.tsx) for a freeze that needs a diagnosis
   const copyDebugRecord = (t: Task) => {
     const record = terminalDebugRecord(t.id);
@@ -262,7 +268,7 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
       else if (key(e, 'prevPage')) { if (per) turnPage(-1); else hit = false; }
       else if (key(e, 'nextNeedy')) { const w = wins.filter(t => ATTN.includes(t.status)); if (w.length) focus(w[(w.findIndex(t => t.id === focused) + 1) % w.length].id); }
       else if (key(e, 'fontUp') || key(e, 'fontDown')) { const d = key(e, 'fontUp') ? 1 : -1; if (focused) setFont(f => ({ ...f, [focused]: Math.max(10, Math.min(20, (f[focused] || 13) + d)) })); }
-      else if (key(e, 'removeWindow')) { if (focused) removeFromView(focused); }
+      else if (key(e, 'removeWindow')) { if (focused) hideWindow(focused); }
       else if (nth) { const t = (maxId ? wins : pageWins)[nth - 1]; if (t) { if (maxId) setMaxId(t.id); focus(t.id); } }
       else hit = false;
       if (hit) { e.preventDefault(); e.stopPropagation(); }
@@ -449,6 +455,7 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
           <button className="btn pneed" style={needBefore + needAfter > 0 ? undefined : { visibility: 'hidden' }} onClick={() => { const t = nextNeedy(); if (t) focus(t.id); }} title={`Go to the next window on another page that needs you (${keysText('nextNeedy')})`}>● {needBefore + needAfter} need you on other pages</button>
         </div>}
         {newInSmart > 0 && <button className="btn" onClick={() => { setFrozen(liveSet()); }} title="Windows never appear on their own while you work">{newInSmart} new · refresh</button>}
+        {hiddenIds.length > 0 && <button className="btn" onClick={() => setHiddenBy(h => unhide(h, view))} title="Show the windows that you hid in this view">Show hidden ({hiddenIds.length})</button>}
         <span className="sp" />
         <span className="lbl">{per && pageCount > 1 ? '' : `${wins.length} windows`}{focusedTask ? `${per && pageCount > 1 ? '' : ' · '}typing into #${focusedTask.num}` : ''}</span>
         {suspendedHere.length > 0 && <button className="btn" title={`Not running: ${suspendedHere.map(t => '#' + t.num + ' ' + t.title).join(', ')}. Resume starts their agents again and continues their conversations.`} onClick={() => suspendedHere.forEach(t => api.resume(t.id).catch(() => {}))}>{suspendedHere.length} suspended · Resume</button>}
@@ -461,7 +468,7 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
       {archiving && <ArchiveAllPanel g={archiving.group} deleteGroup={archiving.deleteGroup} groups={groups} tasks={tasks} close={() => setArchiving(null)} onDeleted={() => { if (view === 'g:' + archiving.group.id) setView('live'); }} onRestored={() => setView('g:' + archiving.group.id)} onEnded={ids => { if (panelTaskId && ids.includes(panelTaskId)) openPanel(null); }} toast={toast} />}
       {runtimeOpen && <GroupRuntime tasks={runtimeTasks} group={group} onOpen={(id, tab) => openPanel(id, tab)} />}
       <div className="stage-grid" ref={stage} style={style}>
-        {!wins.length && <div className="emptyview"><h2>{group ? `“${group.name}” is empty` : view === 'ungrouped' && !hidden.length ? 'Every live task is in a group' : 'No windows'}</h2><p>Use <b>＋ New task</b> to start an agent here. Use <b>＋ Add window</b> to show a task that already exists.</p></div>}
+        {!wins.length && <div className="emptyview"><h2>{group ? `“${group.name}” is empty` : view === 'ungrouped' && !hiddenIds.length ? 'Every live task is in a group' : 'No windows'}</h2><p>Use <b>＋ New task</b> to start an agent here. Use <b>＋ Add window</b> to show a task that already exists.</p></div>}
         {/* renderOrder: the page keeps the windows in one fixed order and CSS order puts them in place, so a move does not remount a terminal */}
         {measuredW !== null && renderOrder(shown).map(({ item: t, at: i }) => (
           <div key={t.id} data-win={t.id} className={`win ${t.status} ${t.link?.state === 'superseded' ? 'superseded' : ''} ${focused === t.id ? 'focus' : ''} ${selected.has(t.id) ? 'selected' : ''} ${tileDrag?.id === t.id ? 'dragging' : ''} ${tileSlotClass(i)} ${layout === 'rows' ? 'vslot' : ''}`} style={{ order: i, ...(layout === 'grid' && !maxId ? { gridColumn: `span ${i < tileCount - lastRow ? lastRow : gridCols}` } : {}) }} onMouseDown={() => { setFocused(t.id); if (t.status === 'unread') api.seen(t.id); }}>
@@ -479,7 +486,7 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
               <button className="b" title="Task panel" onClick={() => openPanel(t.id)}>☰</button>
               <button className="b" title="Copy the terminal debug record: recent output sizes and escape sequences, without text. Use it when the terminal stops drawing." onClick={() => copyDebugRecord(t)}>⚙</button>
               {t.role !== 'controller' && <button className="b" title={t.openElsewhere ? 'End & archive: archives the task; the session in the other terminal keeps running' : 'End & archive: ends the tmux session and archives the task'} onClick={() => confirmEnd() ? setEnding(t.id) : endTask(t)}>⏻</button>}
-              <button className="b" title={`${group ? `Remove from ${group.name}` : 'Remove from this view'} (${keysText('removeWindow')}). The agent keeps running.`} onClick={() => removeFromView(t.id)}>✕</button></>}
+              {canHide(view) && <button className="b" title={`${HIDE_TITLE} Shortcut: ${keysText('removeWindow')}.`} aria-label="Hide from this view" onClick={() => hideWindow(t.id)}><EyeOff /></button>}</>}
             </div>
             {t.restartWhenDone && t.restartFor && <div className="win-note" title={t.restartWait}>{t.restartOverdue ? t.restartWait : `Waiting for the end of the turn ${t.restartFor}.`}{t.restartOverdue && <button className="b" onClick={() => api.restart(t.id, 'now').catch(e => toast(String(e.message || e)))}>Restart now</button>}</div>}
             {t.restartFailed && <div className="win-note bad">The restart failed: {t.restartFailed}<button className="b" onClick={() => api.resume(t.id).catch(e => toast(String(e.message || e)))}>Try again</button></div>}

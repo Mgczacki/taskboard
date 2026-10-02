@@ -44,7 +44,7 @@ export const ACTIONS: KeyAction[] = [
   { id: 'prevPage', ctx: 'canvas', label: 'Previous page (when Per page is on)', keys: ['Ctrl+Alt+PageUp', 'Ctrl+Alt+BracketLeft'] },
   { id: 'fontUp', ctx: 'canvas', label: 'Larger text in the focused window', keys: ['Ctrl+Alt+Period'] },
   { id: 'fontDown', ctx: 'canvas', label: 'Smaller text in the focused window', keys: ['Ctrl+Alt+Comma'] },
-  { id: 'removeWindow', ctx: 'canvas', label: 'Remove the focused window from the view', keys: ['Ctrl+Alt+KeyW'] },
+  { id: 'removeWindow', ctx: 'canvas', label: 'Hide the focused window from this view (not in group views)', keys: ['Ctrl+Alt+KeyW'] },
   ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => ({ id: `window${n}`, ctx: 'canvas' as const, label: `Focus window ${n}`, keys: [`Ctrl+Alt+Digit${n}`] })),
   { id: 'reviewNext', ctx: 'review', label: 'Next document', keys: ['Ctrl+Alt+ArrowDown'] },
   { id: 'reviewPrev', ctx: 'review', label: 'Previous document', keys: ['Ctrl+Alt+ArrowUp'] },
