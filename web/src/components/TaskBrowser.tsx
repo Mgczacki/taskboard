@@ -318,25 +318,47 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
   const go = () => { setEditing(false); if (addr.trim()) send({ type: 'nav', action: 'go', url: addr.trim() }); screen.current?.focus(); };
   const startNow = () => { setErr(''); send({ type: 'start' }); };
 
+  // A start that runs (state.starting): its time, and after 15 s a note that the computer is slow. A start can take up to
+  // starting.limitSeconds; it fails earlier only when Chrome exits.
+  const starting = state?.starting;
+  const lowMemory = state?.systemMemory?.low ? state.systemMemory : null;
+  const memoryNote = lowMemory && <div className="banner bw-warn">Little memory is free: {lowMemory.availablePct}% of {mb(lowMemory.totalMb)} ({mb(lowMemory.availableMb)}). A task browser uses about 450 MB, and Chrome starts slowly when memory is low. Stop browsers or test servers that you do not need.</div>;
+  if (running === false && starting) return (
+    <div className="bw-empty"><div className="bw-card">
+      <div className="bw-card-icon"><span className="bw-spin bw-spin-l" /></div>
+      <h3>{isTemplate ? 'The template browser is starting' : 'The browser is starting'} ({starting.seconds} s)</h3>
+      <p>{starting.seconds < 15 ? 'Chrome usually starts in about 1 s.'
+        : `Chrome is slow to start. This happens when the computer is busy or has little free memory. Taskboard waits up to ${starting.limitSeconds} s while the Chrome process runs, and starts no second Chrome.`}</p>
+      {memoryNote}
+    </div></div>
+  );
+  // the last start failed (error), or Chrome ended by itself after its start (exited)
+  const failed = !!state?.error && !archived;
   if (running === false) return (
     <div className="bw-empty"><div className="bw-card">
       <div className="bw-card-icon"><Icon d={I.globe} size={28} /></div>
-      <h3>{archived ? 'The browser is closed' : isTemplate ? 'The template browser is closed' : state?.suspended ? 'The browser is closed while the task is suspended' : state?.idleStopped ? 'The browser stopped because nobody used it' : 'The browser is not running'}</h3>
+      <h3>{archived ? 'The browser is closed' : failed ? (state?.exited ? 'Chrome stopped by itself' : 'The browser did not start') : isTemplate ? 'The template browser is closed' : state?.suspended ? 'The browser is closed while the task is suspended' : state?.idleStopped ? 'The browser stopped because nobody used it' : 'The browser is not running'}</h3>
       <p>{archived ? 'The task is archived. The profile is kept until the task is removed.'
+        : failed ? (state?.exited ? 'It starts again when the agent uses it, or when you start it.' : 'An agent that called a browser tool got the same reason. Retry starts Chrome again.')
         : isTemplate ? 'Sign in here once. New task browsers copy this profile.'
         : state?.suspended ? 'It opens again when the task resumes.'
         : state?.idleStopped ? `No agent used it and no one viewed it for ${state.idleStopMinutes} minutes${state.stoppedAt ? `, so it stopped at ${new Date(state.stoppedAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : ''}. It starts again when the agent uses it, or when you start it.`
         : 'Opening this tab does not start it. It starts when the agent uses it, or when you start it.'}</p>
       {!archived && <div className="bw-actions">
-        <button className="btn primary" onClick={startNow}>{isTemplate ? 'Open the template browser' : 'Start the browser'}</button>
+        <button className="btn primary" onClick={startNow}>{failed && !state?.exited ? 'Retry' : isTemplate ? 'Open the template browser' : 'Start the browser'}</button>
         <SoundSwitch id={id} muted={muted} labeled onChange={setMuted} onDone={s => { setState(s); setMuted(s.muted); }} onError={setErr} />
       </div>}
       {!!state?.tabs.length && <div className="bw-saved">
         <div className="bw-saved-h">Opens at the next start</div>
         {state.tabs.map(t => <div key={t.id} className="bw-saved-row" title={t.url}><Favicon tab={t} /><span>{t.url}</span></div>)}
       </div>}
-      {state?.error && <div className="banner">{state.error}</div>}
-      {err && <div className="banner">{err}</div>}
+      {failed && <div className="banner">{state!.error}{state!.errorAt && !state!.exited && <span className="bw-when"> ({new Date(state!.errorAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })})</span>}</div>}
+      {failed && !!state?.errorLines?.length && <div className="bw-saved">
+        <div className="bw-saved-h">Last lines of chrome.log</div>
+        <pre className="bw-log">{state.errorLines.join('\n')}</pre>
+      </div>}
+      {!archived && memoryNote}
+      {err && err !== state?.error && <div className="banner">{err}</div>}
       {!isTemplate && state && <div className="bw-card-foot">
         <span>{state.profile ? `Profile ${state.copiedFromTemplate ? `copied from the template on ${new Date(state.copiedFromTemplate).toLocaleDateString()}` : 'without a template copy'}.` : 'The first start copies the template profile.'}</span>
         {state.profile && !archived && <button className="btn ghost" onClick={() => api.browserAction(id, 'reset').then(setState).catch(e => setErr(String(e.message || e)))} title="Delete this task's profile and copy the template again. The task loses its own sign-ins.">Reset from template</button>}

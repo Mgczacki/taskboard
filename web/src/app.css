@@ -627,6 +627,10 @@ table.keyset .keycell { text-align: right; white-space: normal; }
 .bw-saved-h { padding: 7px 12px; background: var(--panel2); color: var(--dim); font-size: 11px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase; }
 .bw-saved-row { display: flex; align-items: center; gap: 10px; padding: 7px 12px; border-top: 1px solid var(--line); color: var(--text); font: 12px var(--mono); }
 .bw-saved-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bw-log { margin: 0; padding: 8px 12px; border-top: 1px solid var(--line); max-height: 180px; overflow: auto; color: var(--text); font: 11px/1.5 var(--mono); white-space: pre-wrap; word-break: break-all; }
+.bw-warn { border-left-color: var(--st-needs); }
+.bw-when { color: var(--dim); }
+.bw-spin-l { width: 24px; height: 24px; border-width: 3px; }
 .bw-card-foot { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding-top: 12px; border-top: 1px solid var(--line); font-size: 12px; color: var(--dim); }
 .bw-float .fw-b { display: flex; }
 .bw-float .fw-h .bw-ib { min-width: 28px; height: 28px; }
