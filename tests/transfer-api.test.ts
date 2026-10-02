@@ -132,7 +132,9 @@ test('a paired target starts the handoff before the source is archived', { timeo
     assert.equal(recovered.state, 'source-ready');
     assert.ok(!(await json(`${targetUrl}/api/tasks`)).some((t: { id: string }) => t.id === failed.transfer.task));
     const resumed = await json(`${sourceUrl}/api/tasks/${third.id}/resume`, 'POST', {}, sourceUrl);
-    assert.equal(resumed.status, 'idle');
+    // the fake Claude Code writes no transcript, so the source has no saved conversation and starts again with its first prompt
+    assert.equal(resumed.status, 'working');
+    assert.match(resumed.statusSource, /new session with its first prompt/);
   } finally {
     for (const child of children) child.kill('SIGTERM');
     for (const portNumber of [sourcePort, targetPort]) {

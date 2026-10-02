@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { writeFileSync } from 'node:fs';
+import { rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { TB_DIR, TMUX_SOCKET } from './config.ts';
 
@@ -10,10 +10,24 @@ export const TMUX_BIN = process.env.TASKBOARD_TMUX || 'tmux';
 // tmux rewrites tabs and other characters in its output when the locale is not UTF-8 (as under launchd, which sets
 // no locale). Always run it with a UTF-8 locale; the list below also uses a separator tmux never rewrites.
 const TMUX_ENV = { ...process.env, LANG: process.env.LANG?.includes('UTF-8') ? process.env.LANG : 'en_US.UTF-8', LC_CTYPE: 'en_US.UTF-8' };
+// A failed command throws an error whose message names the tmux command and its answer, not the whole command line
+// (a start command holds the task instructions and the first prompt, more than 10 KB).
 export async function tmux(...args: string[]): Promise<string> {
-  const { stdout } = await exec(TMUX_BIN, ['-L', TMUX_SOCKET, ...args], { maxBuffer: 16 * 1024 * 1024, env: TMUX_ENV });
-  return stdout;
+  try {
+    const { stdout } = await exec(TMUX_BIN, ['-L', TMUX_SOCKET, ...args], { maxBuffer: 16 * 1024 * 1024, env: TMUX_ENV });
+    return stdout;
+  } catch (e) {
+    const stderr = String((e as { stderr?: string }).stderr || '').trim();
+    throw Object.assign(new Error(`tmux ${args[0]} failed: ${stderr || (e as Error).message.split('\n')[0].slice(0, 200)}`), { stderr, code: (e as { code?: unknown }).code });
+  }
 }
+
+// tmux sends a command to its server in one message. With tmux 3.7c the arguments (each with its closing zero
+// byte) may use at most 16,364 bytes; a longer command fails with "command too long" (measured with a binary search).
+export const MAX_COMMAND_BYTES = 16_000;
+export const commandBytes = (args: string[]) => args.reduce((n, a) => n + Buffer.byteLength(a) + 1, 0);
+export const newSessionArgs = (name: string, cwd: string, env: Record<string, string>, command: string[]) =>
+  ['new-session', '-d', '-s', name, '-c', cwd, '-x', '200', '-y', '50', ...Object.entries(env).flatMap(([k, v]) => ['-e', `${k}=${v}`]), ...command];
 
 async function tmuxQuiet(...args: string[]): Promise<string | null> {
   try { return await tmux(...args); } catch { return null; }
@@ -102,15 +116,17 @@ export async function configureServer(bellHookCommand: string) {
 }
 
 export async function newSession(name: string, cwd: string, env: Record<string, string>, command: string[], onFirst: (hook: string) => Promise<void>) {
-  const envArgs = Object.entries(env).flatMap(([k, v]) => ['-e', `${k}=${v}`]);
+  const args = newSessionArgs(name, cwd, env, command);
+  if (commandBytes(args) > MAX_COMMAND_BYTES) throw new Error(`The command that starts the agent has ${commandBytes(args)} bytes, and tmux accepts at most about ${MAX_COMMAND_BYTES}.`);
   // The first session starts the tmux server; server options can only be set once it exists.
   const running = (await tmuxQuiet('list-sessions')) !== null;
-  await tmux('new-session', '-d', '-s', name, '-c', cwd, '-x', '200', '-y', '50', ...envArgs, ...command);
+  await tmux(...args);
   if (!running) await onFirst(name);
 }
 
 export async function killSession(name: string) { await tmuxQuiet('kill-session', '-t', '=' + name); }
 
+// Types text without checks. Agent messages go through deliver-text.ts, which checks the input box before Enter.
 export async function sendKeys(name: string, text: string, enter = true) {
   await tmux('send-keys', '-t', '=' + name + ':', '-l', text);
   // Codex treats fast input as a paste and would take an immediate Enter as part of it; wait before submitting.
@@ -119,10 +135,12 @@ export async function sendKeys(name: string, text: string, enter = true) {
 
 // Paste text with several lines as one bracketed paste and submit it. Typed with send-keys, each newline would be an
 // Enter and submit a part of it (Antigravity's first prompt, typed in after its trust question; see agents.ts).
-export async function paste(name: string, text: string) {
+export async function paste(name: string, text: string, enter = true) {
   const f = join(TB_DIR, `paste-${name}.txt`); writeFileSync(f, text);
-  await tmux('load-buffer', '-b', `tb-${name}`, f);
+  try { await tmux('load-buffer', '-b', `tb-${name}`, f); } finally { rmSync(f, { force: true }); }
+  // -p wraps the text in bracketed paste marks when the program asked for them, so the program sees one paste
   await tmux('paste-buffer', '-p', '-d', '-b', `tb-${name}`, '-t', '=' + name + ':');
+  if (!enter) return;
   await new Promise(r => setTimeout(r, 400));
   await tmux('send-keys', '-t', '=' + name + ':', 'Enter');
 }

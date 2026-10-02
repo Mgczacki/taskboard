@@ -13,20 +13,7 @@ process.env.TASKBOARD_TMUX_SOCKET = `tb-delivery-${process.pid}`;
 process.env.CODEX_HOME = join(root, 'codex');
 mkdirSync(process.env.CODEX_HOME, { recursive: true });
 const bin = join(root, 'bin'); mkdirSync(bin, { recursive: true });
-const fake = `#!${process.execPath}
-const fs = require('node:fs'), path = require('node:path');
-if (process.argv.includes('app-server')) {
-  const rl = require('node:readline').createInterface({ input: process.stdin });
-  rl.on('line', line => { const msg = JSON.parse(line);
-    if (msg.id === 1) console.log(JSON.stringify({ id: 1, result: {} }));
-    if (msg.id === 2) console.log(JSON.stringify({ id: 2, result: { data: [{ hooks: [{ source: 'sessionFlags', eventName: 'preToolUse', command: 'node "$TB_HOOKS_DIR/guard.mjs"', key: '/<session-flags>/config.toml:pre_tool_use:0:0', currentHash: 'sha256:' + 'a'.repeat(64) }] }] } }));
-  });
-} else {
-  console.log(process.env.TEST_QUESTION === '1' ? 'Do you trust the contents of this project?' : '>');
-  process.stdin.on('data', chunk => fs.appendFileSync(path.join(process.env.TASK_DIR, 'input.txt'), chunk));
-  setInterval(() => {}, 1000);
-}
-`;
+const fake = readFileSync(join(import.meta.dirname, 'fixtures', 'fake-agent.cjs'), 'utf8');
 for (const name of ['claude', 'codex', 'agy']) writeFileSync(join(bin, name), fake, { mode: 0o755 });
 process.env.PATH = `${bin}:${process.env.PATH}`;
 mkdirSync(process.env.TASKBOARD_DIR, { recursive: true });
