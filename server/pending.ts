@@ -15,6 +15,7 @@
 import { randomUUID } from 'node:crypto';
 import { parsePrompt, type Risk, type ScreenPrompt } from './screen-prompts.ts';
 import type { Task } from './store.ts';
+import * as dismissed from './dismiss.ts';
 
 export type PendingKind = 'command' | 'choice' | 'text' | 'dialog' | 'plan' | 'signin' | 'unknown';
 export type PendingSource = 'claude-hook' | 'screen' | 'turn-end';
@@ -38,6 +39,8 @@ export interface PendingItem {
   answer?: { by: 'user' | 'controller'; label: string; sent: string; at: string; rule?: string; tasks?: number[] };
   repeats?: { count: number; lastAnswer: string };
   sameIn?: { id: string; taskId: string; taskNum: number }[];
+  sig?: string;                          // the signature of a dismiss (dismiss.ts itemSignature)
+  dismissed?: { at: string; until?: string };  // set while the user has dismissed this item (dismiss.ts)
 }
 
 type Action = { via: 'hook'; output: (text: string) => unknown } | { via: 'keys'; index: number; expect?: string } | { via: 'prompt' };
@@ -70,6 +73,9 @@ function close(l: Live, state: 'answered' | 'gone' | 'failed', result: string) {
   live.delete(l.item.id);
   l.item.state = state; l.item.result = result;
   history.unshift(l.item); history.splice(60);
+  // an answer is something new for the item: a later card with the same text shows again
+  if (state === 'answered' && l.item.sig) dismissed.bringBack(l.item.sig);
+  delete l.item.dismissed;
   l.resolve?.(undefined); l.resolve = undefined;
   emit();
 }
@@ -219,10 +225,15 @@ export function list(): PendingItem[] {
   for (const l of open) {
     const same = open.filter(o => o !== l && o.item.state === 'pending' && o.signature === l.signature && o.item.answerable);
     l.item.sameIn = same.length && l.item.answerable ? same.map(o => ({ id: o.item.id, taskId: o.item.taskId, taskNum: o.item.taskNum })) : undefined;
+    l.item.sig = dismissed.itemSignature(l.item, l.signature);
+    const d = dismissed.entryFor(l.item.sig);
+    l.item.dismissed = d ? { at: d.at, ...(d.until ? { until: d.until } : {}) } : undefined;
   }
   return open.map(l => l.item).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 export const answeredList = () => history.slice(0, 40);
+// a held Claude hook card: its dismiss lasts dismiss.HOOK_MS only (the agent waits on the answer)
+export const holdsHook = (item: PendingItem) => item.source === 'claude-hook';
 export const get = (id: string) => live.get(id)?.item || history.find(h => h.id === id);
 
 // ---------- answers ----------

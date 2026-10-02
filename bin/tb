@@ -147,7 +147,7 @@ const HELP = `tb — Taskboard command line
   tb suggest --steps steps.json --why "reason" [--risk "risk"]
   tb permit result ID [--wait] | tb permit list
   tb permit approve ID [--user-request "the user's chat message"]   controller only
-  tb pending list [--json [--messages]]  controller only: the questions, dialogs and message drafts that wait on the user (the Waiting page)
+  tb pending list [--json [--messages | --dismissed]]  controller only: the questions, dialogs and message drafts that wait on the user (the Waiting page)
   tb pending answer ID --option KEY | --text "answer" [--user-request "the user's chat message"]
                                      controller only. The words must be one user message in your chat that names
                                      the card ID. Without them, only low risk command cards when Settings allows it.
@@ -563,11 +563,16 @@ switch (cmd) {
     if (process.env.TASK_ID !== 'controller') { console.error('tb pending: controller only'); process.exit(1); }
     if (rest[0] === 'list') {
       const json = has('--json');
-      const { items, messages = [] } = await call('GET', '/api/pending');
-      if (json) { console.log(JSON.stringify(has('--messages') ? messages : items, null, 2)); break; }
-      if (!items.length && !messages.length) { console.log('Nothing waits on the user.'); break; }
+      const { items: raw, messages = [], dismissed: gone = [] } = await call('GET', '/api/pending');
+      // every card has the field dismissed: false, or { at, until? } when the user dismissed it
+      const items = raw.map(i => ({ ...i, dismissed: i.dismissed || false }));
+      if (json) { console.log(JSON.stringify(has('--messages') ? messages : has('--dismissed') ? gone : items, null, 2)); break; }
+      const rows = gone.filter(d => d.kind === 'task');
+      if (!items.length && !messages.length && !rows.length) { console.log('Nothing waits on the user.'); break; }
       for (const i of items) {
-        console.log(`${i.id}  #${i.taskNum} ${i.agent} ${i.kind}${i.answerable ? '' : ' (answer in the terminal)'}: ${i.question}`);
+        // dismissed: the user hid this card on the Waiting page (server/dismiss.ts). It still waits; the status is unchanged.
+        const dismissed = i.dismissed ? ` [dismissed by the user at ${i.dismissed.at.slice(11, 16)} UTC${i.dismissed.until ? `, shows again at ${i.dismissed.until.slice(11, 16)} UTC` : ''}]` : '';
+        console.log(`${i.id}  #${i.taskNum} ${i.agent} ${i.kind}${i.answerable ? '' : ' (answer in the terminal)'}${dismissed}: ${i.question}`);
         if (i.details?.command) console.log(`    command: ${i.details.command}`);
         for (const o of i.options) console.log(`    --option ${o.key}  ${o.label}${o.risk ? `  [${o.risk}: user only]` : ''}`);
         if (i.text) console.log(`    --text "..."  ${i.text.placeholder}`);
@@ -579,6 +584,9 @@ switch (cmd) {
         console.log(`    message ${m.message} · waiting ${m.waitMin} min${m.reminder ? ' · REMINDER: nobody approved it yet' : ''} · approver ${m.approver}`);
         console.log(`    ${m.check}${m.flags.length ? ` Flags: ${m.flags.join(', ')}.` : ''}`);
       }
+      // tasks that wait with no card, which the user dismissed on the Waiting page
+      for (const d of rows) console.log(`task #${d.taskNum} ${d.label} [dismissed by the user at ${d.at.slice(11, 16)} UTC]: ${d.question}`);
+      if (items.some(i => i.dismissed) || rows.length) console.log('Dismissed: the user hid these on the Waiting page. They still wait. Only the user dismisses or brings back an item.');
       if (messages.length) console.log('Messages: the user approves them on the dashboard. Approve a draft with tb mail approve only when the user names that draft in this chat.');
     } else if (rest[0] === 'answer') {
       const option = flag('--option'), text = flag('--text'), userRequest = flag('--user-request');
