@@ -4,23 +4,26 @@
 // Saved per browser or app in localStorage 'tb-keys' (only the actions the user changed); other windows follow.
 import { useSyncExternalStore } from 'react';
 
-export type KeyCtx = 'app' | 'triage' | 'canvas' | 'review' | 'graph';
+export type KeyCtx = 'app' | 'triage' | 'canvas' | 'review' | 'graph' | 'browser';
 export interface KeyAction {
   id: string; ctx: KeyCtx; label: string; keys: string[];
   // false: never while the cursor is in a terminal or a text field, also with ⌘ or ⌃ (⌘↩ in a comment box saves the comment)
   inFields?: false;
 }
 
-export const CTX_NAME: Record<KeyCtx, string> = { app: 'Anywhere', triage: 'Triage', canvas: 'Canvas', review: 'Review page', graph: 'Graph page' };
+export const CTX_NAME: Record<KeyCtx, string> = { app: 'Anywhere', triage: 'Triage', canvas: 'Canvas', review: 'Review page', graph: 'Graph page', browser: 'Task browser' };
+
+// Every default key has ⌘, ⌃ or ⌥ in it: a key without one ran by accident while the user meant to type (C opened the
+// controller). The Settings page still lets the user add a key without a modifier by hand.
 
 export const ACTIONS: KeyAction[] = [
-  { id: 'newTask', ctx: 'app', label: 'New task', keys: ['Meta+KeyT', 'KeyN'] },
-  { id: 'controller', ctx: 'app', label: 'Open the controller', keys: ['Meta+KeyK', 'Ctrl+Alt+KeyK', 'KeyC'] },
+  { id: 'newTask', ctx: 'app', label: 'New task', keys: ['Meta+KeyT', 'Ctrl+Alt+KeyT'] },
+  { id: 'controller', ctx: 'app', label: 'Open the controller', keys: ['Meta+KeyK', 'Ctrl+Alt+KeyK'] },
   { id: 'sidebar', ctx: 'app', label: 'Hide or show the sidebar', keys: ['Meta+KeyS'] },
-  { id: 'triage', ctx: 'app', label: 'Triage: everything waiting on you', keys: ['Ctrl+Alt+KeyQ', 'KeyT'] },
+  { id: 'triage', ctx: 'app', label: 'Triage: everything waiting on you', keys: ['Ctrl+Alt+KeyQ'] },
   { id: 'needsView', ctx: 'app', label: 'Canvas view “Needs you + unread”', keys: ['Ctrl+Alt+KeyU'] },
   { id: 'nextStyle', ctx: 'app', label: 'Next style', keys: ['Ctrl+Alt+KeyY'] },
-  { id: 'keysHelp', ctx: 'app', label: 'List of keyboard shortcuts', keys: ['Shift+Slash'] },
+  { id: 'keysHelp', ctx: 'app', label: 'List of keyboard shortcuts', keys: ['Meta+Slash'] },
   { id: 'triageNext', ctx: 'triage', label: 'Next task in triage', keys: ['Ctrl+Alt+ArrowDown'] },
   { id: 'triagePrev', ctx: 'triage', label: 'Previous task in triage', keys: ['Ctrl+Alt+ArrowUp'] },
   { id: 'nextView', ctx: 'canvas', label: 'Next view (group tab)', keys: ['Ctrl+Alt+KeyG', 'Ctrl+Alt+Tab', 'Shift+Meta+BracketRight'] },
@@ -43,12 +46,14 @@ export const ACTIONS: KeyAction[] = [
   { id: 'fontDown', ctx: 'canvas', label: 'Smaller text in the focused window', keys: ['Ctrl+Alt+Comma'] },
   { id: 'removeWindow', ctx: 'canvas', label: 'Remove the focused window from the view', keys: ['Ctrl+Alt+KeyW'] },
   ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map(n => ({ id: `window${n}`, ctx: 'canvas' as const, label: `Focus window ${n}`, keys: [`Ctrl+Alt+Digit${n}`] })),
-  { id: 'reviewNext', ctx: 'review', label: 'Next document', keys: ['KeyJ'] },
-  { id: 'reviewPrev', ctx: 'review', label: 'Previous document', keys: ['KeyK'] },
-  { id: 'reviewComment', ctx: 'review', label: 'Comment on the selected text', keys: ['KeyC'] },
-  { id: 'reviewAccept', ctx: 'review', label: 'Accept the document', keys: ['KeyA'] },
+  { id: 'reviewNext', ctx: 'review', label: 'Next document', keys: ['Ctrl+Alt+ArrowDown'] },
+  { id: 'reviewPrev', ctx: 'review', label: 'Previous document', keys: ['Ctrl+Alt+ArrowUp'] },
+  { id: 'reviewComment', ctx: 'review', label: 'Comment on the selected text', keys: ['Ctrl+Alt+KeyC'] },
+  { id: 'reviewAccept', ctx: 'review', label: 'Accept the document', keys: ['Ctrl+Alt+KeyA'] },
   { id: 'reviewSend', ctx: 'review', label: 'Send feedback to the task', keys: ['Meta+Enter', 'Ctrl+Enter'], inFields: false },
-  { id: 'graphFit', ctx: 'graph', label: 'Fit the graph to the window', keys: ['KeyF'] },
+  { id: 'graphFit', ctx: 'graph', label: 'Fit the graph to the window', keys: ['Ctrl+Alt+KeyF'] },
+  // the only key that a task browser keeps: every other key goes to the page (TaskBrowser.tsx)
+  { id: 'browserLeave', ctx: 'browser', label: 'Leave the browser: give the keys back to Taskboard', keys: ['Ctrl+Alt+Escape'] },
 ];
 const BY_ID = new Map(ACTIONS.map(a => [a.id, a]));
 
@@ -83,6 +88,10 @@ export const comboOf = (e: KeyboardEvent): string | null => {
 // ⌘ or ⌃ keys work while you type in a terminal or a text field; a key without them is typing there
 export const worksInFields = (combo: string) => /(^|\+)(Ctrl|Meta)\+/.test(combo);
 const inField = (e: KeyboardEvent) => !!(e.target as HTMLElement)?.closest?.('input,textarea,select,[contenteditable=true],.xterm');
+// The task browser (TaskBrowser.tsx) marks its whole view with data-tb-browser. A key there goes to the browser page:
+// no Taskboard key runs, also with ⌘, ⌃ or ⌥, except the keys of the 'browser' context (browserLeave).
+export const BROWSER_AREA = '[data-tb-browser]';
+export const inBrowser = (e: Event) => !!(e.target as Element | null)?.closest?.(BROWSER_AREA);
 
 // the Settings page sets this while it waits for a new key, so the key does not also run an action
 let recording = false;
@@ -91,6 +100,8 @@ export const setRecording = (on: boolean) => { recording = on; };
 export const hit = (e: KeyboardEvent, id: string) => {
   if (recording || e.type !== 'keydown') return false;
   const c = comboOf(e); if (!c || !keysOf(id).includes(c)) return false;
+  if (inBrowser(e)) return BY_ID.get(id)?.ctx === 'browser';
+  if (BY_ID.get(id)?.ctx === 'browser') return false;
   if (!inField(e)) return true;
   return BY_ID.get(id)?.inFields !== false && worksInFields(c);
 };

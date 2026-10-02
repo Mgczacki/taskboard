@@ -359,9 +359,11 @@ export function proxyAgent(client: WebSocket, id: string) {
 }
 
 // ---------- the dashboard: screencast of one tab, with mouse and key input ----------
+const FRAME_BACKLOG = 512 * 1024;
 interface PageConn { ws: WebSocket; target: string; next: number; pending: Map<number, (r: any) => void>; casting?: boolean }
 export function attachViewer(client: WebSocket, id: string, autostart: boolean) {
   let page: PageConn | null = null, active = '', known = new Set<string>(), chosen = false, closed = false;
+  let frameW = 0, frameH = 0;
   count(viewers, id, 1);
   let size = { w: 1280, h: 800 };
   const send = (m: object) => { if (client.readyState === WebSocket.OPEN && client.bufferedAmount < 4 * 1024 * 1024) client.send(JSON.stringify(m)); };
@@ -398,7 +400,13 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
       else if (msg.method === 'Page.navigatedWithinDocument' && frame === mainFrame) void navState();
       if (msg.method === 'Page.screencastFrame') {
         ws.send(JSON.stringify({ id: ++conn.next, method: 'Page.screencastFrameAck', params: { sessionId: msg.params.sessionId } }));
-        send({ type: 'frame', data: msg.params.data, w: msg.params.metadata.deviceWidth, h: msg.params.metadata.deviceHeight });
+        // A frame goes as one binary message (the JPEG bytes), after a 'frameSize' message when the size changes.
+        // A frame is dropped while the view still has 512 KB to receive, so a slow connection shows the newest frame
+        // a little later instead of every old frame in a queue.
+        if (client.readyState !== WebSocket.OPEN || client.bufferedAmount > FRAME_BACKLOG) return;
+        const w = msg.params.metadata.deviceWidth, h = msg.params.metadata.deviceHeight;
+        if (w !== frameW || h !== frameH) { frameW = w; frameH = h; send({ type: 'frameSize', w, h }); }
+        client.send(Buffer.from(msg.params.data, 'base64'));
       }
     });
     ws.on('close', () => { if (page === conn) page = null; if (conn.casting) { conn.casting = false; count(screencasts, id, -1); } });
@@ -479,7 +487,7 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
 
 // The text that a copy takes: the selection in a focused text field, else the selection of the page.
 const COPY = `(() => { const a = document.activeElement;
-  if (a && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT') && typeof a.selectionStart === 'number') return a.value.slice(a.selectionStart, a.selectionEnd);
+  if (a && (a.tagName === 'TEXTAREA' || (a.tagName === 'INPUT' && a.type !== 'password')) && typeof a.selectionStart === 'number') return a.value.slice(a.selectionStart, a.selectionEnd);
   return String(getSelection() || ''); })()`;
 // Chrome on macOS runs editing shortcuts as commands. A key event from DevTools carries no command by itself, so
 // Cmd+A, Cmd+Z, Option+Arrow and the other usual text shortcuts would do nothing in the page without this list.

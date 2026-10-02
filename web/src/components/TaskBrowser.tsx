@@ -1,26 +1,74 @@
 // The browser of a task (or the template browser): a screencast of one tab over /ws/browser, with the tab strip, an
-// address bar, and mouse and key input sent back to the page (server/task-browser.ts). The view can pop out into a
-// floating window inside the page; only one view of a browser streams at a time, so the panel shows a note meanwhile.
+// address bar, and mouse and key input sent back to the page (server/task-browser.ts). The view can pop out into its
+// own window; only one view of a browser streams at a time, so the panel shows a note meanwhile.
 // The sound switch (SoundSwitch) is in both views: a browser starts muted until the user turns its sound on.
 // The server sends the shown tab's loading state and history ("nav"), so back, forward and reload work like Chrome's.
 // Keys with Cmd: L focuses the address, R reloads, [ and ] go back and forward, V pastes, C and X copy. The other keys
 // go to the page. Copy: after a mouse-up or a selection key the view asks the page for its selection ("copy" with
 // peek, answered by "copied") and keeps it, so the browser's own copy event can put it on the clipboard at once.
+// Keys: the view carries data-tb-browser (keys.ts BROWSER_AREA), so no Taskboard key runs while the focus is in it and
+// every key goes to the page. The one exception is browserLeave (⌃⌥Esc by default), which moves the focus back to
+// Taskboard: to the terminal of the same Canvas window or task panel when there is one.
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { createRoot } from 'react-dom/client';
 import type { BrowserStatus, BrowserTab } from '../api';
 import { api } from '../api';
 import { mb } from '../runtimeText';
+import { hit, keyLabel, keysText, useKeymap } from '../keys';
 
 // ---------- which browsers are popped out ----------
+// Pop out opens the view in its own window (/?browser=<id>, BrowserWindowPage below; an app window in the Mac app).
+// The windows of this browser tell each other on the BroadcastChannel 'tb-browser-windows' which browsers have a
+// window: 'open' and 'closed' from the browser window, 'who' from a page that starts, 'close' to ask a window to close.
+// When the browser blocks the window, the view opens in a floating panel inside the page instead.
 const popped = new Map<string, () => void>();
 const subs = new Set<() => void>();
 const notify = () => subs.forEach(f => f());
 const usePopped = (id: string) => useSyncExternalStore(f => { subs.add(f); return () => subs.delete(f); }, () => popped.has(id));
+type WinMsg = { type: 'open' | 'closed' | 'close'; id: string } | { type: 'who' };
+const channel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('tb-browser-windows') : null;
+const post = (m: WinMsg) => channel?.postMessage(m);
+const BROWSER_PAGE = new URLSearchParams(location.search).get('browser');
+const askClose = (id: string) => () => post({ type: 'close', id });
+channel?.addEventListener('message', (e: MessageEvent<WinMsg>) => {
+  const m = e.data;
+  if (m.type === 'open' && !popped.has(m.id)) { popped.set(m.id, askClose(m.id)); notify(); }
+  else if (m.type === 'closed' && popped.delete(m.id)) notify();
+  else if (m.type === 'close' && m.id === BROWSER_PAGE) window.close();
+  else if (m.type === 'who' && BROWSER_PAGE) post({ type: 'open', id: BROWSER_PAGE });
+});
+if (!BROWSER_PAGE) post({ type: 'who' });
 
-let z = 300, n = 0;
+const isApp = () => !!(window as unknown as { taskboardApp?: { isApp: boolean } }).taskboardApp?.isApp;
 export function popOutBrowser(id: string, title: string, sub = '', autostart = false) {
   if (popped.has(id)) return;
+  const q = new URLSearchParams({ browser: id, title, ...(sub ? { sub } : {}), ...(autostart ? { start: '1' } : {}) });
+  const w = window.open(`/?${q}`, `tb-browser-${id}`, `popup,width=${Math.min(1280, screen.availWidth)},height=${Math.min(900, screen.availHeight)}`);
+  // the Mac app opens its own window and window.open returns null; a plain browser returns null when it blocks the window
+  if (w || isApp()) { popped.set(id, askClose(id)); notify(); return; }
+  floatInPage(id, title, sub, autostart);
+}
+
+// The page of a browser window: only the view, with the task as the window title.
+export function BrowserWindowPage() {
+  const q = new URLSearchParams(location.search);
+  const id = q.get('browser') || '', title = q.get('title') || 'Task browser', sub = q.get('sub') || '';
+  useEffect(() => {
+    document.title = title;
+    post({ type: 'open', id });
+    const gone = () => post({ type: 'closed', id });
+    addEventListener('pagehide', gone); return () => { removeEventListener('pagehide', gone); gone(); };
+  }, []);
+  return (
+    <div className="bw-window">
+      <div className="bw-window-h"><b>{title}</b>{sub && <span className="sub">{sub}</span>}</div>
+      <BrowserView id={id} autostart={q.get('start') === '1'} floating />
+    </div>
+  );
+}
+
+let z = 300, n = 0;
+function floatInPage(id: string, title: string, sub: string, autostart: boolean) {
   const host = document.createElement('div'); host.className = 'floatwin bw-float'; host.style.zIndex = String(++z);
   const k = n++ % 6;
   Object.assign(host.style, { left: Math.max(20, innerWidth - 1040 - k * 28) + 'px', top: 70 + k * 28 + 'px', width: '980px', height: Math.min(720, innerHeight - 120) + 'px' });
@@ -93,7 +141,7 @@ export function BrowserView({ id, title = '', autostart = false, floating = fals
   if (isPopped && !floating) return (
     <div className="bw-empty"><div className="bw-card">
       <div className="bw-card-icon"><Icon d={I.popout} size={28} /></div>
-      <h3>This browser is in a floating window</h3>
+      <h3>This browser is in its own window</h3>
       <div className="bw-actions"><button className="btn primary" onClick={() => popped.get(id)?.()}>Put it back here</button></div>
     </div></div>
   );
@@ -121,6 +169,16 @@ function Live({ id, title, autostart, floating, archived, isTemplate }: { id: st
   const flashTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const selection = useRef(''), peekTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const peek = () => { clearTimeout(peekTimer.current); peekTimer.current = setTimeout(() => send({ type: 'copy', peek: true }), 120); };
+  const frameUrl = useRef('');
+  const showFrame = (b: Blob) => {
+    if (!img.current) return;
+    const url = URL.createObjectURL(b.type ? b : new Blob([b], { type: 'image/jpeg' }));
+    img.current.src = url;
+    if (frameUrl.current) URL.revokeObjectURL(frameUrl.current);
+    frameUrl.current = url;
+    setFramed(true); setRunning(true);
+  };
+  useEffect(() => () => { if (frameUrl.current) URL.revokeObjectURL(frameUrl.current); }, []);
   const send = (m: object) => { if (ws.current?.readyState === WebSocket.OPEN) ws.current.send(JSON.stringify(m)); };
   const note = (text: string) => { setFlash(text); clearTimeout(flashTimer.current); flashTimer.current = setTimeout(() => setFlash(''), 1600); };
 
@@ -129,9 +187,12 @@ function Live({ id, title, autostart, floating, archived, isTemplate }: { id: st
     const connect = () => {
       const s = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/browser?id=${encodeURIComponent(id)}${autostart ? '&start=1' : ''}`);
       ws.current = s;
+      s.binaryType = 'blob';
       s.onmessage = ev => {
+        // a binary message is one JPEG frame of the page; the browser decodes a Blob URL off the main thread
+        if (ev.data instanceof Blob) { showFrame(ev.data); return; }
         const m = JSON.parse(ev.data);
-        if (m.type === 'frame') { frameSize.current = { w: m.w, h: m.h }; if (img.current) img.current.src = 'data:image/jpeg;base64,' + m.data; setFramed(true); setRunning(true); }
+        if (m.type === 'frameSize') frameSize.current = { w: m.w, h: m.h };
         else if (m.type === 'tabs') { setTabs(m.tabs); setRunning(true); setAgents(m.agents || 0); setMuted(m.muted ?? null); setErr(''); }
         else if (m.type === 'active') setActive(m.id);
         else if (m.type === 'nav') setNav({ loading: !!m.loading, canBack: !!m.canBack, canForward: !!m.canForward });
@@ -210,6 +271,15 @@ function Live({ id, title, autostart, floating, archived, isTemplate }: { id: st
     send({ type: 'copy', cut });
   };
 
+  // browserLeave: the page got the keydown of ⌃ and ⌥ before the key, so release them there, then move the focus out
+  const [inside, setInside] = useState(false);
+  useKeymap();
+  const leave = (e: React.KeyboardEvent) => {
+    if (!hit(e.nativeEvent, 'browserLeave')) return;
+    e.preventDefault(); e.stopPropagation();
+    for (const [key, code, keyCode] of [['Control', 'ControlLeft', 17], ['Alt', 'AltLeft', 18], ['Shift', 'ShiftLeft', 16], ['Meta', 'MetaLeft', 91]] as const) send({ type: 'key', down: false, key, code, keyCode, modifiers: 0 });
+    leaveBrowser(e.currentTarget as HTMLElement);
+  };
   const go = () => { setEditing(false); if (addr.trim()) send({ type: 'nav', action: 'go', url: addr.trim() }); screen.current?.focus(); };
   const startNow = () => { setErr(''); send({ type: 'start' }); };
 
@@ -241,7 +311,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate }: { id: st
 
   const parts = urlParts(addr);
   return (
-    <div className="bw">
+    <div className={`bw ${inside ? 'kb' : ''}`} data-tb-browser="" onKeyDownCapture={leave} onFocus={() => setInside(true)} onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setInside(false); }}>
       <div className="bw-tabs" onDoubleClick={e => { if (e.target === e.currentTarget) send({ type: 'new', url: 'about:blank' }); }}>
         {tabs.map(t => (
           <div key={t.id} className={`bw-tab ${t.id === active ? 'on' : ''}`} onClick={() => send({ type: 'select', id: t.id })}
@@ -268,10 +338,11 @@ function Live({ id, title, autostart, floating, archived, isTemplate }: { id: st
         </div>
         <div className="bw-side">
           {flash && <span className="bw-chip flash">{flash}</span>}
+          {keyLabel('browserLeave') && <span className="bw-chip bw-leave" title={`While the focus is in this browser, every key goes to the page, also ⌘ and ⌃ keys. Press ${keysText('browserLeave')} to give the keys back to Taskboard.`}><kbd>{keyLabel('browserLeave')}</kbd> leaves</span>}
           {agents > 0 && <span className="bw-chip agent" title="An agent is connected to this browser through its task-browser tools"><i />Agent</span>}
           {!isTemplate && <BrowserMemory id={id} />}
           <SoundSwitch id={id} muted={muted} running agents={agents} onDone={s => setMuted(s.muted)} onError={setErr} />
-          {!floating && <button className="bw-ib" onClick={() => popOutBrowser(id, title || (isTemplate ? 'Template browser' : 'Task browser'), isTemplate ? 'Sign in here. New task browsers copy this profile.' : '')} aria-label="Pop out" title="Show the browser in a floating window inside Taskboard"><Icon d={I.popout} /></button>}
+          {!floating && <button className="bw-ib" onClick={() => popOutBrowser(id, title || (isTemplate ? 'Template browser' : 'Task browser'), isTemplate ? 'Sign in here. New task browsers copy this profile.' : '')} aria-label="Pop out" title="Show the browser in its own window"><Icon d={I.popout} /></button>}
           <button className="bw-ib danger" onClick={() => send({ type: 'stop' })} aria-label={isTemplate ? 'Close the template browser' : 'Stop the browser'} title={isTemplate ? 'Close the template browser. New task browsers can copy it only when it is closed.' : 'Stop the browser. Its pages open again at the next start.'}><Icon d={I.power} /></button>
         </div>
         {nav.loading && <div className="bw-progress" />}
@@ -292,6 +363,12 @@ function Live({ id, title, autostart, floating, archived, isTemplate }: { id: st
   );
 }
 
+// Move the focus out of a browser view: to the terminal of the same Canvas window or task panel, or else to nothing.
+export function leaveBrowser(from: HTMLElement) {
+  (document.activeElement as HTMLElement | null)?.blur?.();
+  const term = from.closest('[data-win], .drawer')?.querySelector<HTMLTextAreaElement>('.xterm-helper-textarea');
+  term?.focus();
+}
 // The memory of a task browser (its footprint, from GET /api/runtime), read every 4 s while the view is open.
 function BrowserMemory({ id }: { id: string }) {
   const [memMb, setMemMb] = useState<number | null>(null);

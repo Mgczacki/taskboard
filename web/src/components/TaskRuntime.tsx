@@ -81,7 +81,7 @@ export function RuntimeList({ tasks, showOwner, onOpen, pictures = false }: { ta
               <td>{i.port && i.kind === 'proc' ? <a href={`http://localhost:${i.port}`} target="_blank" rel="noreferrer" title="Open in your own browser">{i.port}</a> : '—'}</td>
               <td className="rtl-mem">{on(i) ? mb(i.memMb) : '—'}</td>
               <td className="rtl-act">
-                {showOwner && i.kind === 'browser' && t && <button className="btn" onClick={() => popOutBrowser(i.task, `#${t.num} ${t.title}`, '', on(i))} title="Show this browser in a floating window">Pop out</button>}
+                {showOwner && i.kind === 'browser' && t && <button className="btn" onClick={() => popOutBrowser(i.task, `#${t.num} ${t.title}`, '', on(i))} title="Show this browser in its own window">Pop out</button>}
                 {on(i) && <button className="btn" disabled={busy === k} onClick={() => stop(i)} title={i.kind === 'browser' ? `Close the browser of #${t?.num}. Its pages open again at the next start.` : `Stop ${i.name} of #${t?.num}. Other items keep running.`}>Stop</button>}
               </td>
             </tr>
@@ -129,7 +129,7 @@ function RuntimePopover({ t, anchor, close, onOpen }: { t: Task; anchor: HTMLEle
       <div className="rtb-pop-f">
         <button className="btn" onClick={() => onOpen('browser')}>Browser tab</button>
         <button className="btn" onClick={() => onOpen('procs')}>Processes tab</button>
-        <button className="btn" onClick={() => { popOutBrowser(t.id, `#${t.num} ${t.title}`, '', t.status !== 'archived'); close(); }} title="Show the browser in a floating window inside Taskboard">Pop out browser</button>
+        <button className="btn" onClick={() => { popOutBrowser(t.id, `#${t.num} ${t.title}`, '', t.status !== 'archived'); close(); }} title="Show the browser in its own window">Pop out browser</button>
       </div>
     </div>,
     document.body,

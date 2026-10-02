@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import type { Group, SpinOffExchange, Task } from './api';
 import { ATTN, api, fmtWait, setViewing, useStore } from './api';
-import { ACTIONS, CTX_NAME, fmtCombo, hit, hitIn, keyLabel, keysOf, keysText, useKeymap } from './keys';
+import { ACTIONS, CTX_NAME, fmtCombo, hit, hitIn, inBrowser, keyLabel, keysOf, keysText, useKeymap } from './keys';
 import { Canvas, openInWindow, viewName } from './components/Canvas';
 import { Import } from './components/Import';
 import { NewTask } from './components/NewTask';
@@ -185,7 +185,8 @@ export function App() {
   useEffect(() => { document.title = SOLO ? `${viewName(view, groups, tasks)} · Taskboard` : (queue.length + unread.length ? `(${queue.length + unread.length}) ` : '') + 'Taskboard'; }, [queue.length, unread.length, view, groups, tasks]);
   useEffect(() => { if (!SOLO) localStorage.setItem('tb-rail', railHidden ? 'hidden' : 'shown'); }, [railHidden]);
 
-  // keys (keys.ts): a key of the Canvas, Review or Graph page or of triage wins over the same key here (C comments on the Review page)
+  // keys (keys.ts): a key of the Canvas, Review or Graph page or of triage wins over the same key here (⌃⌥T on the Canvas
+  // starts the new task in the canvas view). Esc goes to the task browser page when the focus is in the browser.
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
       if ((triage && hitIn(e, 'triage')) || (page === 'canvas' && hitIn(e, 'canvas')) || (page === 'inbox' && hitIn(e, 'review')) || (page === 'graph' && hitIn(e, 'graph'))) return;
@@ -196,7 +197,7 @@ export function App() {
       if (hit(e, 'triage')) return act(() => setTriage(x => !x));
       if (hit(e, 'needsView')) return act(() => { if (!SOLO) { setView('needs'); setPage('canvas'); } });
       if (hit(e, 'keysHelp')) return act(() => setKeysHelp(x => !x));
-      if ((e.target as HTMLElement)?.closest?.('input,textarea,select,[contenteditable=true],.xterm')) return;
+      if ((e.target as HTMLElement)?.closest?.('input,textarea,select,[contenteditable=true],.xterm') || inBrowser(e)) return;
       if (e.key === 'Escape') { if (keysHelp) setKeysHelp(false); else if (triage) setTriage(false); else if (openId) setOpenId(null); else if (selected.size) setSelected(new Set()); }
     };
     addEventListener('keydown', on, true); return () => removeEventListener('keydown', on, true);
@@ -315,14 +316,14 @@ export function App() {
 // All shortcuts: the ones in keys.ts (changed on the Settings page), then the keys that cannot be changed.
 const FIXED: [string, string, string][] = [
   ['Mac app', '⌘N / ⇧⌘N', 'New window / new canvas window (File menu)'],
-  ['Anywhere', 'Esc', 'Close the panel or clear the selection (outside a terminal)'],
+  ['Anywhere', 'Esc', 'Close the panel or clear the selection (outside a terminal, a text field and the task browser)'],
   ['Canvas', 'Sideways swipe', 'Scrolls the canvas, or turns one page when Per page is on; Shift + mouse wheel does the same'],
   ['Graph page', 'Arrows / ↩', 'Select the nearest task / open it'],
   ['Board and canvas', '⌘-click', 'Select several tasks, then act on them in the bar at the bottom'],
 ];
 function KeysHelp({ close, settings }: { close: () => void; settings: () => void }) {
   useKeymap();
-  const order = ['Anywhere', 'Mac app', 'Triage', 'Canvas', 'Review page', 'Graph page', 'Board and canvas'];
+  const order = ['Anywhere', 'Mac app', 'Triage', 'Canvas', 'Review page', 'Graph page', 'Task browser', 'Board and canvas'];
   const rows: [string, string, string][] = [...ACTIONS.map(a => [CTX_NAME[a.ctx], keysOf(a.id).map(fmtCombo).join(' / ') || '—', a.label] as [string, string, string]), ...FIXED]
     .sort((x, y) => order.indexOf(x[0]) - order.indexOf(y[0]));
   return (
@@ -330,7 +331,7 @@ function KeysHelp({ close, settings }: { close: () => void; settings: () => void
       <div className="modal" style={{ width: 640 }}>
         <header><h2>Keyboard shortcuts</h2><button className="btn ghost icon" onClick={close}>✕</button></header>
         <div className="body">
-          <div className="sub" style={{ marginBottom: 8 }}>Symbols: ⌘ Command · ⌥ Option · ⌃ Control · ⇧ Shift. Keys with ⌘ or ⌃ also work inside a terminal; single keys work when the cursor is not in a terminal or a text field. <button className="btn ghost" onClick={settings}>Change the keys in Settings</button>.</div>
+          <div className="sub" style={{ marginBottom: 8 }}>Symbols: ⌘ Command · ⌥ Option · ⌃ Control · ⇧ Shift. Keys with ⌘ or ⌃ also work inside a terminal. In the task browser every key goes to the page, except the key that leaves the browser. <button className="btn ghost" onClick={settings}>Change the keys in Settings</button>.</div>
           <table className="keys"><tbody>{rows.map(([where, k, what], i) => <tr key={i}><td className="sub">{i === 0 || rows[i - 1][0] !== where ? where : ''}</td><td><kbd>{k}</kbd></td><td>{what}</td></tr>)}</tbody></table>
         </div>
       </div>
