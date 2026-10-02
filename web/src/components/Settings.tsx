@@ -3,7 +3,8 @@
 import { useEffect, useRef, useState } from 'react';
 import type { BrowserMode, BrowserStatus, MachineInfo, MessageLevel, PushRecord, RestartImpact, RestartResult, Task } from '../api';
 import { api, autoReload, confirmEnd, setAutoReload, setConfirmEnd } from '../api';
-import { GLASS_STEPS, glassStep, setGlassStep, setTaskThinBar, taskThinBar, type GlassId } from '../controllerView';
+import { setTaskThinBar, setWindowSee, taskThinBar, windowSee, windowSeeSupported } from '../controllerView';
+import { GlassControls, useGlass, useReadable } from './GlassControls';
 import { ControllerBox, MaxTasksInput, loadAccounts } from './Accounts';
 import { MessageLevels } from './MessageLevels';
 import { Integrations } from './Integrations';
@@ -24,7 +25,8 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
   const [busy, setBusy] = useState(false);
   const [reloadOn, setReloadOn] = useState(autoReload());
   const [askEnd, setAskEnd] = useState(confirmEnd());
-  const [glass, setGlass] = useState<GlassId>(() => glassStep().id);
+  const glass = useGlass(), readable = useReadable(glass);
+  const [winSee, setWinSeeState] = useState(windowSee);
   const [thinBar, setThinBar] = useState(taskThinBar);
   const [accts, setAccts] = useState<Account[]>([]);
   const [routingRules, setRoutingRules] = useState('');
@@ -197,9 +199,15 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
               </SettingGroup>
               <SettingGroup section="browser" id="controllerView" title="Controller view">
                 <SettingItem id="controllerGlass">
-                  <label className="opt" title="The controller panel floats over the page. With a step above Off, the page behind it shows through, blurred">Transparency of the controller terminal <select value={glass} onChange={e => { setGlassStep(e.target.value as GlassId); setGlass(e.target.value as GlassId); }}>{GLASS_STEPS.map(g => <option key={g.id} value={g.id}>{g.label}</option>)}</select></label>
+                  <div className="opt" title="The controller panel floats over the page. Above 0%, the page behind it shows through, blurred">See-through controller terminal</div>
+                  <GlassControls g={glass} r={readable} />
                   <div className="sub">Saved for this app or browser. The ◐ control on the controller bar changes the same setting.</div>
                 </SettingItem>
+                {windowSeeSupported() && <SettingItem id="windowSee">
+                  <label className="opt" title="While the controller view is open, the whole window is drawn see-through, so the desktop behind it shows"><input type="checkbox" checked={winSee.on} onChange={e => { setWindowSee({ on: e.target.checked }); setWinSeeState(windowSee()); }} /> Window see-through while the controller view is open</label>
+                  {winSee.on && <label className="glass-row"><span>Window opacity</span><input type="range" min={40} max={95} step={5} value={winSee.opacity} onChange={e => { setWindowSee({ opacity: Number(e.target.value) }); setWinSeeState(windowSee()); }} /><b>{winSee.opacity}%</b></label>}
+                  <div className="sub">Saved for this app. Off at first. The whole window, text too, is drawn at this opacity.</div>
+                </SettingItem>}
                 <SettingItem id="taskThinBar">
                   <label className="opt" title="The header of a task panel folds to a thin bar with the number, the title and the status, as in the controller view"><input type="checkbox" checked={thinBar} onChange={e => { setTaskThinBar(e.target.checked); setThinBar(e.target.checked); }} /> Fold the header of normal tasks to a thin bar too</label>
                   <div className="sub">Saved for this app or browser. A change applies to the next task panel that you open.</div>

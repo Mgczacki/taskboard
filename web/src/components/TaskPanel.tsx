@@ -19,7 +19,9 @@ import { openBrowserSplit } from '../browserSplit';
 import { ProcList } from './TaskProcs';
 import { RuntimeButton } from './TaskRuntime';
 import type { PanelTab } from '../panelShare';
-import { GLASS_STEPS, clickThroughHeld, glassStep, headerCollapsed, onGlassChange, setGlassStep, setHeaderCollapsed, taskThinBar, type GlassId } from '../controllerView';
+import { BAR_ALPHA, applyWindowOpacity, clickThroughHeld, glassAlpha, headerCollapsed, onWindowSeeChange, presetOf, setHeaderCollapsed, stepGlass, taskThinBar, windowSee, windowSeeSupported } from '../controllerView';
+import { GlassControls, useGlass, useReadable } from './GlassControls';
+import { keysText } from '../keys';
 
 // The drawer's width, set by dragging its left edge and kept across reloads. null means the default width.
 const WIDTH_KEY = 'tb-drawer-width', MIN_W = 420, EDGE = 120;
@@ -81,9 +83,25 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
   const [thin] = useState(() => isCtl || taskThinBar());
   const [collapsed, setCollapsedRaw] = useState(() => thin && headerCollapsed(headKind) && (initialTab || 'terminal') === 'terminal');
   const setCollapsed = (c: boolean) => { setCollapsedRaw(c); setHeaderCollapsed(headKind, c); if (c) setTab('terminal'); };
-  const [glass, setGlass] = useState(glassStep);
-  useEffect(() => onGlassChange(() => setGlass(glassStep())), []);
-  const see = isCtl && glass.alpha < 1 ? glass : null;
+  const glass = useGlass(), readable = useReadable(glass);
+  const see = isCtl && glass.see > 0 ? glass : null;
+  const [glassOpen, setGlassOpen] = useState(false);
+  // the popover closes on a click outside it and on Esc
+  useEffect(() => {
+    if (!glassOpen) return;
+    const down = (e: PointerEvent) => { if (!(e.target as Element)?.closest?.('.glass-pop, .dr-bar-glass')) setGlassOpen(false); };
+    const key = (e: KeyboardEvent) => { if (e.key === 'Escape') { e.stopPropagation(); setGlassOpen(false); } };
+    addEventListener('pointerdown', down, true); addEventListener('keydown', key, true);
+    return () => { removeEventListener('pointerdown', down, true); removeEventListener('keydown', key, true); };
+  }, [glassOpen]);
+  // Window see-through (Settings, the app only): the whole window at the saved opacity while the controller view is open
+  const [winSee, setWinSee] = useState(windowSee);
+  useEffect(() => onWindowSeeChange(() => setWinSee(windowSee())), []);
+  useEffect(() => {
+    if (!isCtl || !winSee.on || !windowSeeSupported()) return;
+    applyWindowOpacity(winSee.opacity / 100);
+    return () => applyWindowOpacity(1);
+  }, [isCtl, winSee.on, winSee.opacity]);
   // Alt held over the see-through terminal: the terminal ignores the pointer and clicks reach the page behind it.
   // The bar and the resize handle still take clicks. Only window listeners read the key, so the terminal keeps its focus.
   const [through, setThrough] = useState(false);
@@ -118,7 +136,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
   const resetWidth = () => { setWidth(null); try { localStorage.removeItem(WIDTH_KEY); } catch { /* private mode */ } };
 
   return (
-    <aside className={`drawer open ${dropping ? 'dropping' : ''} ${resizing ? 'resizing' : ''} ${isCtl ? 'ctl-view' : ''} ${see ? 'glass' : ''} ${see && through ? 'through' : ''}`} style={{ width: width ? `clamp(${MIN_W}px, ${width}px, calc(100vw - ${EDGE}px))` : 'min(880px, 55vw)', ...(see ? { '--glass-a': `${see.alpha * 100}%`, backdropFilter: `blur(${see.blur}px)`, WebkitBackdropFilter: `blur(${see.blur}px)` } as React.CSSProperties : {}) }}
+    <aside className={`drawer open ${dropping ? 'dropping' : ''} ${resizing ? 'resizing' : ''} ${isCtl ? 'ctl-view' : ''} ${see ? `glass txt-${readable.level} tint-${see.tint}` : ''} ${see && through ? 'through' : ''}`} style={{ width: width ? `clamp(${MIN_W}px, ${width}px, calc(100vw - ${EDGE}px))` : 'min(880px, 55vw)', ...(see ? { '--glass-a': `${glassAlpha(see) * 100}%`, '--glass-bar-a': `${Math.max(BAR_ALPHA, glassAlpha(see)) * 100}%`, '--glass-s': see.see / 100, backdropFilter: `blur(${see.blur}px)`, WebkitBackdropFilter: `blur(${see.blur}px)` } as React.CSSProperties : {}) }}
       onDragOver={e => { if (!hasFiles(e) || t.machine) return; e.preventDefault(); setDropping(true); }}
       onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropping(false); }}
       onDrop={e => { if (!hasFiles(e) || t.machine) return; e.preventDefault(); setDropping(false); uploadAll(t.id, e.dataTransfer.files, setDropMsg); }}>
@@ -131,11 +149,17 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
           {collapsed && attention && <button className="dr-bar-attn" onClick={() => setCollapsed(false)} title={t.ask || 'Open the header to see what the task waits for'}>waiting {fmtWait(t.waitMin)}</button>}
           {collapsed && t.ask && !attention && <button className="dr-bar-attn" onClick={() => setCollapsed(false)} title={t.ask}>question</button>}
           <span className="tabs-sp" />
-          {isCtl && <label className="dr-bar-glass" title="Transparency of the controller terminal. The page behind it shows through, blurred.">◐<select aria-label="Terminal transparency" value={glass.id} onChange={e => setGlassStep(e.target.value as GlassId)}>{GLASS_STEPS.map(g => <option key={g.id} value={g.id}>{g.label}</option>)}</select></label>}
+          {isCtl && <span className="dr-bar-glass">
+            <button className="btn ghost icon" onClick={() => stepGlass(-1)} disabled={glass.see === 0} title={`Less see-through (${keysText('glassLess')})`} aria-label="Less see-through">−</button>
+            <button className={`btn ghost glass-btn ${glassOpen ? 'on' : ''}`} aria-expanded={glassOpen} onClick={() => setGlassOpen(o => !o)}
+              title={`See-through terminal: presets, blur, text strength and tint. ${keysText('glassToggle')} switches between the saved value and Off.`}>◐ {glass.see ? `${presetOf(glass)?.label || 'Custom'} ${glass.see}%` : 'Off'}{see && readable.raised ? ' !' : ''}</button>
+            <button className="btn ghost icon" onClick={() => stepGlass(1)} disabled={glass.see === 100} title={`More see-through (${keysText('glassMore')})`} aria-label="More see-through">+</button>
+          </span>}
           {see && <span className="dr-bar-hint" title="Hold the Alt (Option) key to click the page behind the terminal. The panel stays open.">hold ⌥ to click behind</span>}
           <button className="btn ghost icon" aria-expanded={!collapsed} onClick={() => setCollapsed(!collapsed)} title={collapsed ? 'Show the header: details, buttons, tabs, log, inbox and outbox' : 'Hide the header so the terminal gets the whole height'}>{collapsed ? '▾' : '▴'}</button>
           <button className="btn ghost icon" onClick={onClose} title="Close">✕</button>
         </div>}
+        {isCtl && thin && glassOpen && <div className="glass-pop"><GlassControls g={glass} r={readable} /></div>}
         {!thin && <div className="dr-row1"><span className="num">#{t.num}</span><h2>{t.title}</h2><button className="btn ghost icon" onClick={() => setCompact(c => !c)} title={compact ? 'Show the details (chips, goal, now, since you last looked, buttons)' : 'Fold the details so the terminal gets the room'}>{compact ? '▾' : '▴'}</button><button className="btn ghost icon" onClick={onClose} title="Close">✕</button></div>}
         {t.role === 'controller' && <div className="banner intro">The controller is {t.agent === 'antigravity' ? 'an' : 'a'} {AGENT_NAME[t.agent]} session in <code>~/AgentVault/controller</code> (choose its account and agent on the Accounts page).{t.remoteUrl && <> Remote Control is on: <a href={t.remoteUrl} target="_blank" rel="noreferrer">open it on claude.ai or the Claude app</a>.</>} It manages agents with the <code>tb</code> command: reading and organising run without asking; starting agents, typing into them and archiving wait for your approval here. Try: “what needs me?” or “split X into three parallel tasks”.</div>}
         <div className="dr-meta"><ByController t={t} /><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} />{acct && <span className="chip" title={acct.dir}>{acct.name}</span>}<span className="chip mono">{shortPath(t.cwd)}</span>{t.branch && <span className="chip mono">{t.worktree ? 'worktree · ' : ''}{t.branch}</span>}{t.agent === 'antigravity' && <span className="chip mono" title="Estimate from visible transcript text. Repeated model context is not included.">{tokenEstimate === null ? 'Estimate unavailable' : `~${formatTokens(tokenEstimate)} tokens`}</span>}</div>
@@ -239,7 +263,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
         {tab === 'terminal' && t.openElsewhere && <div className="empty" style={{ padding: 20 }}>The terminal for this session belongs to {t.openElsewhere?.tty}. Last message from the agent:<pre className="logtext" style={{ marginTop: 10 }}>{t.now || '—'}</pre></div>}
         {tab === 'terminal' && !t.openElsewhere && (t.status === 'suspended'
           ? <div className="empty" style={{ padding: 20 }}>Resuming with {t.agent === 'claude' ? 'claude --resume' : t.agent === 'codex' ? 'codex resume' : 'agy --conversation'} {t.sessionId}…</div>
-          : <div className="term-wrap">{!collapsed && <div className={`term-brief ${briefOpen ? 'open' : ''}`} onClick={() => setBriefOpen(o => !o)} title={briefOpen ? 'Click to show only the first lines' : 'Click to show the whole task description'}><b>Task</b><span>{t.desc}</span><i className="more">{briefOpen ? 'less' : 'more'}</i></div>}<Terminal taskId={t.id} autoFocus glass={see ? see.alpha : 1} /></div>)}
+          : <div className="term-wrap">{!collapsed && <div className={`term-brief ${briefOpen ? 'open' : ''}`} onClick={() => setBriefOpen(o => !o)} title={briefOpen ? 'Click to show only the first lines' : 'Click to show the whole task description'}><b>Task</b><span>{t.desc}</span><i className="more">{briefOpen ? 'less' : 'more'}</i></div>}<Terminal taskId={t.id} autoFocus glass={see ? glassAlpha(see) : 1} tint={see ? see.tint : 'panel'} /></div>)}
         {tab === 'log' && <pre className="logtext">{log || 'No log entries yet.'}</pre>}
         {tab === 'browser' && <BrowserView key={t.id} id={t.id} title={`#${t.num} ${t.title}`} archived={t.status === 'archived'} onCanvas={() => { openBrowserSplit(t.id); onCanvas(t.id); }} />}
         {tab === 'procs' && <ProcList key={t.id} scope="tasks" id={t.id} cwd={t.cwd} />}

@@ -385,10 +385,19 @@ table.keys td:nth-child(2) { white-space: nowrap; }
 
 /* Mac app (no title bar): the header and sidebar top can drag the window; a thin strip along the top edge too
    (pop-out windows have no header). The sidebar top makes room for the window buttons while they are shown. */
-body.in-app::before { content: ''; position: fixed; top: 0; left: 0; right: 0; height: 8px; z-index: 1000; -webkit-app-region: drag; }
+/* Window drag areas in the app. Electron builds the drag area from -webkit-app-region in document order: it adds each
+   drag box and cuts out each later no-drag box. z-index and pointer-events do not count, so an element drawn on top
+   (the task drawer over .top) is inside the drag area unless it is no-drag itself. A click in the drag area moves the
+   window and never reaches the page; a double click zooms it. The rules:
+   - the 8 px strip at the top edge, .top and .brand are drag; the strip lets the pointer through to the page
+   - every control is no-drag, and so is the whole drawer, which comes after them in the document
+   - the empty spacer of the drawer bar is drag again: the place to move the window from the drawer
+   tests/drag-regions.test.ts and scripts/check-drag-regions.mjs check this. */
+body.in-app::before { content: ''; position: fixed; top: 0; left: 0; right: 0; height: 8px; z-index: 1000; pointer-events: none; -webkit-app-region: drag; }
 body.in-app .top, body.in-app .brand { -webkit-app-region: drag; }
-body.in-app .top button, body.in-app .top a, body.in-app .top input, body.in-app .top select, body.in-app .top label,
-body.in-app .brand a, body.in-app .brand button { -webkit-app-region: no-drag; }
+body.in-app :is(button, a, input, select, textarea, label, summary, [role="button"], [role="tab"], [tabindex]:not([tabindex="-1"]), [contenteditable="true"]),
+body.in-app .drawer { -webkit-app-region: no-drag; }
+body.in-app .drawer .dr-bar .tabs-sp { -webkit-app-region: drag; }
 body.in-app .brand { transition: padding-left .15s ease; }
 body.in-app.app-buttons .brand { padding-left: 84px; }
 body.in-app.app-buttons .app:not(:has(.rail)) .top { padding-left: 84px; }
@@ -713,15 +722,35 @@ table.keyset .keycell { text-align: right; white-space: normal; }
 .dr-head.thin { padding-top: 0; }
 .dr-bar { display: flex; align-items: center; gap: 8px; min-height: 30px; padding: 3px 0; font-size: 12.5px; }
 .dr-bar .num { color: var(--dim); font: 12px var(--mono); }
+/* the empty part of the bar: it pushes the controls to the right edge, and in the app it moves the window (see above) */
+.dr-bar .tabs-sp { flex: 1 1 24px; min-width: 24px; align-self: stretch; }
 .dr-bar-t { font-weight: 600; }
 .dr-bar .st-label { font-size: 12px; }
 .dr-bar .btn.icon { padding: 1px 7px; }
 .dr-bar-attn { border: 1px solid color-mix(in srgb, var(--st-needs) 60%, var(--line)); background: color-mix(in srgb, var(--st-needs) 16%, transparent); color: var(--text); border-radius: 10px; padding: 0 8px; font: 11.5px var(--sans); cursor: pointer; }
-.dr-bar-glass { display: flex; align-items: center; gap: 3px; color: var(--muted); font-size: 12px; }
-.dr-bar-glass select { background: var(--bg2); color: var(--text); border: 1px solid var(--line); border-radius: 5px; font: 11.5px var(--sans); padding: 1px 2px; }
+.dr-bar-glass { display: flex; align-items: center; gap: 1px; color: var(--muted); font-size: 12px; }
+.dr-bar-glass .glass-btn { padding: 1px 7px; font: 11.5px var(--sans); color: var(--muted); white-space: nowrap; }
+.dr-bar-glass .glass-btn.on, .dr-bar-glass .glass-btn:hover { color: var(--text); }
+.dr-head.thin { position: relative; }
+/* the controls of the see-through terminal: a popover under the bar, and the Settings page (GlassControls.tsx) */
+.glass-pop { position: absolute; top: 31px; right: 8px; z-index: 30; width: min(380px, calc(100% - 16px)); padding: 10px 12px; background: var(--panel); border: 1px solid var(--line2); border-radius: 8px; box-shadow: 0 10px 28px rgba(0,0,0,.35); white-space: normal; }
+.glass-ctl { display: flex; flex-direction: column; gap: 8px; font-size: 12px; max-width: 420px; }
+.glass-presets { display: flex; flex-wrap: wrap; gap: 4px; }
+.glass-presets .btn { padding: 2px 8px; font-size: 11.5px; }
+.glass-presets .btn.on { border-color: var(--accent); color: var(--text); background: var(--accent-bg, color-mix(in srgb, var(--accent) 15%, transparent)); }
+.glass-row { display: flex; align-items: center; gap: 8px; }
+.glass-row > span:first-child { flex: none; width: 76px; color: var(--muted); }
+.glass-row input[type="range"] { flex: 1; min-width: 80px; accent-color: var(--accent); }
+.glass-row > b { flex: none; width: 42px; text-align: right; font: 11.5px var(--mono); font-weight: 600; }
+.glass-row select { background: var(--bg2); color: var(--text); border: 1px solid var(--line); border-radius: 5px; font: 11.5px var(--sans); padding: 1px 2px; }
+.glass-tint { margin-left: auto; color: var(--muted); }
+.glass-note { font-size: 11.5px; color: var(--muted); }
+.glass-note.raised { color: var(--text); border-left: 2px solid var(--st-needs); padding-left: 6px; }
+.glass-note.bad { color: var(--text); border-left: 2px solid var(--st-stopped); padding-left: 6px; }
+.glass-keys { font-size: 11px; color: var(--dim); }
 .dr-bar-hint { color: var(--dim); font-size: 11px; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .dr-head.collapsed { padding-bottom: 0; }
-.dr-head.collapsed > :not(.dr-bar):not(.banner), .dr-head.collapsed > .banner.intro { display: none; }
+.dr-head.collapsed > :not(.dr-bar):not(.banner):not(.glass-pop), .dr-head.collapsed > .banner.intro { display: none; }
 .dr-head.collapsed > .banner { margin: 0 0 6px; }
 
 /* The see-through controller terminal. The drawer blurs the page behind it (backdrop-filter, set inline in TaskPanel.tsx
@@ -729,13 +758,20 @@ table.keyset .keycell { text-align: right; white-space: normal; }
    colours at --glass-a over it; the xterm.js layers inside the box stay clear, so the alpha is applied once.
    !important wins over the fixed drawer colours of some themes and over the inline background that xterm.js sets.
    A glow in the terminal background colour keeps each letter apart from the page. */
-.drawer.glass { background: transparent !important; }
-.drawer.glass .dr-head { background: color-mix(in srgb, var(--panel) var(--glass-a), transparent) !important; }
+.drawer.glass { --glass-tint: var(--term-bg); --glass-bar: var(--panel); background: transparent !important; }
+/* Tint: the page colour instead of the panel colour (the terminal theme then uses the page text colour too) */
+.drawer.glass.tint-page { --glass-tint: var(--bg); --glass-bar: var(--bg); }
+/* the bar keeps at least BAR_ALPHA of its colour (--glass-bar-a), so the title and the controls stay clear in Ghost */
+.drawer.glass .dr-head { background: color-mix(in srgb, var(--glass-bar) var(--glass-bar-a), transparent) !important; }
 .drawer.glass .dr-body { background: transparent !important; }
-.drawer.glass .xterm-box { background: color-mix(in srgb, var(--term-bg) var(--glass-a), transparent) !important; }
+.drawer.glass .xterm-box { background: color-mix(in srgb, var(--glass-tint) var(--glass-a), transparent) !important; }
 .drawer.glass .xterm-box .xterm-viewport, .drawer.glass .xterm-box .xterm-scrollable-element { background: transparent !important; }
-.drawer.glass .xterm-rows { text-shadow: 0 0 2px var(--term-bg), 0 0 1px var(--term-bg); }
-/* no glow on a cell with its own background (inverse text, a coloured block, the cursor): the glow would blur its letters */
+/* Text strength (the contrast guard in controllerView.ts picks the level): a glow or an outline in the tint colour
+   around each letter. The glow grows with the see-through share (--glass-s, 0 to 1). Bold adds weight. */
+.drawer.glass.txt-shadow .xterm-rows, .drawer.glass.txt-bold .xterm-rows { text-shadow: 0 0 calc(1px + 3px * var(--glass-s)) var(--glass-tint), 0 0 1px var(--glass-tint); }
+.drawer.glass.txt-outline .xterm-rows { text-shadow: 1px 0 var(--glass-tint), -1px 0 var(--glass-tint), 0 1px var(--glass-tint), 0 -1px var(--glass-tint), 0 0 calc(2px + 3px * var(--glass-s)) var(--glass-tint); }
+.drawer.glass.txt-bold .xterm-rows, .drawer.glass.txt-outline .xterm-rows { font-weight: 600 !important; }
+.drawer.glass.txt-bold .xterm-rows .xterm-bold, .drawer.glass.txt-outline .xterm-rows .xterm-bold { font-weight: 800 !important; }
 .drawer.glass .xterm-rows span[class*="xterm-bg-"], .drawer.glass .xterm-rows .xterm-cursor { text-shadow: none; }
 
 /* ---------- question cards (PendingCard.tsx), the notification stack (NoticeStack.tsx), the Waiting page (Waiting.tsx) ---------- */
