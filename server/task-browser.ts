@@ -11,9 +11,9 @@
 // tool call, so the browser starts then (or when the user starts it on the dashboard). stopIdle() stops a task browser
 // that got no command from an agent and had no dashboard viewer and no screencast for the time set on the Settings
 // page. It closes the agent connections first: chrome-devtools-mcp connects again at the agent's next tool call.
-import { execFileSync, spawn } from 'node:child_process';
+import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
 import { createHmac } from 'node:crypto';
-import { cpSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { closeSync, cpSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import WebSocket from 'ws';
 import { PORT, ROOT, TB_DIR, TOKEN } from './config.ts';
@@ -26,7 +26,9 @@ const ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,120}$/;
 
 // sound: the user's choice for this browser. muted: the state of the running browser. muteFlag: the running browser
 // started with --mute-audio because the sound extension did not load (see muteTabs).
-export interface Meta { pid?: number; port?: number; started?: string; startMs?: number; tabs?: string[]; suspended?: boolean; idleStopped?: boolean; stoppedAt?: string; error?: string; copiedFromTemplate?: string; sound?: boolean; muted?: boolean; muteFlag?: boolean; sharp?: boolean }
+// error: why the last start failed or why Chrome ended by itself (exited), with the useful lines of chrome.log
+// (errorLines) and the time (errorAt). The next start that works removes them.
+export interface Meta { pid?: number; port?: number; started?: string; startMs?: number; tabs?: string[]; suspended?: boolean; idleStopped?: boolean; stoppedAt?: string; error?: string; errorLines?: string[]; errorAt?: string; exited?: boolean; copiedFromTemplate?: string; sound?: boolean; muted?: boolean; muteFlag?: boolean; sharp?: boolean }
 export interface Tab { id: string; title: string; url: string; faviconUrl?: string; dialog?: Dialog }
 // A box that a page opened with alert(), confirm(), prompt() or onbeforeunload. Headless Chrome draws no box, and the
 // page waits until a DevTools client answers it (Page.handleJavaScriptDialog).
@@ -89,7 +91,66 @@ function copyTemplate(id: string) {
   return true;
 }
 
+// ---------- the start of a browser ----------
+// A start waits for Chrome while its process lives, up to startLimitMs(). A busy computer can take 20 s or more: on
+// 2 October 2026 one start took 21.5 s, and a limit of 30 s reported such starts as failures. A start ends early only
+// when the Chrome process exits. Only one Chrome may use a profile: a second Chrome on the same profile either hands
+// over to the first one and exits at once, or (when the first one does not answer) waits 20 s and then ends the first
+// one. So a start first looks for a Chrome that holds the profile (profileHolder) and waits for that one.
+// TASKBOARD_BROWSER_START_LIMIT_MS changes the limit for tests.
+export const startLimitMs = () => Number(process.env.TASKBOARD_BROWSER_START_LIMIT_MS) || 90000;
+export class StartError extends Error { constructor(message: string, public lines: string[] = []) { super(message); } }
 const starting = new Map<string, Promise<Meta & { ws: string }>>();
+// The start that runs now, for the dashboard: when it began and the Chrome process it waits for.
+const progress = new Map<string, { since: number; pid?: number }>();
+
+// The process id that Chrome wrote into the profile lock. SingletonLock is a symbolic link to "<host name>-<pid>".
+function lockPid(id: string): number | undefined {
+  try { const t = readlinkSync(join(profileDir(id), 'SingletonLock')); return Number(t.slice(t.lastIndexOf('-') + 1)) || undefined; } catch { return undefined; }
+}
+// A live Chrome process that runs on the profile of this browser: the process in browser.json, or the process in the
+// profile lock (a Chrome that browser.json lost, for example after a start that failed). Checked with ps, because a
+// process id that the system gave to another program after Chrome ended must not count.
+function profileHolder(id: string): number | undefined {
+  for (const pid of new Set([readMeta(id).pid, lockPid(id)])) {
+    if (!pid || !pidAlive(pid)) continue;
+    try { if (execFileSync('ps', ['-o', 'command=', '-p', String(pid)], { encoding: 'utf8', timeout: 3000 }).includes(`--user-data-dir=${profileDir(id)}`)) return pid; } catch { /* ended */ }
+  }
+  return undefined;
+}
+// End a Chrome process and its helpers (its process group), and wait up to 5 s until the main process is gone.
+async function killChrome(pid: number) {
+  try { process.kill(-pid, 'SIGKILL'); } catch { try { process.kill(pid, 'SIGKILL'); } catch { /* ended */ } }
+  for (let i = 0; i < 50 && pidAlive(pid); i++) await new Promise(r => setTimeout(r, 100));
+}
+// Wait until this Chrome process writes DevToolsActivePort and answers on that port. The result is 'exited' as soon as
+// the process ends, and 'timeout' at the deadline.
+async function waitReady(id: string, pid: number, deadline: number, exited: () => boolean = () => !pidAlive(pid)): Promise<{ port: number; ws: string } | 'exited' | 'timeout'> {
+  const portFile = join(profileDir(id), 'DevToolsActivePort');
+  while (Date.now() < deadline) {
+    if (exited()) return 'exited';
+    let port = 0;
+    try { port = Number(readFileSync(portFile, 'utf8').split('\n')[0]) || 0; } catch { /* not yet */ }
+    const v = port ? await version(port, 2000) : null;
+    if (v) return { port, ws: v.webSocketDebuggerUrl };
+    await new Promise(r => setTimeout(r, 200));
+  }
+  return exited() ? 'exited' : 'timeout';
+}
+
+// The lines of chrome.log that can explain a failure. Chrome also writes lines that do not: the Google updater and its
+// crash reporter (Chrome starts them in the background), display link errors of headless Chrome on macOS, and GCM
+// registration errors. These are left out.
+const NOISE = /chrome\/updater\/|crashpad|cv_display_link|gcm\/engine|Trying to load the allocator|TensorFlow Lite|^DevTools listening|:VERBOSE\d:/;
+export function usefulLines(text: string, max = 8): string[] {
+  return text.split('\n').map(l => l.trimEnd()).filter(l => l.trim() && !NOISE.test(l)).slice(-max).map(l => l.length > 300 ? l.slice(0, 300) + '…' : l);
+}
+// The part of chrome.log after this byte offset (at most the last 64 KB).
+function logSince(id: string, offset: number): string {
+  try { const b = readFileSync(join(folder(id), 'chrome.log')); return b.subarray(Math.max(offset, b.length - 65536)).toString('utf8'); } catch { return ''; }
+}
+const logSize = (id: string) => { try { return statSync(join(folder(id), 'chrome.log')).size; } catch { return 0; } };
+
 // Start the browser of this id if it is not running. A task browser without a profile gets a copy of the template.
 export function ensure(id: string): Promise<Meta & { ws: string }> {
   folder(id);
@@ -100,68 +161,134 @@ export function ensure(id: string): Promise<Meta & { ws: string }> {
     const running = await live(id);
     if (running) return running;
     const t0 = Date.now();
-    const bin = chromePath();
-    if (!bin) throw new Error('No Chrome found. Install Google Chrome, or set the Chrome path on the Settings page.');
-    const meta = readMeta(id);
-    mkdirSync(folder(id), { recursive: true });
-    if (!existsSync(profileDir(id)) && id !== TEMPLATE) {
-      if (templateOpen()) throw new Error('The template browser is open. Close it on the Settings page, then try again. A copy of an open profile can lose its sign-ins.');
-      if (copyTemplate(id)) meta.copiedFromTemplate = new Date().toISOString();
-    }
-    mkdirSync(profileDir(id), { recursive: true });
-    const portFile = join(profileDir(id), 'DevToolsActivePort');
-    const urls = (meta.tabs || []).filter(u => /^(https?|file):/.test(u)).slice(0, 20);
-    const sharp = !!machine.get().browser?.sharp;
-    const launch = async (muteFlag: boolean) => {
-      rmSync(portFile, { force: true });
-      const args = ['--headless=new', `--user-data-dir=${profileDir(id)}`, '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1',
-        '--no-first-run', '--no-default-browser-check', '--hide-crash-restore-bubble', '--window-size=1280,800', '--disable-features=Translate,MediaRouter',
-        // some Chrome versions allow Extensions.loadUnpacked (the sound extension, muteTabs) only with this flag
-        '--enable-unsafe-extension-debugging',
-        ...(muteFlag ? ['--mute-audio'] : []),
-        // Settings → Task browsers → Sharp view: only this start flag makes screencast frames larger than the CSS size
-        ...(sharp ? ['--force-device-scale-factor=2'] : []),
-        'about:blank']; // headless Chrome takes one start page; the saved pages open below
-      const log = openSync(join(folder(id), 'chrome.log'), 'a');
-      const child = spawn(bin, args, { detached: true, stdio: ['ignore', log, log] });
-      child.unref();
-      let port = 0;
-      for (let i = 0; i < 300 && !port; i++) { // up to 30 s: a busy computer can take more than 15 s to start Chrome
-        await new Promise(r => setTimeout(r, 100));
-        if (child.exitCode !== null) break;
-        try { port = Number(readFileSync(portFile, 'utf8').split('\n')[0]) || 0; } catch { /* not yet */ }
-      }
-      const v = port ? await version(port) : null;
-      if (!v) {
-        try { process.kill(-child.pid!, 'SIGKILL'); } catch { /* ended */ }
-        writeMeta(id, { ...meta, pid: undefined, port: undefined, error: 'Chrome did not start. See chrome.log in the browser folder.' });
-        throw new Error(`Chrome did not start for ${id}. See ${join(folder(id), 'chrome.log')}.`);
-      }
-      return { pid: child.pid!, port, ws: v.webSocketDebuggerUrl };
-    };
-    // The tabs are muted before the saved pages open. The choice is read again here: the user can change it while
-    // Chrome starts. When the extension does not load (a Chrome without Extensions.loadUnpacked), a browser that must be
-    // muted starts again with --mute-audio, and the switch then restarts it (setSound).
-    let b = await launch(false), muted = !readMeta(id).sound, muteFlag = false;
-    try { await muteTabs(b.ws, muted); } catch (e) {
-      console.error(`task browser ${id}: the sound extension did not load: ${(e as Error).message}`);
-      if (muted) { await closeChrome(b.ws, b.pid); b = await launch(muteFlag = true); }
-    }
-    const port = b.port;
-    const next: Meta = { ...meta, pid: b.pid, port, started: new Date().toISOString(), muted, muteFlag: muteFlag || undefined, sharp: sharp || undefined, suspended: undefined, idleStopped: undefined, error: undefined, stoppedAt: undefined };
-    const v = { webSocketDebuggerUrl: b.ws };
-    if (urls.length) await openSaved(port, v.webSocketDebuggerUrl, urls);
-    next.startMs = Date.now() - t0;
-    writeMeta(id, next);
-    lastUse.set(id, Date.now());
-    changed(id);
-    watchDialogs(id, v.webSocketDebuggerUrl);
-    return { ...next, ws: v.webSocketDebuggerUrl };
+    progress.set(id, { since: t0 }); changed(id);
+    try { return await start(id, t0); }
+    catch (e) {
+      const lines = e instanceof StartError ? e.lines : [];
+      writeMeta(id, { ...readMeta(id), pid: undefined, port: undefined, exited: undefined, error: (e as Error).message, errorLines: lines.length ? lines : undefined, errorAt: new Date().toISOString() });
+      console.error(`${new Date().toISOString()} task browser ${id}: ${(e as Error).message}${lines.length ? `\n  ${lines.join('\n  ')}` : ''}`);
+      problem(id, (e as Error).message, lines);
+      throw e;
+    } finally { progress.delete(id); changed(id); }
   })();
   starting.set(id, p);
   p.finally(() => starting.delete(id)).catch(() => {});
   return p;
 }
+async function start(id: string, t0: number): Promise<Meta & { ws: string }> {
+  const bin = chromePath();
+  if (!bin) throw new Error('No Chrome found. Install Google Chrome, or set the Chrome path on the Settings page.');
+  const meta = readMeta(id);
+  mkdirSync(folder(id), { recursive: true });
+  if (!existsSync(profileDir(id)) && id !== TEMPLATE) {
+    if (templateOpen()) throw new Error('The template browser is open. Close it on the Settings page, then try again. A copy of an open profile can lose its sign-ins.');
+    if (copyTemplate(id)) meta.copiedFromTemplate = new Date().toISOString();
+  }
+  mkdirSync(profileDir(id), { recursive: true });
+  const portFile = join(profileDir(id), 'DevToolsActivePort');
+  const urls = (meta.tabs || []).filter(u => /^(https?|file):/.test(u)).slice(0, 20);
+  const sharp = !!machine.get().browser?.sharp;
+  // A Chrome that holds the profile but did not answer live() (a busy computer answers slowly) gets the full time.
+  // When it answers, it is the browser. When it does not, it is ended before a new Chrome starts.
+  let b: { pid: number; port: number; ws: string; child?: ChildProcess } | null = null;
+  const holder = profileHolder(id);
+  if (holder) {
+    progress.set(id, { since: t0, pid: holder }); changed(id);
+    const r = await waitReady(id, holder, t0 + startLimitMs());
+    if (typeof r === 'object') { b = { pid: holder, ...r }; console.log(`${new Date().toISOString()} task browser ${id}: Chrome ${holder} holds the profile and answered after ${Math.round((Date.now() - t0) / 1000)} s, so no second Chrome started`); }
+    else if (r === 'timeout') { console.error(`${new Date().toISOString()} task browser ${id}: Chrome ${holder} holds the profile and did not answer in ${startLimitMs() / 1000} s, so it was ended`); await killChrome(holder); }
+  }
+  const launch = async (muteFlag: boolean) => {
+    rmSync(portFile, { force: true });
+    const args = ['--headless=new', `--user-data-dir=${profileDir(id)}`, '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1',
+      '--no-first-run', '--no-default-browser-check', '--hide-crash-restore-bubble', '--window-size=1280,800', '--disable-features=Translate,MediaRouter',
+      // some Chrome versions allow Extensions.loadUnpacked (the sound extension, muteTabs) only with this flag
+      '--enable-unsafe-extension-debugging',
+      ...(muteFlag ? ['--mute-audio'] : []),
+      // Settings → Task browsers → Sharp view: only this start flag makes screencast frames larger than the CSS size
+      ...(sharp ? ['--force-device-scale-factor=2'] : []),
+      'about:blank']; // headless Chrome takes one start page; the saved pages open below
+    const offset = logSize(id), began = Date.now();
+    const log = openSync(join(folder(id), 'chrome.log'), 'a');
+    const child = spawn(bin, args, { detached: true, stdio: ['ignore', log, log] });
+    closeSync(log);
+    child.unref();
+    let how = '';
+    child.once('exit', (code, signal) => { how = code !== null ? `exit code ${code}` : `signal ${signal}`; });
+    child.once('error', e => { how = e.message; });
+    progress.set(id, { since: t0, pid: child.pid }); changed(id);
+    const r = child.pid ? await waitReady(id, child.pid, began + startLimitMs(), () => !!how) : 'exited';
+    if (typeof r === 'object') return { pid: child.pid!, ...r, child };
+    const lines = usefulLines(logSince(id, offset));
+    if (r === 'timeout') {
+      await killChrome(child.pid!);
+      throw new StartError(`Chrome did not answer within ${startLimitMs() / 1000} s, so Taskboard ended it. The computer can be too busy. Try again.`, lines);
+    }
+    throw new StartError(`Chrome ended ${Math.round((Date.now() - began) / 100) / 10} s after its start (${how || 'no exit code'}). It did not open its debugging port.`, lines);
+  };
+  // The tabs are muted before the saved pages open. The choice is read again here: the user can change it while
+  // Chrome starts. When the extension does not load (a Chrome without Extensions.loadUnpacked), a browser that must be
+  // muted starts again with --mute-audio, and the switch then restarts it (setSound).
+  // a Chrome that held the profile keeps the start flags it has (Sharp view, --mute-audio)
+  const reused = !!b;
+  if (!b) b = await launch(false);
+  let muted = !readMeta(id).sound, muteFlag = reused && !!meta.muteFlag;
+  try { await muteTabs(b.ws, muted); } catch (e) {
+    console.error(`task browser ${id}: the sound extension did not load: ${(e as Error).message}`);
+    if (muted && !muteFlag) { await closeChrome(b.ws, b.pid); b = await launch(muteFlag = true); }
+  }
+  const port = b.port;
+  const next: Meta = { ...meta, pid: b.pid, port, started: new Date().toISOString(), muted, muteFlag: muteFlag || undefined, sharp: (reused ? meta.sharp : sharp) || undefined, suspended: undefined, idleStopped: undefined, error: undefined, errorLines: undefined, errorAt: undefined, exited: undefined, stoppedAt: undefined };
+  const v = { webSocketDebuggerUrl: b.ws };
+  if (urls.length) await openSaved(port, v.webSocketDebuggerUrl, urls);
+  next.startMs = Date.now() - t0;
+  writeMeta(id, next);
+  lastUse.set(id, Date.now());
+  watchExit(id, b.pid, b.child);
+  watchDialogs(id, v.webSocketDebuggerUrl);
+  return { ...next, ws: v.webSocketDebuggerUrl };
+}
+
+// ---------- a Chrome that ends by itself after its start ----------
+// Each running browser has a check: the 'exit' event of the Chrome process that this server started, and a check of
+// the process id every 2 s (also for a Chrome that was running before this server started; stopIdle() adds those).
+// A Chrome that ends while no stop and no start of that browser runs is recorded in browser.json (error, exited, the
+// useful lines of chrome.log) and in the task log. The next use starts it again: ensure() finds no live process.
+const exitChecks = new Map<string, { pid: number; timer: NodeJS.Timeout }>();
+function watchExit(id: string, pid: number, child?: ChildProcess) {
+  const had = exitChecks.get(id);
+  if (had?.pid === pid) return;
+  if (had) clearInterval(had.timer);
+  const offset = logSize(id);
+  const gone = (how: string) => {
+    const c = exitChecks.get(id);
+    if (c?.pid !== pid) return;
+    clearInterval(c.timer); exitChecks.delete(id);
+    markExited(id, pid, how, offset);
+  };
+  const timer = setInterval(() => { if (!pidAlive(pid)) gone(''); }, 2000);
+  timer.unref();
+  exitChecks.set(id, { pid, timer });
+  child?.once('exit', (code, signal) => gone(code !== null ? `exit code ${code}` : `signal ${signal}`));
+}
+function markExited(id: string, pid: number, how: string, offset = Math.max(0, logSize(id) - 16384)) {
+  const m = readMeta(id);
+  // a stop or a start of this browser ended this process on purpose, or browser.json names another process now
+  if (m.pid !== pid || stopping.has(id) || starting.has(id)) return;
+  const lines = usefulLines(logSince(id, offset));
+  const at = new Date();
+  const error = `Chrome ended by itself at ${at.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}${how ? ` (${how})` : ''}. It starts again at the next use.`;
+  writeMeta(id, { ...m, pid: undefined, port: undefined, stoppedAt: at.toISOString(), error, errorLines: lines.length ? lines : undefined, errorAt: at.toISOString(), exited: true });
+  console.error(`${at.toISOString()} task browser ${id}: ${error}${lines.length ? `\n  ${lines.join('\n  ')}` : ''}`);
+  dialogWatch.get(id)?.ws.terminate();
+  changed(id);
+  problem(id, error, lines);
+}
+
+// Listeners for a start that failed and for a Chrome that ended by itself (runtime-routes.ts writes the task log).
+const problems = new Set<(id: string, message: string, lines: string[]) => void>();
+export const onProblem = (fn: (id: string, message: string, lines: string[]) => void) => { problems.add(fn); };
+const problem = (id: string, message: string, lines: string[]) => { for (const fn of problems) try { fn(id, message, lines); } catch { /* listener failed */ } };
 
 // Open the saved pages in a browser that just started, then close its blank start page. Each page is created blank,
 // and this connection attaches to it before it navigates, then waits up to 10 s for its load event. A DevTools client
@@ -222,13 +349,17 @@ export function stop(id: string, opts: { suspended?: boolean; idle?: boolean } =
   return p;
 }
 async function stopNow(id: string, opts: { suspended?: boolean; idle?: boolean }): Promise<boolean> {
+  // a start that runs ends first, so a stop (for example the archive of the task) does not leave its Chrome running
+  await starting.get(id)?.catch(() => {});
   const m = readMeta(id);
-  if (!m.pid && !m.port) return false;
+  // a Chrome that holds the profile but is not in browser.json (a start that failed before this version lost it)
+  const holder = m.pid ? undefined : profileHolder(id);
+  if (!m.pid && !m.port && !holder) return false;
   const running = await live(id);
   // a busy Chrome can answer slowly: wait up to 5 s, and keep the saved pages when it does not answer
   const listed = running ? await pageList(running.port!, 5000) : null;
   const open = listed ? listed.map(t => t.url).filter(u => /^(https?|file):/.test(u)) : m.tabs;
-  await closeChrome(running?.ws, m.pid);
+  await closeChrome(running?.ws, m.pid || holder);
   writeMeta(id, { ...readMeta(id), pid: undefined, port: undefined, tabs: open, stoppedAt: new Date().toISOString(), suspended: opts.suspended || undefined, idleStopped: opts.idle || undefined });
   changed(id);
   return !!running;
@@ -363,16 +494,21 @@ export async function resetFromTemplate(id: string) {
 // The task was removed from Taskboard: stop its browser and delete its profile (it holds copied sign-ins).
 export async function remove(id: string) { await stop(id).catch(() => {}); rmSync(folder(id), { recursive: true, force: true }); }
 
-export interface Status { id: string; running: boolean; port?: number; tabs: Tab[]; profile: boolean; copiedFromTemplate?: string; suspended?: boolean; idleStopped?: boolean; idleStopMinutes: number; startMs?: number; started?: string; stoppedAt?: string; error?: string; memMb?: number | null; rssMb?: number | null; agents: number; viewers: number; chrome: string | null; sound: boolean; muted: boolean; sharp: boolean }
+// starting: a start runs (seconds since it began, the limit, and the Chrome process it waits for). systemMemory: the
+// free memory of the computer, sent while the browser is not running, so the dashboard can warn before a start.
+export interface Status { id: string; running: boolean; port?: number; tabs: Tab[]; profile: boolean; copiedFromTemplate?: string; suspended?: boolean; idleStopped?: boolean; idleStopMinutes: number; startMs?: number; started?: string; stoppedAt?: string; error?: string; errorLines?: string[]; errorAt?: string; exited?: boolean; starting?: { seconds: number; limitSeconds: number; pid?: number }; systemMemory?: memory.SystemMemory | null; memMb?: number | null; rssMb?: number | null; agents: number; viewers: number; chrome: string | null; sound: boolean; muted: boolean; sharp: boolean }
 // a running browser has the state that muteTabs set (none for a browser started before this setting existed); a
 // stopped browser gets the saved choice at its next start
 const mutedNow = (m: Meta, running: boolean) => running ? !!m.muted : !m.sound;
+const startingNow = (id: string) => { const s = progress.get(id); return s ? { seconds: Math.floor((Date.now() - s.since) / 1000), limitSeconds: startLimitMs() / 1000, pid: s.pid } : undefined; };
 export async function status(id: string): Promise<Status> {
-  const m = readMeta(id), running = await live(id);
+  // a start that runs is reported without asking Chrome: its port does not answer yet
+  const m = readMeta(id), running = progress.has(id) ? null : await live(id);
   const mem = running ? await memory.groupMb(m.pid) : null;
   return { id, running: !!running, port: running?.port, tabs: running ? await tabs(id) : (m.tabs || []).map((url, i) => ({ id: `saved-${i}`, title: url, url })),
     profile: existsSync(profileDir(id)), copiedFromTemplate: m.copiedFromTemplate, suspended: m.suspended, idleStopped: m.idleStopped, idleStopMinutes: idleStopMs() / 60000,
-    startMs: m.startMs, started: running ? m.started : undefined, stoppedAt: m.stoppedAt, error: m.error,
+    startMs: m.startMs, started: running ? m.started : undefined, stoppedAt: m.stoppedAt, error: running ? undefined : m.error, errorLines: running ? undefined : m.errorLines, errorAt: running ? undefined : m.errorAt, exited: running ? undefined : m.exited,
+    starting: startingNow(id), systemMemory: running ? undefined : await memory.systemMemory(),
     // memMb is the footprint of the browser's processes (memory.ts). rssMb has the same value for older callers.
     memMb: mem, rssMb: mem, agents: agentCount(id), viewers: viewers.get(id) || 0, chrome: chromePath(), sound: !!m.sound, muted: mutedNow(m, !!running), sharp: !!(running && m.sharp) };
 }
@@ -426,6 +562,7 @@ export function idleStopMs(): number {
   const min = machine.get().browser?.idleStopMinutes;
   return (typeof min === 'number' && Number.isFinite(min) && min >= 0 ? min : 10) * 60000;
 }
+// Each call also checks every browser (the template too) for a Chrome that ended by itself (watchExit, markExited).
 // Stop each running task browser that got no agent command and had no viewer and no screencast for idleStopMs(). An
 // open agent connection that sent no command for that time does not keep the browser: chrome-devtools-mcp keeps its
 // connection open until the agent session ends. The open tab addresses are saved, so the next start opens the same
@@ -433,12 +570,15 @@ export function idleStopMs(): number {
 // A browser that was running before this server started gets the full time from the server start.
 export async function stopIdle(now = Date.now()): Promise<string[]> {
   const ms = idleStopMs(), done: string[] = [];
-  if (!ms) return done;
   let ids: string[] = [];
   try { ids = readdirSync(DIR); } catch { return done; }
   for (const id of ids) {
-    if (id === TEMPLATE || !ID.test(id)) continue;
+    if (!ID.test(id)) continue;
     const m = readMeta(id);
+    // a Chrome that ended while this server did not watch it (watchExit), and a Chrome that this server did not start
+    if (m.pid && !pidAlive(m.pid)) markExited(id, m.pid, '');
+    else if (m.pid && !starting.has(id)) watchExit(id, m.pid);
+    if (id === TEMPLATE || !ms) continue;
     if (!m.pid || !pidAlive(m.pid)) { lastUse.delete(id); continue; }
     if (viewed(id) || starting.has(id) || stopping.has(id)) { lastUse.set(id, now); continue; }
     const conns = [...(agentConnections.get(id) || [])];
@@ -461,23 +601,55 @@ export function watchIdle() {
 }
 
 // ---------- agents: DevTools connections forwarded to the task's browser ----------
-export function proxyAgent(client: WebSocket, id: string) {
+// The connection waits for ensure() up to AGENT_WAIT_MS. Most slow starts end in that time, and the agent's tool call
+// then works. When the start takes longer or fails, the server answers each DevTools command of the agent with an error
+// that says why, then closes the connection. chrome-devtools-mcp shows the agent "Could not connect to Chrome" with
+// that text as the cause, and connects again at the next tool call. The start goes on without the agent.
+export const AGENT_WAIT_MS = 40000;
+export function agentRefusal(id: string, e?: Error): string {
+  if (!e) {
+    const s = startingNow(id);
+    return `Taskboard: the task browser is still starting (Chrome has run for ${s?.seconds ?? Math.round(AGENT_WAIT_MS / 1000)} s; the computer is slow). Call the browser tool again in about 20 s. Taskboard waits up to ${startLimitMs() / 1000} s for Chrome.`;
+  }
+  return `Taskboard: the task browser did not start. ${e.message} The Browser tab of the task shows the details. Call the browser tool again to try once more.`;
+}
+export function proxyAgent(client: WebSocket, id: string, waitMs = AGENT_WAIT_MS) {
   const queue: (string | Buffer)[] = [];
-  let up: WebSocket | null = null, closed = false;
+  let up: WebSocket | null = null, closed = false, refusal = '';
   const conn: AgentConn = { last: Date.now(), close: () => done() };
   let set = agentConnections.get(id);
   if (!set) agentConnections.set(id, set = new Set());
   set.add(conn); lastUse.set(id, Date.now()); changed(id);
-  const done = () => { if (closed) return; closed = true; set.delete(conn); lastUse.set(id, Date.now()); changed(id); try { up?.close(); } catch { /* closed */ } try { client.close(); } catch { /* closed */ } };
-  client.on('message', (d, binary) => { conn.last = Date.now(); const msg = binary ? d as Buffer : d.toString(); if (up?.readyState === WebSocket.OPEN) up.send(msg); else if (queue.length < 1000) queue.push(msg); else done(); });
+  const done = () => { if (closed) return; closed = true; clearTimeout(timer); set.delete(conn); lastUse.set(id, Date.now()); changed(id); try { up?.close(); } catch { /* closed */ } try { client.close(); } catch { /* closed */ } };
+  // answer one DevTools command with an error (the agent's client rejects the call with this text)
+  const refuse = (msg: string | Buffer) => {
+    let m: { id?: number; sessionId?: string }; try { m = JSON.parse(msg.toString()); } catch { return; }
+    if (typeof m.id === 'number' && client.readyState === WebSocket.OPEN) client.send(JSON.stringify({ id: m.id, ...(m.sessionId ? { sessionId: m.sessionId } : {}), error: { code: -32000, message: refusal } }));
+  };
+  const giveUp = (text: string) => {
+    if (closed || up || refusal) return;
+    refusal = text;
+    for (const q of queue) refuse(q);
+    queue.length = 0;
+    // a short time for the commands that the client sends after its first one failed
+    setTimeout(done, 1000).unref();
+  };
+  client.on('message', (d, binary) => {
+    conn.last = Date.now(); const msg = binary ? d as Buffer : d.toString();
+    if (refusal) refuse(msg);
+    else if (up?.readyState === WebSocket.OPEN) up.send(msg); else if (queue.length < 1000) queue.push(msg); else done();
+  });
   client.on('close', done); client.on('error', done);
+  const timer = setTimeout(() => giveUp(agentRefusal(id)), waitMs);
+  timer.unref();
   ensure(id).then(m => {
-    if (closed) return;
+    if (closed || refusal) return;
+    clearTimeout(timer);
     up = new WebSocket(m.ws, { perMessageDeflate: false, maxPayload: 512 * 1024 * 1024 });
     up.on('open', () => { for (const q of queue) up!.send(q); queue.length = 0; });
     up.on('message', (d, binary) => { if (client.readyState === WebSocket.OPEN) client.send(binary ? d : d.toString()); });
     up.on('close', done); up.on('error', done);
-  }).catch(e => { console.error(`task browser ${id}: ${(e as Error).message}`); try { client.close(1011, String((e as Error).message).slice(0, 120)); } catch { /* closed */ } done(); });
+  }).catch(e => giveUp(agentRefusal(id, e as Error)));
 }
 
 // ---------- dialogs ----------
@@ -626,7 +798,8 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
   client.on('message', async d => {
     let m: any; try { m = JSON.parse(d.toString()); } catch { return; }
     try {
-      if (m.type === 'start') { await ensure(id); await poll(); }
+      // a failed start shows in the state that poll() sends (status().error), not as a second message
+      if (m.type === 'start') { void ensure(id).then(() => poll(), () => poll()); await poll(); }
       else if (m.type === 'stop') { await stop(id); await poll(); }
       else if (m.type === 'select' && typeof m.id === 'string') { chosen = true; clearTimeout(chosenTimer); chosenTimer = setTimeout(() => { chosen = false; }, 60000); await open(m.id); }
       else if (m.type === 'size' && m.w > 100 && m.h > 100) { size = { w: Math.min(3840, Math.round(m.w)), h: Math.min(2160, Math.round(m.h)) }; await viewport(); }
@@ -666,8 +839,9 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     if (m.key === 'Enter') return call('Input.dispatchKeyEvent', { type: 'keyDown', ...base, text: '\r', unmodifiedText: '\r' });
     return call('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...base });
   }
+  // the start runs while the view polls, so the view shows its progress (status().starting) and then its result
   void (async () => {
-    if (!(await isRunning(id)) && autostart) { try { await ensure(id); } catch (e) { send({ type: 'error', message: (e as Error).message }); } }
+    if (autostart && !(await isRunning(id))) void ensure(id).then(() => poll()).catch(() => poll());
     await poll();
   })();
 }

@@ -68,3 +68,33 @@ export async function groupMb(pgid?: number): Promise<number | null> {
   if (!pgid) return null;
   return (await byGroup([pgid])).get(pgid) ?? null;
 }
+
+// The memory of the computer that is free for a new program. On macOS, kern.memorystatus_level is the percent of
+// memory available (memory_pressure prints the same number as "System-wide memory free percentage"). Swap use is not
+// a good sign of low memory: macOS keeps swap in use for a long time after the memory was free again. On Linux, the
+// numbers come from MemAvailable and MemTotal in /proc/meminfo. low: a new browser (about 450 MB, see above) can make
+// every program slower. The result is kept for 5 s.
+export interface SystemMemory { totalMb: number; availableMb: number; availablePct: number; low: boolean }
+export const LOW_MEMORY_PCT = 20, LOW_MEMORY_MB = 2048;
+let systemCache: { at: number; value: SystemMemory | null } | null = null;
+export async function systemMemory(): Promise<SystemMemory | null> {
+  if (systemCache && Date.now() - systemCache.at < 5000) return systemCache.value;
+  let value: SystemMemory | null = null;
+  try {
+    let totalMb = 0, availableMb = 0;
+    if (process.platform === 'darwin') {
+      const [level, size] = (await exec('sysctl', ['-n', 'kern.memorystatus_level', 'hw.memsize'], { timeout: 3000 })).stdout.trim().split('\n').map(Number);
+      totalMb = Math.round(size / 1048576); availableMb = Math.round(totalMb * level / 100);
+    } else {
+      const info = readFileSync('/proc/meminfo', 'utf8'), kb = (k: string) => Number(new RegExp(`^${k}:\\s+(\\d+)`, 'm').exec(info)?.[1] || 0);
+      totalMb = Math.round(kb('MemTotal') / 1024); availableMb = Math.round(kb('MemAvailable') / 1024);
+    }
+    if (totalMb > 0) value = systemMemoryOf(totalMb, availableMb);
+  } catch { /* not known */ }
+  systemCache = { at: Date.now(), value };
+  return value;
+}
+export function systemMemoryOf(totalMb: number, availableMb: number): SystemMemory {
+  const availablePct = Math.round(availableMb / totalMb * 100);
+  return { totalMb, availableMb, availablePct, low: availablePct < LOW_MEMORY_PCT || availableMb < LOW_MEMORY_MB };
+}

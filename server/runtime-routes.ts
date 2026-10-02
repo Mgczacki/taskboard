@@ -67,7 +67,14 @@ export function watchResume() {
 
 // A task browser without an agent command or a dashboard viewer for the time set on the Settings page stops. Its
 // pages are saved. The next tool call of the agent, or a start on the dashboard, starts it again with those pages.
-export const watchBrowserIdle = () => browser.watchIdle();
+// A start that failed and a Chrome that ended by itself also go into the task log, with the useful lines of chrome.log.
+export const watchBrowserIdle = () => {
+  browser.watchIdle();
+  browser.onProblem((id, message, lines) => {
+    if (!store.get(id)) return; // the template browser has no task
+    try { store.appendLog(id, { did: `Task browser: ${message}${lines.length ? ` Chrome log: ${lines.slice(-3).join(' | ')}` : ''}`, next: 'The browser starts again at the next tool call, or with Start the browser (Retry) in the Browser tab.' }); } catch { /* the task folder is gone */ }
+  });
+};
 
 type Fail = (res: express.Response, e: unknown) => void;
 // Who may change the processes or the browser of a task: the dashboard, tb from the user's own shell (token, no task),
