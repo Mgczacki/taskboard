@@ -259,18 +259,27 @@ export function mountA2ANotes(app: Express, options: { delivery?: A2ADeps; setti
     void cards.sync();
     return decorate(result);
   }));
-  // Removes the sentences that the message check flagged, as a new version of the draft (the person only).
-  app.post('/api/a2anotes/messages/:id/remove-flagged', endpoint(async req => {
+  // A new version of a draft with the same subject, files, and audience, made by the person. A2A Notes runs its checks
+  // again on each version, and the version keeps the instruction and the Taskboard metadata of the draft.
+  const reviseAsPerson = async (req: Request, body: (m: any) => string) => {
     need(req, 'person');
     const m = await service().call('person', 'a2anotes_get_message', { id: req.params.id });
     if (m.hash !== req.body?.hash) throw new A2AError('hash_changed', 'The draft changed. Read it again.');
-    const body = removeFlags(m.body, m.body_check?.flags || []);
-    if (!body) throw new A2AError('invalid_input', 'Every sentence is flagged. Write the draft again.');
-    const result = await service().call('person', 'a2anotes_revise_draft', { id: m.id, expected_hash: m.hash, subject: m.subject, body, audience: m.audience,
+    if (m.direction !== 'out') throw new A2AError('invalid_input', 'Only an outgoing draft can change.');
+    const text = body(m);
+    const result = await service().call('person', 'a2anotes_revise_draft', { id: m.id, expected_hash: m.hash, subject: m.subject, body: text, audience: m.audience,
       ...(m.agent_file ? { agent_file_id: m.agent_file.id } : {}), file_ids: (m.files || []).map((f: any) => f.id) });
     void cards.sync();
     return decorate(result);
-  }));
+  };
+  // Removes the sentences that the message check flagged, as a new version of the draft (the person only).
+  app.post('/api/a2anotes/messages/:id/remove-flagged', endpoint(req => reviseAsPerson(req, m => {
+    const body = removeFlags(m.body, m.body_check?.flags || []);
+    if (!body) throw new A2AError('invalid_input', 'Every sentence is flagged. Write the draft again.');
+    return body;
+  })));
+  // Runs the checks again on the same text, for example after the message check command did not finish (check_failed).
+  app.post('/api/a2anotes/messages/:id/recheck', endpoint(req => reviseAsPerson(req, m => m.body)));
   app.post('/api/a2anotes/messages/:id/approve', endpoint(async req => {
     const result = await service().call(need(req, 'person', 'reviewer'), 'a2anotes_approve', { id: req.params.id, expected_hash: req.body?.hash, decision: req.body?.decision === 'reject' ? 'reject' : 'approve',
       ...(typeof req.body?.comment === 'string' && req.body.comment ? { review_context: req.body.comment } : {}) });

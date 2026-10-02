@@ -147,7 +147,7 @@ const HELP = `tb — Taskboard command line
   tb suggest --steps steps.json --why "reason" [--risk "risk"]
   tb permit result ID [--wait] | tb permit list
   tb permit approve ID [--user-request "the user's chat message"]   controller only
-  tb pending list [--json]          controller only: the questions and dialogs that tasks wait on (the Waiting page)
+  tb pending list [--json [--messages]]  controller only: the questions, dialogs and message drafts that wait on the user (the Waiting page)
   tb pending answer ID --option KEY | --text "answer" [--user-request "the user's chat message"]
                                      controller only. The words must be one user message in your chat that names
                                      the card ID. Without them, only low risk command cards when Settings allows it.
@@ -326,6 +326,8 @@ switch (cmd) {
     else { console.error(help); process.exit(1); }
     if (result?.body_check?.flags?.length) console.error(`The message check found ${result.body_check.flags.length} item(s). The user must approve this draft.`, ...result.body_check.flags.map(f => `\n- ${f.reason}${f.text && f.code !== 'ask_changed' && f.code !== 'check_failed' ? ` Text: ${f.text}` : ''}`));
     if (result?.body_check?.state === 'checking') console.error('The message check is still running. Read the draft again with tb mail get <id> in a minute.');
+    if ((action === 'draft' || action === 'revise') && result?.state === 'draft' && process.env.TASK_ID !== 'controller')
+      console.error('The draft is not sent. It waits on the user as a Message card on the Waiting page of the dashboard. A file in your inbox tells you when the user decides.');
     console.log(JSON.stringify(result, null, 2));
     // task 171 sent a request for the controller this way and waited for an answer that no agent could give
     if (action === 'submit' && process.env.TASK_ID && process.env.TASK_ID !== 'controller') console.error('This note is in the user\'s Inbox. No agent reads it. To reach the controller, run tb send controller "<text>".');
@@ -560,15 +562,23 @@ switch (cmd) {
     if (process.env.TASK_ID !== 'controller') { console.error('tb pending: controller only'); process.exit(1); }
     if (rest[0] === 'list') {
       const json = has('--json');
-      const { items } = await call('GET', '/api/pending');
-      if (json) { console.log(JSON.stringify(items, null, 2)); break; }
-      if (!items.length) { console.log('Nothing waits on the user.'); break; }
+      const { items, messages = [] } = await call('GET', '/api/pending');
+      if (json) { console.log(JSON.stringify(has('--messages') ? messages : items, null, 2)); break; }
+      if (!items.length && !messages.length) { console.log('Nothing waits on the user.'); break; }
       for (const i of items) {
         console.log(`${i.id}  #${i.taskNum} ${i.agent} ${i.kind}${i.answerable ? '' : ' (answer in the terminal)'}: ${i.question}`);
         if (i.details?.command) console.log(`    command: ${i.details.command}`);
         for (const o of i.options) console.log(`    --option ${o.key}  ${o.label}${o.risk ? `  [${o.risk}: user only]` : ''}`);
         if (i.text) console.log(`    --text "..."  ${i.text.placeholder}`);
       }
+      // A2A Notes messages (server/a2anotes/cards.ts). The user decides them on the dashboard card.
+      for (const m of messages) {
+        const who = m.writer.num !== undefined ? `#${m.writer.num}` : m.writer.id;
+        console.log(`${m.card}  ${who} message ${m.stage}${m.notSent ? ' (not sent yet)' : ''}: ${m.direction === 'in' ? 'from' : 'to'} ${m.to.name} (${m.to.address}): ${m.subject}`);
+        console.log(`    message ${m.message} · waiting ${m.waitMin} min${m.reminder ? ' · REMINDER: nobody approved it yet' : ''} · approver ${m.approver}`);
+        console.log(`    ${m.check}${m.flags.length ? ` Flags: ${m.flags.join(', ')}.` : ''}`);
+      }
+      if (messages.length) console.log('Messages: the user approves them on the dashboard. Approve a draft with tb mail approve only when the user names that draft in this chat.');
     } else if (rest[0] === 'answer') {
       const option = flag('--option'), text = flag('--text'), userRequest = flag('--user-request');
       const id = args[2];

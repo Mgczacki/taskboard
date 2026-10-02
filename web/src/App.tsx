@@ -31,7 +31,7 @@ type Page = 'list' | 'board' | 'canvas' | 'graph' | 'waiting' | 'inbox' | 'permi
 // #list · #board · #canvas · #canvas:<view>  (view = g:<group> | needs | live | t:<id,id>) · #settings:<section>
 function parseHash(): { page: Page; view?: string } {
   const h = decodeURIComponent(location.hash.slice(1));
-  if (h === 'review') return { page: 'inbox' };
+  if (h === 'review' || h.startsWith('inbox:')) return { page: 'inbox' }; // #inbox:<messages|sent>:<message id> (MessageCard.tsx)
   if (h.startsWith('canvas:')) return { page: 'canvas', view: h.slice(7) };
   if (h.startsWith('settings:')) return { page: 'settings' }; // #settings:<section> (Settings scrolls to it)
   return { page: (['list', 'board', 'canvas', 'graph', 'waiting', 'inbox', 'permits', 'accounts', 'stats', 'settings'].includes(h) ? h : 'list') as Page };

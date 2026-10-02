@@ -229,12 +229,14 @@ async function guarded(req: express.Request, res: express.Response, summary: str
   if (store.get(actor)) store.update(actor, { status: 'needs-you', ask: `Approve: ${summary}`, statusSource: 'Waiting for your approval on the dashboard.' });
   res.status(202).json({ approval: a });
 }
+let a2aNotes: ReturnType<typeof mountA2ANotes> | undefined;
 app.get('/api/approvals', (_req, res) => res.json(approvals.all()));
 // ---------- the Waiting page: questions and dialogs that agents wait on (pending.ts) ----------
 app.get('/api/pending', (req, res) => {
   const actor = req.get('x-tb-actor');
   if (actor && actor !== 'controller') return res.status(403).json({ error: 'Only the user and the controller read the Waiting list.' });
-  res.json({ items: pending.list(), answered: pending.answeredList() });
+  // messages: the A2A Notes cards that wait on the user (server/a2anotes/cards.ts list), without message text
+  res.json({ items: pending.list(), answered: pending.answeredList(), messages: a2aNotes?.cards.list() ?? [] });
 });
 app.post('/api/pending/:id/answer', async (req, res) => {
   const actor = req.get('x-tb-actor') || '';
@@ -905,7 +907,7 @@ mountReview(app);
 // Messages between people and their agents, through A2A Notes (github.com/Mgczacki/a2a-notes) and its MCP server.
 // A file from it (a comment from an approval card, a routed message, a notice for the controller) goes into the task's
 // Taskboard inbox, and server/inbox-delivery.ts tells the agent, for every agent and status.
-mountA2ANotes(app, { delivery: inboxDelivery });
+a2aNotes = mountA2ANotes(app, { delivery: inboxDelivery });
 inboxDelivery.start();
 messageQueue.start();
 
