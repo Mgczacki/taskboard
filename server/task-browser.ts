@@ -24,7 +24,7 @@ export const DIR = join(TB_DIR, 'browsers');
 export const TEMPLATE = 'template';
 const ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,120}$/;
 
-export interface Meta { pid?: number; port?: number; started?: string; startMs?: number; tabs?: string[]; suspended?: boolean; idleStopped?: boolean; stoppedAt?: string; error?: string; copiedFromTemplate?: string; sound?: boolean; muted?: boolean }
+export interface Meta { pid?: number; port?: number; started?: string; startMs?: number; tabs?: string[]; suspended?: boolean; idleStopped?: boolean; stoppedAt?: string; error?: string; copiedFromTemplate?: string; sound?: boolean; muted?: boolean; sharp?: boolean }
 export interface Tab { id: string; title: string; url: string; faviconUrl?: string }
 
 const folder = (id: string) => { if (!ID.test(id)) throw new Error('Invalid browser id.'); return join(DIR, id); };
@@ -107,9 +107,12 @@ export function ensure(id: string): Promise<Meta & { ws: string }> {
     const portFile = join(profileDir(id), 'DevToolsActivePort');
     rmSync(portFile, { force: true });
     const urls = (meta.tabs || []).filter(u => /^(https?|file):/.test(u)).slice(0, 20);
+    const sharp = !!machine.get().browser?.sharp;
     const args = ['--headless=new', `--user-data-dir=${profileDir(id)}`, '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1',
       '--no-first-run', '--no-default-browser-check', '--hide-crash-restore-bubble', '--window-size=1280,800', '--disable-features=Translate,MediaRouter',
       ...(meta.sound ? [] : ['--mute-audio']), // headless Chrome plays on the Mac's speakers, so sound is off until the user turns it on
+      // Settings → Task browsers → Sharp view: only this start flag makes screencast frames larger than the CSS size
+      ...(sharp ? ['--force-device-scale-factor=2'] : []),
       'about:blank']; // headless Chrome takes one start page; the saved pages open below
     const log = openSync(join(folder(id), 'chrome.log'), 'a');
     const child = spawn(bin, args, { detached: true, stdio: ['ignore', log, log] });
@@ -126,7 +129,7 @@ export function ensure(id: string): Promise<Meta & { ws: string }> {
       writeMeta(id, { ...meta, pid: undefined, port: undefined, error: 'Chrome did not start. See chrome.log in the browser folder.' });
       throw new Error(`Chrome did not start for ${id}. See ${join(folder(id), 'chrome.log')}.`);
     }
-    const next: Meta = { ...meta, pid: child.pid, port, started: new Date().toISOString(), muted: !meta.sound, suspended: undefined, idleStopped: undefined, error: undefined, stoppedAt: undefined };
+    const next: Meta = { ...meta, pid: child.pid, port, started: new Date().toISOString(), muted: !meta.sound, sharp: sharp || undefined, suspended: undefined, idleStopped: undefined, error: undefined, stoppedAt: undefined };
     if (urls.length) await openSaved(port, v.webSocketDebuggerUrl, urls);
     next.startMs = Date.now() - t0;
     writeMeta(id, next);
@@ -241,7 +244,7 @@ export async function resetFromTemplate(id: string) {
 // The task was removed from Taskboard: stop its browser and delete its profile (it holds copied sign-ins).
 export async function remove(id: string) { await stop(id).catch(() => {}); rmSync(folder(id), { recursive: true, force: true }); }
 
-export interface Status { id: string; running: boolean; port?: number; tabs: Tab[]; profile: boolean; copiedFromTemplate?: string; suspended?: boolean; idleStopped?: boolean; idleStopMinutes: number; startMs?: number; started?: string; stoppedAt?: string; error?: string; memMb?: number | null; rssMb?: number | null; agents: number; viewers: number; chrome: string | null; sound: boolean; muted: boolean }
+export interface Status { id: string; running: boolean; port?: number; tabs: Tab[]; profile: boolean; copiedFromTemplate?: string; suspended?: boolean; idleStopped?: boolean; idleStopMinutes: number; startMs?: number; started?: string; stoppedAt?: string; error?: string; memMb?: number | null; rssMb?: number | null; agents: number; viewers: number; chrome: string | null; sound: boolean; muted: boolean; sharp: boolean }
 // a running browser has the mute flag it started with (none for a browser started before this setting existed); a
 // stopped browser gets the saved choice at its next start
 const mutedNow = (m: Meta, running: boolean) => running ? !!m.muted : !m.sound;
@@ -252,7 +255,7 @@ export async function status(id: string): Promise<Status> {
     profile: existsSync(profileDir(id)), copiedFromTemplate: m.copiedFromTemplate, suspended: m.suspended, idleStopped: m.idleStopped, idleStopMinutes: idleStopMs() / 60000,
     startMs: m.startMs, started: running ? m.started : undefined, stoppedAt: m.stoppedAt, error: m.error,
     // memMb is the footprint of the browser's processes (memory.ts). rssMb has the same value for older callers.
-    memMb: mem, rssMb: mem, agents: agentCount(id), viewers: viewers.get(id) || 0, chrome: chromePath(), sound: !!m.sound, muted: mutedNow(m, !!running) };
+    memMb: mem, rssMb: mem, agents: agentCount(id), viewers: viewers.get(id) || 0, chrome: chromePath(), sound: !!m.sound, muted: mutedNow(m, !!running), sharp: !!(running && m.sharp) };
 }
 
 export async function openTab(id: string, url: string): Promise<Tab> {
@@ -363,7 +366,7 @@ const FRAME_BACKLOG = 512 * 1024;
 interface PageConn { ws: WebSocket; target: string; next: number; pending: Map<number, (r: any) => void>; casting?: boolean }
 export function attachViewer(client: WebSocket, id: string, autostart: boolean) {
   let page: PageConn | null = null, active = '', known = new Set<string>(), chosen = false, closed = false;
-  let frameW = 0, frameH = 0;
+  let frameW = 0, frameH = 0, lastFrame = 0;
   count(viewers, id, 1);
   let size = { w: 1280, h: 800 };
   const send = (m: object) => { if (client.readyState === WebSocket.OPEN && client.bufferedAmount < 4 * 1024 * 1024) client.send(JSON.stringify(m)); };
@@ -379,9 +382,10 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     const i = history?.currentIndex ?? 0, n = history?.entries.length ?? 0;
     send({ type: 'nav', loading, canBack: i > 0, canForward: i < n - 1 });
   };
-  // deviceScaleFactor stays 1: a screencast frame of headless Chrome has the CSS size of the page at any scale factor,
-  // so a larger factor only makes the page render more pixels that the frame then drops
-  const viewport = () => call('Emulation.setDeviceMetricsOverride', { width: size.w, height: size.h, deviceScaleFactor: 1, mobile: false });
+  // deviceScaleFactor 0 keeps the factor that Chrome started with. An emulated factor does not change the size of a
+  // screencast frame; only the start flag --force-device-scale-factor does (Sharp view). With the flag and a factor of
+  // 1 here, the page would draw at 1x and the frame would only stretch it.
+  const viewport = () => call('Emulation.setDeviceMetricsOverride', { width: size.w, height: size.h, deviceScaleFactor: 0, mobile: false });
   async function open(target: string) {
     const m = await live(id); if (!m || closed) return;
     const list = await (await fetch(`http://127.0.0.1:${m.port}/json/list`)).json() as { id: string; type: string; webSocketDebuggerUrl: string }[];
@@ -405,10 +409,12 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
         // A frame goes as one binary message (the JPEG bytes), after a 'frameSize' message when the size changes.
         // A frame is dropped while the view still has 512 KB to receive, so a slow connection shows the newest frame
         // a little later instead of every old frame in a queue.
-        if (client.readyState !== WebSocket.OPEN || client.bufferedAmount > FRAME_BACKLOG) return;
+        // the limit grows with the frames: three frames of a sharp view are about 1.3 MB
+        if (client.readyState !== WebSocket.OPEN || client.bufferedAmount > Math.max(FRAME_BACKLOG, 3 * lastFrame)) return;
         const w = msg.params.metadata.deviceWidth, h = msg.params.metadata.deviceHeight;
         if (w !== frameW || h !== frameH) { frameW = w; frameH = h; send({ type: 'frameSize', w, h }); }
-        client.send(Buffer.from(msg.params.data, 'base64'));
+        const jpeg = Buffer.from(msg.params.data, 'base64'); lastFrame = jpeg.length;
+        client.send(jpeg);
       }
     });
     ws.on('close', () => { if (page === conn) page = null; if (conn.casting) { conn.casting = false; count(screencasts, id, -1); } });

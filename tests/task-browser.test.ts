@@ -16,8 +16,9 @@ process.env.TASKBOARD_TMUX_SOCKET = `tb-browser-${process.pid}`;
 mkdirSync(process.env.TASKBOARD_DIR);
 writeFileSync(join(root, 'state', 'machine.json'), JSON.stringify({ name: 'browser-test', controller: { autostart: false, remoteControl: false } }));
 const browser = await import('../server/task-browser.ts');
+const machine = await import('../server/machine.ts');
 const skip = browser.chromePath() ? false : 'Chrome is not installed';
-after(async () => { for (const id of ['template', 'b1', 'b2', 'b3']) await browser.stop(id).catch(() => {}); });
+after(async () => { for (const id of ['template', 'b1', 'b2', 'b3', 'b4']) await browser.stop(id).catch(() => {}); });
 
 function cdp(wsUrl: string, method: string, params: object = {}): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -121,4 +122,29 @@ test('keys typed in the view reach the page, and copy returns the selected text'
   for (let i = 0; i < 50 && left !== ''; i++) { left = await value('q.value'); await new Promise(r => setTimeout(r, 100)); }
   assert.equal(left, '', '⌘X deletes the selection');
   client.emit('close');
+});
+
+// Settings → Task browsers → Sharp view: a browser that starts with it streams frames with two pixels for each CSS
+// pixel, and the page keeps its CSS size (the view's size message sets 800 x 600).
+test('the sharp view streams frames twice the size of the page', { skip, timeout: 60000 }, async () => {
+  machine.update({ browserSharp: true });
+  try {
+    await browser.ensure('b4');
+    assert.equal((await browser.status('b4')).sharp, true);
+    const tab = await browser.openTab('b4', 'data:text/html,<h1>Sharp</h1>');
+    const sent: any[] = [];
+    const jpegs: string[] = [];
+    const client = Object.assign(new EventEmitter(), { readyState: WebSocket.OPEN, bufferedAmount: 0, send: (d: string | Buffer) => {
+      if (typeof d === 'string') { sent.push(JSON.parse(d)); return; }
+      for (let i = 2; i < d.length - 9; i++) if (d[i] === 0xff && (d[i + 1] === 0xc0 || d[i + 1] === 0xc2)) { jpegs.push(`${d.readUInt16BE(i + 7)}x${d.readUInt16BE(i + 5)}`); break; }
+    } });
+    browser.attachViewer(client as unknown as WebSocket, 'b4', false);
+    client.emit('message', JSON.stringify({ type: 'size', w: 800, h: 600 }));
+    client.emit('message', JSON.stringify({ type: 'select', id: tab.id }));
+    // the first frame after the size change can still have the old shape; the next one has the new size
+    for (let i = 0; i < 100 && !jpegs.includes('1600x1200'); i++) await new Promise(r => setTimeout(r, 100));
+    client.emit('close');
+    assert.ok(jpegs.includes('1600x1200'), `a frame has two pixels for each CSS pixel (frames: ${jpegs.join(', ')})`);
+  } finally { machine.update({ browserSharp: false }); await browser.stop('b4'); }
+  assert.equal((await browser.status('b4')).sharp, false);
 });
