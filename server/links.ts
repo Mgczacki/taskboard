@@ -45,11 +45,34 @@ export function resolve(ref: string): Task {
 }
 
 const label = (t: Task | undefined, id: string) => t ? `#${t.num}` : id;
-const live = () => store.all().filter(t => t.role !== 'controller');
+// The lists below are computed from all tasks once after each change of a task (store.version), not once per call:
+// a task list of 185 tasks called them about 900 times and took 50 ms (scripts/dashboard-load.mjs).
+let cache: { v: number; live: Task[]; incoming: Map<string, { from: string; link: TaskLink }[]>; waitedOn?: Map<string, string[]> } | null = null;
+function cached() {
+  if (cache?.v === store.version()) return cache;
+  const list = store.all().filter(t => t.role !== 'controller'), incoming = new Map<string, { from: string; link: TaskLink }[]>();
+  for (const t of list) for (const link of t.links || []) { const l = incoming.get(link.to); if (l) l.push({ from: t.id, link }); else incoming.set(link.to, [{ from: t.id, link }]); }
+  return (cache = { v: store.version(), live: list, incoming });
+}
+const live = () => cached().live;
 
 // Every link that points to a task, with the task that holds it.
 export function incoming(id: string): { from: string; link: TaskLink }[] {
-  return live().flatMap(t => (t.links || []).filter(l => l.to === id).map(link => ({ from: t.id, link })));
+  return cached().incoming.get(id) || [];
+}
+// the open tasks that wait on each task: an open dependsOn link to it, or to a task that it replaced
+function waitedOn(id: string): string[] {
+  const c = cached();
+  if (!c.waitedOn) {
+    const m = new Map<string, string[]>();
+    for (const x of c.live) {
+      if (x.status === 'archived') continue;
+      const to = new Set((x.links || []).filter(l => l.kind === 'dependsOn' && !depDone(l)).map(l => current(l.to)));
+      for (const id of to) { const l = m.get(id); if (l) l.push(x.id); else m.set(id, [x.id]); }
+    }
+    c.waitedOn = m;
+  }
+  return c.waitedOn.get(id) || [];
 }
 
 // The task that now does the work of a task: follows replaces links to the newest replacing task.
@@ -90,11 +113,11 @@ export function info(t: Task): LinkInfo | undefined {
   const count = (t.links || []).length + inc.length;
   if (!count) return undefined;
   const blockedBy = (t.links || []).filter(l => l.kind === 'dependsOn' && !depDone(l)).map(l => current(l.to));
-  const waitedOnBy = live().filter(x => x.status !== 'archived' && (x.links || []).some(l => l.kind === 'dependsOn' && !depDone(l) && current(l.to) === t.id)).map(x => x.id);
+  const waitedOnBy = waitedOn(t.id);
   const r: LinkInfo = { count };
   const s = state(t); if (s) r.state = s;
   if (blockedBy.length) r.blockedBy = [...new Set(blockedBy)];
-  if (waitedOnBy.length) r.waitedOnBy = waitedOnBy;
+  if (waitedOnBy.length) r.waitedOnBy = [...waitedOnBy];
   const rb = replacedBy(t.id); if (rb) r.replacedBy = rb;
   return r;
 }

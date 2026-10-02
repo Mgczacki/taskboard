@@ -1,6 +1,7 @@
 // Client state: the task list, kept current by the server's /ws/events stream.
 import { useSyncExternalStore } from 'react';
 import { restartBanner, retryDelay, type ServerHealth, type ServerLink } from './serverStatus';
+import { countMessage } from './perfStats';
 
 export type Agent = 'claude' | 'codex' | 'antigravity';
 export const AGENT_NAME: Record<Agent, string> = { claude: 'Claude Code', codex: 'Codex', antigravity: 'Antigravity' };
@@ -170,6 +171,7 @@ function connect() {
     retryTimer = setTimeout(() => { retryTimer = undefined; connect(); }, retryDelay(attempt++));
   };
   ws.onmessage = e => {
+    countMessage(e.data);
     const m = JSON.parse(e.data);
     if (m.type === 'stopping') { link = { state: 'restarting', since: Date.now(), stopReason: m.reason, stopDetail: m.detail }; publish(); return; }
     if (m.type === 'hello') {
@@ -186,6 +188,8 @@ function connect() {
       return;
     }
     if (m.type === 'tasks') tasks = m.tasks;
+    // the minutes that tasks wait (index.ts, each minute): only a task whose number changed gets a new object
+    if (m.type === 'waits') { const w = m.waits as Record<string, number>; if (!tasks.some(t => w[t.id] !== undefined && w[t.id] !== t.waitMin)) return; tasks = tasks.map(t => w[t.id] !== undefined && w[t.id] !== t.waitMin ? { ...t, waitMin: w[t.id] } : t); }
     if (m.type === 'groups') groups = m.groups;
     if (m.type === 'canvasOrder') canvasOrder = m.orders;
     if (m.type === 'approvals') approvals = m.approvals;
@@ -194,10 +198,17 @@ function connect() {
     if (m.type === 'machines') { loadMachines(); return; }
     if (m.type === 'removed') tasks = tasks.filter(t => t.id !== m.id);
     if (m.type === 'task') { const i = tasks.findIndex(t => t.id === m.task.id); if (i >= 0) tasks = tasks.map(t => t.id === m.task.id ? m.task : t); else tasks = [m.task, ...tasks]; notifyIfNeeded(m.task); }
-    publish();
+    // a message that changes nothing here (for example "accounts", which the Accounts page reads itself) draws nothing
+    if (!['tasks', 'waits', 'groups', 'canvasOrder', 'approvals', 'pending', 'runtime', 'removed', 'task'].includes(m.type)) return;
+    publishSoon();
   };
 }
-function publish() { snapshot = { tasks, groups, canvasOrder, approvals, pending, answered, machines, connected, runtime, confirmRisk, link, server, banner }; emit(); }
+function publish() { cancelSoon(); snapshot = { tasks, groups, canvasOrder, approvals, pending, answered, machines, connected, runtime, confirmRisk, link, server, banner }; emit(); }
+// Messages often come in bursts (a task, its question card and its runtime count). The page draws once for each burst:
+// at the next animation frame, or after 250 ms when the page is hidden and draws no frames.
+let soon: { frame: number; timer: ReturnType<typeof setTimeout> } | null = null;
+function cancelSoon() { if (soon) { cancelAnimationFrame(soon.frame); clearTimeout(soon.timer); soon = null; } }
+function publishSoon() { if (!soon) soon = { frame: requestAnimationFrame(publish), timer: setTimeout(publish, 250) }; }
 connect();
 // the network came back: try at once instead of waiting for the next retry
 if (typeof window !== 'undefined') {
@@ -207,9 +218,17 @@ if (typeof window !== 'undefined') {
 
 // the groups as they are now, for an Undo that runs after the page has re-rendered
 export const currentGroups = () => groups;
+const subscribe = (cb: () => void) => { subs.add(cb); return () => { subs.delete(cb); }; };
 export function useStore() {
-  return useSyncExternalStore(cb => { subs.add(cb); return () => subs.delete(cb); }, () => snapshot);
+  return useSyncExternalStore(subscribe, () => snapshot);
 }
+// One part of the store: the component draws again only when that part changes. pick must return a value that is kept
+// between changes (a field of the snapshot), not a new object or array.
+export function useStoreValue<T>(pick: (s: typeof snapshot) => T): T {
+  return useSyncExternalStore(subscribe, () => pick(snapshot));
+}
+// the task list now, for code that runs outside of drawing (event handlers, link providers)
+export const currentTasks = () => snapshot.tasks;
 
 // Tell the server which tasks are open, so a finished turn in a task you are looking at is not "unread".
 export function setViewing(ids: string[]) { viewingIds = ids; sendViewing(); }

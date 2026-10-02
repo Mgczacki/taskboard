@@ -55,18 +55,42 @@ const use = (session: string, v: Viewer) => { v.usedAt = Date.now(); sizeWindow(
 // - tells each terminal the mode, so the page shows "Scrolled back" and "Back to live" (a NUL byte, then JSON)
 // - asks tmux to redraw a terminal (refresh-client) that got nothing for 2 s before the pane's last output, outside
 //   copy mode; this has not been seen, it covers causes that could not be tested (at most once in 10 s)
-interface Watch { timer: NodeJS.Timeout; lastInput: number; modeActivity: number | null; copySeen: number; fresh: boolean; busy: boolean }
+// One `tmux list-panes -a` each second reads the mode of every watched session. Before, each session had its own
+// timer and its own `tmux display-message`: with 10 open terminals that was 10 new processes each second, and under
+// heavy machine load the start of one process blocked the event loop for up to 480 ms (scripts/dashboard-load.mjs).
+interface Watch { lastInput: number; modeActivity: number | null; copySeen: number; fresh: boolean; busy: boolean }
 const watches = new Map<string, Watch>();
 const control = (v: Viewer, m: object) => { if (v.ws.readyState === v.ws.OPEN) v.ws.send('\x00' + JSON.stringify(m)); };
-const FORMAT = ['#{pane_mode}', '#{scroll_position}', '#{selection_present}', '#{window_activity}', '#{window_width}', '#{window_height}'].join('|');
+const FIELDS = ['#{pane_mode}', '#{scroll_position}', '#{selection_present}', '#{window_activity}', '#{window_width}', '#{window_height}'];
+const FORMAT = FIELDS.join('|');
+const SEP = '|~|'; // as in tmux.ts listSessions: printable, so no locale changes it
+const ALL_FORMAT = ['#{session_name}', '#{window_active}', '#{pane_active}', ...FIELDS].join(SEP);
+let watchTimer: NodeJS.Timeout | null = null, watchBusy = false;
+async function checkAll() {
+  if (watchBusy) return;
+  watchBusy = true;
+  try {
+    const rows = new Map<string, string[]>();
+    for (const line of (await tmux('list-panes', '-a', '-F', ALL_FORMAT)).split('\n')) {
+      const [name, windowActive, paneActive, ...f] = line.split(SEP);
+      // the pane that display-message -t '=<session>:' reads: the active pane of the active window
+      if (name && windowActive === '1' && paneActive === '1' && f.length === FIELDS.length) rows.set(name, f);
+    }
+    await Promise.all([...watches.keys()].filter(s => rows.has(s)).map(s => check(s, rows.get(s))));
+  } catch { /* tmux did not answer; try again next second */ }
+  finally { watchBusy = false; }
+}
+const startWatching = () => { if (!watchTimer) watchTimer = setInterval(() => void checkAll(), 1000); };
+const stopWatching = () => { if (watchTimer && !watches.size) { clearInterval(watchTimer); watchTimer = null; } };
 
-async function check(session: string) {
+// fields: the values of FORMAT from checkAll; without them (the "Back to live" button) this session is read alone
+async function check(session: string, fields?: string[]) {
   const w = watches.get(session);
   if (!w || w.busy) return;
   w.busy = true;
   try {
     const target = '=' + session + ':';
-    const [mode, scrollText, sel, act, ww, wh] = (await tmux('display-message', '-p', '-t', target, FORMAT)).trim().split('|');
+    const [mode, scrollText, sel, act, ww, wh] = fields || (await tmux('display-message', '-p', '-t', target, FORMAT)).trim().split('|');
     const activity = Number(act) * 1000, scroll = Number(scrollText) || 0, selection = sel === '1';
     let copy = mode === 'copy-mode', left = false;
     if (copy) {
@@ -131,7 +155,7 @@ export function attach(ws: WebSocket, session: string, cols: number, rows: numbe
   viewers.get(session)!.add(me);
   sizeWindow(session);
   let watch = watches.get(session);
-  if (!watch) { watch = { timer: setInterval(() => void check(session), 1000), lastInput: 0, modeActivity: null, copySeen: 0, fresh: true, busy: false }; watches.set(session, watch); }
+  if (!watch) { watch = { lastInput: 0, modeActivity: null, copySeen: 0, fresh: true, busy: false }; watches.set(session, watch); startWatching(); }
   watch.fresh = true;
   const w = watch;
   // coalesce output: one WebSocket message per 8 ms instead of one per read from the pseudo-terminal
@@ -178,7 +202,7 @@ export function attach(ws: WebSocket, session: string, cols: number, rows: numbe
     onData.dispose(); onExit.dispose();
     try { p.kill(); } catch { /* already gone */ }
     viewers.get(session)?.delete(me);
-    if (!viewers.get(session)?.size) { clearInterval(w.timer); watches.delete(session); viewers.delete(session); quietUntil.delete(session); }
+    if (!viewers.get(session)?.size) { watches.delete(session); viewers.delete(session); quietUntil.delete(session); stopWatching(); }
     if (sizedBy.get(session) === me) sizedBy.delete(session);
     sizeWindow(session);
   });

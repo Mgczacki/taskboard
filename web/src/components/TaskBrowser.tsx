@@ -19,6 +19,7 @@ import { createRoot } from 'react-dom/client';
 import type { BrowserStatus, BrowserTab } from '../api';
 import { api } from '../api';
 import { mb } from '../runtimeText';
+import { countMessage } from '../perfStats';
 import { hit, keyLabel, keysText, useKeymap } from '../keys';
 
 // ---------- which browsers are popped out ----------
@@ -204,6 +205,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
       ws.current = s;
       s.binaryType = 'blob';
       s.onmessage = ev => {
+        countMessage(ev.data);
         // a binary message is one JPEG frame of the page
         if (ev.data instanceof Blob) { showFrame(ev.data); return; }
         const m = JSON.parse(ev.data);

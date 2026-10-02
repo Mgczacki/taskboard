@@ -38,7 +38,19 @@ export function docsFor(id: string) {
   const outbox: DocInfo[] = list(outboxDir(id)).map(f => ({ ...f, kind: kindOf(f.name), sentTo: receivers[f.name] || [] }));
   return { inbox, outbox };
 }
-export const counts = (id: string) => ({ inbox: list(inboxDir(id)).length, outbox: list(outboxDir(id)).length });
+// The number of files in a folder, read again only when the folder's modification time changed (a file was added,
+// removed or renamed). Every task list counts both folders of every task, archived ones included.
+const countCache = new Map<string, { mtime: number; n: number }>();
+function fileCount(dir: string) {
+  let mtime: number;
+  try { mtime = statSync(dir).mtimeMs; } catch { countCache.delete(dir); return 0; }
+  const c = countCache.get(dir);
+  if (c?.mtime === mtime) return c.n;
+  const n = list(dir).length;
+  countCache.set(dir, { mtime, n });
+  return n;
+}
+export const counts = (id: string) => ({ inbox: fileCount(inboxDir(id)), outbox: fileCount(outboxDir(id)) });
 
 // Tasks with new inbox files the agent has not been told about yet (Claude Code learns on its next prompt).
 const pendingFile = (id: string) => join(inboxDir(id), '.pending.json');

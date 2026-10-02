@@ -187,7 +187,10 @@ async function poll() {
   let tasks = null;
   try {
     const token = readFileSync(TOKEN_FILE, 'utf8').trim();
-    const r = await fetch(SERVER + '/api/tasks', { headers: { 'x-taskboard-token': token }, signal: AbortSignal.timeout(3000) });
+    // the summary has the fields read here, for the tasks that are not archived; a server without it answers 404
+    const get = path => fetch(SERVER + path, { headers: { 'x-taskboard-token': token }, signal: AbortSignal.timeout(3000) });
+    let r = await get('/api/tasks/summary');
+    if (r.status === 404) r = await get('/api/tasks');
     if (r.ok) tasks = await r.json();
   } catch { /* server down */ }
   const wasUp = serverUp;

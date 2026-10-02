@@ -6,6 +6,7 @@ import { api, autoReload, confirmEnd, DEFAULT_CONFIRM_RISK, setAutoReload, setCo
 import { reasonText, type ServerHealth } from '../serverStatus';
 import { setTaskThinBar, setWindowSee, taskThinBar, windowSee, windowSeeSupported } from '../controllerView';
 import { GlassControls, useGlass, useReadable } from './GlassControls';
+import { onPerfChange, perfOn, setPerfOn } from '../perfStats';
 import { ControllerBox, MaxTasksInput, loadAccounts } from './Accounts';
 import { MessageLevels } from './MessageLevels';
 import { Integrations } from './Integrations';
@@ -36,6 +37,8 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
   const [askEnd, setAskEnd] = useState(confirmEnd());
   const glass = useGlass(), readable = useReadable(glass);
   const [winSee, setWinSeeState] = useState(windowSee);
+  const [perfShown, setPerfShown] = useState(perfOn());
+  useEffect(() => onPerfChange(() => setPerfShown(perfOn())), []);
   const [thinBar, setThinBar] = useState(taskThinBar);
   const [accts, setAccts] = useState<Account[]>([]);
   const [routingRules, setRoutingRules] = useState('');
@@ -231,6 +234,12 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
                 <SettingItem id="autoReload">
                   <label className="opt" title="After a release (pnpm release), open Taskboard windows reload themselves and keep their place (page, canvas view, open task)"><input type="checkbox" checked={reloadOn} onChange={e => { setAutoReload(e.target.checked); setReloadOn(e.target.checked); }} /> Reload automatically when Taskboard is updated</label>
                   <div className="sub">Saved for this app or browser. When it is off, a bar offers the reload instead.</div>
+                </SettingItem>
+              </SettingGroup>
+              <SettingGroup section="browser" id="performance" title="Performance">
+                <SettingItem id="perfMonitor">
+                  <label className="opt" title="A small box at the bottom left: long tasks of this page, socket messages, the server's event loop delay, and the load and swap of the machine"><input type="checkbox" checked={perfShown} onChange={e => setPerfOn(e.target.checked)} /> Show the performance monitor</label>
+                  <div className="sub">Saved for this app or browser. When the machine is overloaded, it names the three processes with the most CPU and the most memory. It never stops a process.</div>
                 </SettingItem>
               </SettingGroup>
             </SettingSection>

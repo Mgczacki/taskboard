@@ -4,6 +4,7 @@
 // 10 s, so a tab for an ended session does not start a tmux attach every second. Code 4004 (no such task) stops.
 import { retryDelay } from './serverStatus';
 export const MISSING_SESSION_RETRY_MS = 10000;
+import { countMessage } from './perfStats';
 export function terminalSocket(url: () => string, handlers: {
   open: () => void;
   message: (event: MessageEvent) => void;
@@ -28,7 +29,7 @@ export function terminalSocket(url: () => string, handlers: {
       again();
     }, 10000);
     current.onopen = () => { clearTimeout(deadline); openedAt = Date.now(); if (!disposed) handlers.open(); };
-    current.onmessage = event => { if (!disposed) handlers.message(event); };
+    current.onmessage = event => { countMessage(event.data); if (!disposed) handlers.message(event); };
     current.onclose = event => {
       clearTimeout(deadline);
       if (disposed) return;
