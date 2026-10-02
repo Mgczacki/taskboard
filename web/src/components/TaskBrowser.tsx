@@ -161,7 +161,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate }: { id: st
   const [addr, setAddr] = useState('');
   const [editing, setEditing] = useState(false);
   const [framed, setFramed] = useState(false);
-  const img = useRef<HTMLImageElement>(null);
+  const canvas = useRef<HTMLCanvasElement>(null);
   const screen = useRef<HTMLDivElement>(null);
   const urlInput = useRef<HTMLInputElement>(null);
   const frameSize = useRef({ w: 1280, h: 800 });
@@ -169,16 +169,22 @@ function Live({ id, title, autostart, floating, archived, isTemplate }: { id: st
   const flashTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const selection = useRef(''), peekTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const peek = () => { clearTimeout(peekTimer.current); peekTimer.current = setTimeout(() => send({ type: 'copy', peek: true }), 120); };
-  const frameUrl = useRef('');
+  // Frames: createImageBitmap decodes each JPEG off the main thread, and the canvas draws it. Decodes can finish out
+  // of order, so a frame older than the one on the canvas is dropped.
+  const frames = useRef({ received: 0, drawn: 0, shown: false });
   const showFrame = (b: Blob) => {
-    if (!img.current) return;
-    const url = URL.createObjectURL(b.type ? b : new Blob([b], { type: 'image/jpeg' }));
-    img.current.src = url;
-    if (frameUrl.current) URL.revokeObjectURL(frameUrl.current);
-    frameUrl.current = url;
-    setFramed(true); setRunning(true);
+    const n = ++frames.current.received;
+    createImageBitmap(b).then(bm => {
+      const c = canvas.current, f = frames.current;
+      if (!c || n < f.drawn) { bm.close(); return; }
+      f.drawn = n;
+      if (c.width !== bm.width || c.height !== bm.height) { c.width = bm.width; c.height = bm.height; }
+      c.getContext('2d')?.drawImage(bm, 0, 0);
+      bm.close();
+      if (!f.shown) { f.shown = true; setFramed(true); setRunning(true); }
+    }, () => { /* a frame that does not decode: the next one replaces it */ });
   };
-  useEffect(() => () => { if (frameUrl.current) URL.revokeObjectURL(frameUrl.current); }, []);
+  const clearFrames = () => { frames.current.shown = false; frames.current.drawn = frames.current.received; const c = canvas.current; c?.getContext('2d')?.clearRect(0, 0, c.width, c.height); };
   const send = (m: object) => { if (ws.current?.readyState === WebSocket.OPEN) ws.current.send(JSON.stringify(m)); };
   const note = (text: string) => { setFlash(text); clearTimeout(flashTimer.current); flashTimer.current = setTimeout(() => setFlash(''), 1600); };
 
@@ -189,7 +195,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate }: { id: st
       ws.current = s;
       s.binaryType = 'blob';
       s.onmessage = ev => {
-        // a binary message is one JPEG frame of the page; the browser decodes a Blob URL off the main thread
+        // a binary message is one JPEG frame of the page
         if (ev.data instanceof Blob) { showFrame(ev.data); return; }
         const m = JSON.parse(ev.data);
         if (m.type === 'frameSize') frameSize.current = { w: m.w, h: m.h };
@@ -202,7 +208,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate }: { id: st
           if (!m.peek && text && text !== selection.current) navigator.clipboard?.writeText(text).then(() => note('Copied'), () => {});
           selection.current = text;
         }
-        else if (m.type === 'state') { setRunning(m.running); setState(m); setMuted(m.muted ?? null); if (!m.running) { setTabs([]); setActive(''); setFramed(false); if (img.current) img.current.removeAttribute('src'); } }
+        else if (m.type === 'state') { setRunning(m.running); setState(m); setMuted(m.muted ?? null); if (!m.running) { setTabs([]); setActive(''); setFramed(false); clearFrames(); } }
         else if (m.type === 'error') setErr(m.message);
       };
       s.onopen = () => sendSize();
@@ -227,17 +233,27 @@ function Live({ id, title, autostart, floating, archived, isTemplate }: { id: st
 
   // mouse and keys
   const point = (e: { clientX: number; clientY: number }) => {
-    const r = img.current!.getBoundingClientRect();
+    const r = canvas.current!.getBoundingClientRect();
     return { x: Math.round((e.clientX - r.left) * frameSize.current.w / r.width), y: Math.round((e.clientY - r.top) * frameSize.current.h / r.height) };
   };
-  const lastMove = useRef(0);
+  // Moves go out at most once for each animation frame (the newest position). A press, a release or the wheel first
+  // sends the waiting move, so the page gets the events in the order the user made them.
+  const pendingMove = useRef<{ msg: object; raf: number } | null>(null);
+  const flushMove = () => { const p = pendingMove.current; if (!p) return; cancelAnimationFrame(p.raf); pendingMove.current = null; send(p.msg); };
   const mouse = (event: string, e: React.MouseEvent, clickCount = 0) => {
-    if (!img.current) return;
-    send({ type: 'mouse', event, ...point(e), button: event === 'mouseMoved' ? (e.buttons ? 'left' : 'none') : BUTTON[e.button] || 'left', buttons: e.buttons, clickCount, modifiers: MOD(e) });
+    if (!canvas.current) return;
+    const msg = { type: 'mouse', event, ...point(e), button: event === 'mouseMoved' ? (e.buttons ? 'left' : 'none') : BUTTON[e.button] || 'left', buttons: e.buttons, clickCount, modifiers: MOD(e) };
+    if (event === 'mouseMoved') {
+      if (pendingMove.current) pendingMove.current.msg = msg;
+      else pendingMove.current = { msg, raf: requestAnimationFrame(flushMove) };
+      return;
+    }
+    flushMove(); send(msg);
   };
+  useEffect(() => () => { if (pendingMove.current) cancelAnimationFrame(pendingMove.current.raf); }, []);
   useEffect(() => {
     const el = screen.current; if (!el) return;
-    const wheel = (e: WheelEvent) => { e.preventDefault(); if (img.current) send({ type: 'mouse', event: 'mouseWheel', ...point(e), dx: e.deltaX, dy: e.deltaY, modifiers: MOD(e) }); };
+    const wheel = (e: WheelEvent) => { e.preventDefault(); flushMove(); if (canvas.current) send({ type: 'mouse', event: 'mouseWheel', ...point(e), dx: e.deltaX, dy: e.deltaY, modifiers: MOD(e) }); };
     el.addEventListener('wheel', wheel, { passive: false });
     return () => el.removeEventListener('wheel', wheel);
   }, [running]);
@@ -351,12 +367,12 @@ function Live({ id, title, autostart, floating, archived, isTemplate }: { id: st
       <div className={`bw-screen ${framed ? 'framed' : ''}`} ref={screen} tabIndex={0}
         onMouseDown={e => { screen.current?.focus(); mouse('mousePressed', e, e.detail || 1); }}
         onMouseUp={e => { mouse('mouseReleased', e, e.detail || 1); peek(); }}
-        onMouseMove={e => { const now = Date.now(); if (now - lastMove.current > 40) { lastMove.current = now; mouse('mouseMoved', e); } }}
+        onMouseMove={e => mouse('mouseMoved', e)}
         onContextMenu={e => e.preventDefault()}
         onKeyDown={e => key(e, true)} onKeyUp={e => key(e, false)}
         onPaste={e => { const text = e.clipboardData.getData('text'); if (text) send({ type: 'text', text }); e.preventDefault(); }}
         onCopy={e => copy(e, false)} onCut={e => copy(e, true)}>
-        <img ref={img} alt="" draggable={false} />
+        <canvas ref={canvas} />
         {!framed && <div className="bw-wait"><span className="bw-spin" />{running === null ? 'Connecting…' : 'Waiting for the page…'}</div>}
       </div>
     </div>

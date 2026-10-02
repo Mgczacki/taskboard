@@ -538,8 +538,8 @@ table.keyset .keycell { text-align: right; white-space: normal; }
 .bw-chip.bw-leave kbd { font: inherit; }
 .bw.kb .bw-chip.bw-leave { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
 .bw-screen:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
-.bw-screen img { display: block; width: 100%; height: 100%; object-fit: fill; user-select: none; }
-.bw-screen img:not([src]) { visibility: hidden; }
+.bw-screen canvas { display: block; width: 100%; height: 100%; user-select: none; }
+.bw-screen:not(.framed) canvas { visibility: hidden; }
 .bw-wait { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 10px; color: var(--dim); background: var(--bg); }
 
 .bw-empty { flex: 1; display: flex; align-items: flex-start; justify-content: center; padding: 48px 20px; overflow: auto; background: var(--bg); }

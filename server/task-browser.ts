@@ -379,6 +379,8 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     const i = history?.currentIndex ?? 0, n = history?.entries.length ?? 0;
     send({ type: 'nav', loading, canBack: i > 0, canForward: i < n - 1 });
   };
+  // deviceScaleFactor stays 1: a screencast frame of headless Chrome has the CSS size of the page at any scale factor,
+  // so a larger factor only makes the page render more pixels that the frame then drops
   const viewport = () => call('Emulation.setDeviceMetricsOverride', { width: size.w, height: size.h, deviceScaleFactor: 1, mobile: false });
   async function open(target: string) {
     const m = await live(id); if (!m || closed) return;
