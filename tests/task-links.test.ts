@@ -155,3 +155,23 @@ test('the summary of a linked set gives counts, the longest chain in work order 
   // one task alone still gives its own set
   assert.equal(links.setsFor([lone.id]).sets.length, 1);
 });
+
+test('suggestions come from task parents, sent documents and equal titles, and a dismiss hides one', async () => {
+  const docs = await import('../server/docs.ts');
+  const parent = task('suggest parent'), child = task('suggest child', { parent: parent.id });
+  const a = task('Same title here'), b = task('same title here ');
+  const sender = task('sender'), receiver = task('receiver');
+  const { writeFileSync, mkdirSync } = await import('node:fs');
+  mkdirSync(join(root, 'vault', 'tasks', sender.id, 'outbox'), { recursive: true });
+  writeFileSync(join(root, 'vault', 'tasks', sender.id, 'outbox', 'handoff.md'), 'x');
+  docs.send(sender.id, 'handoff.md', receiver.id);
+  const s = links.suggestions();
+  const has = (from: string, to: string, kind: string) => s.find(x => x.from === from && x.to === to && x.kind === kind);
+  assert.match(has(child.id, parent.id, 'followUpOf')!.reason, new RegExp(`#${parent.num} started this task`));
+  assert.match(has(receiver.id, sender.id, 'followUpOf')!.reason, /sent it handoff.md/);
+  assert.ok(has(b.id, a.id, 'replaces'));
+  links.dismiss(has(b.id, a.id, 'replaces')!);
+  assert.equal(links.suggestions().some(x => x.from === b.id && x.to === a.id), false);
+  links.add(child.id, { kind: 'followUpOf', to: parent.id }, user);
+  assert.equal(links.suggestions().some(x => x.from === child.id && x.to === parent.id), false);
+});

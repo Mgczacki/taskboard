@@ -14,6 +14,9 @@
 // - a replaces link parks the replaced task (unless it is parked or archived) and tells it in its inbox
 // - when a task becomes ready, Taskboard tells it and the controller in their inboxes
 import { randomBytes } from 'node:crypto';
+import { readFileSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { TB_DIR } from './config.ts';
 import * as docs from './docs.ts';
 import * as store from './store.ts';
 import type { LinkActor, LinkKind, Task, TaskLink } from './store.ts';
@@ -329,4 +332,42 @@ export function setsFor(ids: string[]) {
     sets.push(set);
   }
   return { sets: sets.map(summary), unlinked };
+}
+
+// Suggestions: links that the data Taskboard already has points to. They change nothing until someone confirms one
+// (which adds the link) or dismisses it (saved in ~/.taskboard/link-suggestions-dismissed.json).
+// - a task started by another task (parent): follow-up of that task
+// - a document that one task sent to another (tb doc send): the receiver is a follow-up of the sender
+// - two tasks with the same title: the newer task replaces the older one
+// Only tasks that are not archived, and pairs with no link between them in either direction.
+export interface Suggestion { from: string; to: string; kind: LinkKind; reason: string }
+const dismissedFile = () => join(TB_DIR, 'link-suggestions-dismissed.json');
+const sugKey = (s: { from: string; to: string; kind: string }) => `${s.from}|${s.to}|${s.kind}`;
+function dismissed(): Set<string> { try { return new Set(JSON.parse(readFileSync(dismissedFile(), 'utf8'))); } catch { return new Set(); } }
+export function dismiss(s: { from: string; to: string; kind: string }) {
+  const d = dismissed(); d.add(sugKey(s));
+  writeFileSync(dismissedFile(), JSON.stringify([...d], null, 2));
+}
+export function suggestions(): Suggestion[] {
+  const tasks = live().filter(t => t.status !== 'archived');
+  const byId = new Map(tasks.map(t => [t.id, t]));
+  const linked = (a: string, b: string) => (byId.get(a)?.links || []).some(l => l.to === b) || (byId.get(b)?.links || []).some(l => l.to === a);
+  const out = new Map<string, Suggestion>();
+  const put = (from: string, to: string, kind: LinkKind, reason: string) => {
+    if (from === to || !byId.has(from) || !byId.has(to) || linked(from, to)) return;
+    const k = sugKey({ from, to, kind });
+    const had = out.get(k);
+    out.set(k, { from, to, kind, reason: had ? `${had.reason} ${reason}` : reason });
+  };
+  for (const t of tasks) if (t.parent && t.parent !== 'controller' && byId.has(t.parent)) put(t.id, t.parent, 'followUpOf', `#${byId.get(t.parent)!.num} started this task.`);
+  for (const e of docs.edges()) if (byId.has(e.from)) put(e.to, e.from, 'followUpOf', `#${byId.get(e.from)!.num} sent it ${e.name}.`);
+  const byTitle = new Map<string, Task[]>();
+  for (const t of tasks) { const k = t.title.trim().toLowerCase(); if (k) (byTitle.get(k) || byTitle.set(k, []).get(k)!).push(t); }
+  for (const list of byTitle.values()) {
+    if (list.length < 2) continue;
+    const sorted = [...list].sort((a, b) => a.num - b.num), newest = sorted[sorted.length - 1];
+    for (const old of sorted.slice(0, -1)) put(newest.id, old.id, 'replaces', `Both tasks have the title “${newest.title}”.`);
+  }
+  const d = dismissed();
+  return [...out.values()].filter(s => !d.has(sugKey(s)));
 }

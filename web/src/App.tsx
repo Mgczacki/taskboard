@@ -11,6 +11,8 @@ import { Terminal } from './components/Terminal';
 import { AgentChip, Dot, StatusLabel, ThreeLines } from './components/ui';
 import { BoardView, ListView } from './components/Views';
 import { GraphView } from './components/Graph';
+import { LinkedWork, LinkMarker } from './components/Links';
+import { isReplaced, linkOrder, treeDepth, waitingCount } from './links';
 import { InboxPage } from './components/Mail';
 import { FlaggedBody, request as messageRequest } from './components/messages';
 import { AccountsPage } from './components/Accounts';
@@ -136,6 +138,12 @@ export function App() {
   const [newTaskToFocus, setNewTaskToFocus] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(() => location.hash === '#import');
   const [triage, setTriage] = useState(false);
+  // the linked work overview (components/Links.tsx), opened from any view with showLinkedWork() in links.ts
+  const [linked, setLinked] = useState<{ task?: string; group?: string } | null>(null);
+  useEffect(() => { const on = (e: Event) => setLinked((e as CustomEvent<{ task?: string; group?: string }>).detail); addEventListener('tb-linked-work', on); return () => removeEventListener('tb-linked-work', on); }, []);
+  // groups opened as a tree in the sidebar
+  const [openGroups, setOpenGroups] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem('tb-rail-groups') || '[]'); } catch { return []; } });
+  const toggleGroup = (id: string) => setOpenGroups(l => { const n = l.includes(id) ? l.filter(x => x !== id) : [...l, id]; try { localStorage.setItem('tb-rail-groups', JSON.stringify(n)); } catch { /* storage off */ } return n; });
   const [cardComments, setCardComments] = useState<Record<string, string>>({}); // comments for Send back on message cards
   const [railHidden, setRailHidden] = useState(() => SOLO || localStorage.getItem('tb-rail') === 'hidden');
   const [focusMode, setFocusMode] = useState(false);
@@ -213,7 +221,7 @@ export function App() {
     else if (view === 'needs' || (view === 'ungrouped' && groups.some(g => g.tasks.includes(id)))) setView('live');
     setOpenId(null); go('canvas');
   };
-  const item = (t: Task) => <div key={t.id} className="rail-item" onClick={() => setOpenId(t.id)}><Dot s={t.status} /><span className="t">{t.title}</span><span className="m">{t.agent === 'claude' ? 'CC' : t.agent === 'codex' ? 'CX' : 'AG'}</span></div>;
+  const item = (t: Task) => <div key={t.id} className="rail-item" onClick={() => setOpenId(t.id)}><Dot s={t.status} /><span className="t">{t.title}</span><LinkMarker t={t} tasks={tasks} /><span className="m">{t.agent === 'claude' ? 'CC' : t.agent === 'codex' ? 'CX' : 'AG'}</span></div>;
   const hideChrome = focusMode && page === 'canvas';
   // pending reviews for the sidebar count
   const [reviewCount, setReviewCount] = useState(0);
@@ -242,9 +250,11 @@ export function App() {
           </div>}
           <div className="rail-sec"><h6>Groups<span className="addg" title="New group" onClick={() => setGroupPrompt([])}>＋</span></h6>
             {groups.map(g => { const w = g.tasks.filter(id => ATTN.includes(tasks.find(t => t.id === id)?.status as Task['status'])).length; return (
-              <div key={g.id} className={`rail-item ${page === 'canvas' && view === 'g:' + g.id ? 'on' : ''}`} onClick={() => { setView('g:' + g.id); setPage('canvas'); }}>
+              <div key={g.id}><div className={`rail-item ${page === 'canvas' && view === 'g:' + g.id ? 'on' : ''}`} onClick={() => { setView('g:' + g.id); setPage('canvas'); }}>
+                <span className="gcaret" role="button" aria-label={openGroups.includes(g.id) ? 'Close the task tree' : 'Open the task tree'} title="Show the tasks of this group, each under the task it waits for" onClick={e => { e.stopPropagation(); toggleGroup(g.id); }}>{openGroups.includes(g.id) ? '▾' : '▸'}</span>
                 <span className="dot" style={{ background: g.color, borderRadius: 3 }} /><span className="t">{g.name}</span><span className="m">{w > 0 && <span style={{ color: 'var(--st-needs)' }}>● </span>}{g.tasks.length}</span>
-                <button className="gopen" title="Open in its own window" onClick={e => { e.stopPropagation(); openInWindow('g:' + g.id); }}>↗</button></div>); })}
+                <button className="gopen" title="Open in its own window" onClick={e => { e.stopPropagation(); openInWindow('g:' + g.id); }}>↗</button></div>
+                {openGroups.includes(g.id) && <GroupTree g={g} tasks={tasks} open={setOpenId} />}</div>); })}
             {!groups.length && <div className="rail-empty">No groups yet</div>}
           </div>
         </div>
@@ -293,7 +303,8 @@ export function App() {
       {updateReady && <div className="update-bar">A new version of Taskboard is ready. <button className="btn primary" onClick={() => location.reload()}>Reload</button><button className="btn ghost" onClick={() => setUpdateReady(false)}>Later</button></div>}
       {keysHelp && <KeysHelp close={() => setKeysHelp(false)} settings={() => { setKeysHelp(false); go('settings'); location.hash = 'settings:keys'; }} />}
       {addMachine && <AddMachine close={() => setAddMachine(false)} />}
-      {triage && <Triage queue={queue} close={() => setTriage(false)} open={id => { setTriage(false); setOpenId(id); }} />}
+      {linked && <LinkedWork q={linked} tasks={tasks} close={() => setLinked(null)} onGo={id => setOpenId(id)} />}
+      {triage && <Triage queue={queue} tasks={tasks} close={() => setTriage(false)} open={id => { setTriage(false); setOpenId(id); }} />}
       {approvals.some(a => (page !== 'permits' || a.action !== 'permit') && (a.state === 'pending' || (a.action === 'permit' && a.state === 'running'))) && <div className="approvals">{approvals.filter(a => (page !== 'permits' || a.action !== 'permit') && (a.state === 'pending' || (a.action === 'permit' && a.state === 'running'))).map(a => (
         <div key={a.id} className={`approval${a.action === 'git-push' ? ' push-card' : ''}`}>
           {a.action === 'permit' && a.payload?.permitId ? <PermitDetails id={a.payload.permitId} decision openTask={setOpenId} /> : a.action === 'git-push' && a.payload?.pushId ? <><div className="ap-h"><span className="dot needs-you" /><b>Task #{allTasks.find(t => t.id === a.actor)?.num || a.actor} asks to push</b><span className="sub">Expires {new Date(Date.parse(a.created) + 600000).toLocaleTimeString()}</span></div><pre className="ap-d">{a.detail}</pre><textarea className="routing-rule" rows={2} aria-label="Push decision comment" placeholder="Comment for the task" value={cardComments[a.id] || ''} onChange={e => setCardComments(c => ({ ...c, [a.id]: e.target.value }))} /><div className="ap-a"><button className="btn primary" onClick={() => void api.decidePush(a.payload!.pushId!, true, cardComments[a.id] || '').catch(e => toast(String(e.message || e)))}>{a.payload?.state?.forcePush ? 'Approve force push' : 'Approve push'}</button><button className="btn" onClick={() => void api.decidePush(a.payload!.pushId!, false, cardComments[a.id] || '').catch(e => toast(String(e.message || e)))}>Deny</button><button className="btn ghost" onClick={() => setOpenId(a.actor)}>Open task</button></div></> : a.action === 'tool-refusal' ? <><div className="ap-h"><span className="dot needs-you" /><b>Task #{allTasks.find(t => t.id === a.actor)?.num || a.actor} had a tool call refused</b></div><pre className="ap-d">{a.detail}</pre><div className="ap-a">{a.payload?.canPermit && <button className="btn primary" onClick={() => void api.permitRefusal(a.id).catch(e => toast(String(e.message || e)))}>Allow this once</button>}<button className="btn" onClick={() => void api.decide(a.id, false)}>Deny</button><button className="btn ghost" onClick={() => setOpenId(a.actor)}>Open task</button></div></> : <>
@@ -407,7 +418,39 @@ function GroupPrompt({ ids, close, done }: { ids: string[]; close: () => void; d
   );
 }
 
-function Triage({ queue, close, open }: { queue: Task[]; close: () => void; open: (id: string) => void }) {
+// The tasks of a group in the sidebar, each under the open task it waits for. Replaced tasks are one row at the end.
+function GroupTree({ g, tasks, open }: { g: Group; tasks: Task[]; open: (id: string) => void }) {
+  const [showReplaced, setShowReplaced] = useState(false);
+  const list = g.tasks.map(id => tasks.find(t => t.id === id)).filter((t): t is Task => !!t && t.status !== 'archived');
+  const replaced = list.filter(isReplaced);
+  const rows = treeDepth(linkOrder(showReplaced ? list : list.filter(t => !isReplaced(t)), tasks), tasks, 'deps');
+  return <>
+    {rows.map(({ t, depth, also }) => <div key={t.id} className="rail-item lk-child" style={{ '--depth': depth } as React.CSSProperties} onClick={() => open(t.id)} title={`#${t.num} ${t.title}${also.length ? ` · also blocked by ${also.map(id => '#' + tasks.find(x => x.id === id)?.num).join(' ')}` : ''}`}>
+      {depth > 0 && <span className="lk-indent">└</span>}<Dot s={t.status} /><span className="t">#{t.num} {t.title}</span><LinkMarker t={t} tasks={tasks} /></div>)}
+    {replaced.length > 0 && <div className="rail-item lk-child" onClick={() => setShowReplaced(x => !x)} title={replaced.map(t => `#${t.num} ${t.title}`).join('\n')}><span className="lk-mk super">⤳</span><span className="t">{showReplaced ? 'Hide' : 'Show'} {replaced.length} replaced</span></div>}
+    {!list.length && <div className="rail-empty lk-child">No live tasks</div>}
+  </>;
+}
+
+// Triage order: a task that other tasks wait on comes first (rule 1), then a task that nothing else blocks (rule 2),
+// then the longest wait (rule 3, the old order). The header switches back to the longest wait first.
+function triageWhy(t: Task, tasks: Task[]) {
+  const n = waitingCount(t, tasks), blocked = t.link?.state === 'blocked';
+  const num = (id: string) => '#' + (tasks.find(x => x.id === id)?.num ?? '?');
+  return {
+    n, blocked,
+    text: [n ? `${n} task${n === 1 ? '' : 's'} wait${n === 1 ? 's' : ''} on it.` : 'No task waits on it.',
+      blocked ? `Also blocked by ${(t.link?.blockedBy || []).map(num).join(' ')}, so your answer does not finish it.` : 'Nothing else blocks it.'].join(' '),
+  };
+}
+function Triage({ queue: byWait, tasks, close, open }: { queue: Task[]; tasks: Task[]; close: () => void; open: (id: string) => void }) {
+  const [order, setOrder] = useState<'links' | 'wait'>(() => localStorage.getItem('tb-triage-order') === 'wait' ? 'wait' : 'links');
+  const setOrderSaved = (o: 'links' | 'wait') => { setOrder(o); try { localStorage.setItem('tb-triage-order', o); } catch { /* storage off */ } };
+  const queue = useMemo(() => order === 'wait' ? byWait : [...byWait].sort((a, b) => {
+    const x = triageWhy(a, tasks), y = triageWhy(b, tasks);
+    return y.n - x.n || Number(x.blocked) - Number(y.blocked) || b.waitMin - a.waitMin;
+  }), [byWait, tasks, order]);
+  const blockers = order === 'links' ? tasks.filter(t => !ATTN.includes(t.status) && t.status !== 'archived' && !isReplaced(t) && (t.link?.waitedOnBy?.length || 0) > 0) : [];
   const [i, setI] = useState(0);
   const [hidden, setHidden] = useState<Set<string>>(new Set());
   const [ending, setEnding] = useState<string | null>(null);
@@ -445,12 +488,16 @@ function Triage({ queue, close, open }: { queue: Task[]; close: () => void; open
   return (
     <div className="triage open" onMouseDown={e => { if (e.target === e.currentTarget) close(); }}>
       <div className="tr-box">
-        <div className="tr-head"><h2>Triage</h2><span className="sub">{visible.length ? `${Math.min(i, visible.length - 1) + 1} of ${visible.length} waiting · longest first` : 'Nothing is waiting for you'}</span><span style={{ flex: 1 }} /><span className="sub">{keyLabel('triageNext') && <><kbd>{keyLabel('triageNext')}</kbd> next </>}{keyLabel('triage') && <><kbd>{keyLabel('triage')}</kbd> close</>}</span><button className="btn ghost icon" onClick={close}>✕</button></div>
+        <div className="tr-head"><h2>Triage</h2><span className="sub">{visible.length ? `${Math.min(i, visible.length - 1) + 1} of ${visible.length} waiting · ${order === 'links' ? 'tasks that unblock others first' : 'longest first'}` : 'Nothing is waiting for you'}</span>
+          <span className="tr-order">Order <span className="seg"><button className={order === 'links' ? 'on' : ''} onClick={() => setOrderSaved('links')} title="Tasks that other tasks wait on first, then tasks that nothing else blocks, then the longest wait">Unblocks others</button><button className={order === 'wait' ? 'on' : ''} onClick={() => setOrderSaved('wait')}>Longest wait</button></span></span><span style={{ flex: 1 }} /><span className="sub">{keyLabel('triageNext') && <><kbd>{keyLabel('triageNext')}</kbd> next </>}{keyLabel('triage') && <><kbd>{keyLabel('triage')}</kbd> close</>}</span><button className="btn ghost icon" onClick={close}>✕</button></div>
         {t ? <div className="tr-main">
-          <div className="tr-list">{visible.map((x, k) => <div key={x.id} className={`tq ${x.id === t.id ? 'on' : ''}`} onClick={() => { setI(k); setEnding(null); }}><Dot s={x.status} /><span className="t">#{x.num} {x.title}</span><span className="m">{fmtWait(x.waitMin)}</span></div>)}</div>
+          <div className="tr-list">{visible.map((x, k) => <div key={x.id} className={`tq ${x.id === t.id ? 'on' : ''}`} onClick={() => { setI(k); setEnding(null); }}><Dot s={x.status} /><span className="t">#{x.num} {x.title}{order === 'links' && <span className="why">{triageWhy(x, tasks).text}</span>}</span><LinkMarker t={x} tasks={tasks} /><span className="m">{fmtWait(x.waitMin)}</span></div>)}
+            {blockers.length > 0 && <><div className="tr-sec" title="These tasks do not wait for you, but other tasks wait on them">Blocks others, does not wait for you</div>
+              {blockers.map(x => <div key={x.id} className="tq" onClick={() => open(x.id)}><Dot s={x.status} /><span className="t">#{x.num} {x.title}<span className="why">{x.link!.waitedOnBy!.map(id => '#' + tasks.find(y => y.id === id)?.num).join(' ')} wait{x.link!.waitedOnBy!.length === 1 ? 's' : ''} on it.</span></span><span className="m">{x.status}</span></div>)}</>}</div>
           <div className="tr-item">
             <div className="tr-title"><Dot s={t.status} /><span className="num">#{t.num}</span><h3>{t.title}</h3><StatusLabel s={t.status} /><span className="waitchip">waiting {fmtWait(t.waitMin)}</span><AgentChip a={t.agent} /></div>
             <ThreeLines t={t} fixed />
+            {order === 'links' && (w => <div className="tr-why"><b>Why this place</b><ol><li>{w.n ? `${w.n} open task${w.n === 1 ? '' : 's'} wait${w.n === 1 ? 's' : ''} on it.` : 'No task waits on it.'}</li><li>{w.blocked ? `It is also blocked by ${(t.link?.blockedBy || []).map(id => '#' + tasks.find(x => x.id === id)?.num).join(' ')}. Your answer does not finish it.` : 'Nothing else blocks it. Your answer lets it continue.'}</li><li>Waiting {fmtWait(t.waitMin)}.</li></ol></div>)(triageWhy(t, tasks))}
             <div className="tr-term"><Terminal key={t.id} taskId={t.id} autoFocus /></div>
             {error?.id === t.id && <div className="banner stopped" role="alert">{error.text}</div>}
             <div className="tr-actions"><button className="btn" onClick={() => open(t.id)} title="Terminal, log and documents of this task">Open task panel</button><button className="btn" onClick={() => api.setStatus(t.id, 'parked')} title="Take it off Needs you, Unread and triage. The agent is not stopped; the task comes back by itself the next time the agent works or finishes a turn.">Set aside</button>{ending === t.id ? <><span className="sel-warn">End this task and archive it? Ending it stops the agent.</span><button className="btn danger" disabled={busy !== null} onClick={() => void endAndArchive(t)}>Yes, end and archive</button><button className="btn ghost" onClick={() => setEnding(null)}>Cancel</button></> : <button className="btn" disabled={busy !== null} onClick={() => confirmTriageArchive(t) ? setEnding(t.id) : void endAndArchive(t)} title="Ends the task, then archives it">{busy === t.id ? 'Ending…' : 'End and archive'}</button>}<span style={{ flex: 1 }} /><button className="btn" onClick={() => setI(x => (x + 1) % visible.length)}>Skip to next {keyLabel('triageNext')}</button></div>

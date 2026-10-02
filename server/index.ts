@@ -1056,6 +1056,12 @@ app.post('/api/open-local-file', (req, res) => {
 });
 // Links between tasks (server/links.ts). x-tb-actor tells who adds a link: no header is the user.
 app.get('/api/links', (_req, res) => res.json(links.all()));
+app.get('/api/links/suggestions', (_req, res) => res.json(links.suggestions()));
+app.post('/api/links/suggestions/dismiss', (req, res) => {
+  const { from, to, kind } = req.body || {};
+  if (!from || !to || !links.KINDS.includes(kind)) return fail(res, 'from, to and kind are required');
+  links.dismiss({ from: String(from), to: String(to), kind }); res.json({});
+});
 // The linked sets of a task (?task=) or of a group (?group= name or id), with counts, the longest chain and what waits.
 app.get('/api/links/sets', (req, res) => {
   try {

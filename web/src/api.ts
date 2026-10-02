@@ -76,6 +76,15 @@ export const STATUS_LABEL: Record<Status, string> = {
 export type LinkKind = 'dependsOn' | 'replaces' | 'followUpOf' | 'relatedTo';
 export interface LinkActor { actor: 'user' | 'controller' | 'task' | 'taskboard'; task?: string }
 export interface TaskLink { id: string; kind: LinkKind; to: string; note?: string; folded?: boolean; at: string; by: LinkActor; doneAt?: string; doneBy?: LinkActor; doneNote?: string }
+export interface LinkSuggestion { from: string; to: string; kind: LinkKind; reason: string }
+export interface LinkSetTask { id: string; num: number; title: string; status: Status; state?: LinkInfo['state']; ask?: string }
+export interface LinkSet {
+  tasks: LinkSetTask[];
+  counts: { waitsForYou: number; blocked: number; working: number; replaced: number; archived: number; other: number };
+  chain: string[]; waiting: (LinkSetTask & { blockedBy: string[] })[]; replaced: (LinkSetTask & { by: string })[];
+  links: (TaskLink & { from: string; done?: boolean })[];
+}
+export interface LinkSets { group?: { id: string; name: string }; sets: LinkSet[]; unlinked: number }
 export interface LinkInfo { state?: 'done' | 'superseded' | 'blocked' | 'ready'; blockedBy?: string[]; waitedOnBy?: string[]; replacedBy?: string; count: number }
 export const ORDER: Status[] = ['needs-you', 'stopped', 'review', 'unread', 'working', 'idle', 'suspended', 'parked', 'archived'];
 export const ATTN: Status[] = ['needs-you', 'stopped', 'review'];
@@ -160,6 +169,12 @@ export const api = {
   saveRules: (kind: RulesKind, text: string) => call<RulesFile>('PUT', `/api/rules/${kind}`, { text }),
   create: (b: { title: string; desc: string; agent: string; folder: string; worktree?: boolean; branch?: string; account?: string; model?: string; machine?: string; group?: string; images?: { type: string; data: string }[]; spinOff?: SpinOffExchange }) => call<Task>('POST', '/api/tasks', b),
   setStatus: (id: string, status: string) => call('POST', `/api/tasks/${id}/status`, { status }),
+  addLink: (id: string, b: { kind: LinkKind; to: string; note?: string; folded?: boolean }) => call<TaskLink>('POST', `/api/tasks/${encodeURIComponent(id)}/links`, b),
+  removeLink: (id: string, link: string) => call<TaskLink>('DELETE', `/api/tasks/${encodeURIComponent(id)}/links/${encodeURIComponent(link)}`),
+  linkDone: (id: string, link: string, note?: string) => call<TaskLink>('POST', `/api/tasks/${encodeURIComponent(id)}/links/${encodeURIComponent(link)}/done`, { note }),
+  linkSets: (q: { task?: string; group?: string }) => call<LinkSets>('GET', `/api/links/sets?${q.task ? `task=${encodeURIComponent(q.task)}` : `group=${encodeURIComponent(q.group || '')}`}`),
+  linkSuggestions: () => call<LinkSuggestion[]>('GET', '/api/links/suggestions'),
+  dismissSuggestion: (s: LinkSuggestion) => call('POST', '/api/links/suggestions/dismiss', { from: s.from, to: s.to, kind: s.kind }),
   seen: (id: string) => call('POST', `/api/tasks/${id}/seen`, {}),
   resume: (id: string, force = false) => call<Task>('POST', `/api/tasks/${id}/resume`, { force }),
   importList: () => call<ImportCandidate[]>('GET', '/api/import'),
