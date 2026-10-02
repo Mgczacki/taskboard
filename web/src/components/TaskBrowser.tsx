@@ -193,22 +193,53 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
   const flashTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const selection = useRef(''), peekTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const peek = () => { clearTimeout(peekTimer.current); peekTimer.current = setTimeout(() => send({ type: 'copy', peek: true }), 120); };
-  // Frames: createImageBitmap decodes each JPEG off the main thread, and the canvas draws it. Decodes can finish out
-  // of order, so a frame older than the one on the canvas is dropped.
-  const frames = useRef({ received: 0, drawn: 0, shown: false });
-  const showFrame = (b: Blob) => {
-    const n = ++frames.current.received;
-    createImageBitmap(b).then(bm => {
-      const c = canvas.current, f = frames.current;
-      if (!c || n < f.drawn) { bm.close(); return; }
-      f.drawn = n;
+  // Frames: createImageBitmap decodes one JPEG at a time off the main thread. A frame that comes during a decode waits
+  // (next), and a newer frame replaces it. The canvas draws the newest decoded frame once in each animation frame.
+  // Each frame is reported ('drawn') when its decode ends or when a newer frame replaces it: the server sends at most
+  // two frames that the view did not report, so frames never queue up here while the main thread is busy (back
+  // pressure in server/task-browser.ts). gen: clearFrames() makes the frames that are still in a decode old.
+  const frames = useRef({ shown: false, decoding: false, next: null as Blob | null, bitmap: null as ImageBitmap | null, raf: 0, gen: 0 });
+  const drawn = () => send({ type: 'drawn' });
+  const decode = (b: Blob) => {
+    const f = frames.current, gen = f.gen;
+    f.decoding = true;
+    const done = (bm: ImageBitmap | null) => {
+      f.decoding = false;
+      drawn();
+      if (bm && gen === f.gen) {
+        f.bitmap?.close();
+        f.bitmap = bm;
+        if (!f.raf) f.raf = requestAnimationFrame(paint);
+      } else bm?.close(); // a frame that does not decode: the next one replaces it
+      const n = f.next; f.next = null;
+      if (n) decode(n);
+    };
+    createImageBitmap(b).then(done, () => done(null));
+  };
+  const paint = () => {
+    const f = frames.current, c = canvas.current, bm = f.bitmap;
+    f.raf = 0; f.bitmap = null;
+    if (!bm) return;
+    if (c) {
       if (c.width !== bm.width || c.height !== bm.height) { c.width = bm.width; c.height = bm.height; }
       c.getContext('2d')?.drawImage(bm, 0, 0);
-      bm.close();
-      if (!f.shown) { f.shown = true; setFramed(true); setRunning(true); }
-    }, () => { /* a frame that does not decode: the next one replaces it */ });
+    }
+    bm.close();
+    if (c && !f.shown) { f.shown = true; setFramed(true); setRunning(true); }
   };
-  const clearFrames = () => { frames.current.shown = false; frames.current.drawn = frames.current.received; const c = canvas.current; c?.getContext('2d')?.clearRect(0, 0, c.width, c.height); };
+  const showFrame = (b: Blob) => {
+    const f = frames.current;
+    if (!f.decoding) decode(b);
+    else { if (f.next) drawn(); f.next = b; }
+  };
+  const clearFrames = () => {
+    const f = frames.current;
+    f.shown = false; f.gen++;
+    if (f.next) { f.next = null; drawn(); }
+    f.bitmap?.close(); f.bitmap = null;
+    const c = canvas.current; c?.getContext('2d')?.clearRect(0, 0, c.width, c.height);
+  };
+  useEffect(() => () => { const f = frames.current; cancelAnimationFrame(f.raf); f.bitmap?.close(); }, []);
   const send = (m: object) => { if (ws.current?.readyState === WebSocket.OPEN) ws.current.send(JSON.stringify(m)); };
   const note = (text: string) => { setFlash(text); clearTimeout(flashTimer.current); flashTimer.current = setTimeout(() => setFlash(''), 1600); };
 
@@ -237,7 +268,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
         else if (m.type === 'state') { setRunning(m.running); setState(m); setMuted(m.muted ?? null); if (!m.running) { setTabs([]); setActive(''); setFramed(false); clearFrames(); } }
         else if (m.type === 'error') setErr(m.message);
       };
-      s.onopen = () => sendSize();
+      s.onopen = () => { send({ type: 'hello', acks: true }); sendSize(); };
       s.onclose = () => { if (!closed) retry = setTimeout(connect, 2000); };
     };
     connect();

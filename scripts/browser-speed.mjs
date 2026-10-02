@@ -19,7 +19,8 @@
 // - hidden: the dashboard page is hidden (Page.setWebLifecycleState frozen is too strong, so the test uses
 //   Emulation.setFocusEmulationEnabled and a visibilitychange event) for 3 s while the bar moves. Frames received.
 // - panel hidden: the same with the view's element at display: none.
-// - busy: the dashboard's main thread runs 25 ms of other work every 40 ms. Animation numbers and the click latency.
+// - busy and freeze: the dashboard's main thread runs 25 ms of other work every 40 ms (busy) or 150 ms every 200 ms
+//   (freeze). Animation numbers and the click latency.
 // --load on runs one CPU burner for each core and a memory hog of 2 GB (touched every second) during the widths.
 import { execFileSync, spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -119,6 +120,13 @@ function probe() {
   const read = (ctx, fx, fy) => { const c = ctx.canvas, d = ctx.getImageData(Math.floor(c.width * fx), Math.floor(c.height * fy), 1, 1).data; return `${d[0]},${d[1]},${d[2]}`; };
   // the colours of the canvas now, so the first input of a series has a colour to compare with
   P.sample = () => { const ctx = document.querySelector('.bw-screen canvas')?.getContext('2d'); if (ctx) for (const [k, fx, fy] of POINTS) P.last[k] = read(ctx, fx, fy); };
+  // A canvas change shows in the display frame after the draw, or in the same frame for a draw in a
+  // requestAnimationFrame callback. A change gets the start time of that frame, so a direct draw and a draw in an
+  // animation frame compare fairly. The loop below starts first, so it records the start of each frame.
+  P.frameStart = 0; P.inRaf = false; const nextFrame = [];
+  const raf = window.requestAnimationFrame.bind(window);
+  window.requestAnimationFrame = cb => raf(t => { P.inRaf = true; try { cb(t); } finally { P.inRaf = false; } });
+  (function loop() { raf(() => { P.frameStart = performance.now(); for (const c of nextFrame.splice(0)) c.t = P.frameStart; loop(); }); })();
   const draw = CanvasRenderingContext2D.prototype.drawImage;
   CanvasRenderingContext2D.prototype.drawImage = function (...a) {
     const t0 = performance.now(); const r = draw.apply(this, a); const t1 = performance.now();
@@ -127,7 +135,7 @@ function probe() {
       P.draws.push({ t: t1, ms: t1 - t0, w: c.width, h: c.height });
       if (P.arm) for (const [k, fx, fy] of POINTS) {
         const col = read(this, fx, fy);
-        if (P.last[k] !== undefined && P.last[k] !== col) P.changes.push({ k, t: t1 });
+        if (P.last[k] !== undefined && P.last[k] !== col) { const c = { k, t: P.inRaf ? P.frameStart : Infinity }; P.changes.push(c); if (!P.inRaf) nextFrame.push(c); }
         P.last[k] = col;
       }
     }
@@ -261,13 +269,18 @@ try {
       await evaluate(`document.querySelector('.bw').style.display = ''`);
       res.hidden.receivedFpsWhilePanelHidden = r1(panelHidden / 3);
       await sleep(1000);
-      // a busy dashboard: its main thread runs 25 ms of other work every 40 ms, while the bar moves
-      await evaluate(`window.__busy = setInterval(() => { const e = performance.now() + 25; while (performance.now() < e); }, 40)`);
-      await sleep(500);
-      res.busy = { animation: await stream(4, () => sleep(4000)) };
-      await pageEval('animate(false)'); await sleep(500);
-      res.busy.click = await latency('mousedown', async () => { await mouse('mousePressed', cx, cy); await mouse('mouseReleased', cx, cy); }, 'box');
-      await evaluate('clearInterval(window.__busy)');
+      // a busy dashboard: its main thread runs other work (25 ms every 40 ms, then 150 ms every 200 ms) while the bar
+      // moves, then the click latency with the same work and a still page
+      for (const [name, work, every] of [['busy', 25, 40], ['freeze', 150, 200]]) {
+        await pageEval('animate(true)');
+        await evaluate(`window.__busy = setInterval(() => { const e = performance.now() + ${work}; while (performance.now() < e); }, ${every})`);
+        await sleep(500);
+        res[name] = { animation: await stream(4, () => sleep(4000)) };
+        await pageEval('animate(false)'); await sleep(500);
+        res[name].click = await latency('mousedown', async () => { await mouse('mousePressed', cx, cy); await mouse('mouseReleased', cx, cy); }, 'box');
+        await evaluate('clearInterval(window.__busy)');
+        await sleep(500);
+      }
       await reset(); await sleep(1000); await reset();
       await sleep(3000);
       res.idleFps = r1(await evaluate('window.__bs.decodes.length') / 3);

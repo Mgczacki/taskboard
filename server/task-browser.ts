@@ -781,9 +781,15 @@ function answerDialog(id: string, target: string, accept: boolean, promptText?: 
 const FRAME_BACKLOG = 512 * 1024;
 // JPEG quality of the screencast: QUALITY_FAST while frames come less than FAST_GAP_MS apart (scroll, video,
 // animation), QUALITY_STILL when no frame came for STILL_MS, so text is sharp while the page does not move. At 1000 x
-// 684 px a scroll frame of the test page of scripts/browser-speed.mjs is 53 KB at quality 50 and 69 KB at quality 70. The quality does not change the CPU time
-// of Chrome. Chrome refuses a second Page.startScreencast, so a change of quality stops the screencast and starts it
-// again, and Chrome sends a frame within about 10 ms of the start.
+// 684 px a scroll frame of the test page of scripts/browser-speed.mjs is 53 KB at quality 50 and 69 KB at quality 70.
+// The quality does not change the CPU time of Chrome. Chrome refuses a second Page.startScreencast, so a change of
+// quality stops the screencast and starts it again, and Chrome sends a frame within about 10 ms of the start.
+// Back pressure: a view that sent 'hello' with acks reports each frame that it drew or dropped ('drawn'). The server
+// sends a frame only while fewer than MAX_UNDRAWN frames wait in the view. It keeps the newest other frame (waiting)
+// and holds the Page.screencastFrameAck of each frame until the view has room, so Chrome stops capturing (it sends
+// a few frames without an ack, then waits). HELD_MS limits the wait: a view that stops reporting gets about one frame
+// each second. A view without acks (an older dashboard) gets every frame and Chrome gets the ack at once.
+const MAX_UNDRAWN = 2, HELD_MS = 1000;
 const QUALITY_FAST = 50, QUALITY_STILL = 80, FAST_GAP_MS = 150, STILL_MS = 300;
 // quality: the quality of the screencast that runs or that the last queued start asks for. chain: the starts and stops
 // of this page's screencast, one at a time.
@@ -791,6 +797,17 @@ interface PageConn { ws: WebSocket; target: string; next: number; pending: Map<n
 export function attachViewer(client: WebSocket, id: string, autostart: boolean) {
   let page: PageConn | null = null, active = '', known = new Set<string>(), chosen = false, closed = false;
   let frameW = 0, frameH = 0, lastFrame = 0;
+  // acks: the view reports drawn frames. undrawn: frames sent to the view that it did not report yet. waiting: the
+  // newest frame that the view had no room for. held: the acks that Chrome waits for.
+  let acks = false, undrawn = 0, waiting: Buffer | null = null, held: (() => void)[] = [], heldTimer: NodeJS.Timeout | undefined;
+  const sendFrame = (jpeg: Buffer) => { lastFrame = jpeg.length; undrawn++; client.send(jpeg); };
+  // the view has room: send the waiting frame, then let Chrome capture again
+  const drain = () => {
+    if (waiting && undrawn < MAX_UNDRAWN && client.readyState === WebSocket.OPEN) { sendFrame(waiting); waiting = null; }
+    while (held.length && undrawn < MAX_UNDRAWN) held.shift()!();
+    if (!held.length) { clearTimeout(heldTimer); heldTimer = undefined; }
+  };
+  const resetFrames = () => { undrawn = 0; waiting = null; drain(); };
   count(viewers, id, 1);
   let size = { w: 1280, h: 800 };
   const send = (m: object) => { if (client.readyState === WebSocket.OPEN && client.bufferedAmount < 4 * 1024 * 1024) client.send(JSON.stringify(m)); };
@@ -815,6 +832,7 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     const list = await (await fetch(`http://127.0.0.1:${m.port}/json/list`)).json() as { id: string; type: string; webSocketDebuggerUrl: string }[];
     const t = list.find(x => x.id === target && x.type === 'page'); if (!t) return;
     closePage();
+    waiting = null;
     active = target;
     // tell the view now: a page with an open dialog answers the calls below only after the dialog closes, and the
     // view must show that tab to show its question
@@ -832,7 +850,8 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
       else if (msg.method === 'Page.frameNavigated' && !msg.params.frame.parentId) { mainFrame = msg.params.frame.id; void navState(); }
       else if (msg.method === 'Page.navigatedWithinDocument' && frame === mainFrame) void navState();
       if (msg.method === 'Page.screencastFrame') {
-        ws.send(JSON.stringify({ id: ++conn.next, method: 'Page.screencastFrameAck', params: { sessionId: msg.params.sessionId } }));
+        const ack = () => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ id: ++conn.next, method: 'Page.screencastFrameAck', params: { sessionId: msg.params.sessionId } })); };
+        if (!acks) ack();
         const now = Date.now();
         if (now - conn.lastFrame < FAST_GAP_MS && conn.quality !== QUALITY_FAST) cast(conn, QUALITY_FAST);
         conn.lastFrame = now;
@@ -842,11 +861,14 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
         // A frame is dropped while the view still has 512 KB to receive, so a slow connection shows the newest frame
         // a little later instead of every old frame in a queue.
         // the limit grows with the frames: three frames of a sharp view are about 1.3 MB
-        if (client.readyState !== WebSocket.OPEN || client.bufferedAmount > Math.max(FRAME_BACKLOG, 3 * lastFrame)) return;
+        if (client.readyState !== WebSocket.OPEN || client.bufferedAmount > Math.max(FRAME_BACKLOG, 3 * lastFrame)) { if (acks) ack(); return; }
         const w = msg.params.metadata.deviceWidth, h = msg.params.metadata.deviceHeight;
         if (w !== frameW || h !== frameH) { frameW = w; frameH = h; send({ type: 'frameSize', w, h }); }
-        const jpeg = Buffer.from(msg.params.data, 'base64'); lastFrame = jpeg.length;
-        client.send(jpeg);
+        const jpeg = Buffer.from(msg.params.data, 'base64');
+        if (!acks) { lastFrame = jpeg.length; client.send(jpeg); return; }
+        if (undrawn < MAX_UNDRAWN) sendFrame(jpeg); else waiting = jpeg;
+        if (undrawn < MAX_UNDRAWN) ack();
+        else { held.push(ack); heldTimer ??= setTimeout(() => { heldTimer = undefined; resetFrames(); }, HELD_MS); }
       }
     });
     ws.on('close', () => { clearTimeout(conn.stillTimer); if (page === conn) page = null; if (conn.casting) { conn.casting = false; count(screencasts, id, -1); } });
@@ -868,6 +890,7 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     conn.chain = conn.chain.then(async () => {
       if (page !== conn) return;
       if (conn.casting) await call('Page.stopScreencast');
+      held = []; // Chrome does not wait for the acks of a stopped screencast
       if (quality !== null && page === conn) await call('Page.startScreencast', { format: 'jpeg', quality, maxWidth: 1920, maxHeight: 1920, everyNthFrame: 1 });
       const on = quality !== null && page === conn && conn.ws.readyState === WebSocket.OPEN;
       if (on !== !!conn.casting) { conn.casting = on; count(screencasts, id, on ? 1 : -1); }
@@ -900,7 +923,9 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     let m: any; try { m = JSON.parse(d.toString()); } catch { return; }
     try {
       // a failed start shows in the state that poll() sends (status().error), not as a second message
-      if (m.type === 'start') { void ensure(id).then(() => poll(), () => poll()); await poll(); }
+      if (m.type === 'hello') acks = !!m.acks;
+      else if (m.type === 'drawn') { undrawn = Math.max(0, undrawn - 1); drain(); }
+      else if (m.type === 'start') { void ensure(id).then(() => poll(), () => poll()); await poll(); }
       else if (m.type === 'stop') { await stop(id); await poll(); }
       else if (m.type === 'select' && typeof m.id === 'string') { chosen = true; clearTimeout(chosenTimer); chosenTimer = setTimeout(() => { chosen = false; }, 60000); await open(m.id); }
       else if (m.type === 'size' && m.w > 100 && m.h > 100) { size = { w: Math.min(3840, Math.round(m.w)), h: Math.min(2160, Math.round(m.h)) }; await viewport(); }
