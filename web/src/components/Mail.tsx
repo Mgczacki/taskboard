@@ -7,9 +7,17 @@ import { MessageList, TaskNotesList } from './A2ANotes';
 import type { DocumentLink } from '../documentLinks';
 import '../mail.css';
 
+function focusFromHash(): { tab: 'inbox' | 'sent'; id: string } | undefined {
+  const m = /^inbox:(messages|sent):(.+)$/.exec(decodeURIComponent(location.hash.slice(1)));
+  return m ? { tab: m[1] === 'sent' ? 'sent' : 'inbox', id: m[2] } : undefined;
+}
+
 export function InboxPage(props: { tasks: Task[]; open: (id: string, tab?: 'terminal' | 'log' | 'docs') => void; documentLink?: DocumentLink | null }) {
-  const [tab, setTab] = useState<'inbox' | 'sent' | 'documents'>(props.documentLink ? 'documents' : 'inbox');
+  const [tab, setTab] = useState<'inbox' | 'sent' | 'documents'>(props.documentLink ? 'documents' : focusFromHash()?.tab || 'inbox');
+  const [focus, setFocus] = useState(() => focusFromHash()?.id || '');
   useEffect(() => { if (props.documentLink) setTab('documents'); }, [props.documentLink]);
+  // "Open in the Inbox" on a Message card sets #inbox:<messages|sent>:<message id>
+  useEffect(() => { const on = () => { const f = focusFromHash(); if (f) { setTab(f.tab); setFocus(f.id); } }; addEventListener('hashchange', on); return () => removeEventListener('hashchange', on); }, []);
   return <div className="account-mail">
     <nav className="mail-tabs" aria-label="Inbox sections">
       <button className="btn" onClick={() => setTab('inbox')} aria-pressed={tab === 'inbox'}>Messages</button>
@@ -17,7 +25,7 @@ export function InboxPage(props: { tasks: Task[]; open: (id: string, tab?: 'term
       <button className="btn" onClick={() => setTab('sent')} aria-pressed={tab === 'sent'}>Sent</button>
     </nav>
     {tab === 'documents' ? <Documents {...props} />
-      : tab === 'sent' ? <MessageList tasks={props.tasks} direction="outgoing" />
-      : <><TaskNotesList tasks={props.tasks} /><MessageList tasks={props.tasks} direction="incoming" /></>}
+      : tab === 'sent' ? <MessageList tasks={props.tasks} direction="outgoing" focus={focus} />
+      : <><TaskNotesList tasks={props.tasks} /><MessageList tasks={props.tasks} direction="incoming" focus={focus} /></>}
   </div>;
 }

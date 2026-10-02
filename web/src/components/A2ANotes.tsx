@@ -39,7 +39,7 @@ function NotConnected({ status }: { status: Status }) {
   </section>;
 }
 
-export function MessageList({ tasks, direction }: { tasks: Task[]; direction: 'incoming' | 'outgoing' }) {
+export function MessageList({ tasks, direction, focus }: { tasks: Task[]; direction: 'incoming' | 'outgoing'; focus?: string }) {
   const status = useStatus();
   const [messages, setMessages] = useState<Summary[]>([]);
   const [open, setOpen] = useState<Record<string, Detail>>({});
@@ -65,6 +65,13 @@ export function MessageList({ tasks, direction }: { tasks: Task[]; direction: 'i
     catch (e) { setError((e as Error).message); } finally { setBusy(false); }
   }
   const show = (id: string) => act(async () => { const d = await request(`/messages/${encodeURIComponent(id)}`); setOpen(o => ({ ...o, [id]: d })); });
+  // a message that a Message card opened (focus): show its text and scroll to it once it is in the list
+  const focused = useRef('');
+  useEffect(() => {
+    if (!focus || focused.current === focus || !messages.some(m => m.id === focus)) return;
+    focused.current = focus;
+    void show(focus).then(() => document.querySelector(`[data-a2a="${CSS.escape(focus)}"]`)?.scrollIntoView({ block: 'start', behavior: 'smooth' }));
+  }, [focus, messages]);
 
   if (!status) return <p>Loading messages…</p>;
   if (!ok) return <NotConnected status={status} />;

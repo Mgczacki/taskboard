@@ -72,3 +72,10 @@
 .a2a-head { display: flex; align-items: center; gap: 10px; }
 .a2a-head h3 { margin: 0; }
 .a2a-who { font-size: 12.5px; color: var(--dim); }
+/* Message cards on the Waiting page and in the notification stack (web/src/components/MessageCard.tsx) */
+.msg-fields { display:grid; grid-template-columns:max-content minmax(0, 1fr); gap:3px 10px; margin:0; font-size:12px; }
+.msg-fields dt { color:var(--muted); }
+.msg-fields dd { margin:0; overflow-wrap:anywhere; }
+.msg-link { padding:0 4px; font-size:12px; }
+.msg-card .mail-flagged-body, .msg-card .ap-d { max-height:260px; overflow:auto; border:1px solid var(--line); border-radius:6px; padding:8px; margin:0; }
+.msg-rule { margin:0; font-size:11px; }
