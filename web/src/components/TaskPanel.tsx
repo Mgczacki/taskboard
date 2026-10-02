@@ -15,14 +15,17 @@ import { TransferPanel } from './TransferPanel';
 import { BrowserView } from './TaskBrowser';
 import { ProcList } from './TaskProcs';
 import { RuntimeButton } from './TaskRuntime';
+import type { PanelTab } from '../panelShare';
 
 // The drawer's width, set by dragging its left edge and kept across reloads. null means the default width.
 const WIDTH_KEY = 'tb-drawer-width', MIN_W = 420, EDGE = 120;
 const maxW = () => Math.max(MIN_W, innerWidth - EDGE);
 const savedWidth = () => { try { const w = Number(localStorage.getItem(WIDTH_KEY)); return w > 0 ? w : null; } catch { return null; } };
 
-export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, initialTab, documentLink, toast }: { t: Task; tasks: Task[]; groups: Group[]; onClose: () => void; onCanvas: (id: string) => void; onOpenTask: (id: string) => void; initialTab?: 'terminal' | 'log' | 'docs' | 'browser' | 'procs'; documentLink?: DocumentLink | null; toast: Toast }) {
-  const [tab, setTab] = useState<'terminal' | 'log' | 'docs' | 'browser' | 'procs'>(initialTab || 'terminal');
+export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, initialTab, onTab, documentLink, toast }: { t: Task; tasks: Task[]; groups: Group[]; onClose: () => void; onCanvas: (id: string) => void; onOpenTask: (id: string) => void; initialTab?: PanelTab; onTab?: (tab: PanelTab) => void; documentLink?: DocumentLink | null; toast: Toast }) {
+  const [tab, setTab] = useState<PanelTab>(initialTab || 'terminal');
+  // the Canvas window of this task shows what this tab does not (panelShare.ts)
+  useEffect(() => { onTab?.(tab); }, [tab]);
   const [log, setLog] = useState('');
   const [err, setErr] = useState('');
   const [copied, setCopied] = useState(false);
