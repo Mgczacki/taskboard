@@ -322,6 +322,30 @@ test('when a2anotes.json is missing, the adapter reports off and changes nothing
   const link = (await (await fetch(`${url}/slack-sign-in`, { method: 'POST', headers, body: '{}' })).json()).url;
   assert.match(link, /^https:\/\/slack\.com\/oauth\/v2\/authorize\?/);
   assert.equal(new URL(link).searchParams.get('team'), 'T08LG8BQH1P');
+  // the default Slack app is the separate A2A Notes app, with the redirect URL of the test port
+  const port = Number(process.env.TASKBOARD_A2A_PORT);
+  assert.equal(new URL(link).searchParams.get('client_id'), '8696283833057.12198817279122');
+  assert.equal(new URL(link).searchParams.get('redirect_uri'), `http://localhost:${port}/slack/callback`);
+  assert.deepEqual(after.setup.slack, { clientId: '8696283833057.12198817279122', teamId: 'T08LG8BQH1P', redirectUri: `http://localhost:${port}/slack/callback`, name: 'A2A Notes' });
+  assert.equal(after.setup.slackAppDiffers, false);
+  assert.ok(after.setup.signInHelp.some((l: string) => l.includes(`http://localhost:${port}/slack/callback`) && l.includes('8696283833057.12198817279122')));
+  // another app in the Taskboard settings: setup reports the difference and changes the config only on "Use this Slack app"
+  const machine = await import('../server/machine.ts');
+  machine.update({ a2aSlackClientId: '8696283833057.12177743257233' });
+  try {
+    const differs = await (await fetch(`${url}/status`, { headers })).json();
+    assert.equal(differs.setup.slackAppDiffers, true);
+    assert.equal(differs.setup.slackApp.source, 'settings');
+    assert.equal(differs.setup.slack.clientId, '8696283833057.12198817279122');
+    await fetch(`${url}/setup`, { method: 'POST', headers, body: '{}' });
+    assert.equal(JSON.parse(readFileSync(join(TB_DIR, 'a2a-notes', 'config.json'), 'utf8')).slack.clientId, '8696283833057.12198817279122', 'a plain setup keeps the app of the config');
+    const applied = await (await fetch(`${url}/setup`, { method: 'POST', headers, body: JSON.stringify({ applySlackApp: true }) })).json();
+    assert.equal(applied.setup.slackAppDiffers, false, JSON.stringify(applied));
+    const config = JSON.parse(readFileSync(join(TB_DIR, 'a2a-notes', 'config.json'), 'utf8'));
+    assert.deepEqual(config.slack, { ...config.slack, clientId: '8696283833057.12177743257233', teamId: 'T08LG8BQH1P', redirectUri: `http://localhost:${port}/slack/callback` });
+    const link2 = (await (await fetch(`${url}/slack-sign-in`, { method: 'POST', headers, body: '{}' })).json()).url;
+    assert.equal(new URL(link2).searchParams.get('client_id'), '8696283833057.12177743257233', 'the restarted service signs in with the new app');
+  } finally { machine.update({ a2aSlackClientId: '' }); }
   offServer.close(); await off.close();
   // stop the test service through its own command
   execFileSync(process.execPath, [join(process.cwd(), 'node_modules', 'a2a-notes', 'bin', 'a2a-notes.js'), 'stop', '--dir', join(TB_DIR, 'a2a-notes')]);
