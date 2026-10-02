@@ -1238,6 +1238,17 @@ app.post('/api/tasks/:id/ask', async (req, res) => {
 });
 app.post('/api/tasks/:id/ask/stop', (req, res) => { ask.stop(req.params.id); res.json({ ok: true }); });
 app.delete('/api/tasks/:id/ask', (req, res) => { if (!store.get(req.params.id)) return res.status(404).end(); res.json(ask.clear(req.params.id)); });
+// The visible screen of the task's pane with its colors (SGR sequences), and the cursor. A browser terminal that has no
+// saved screen yet draws it while its socket connects (web/src/terminalSnapshot.ts).
+app.get('/api/tasks/:id/screen', async (req, res) => {
+  const t = store.get(req.params.id); if (!t) return res.status(404).end();
+  try {
+    const target = '=' + t.session + ':';
+    const [text, info] = await Promise.all([tmux.tmux('capture-pane', '-p', '-e', '-t', target), tmux.tmux('display-message', '-p', '-t', target, '#{cursor_x} #{cursor_y} #{pane_width} #{pane_height}')]);
+    const [x, y, cols, rows] = info.trim().split(' ').map(Number);
+    res.json({ lines: text.replace(/\n$/, '').split('\n').slice(0, rows), cursor: [x, y], cols, rows });
+  } catch { res.status(404).end(); }
+});
 app.get('/api/tasks/:id/peek', async (req, res) => {
   const t = store.get(req.params.id); if (!t) return res.status(404).end();
   res.type('text/plain').send(await tmux.capture(t.session, Math.min(500, Number(req.query.lines) || 30)));

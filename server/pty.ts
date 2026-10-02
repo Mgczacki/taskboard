@@ -1,10 +1,11 @@
 // Live terminals: each browser terminal gets its own `tmux attach` running in a pseudo-terminal.
 // Closing the browser terminal only ends that attach; the agent keeps running in tmux.
 import { execFileSync } from 'node:child_process';
-import * as pty from 'node-pty';
+import type { IPty } from 'node-pty';
 import type { WebSocket } from 'ws';
 import { TMUX_SOCKET } from './config.ts';
 import { TMUX_BIN, loadCopyBindings, tmux } from './tmux.ts';
+import { spawnPty } from './pty-spawn.ts';
 let bindingsLoaded = false;
 
 // Attaching or resizing makes Codex redraw, which looks like new output. Ignore activity for a moment after those.
@@ -24,15 +25,23 @@ const viewers = new Map<string, Set<Viewer>>();
 export const terminalViewerCount = () => [...viewers.values()].reduce((sum, list) => sum + list.size, 0);
 const sizedBy = new Map<string, Viewer>();
 const clamp = (v: Viewer) => [String(Math.max(20, v.cols)), String(Math.max(5, v.rows))];
+// The tmux commands run one after the other for each session, without blocking the server: a synchronous call took
+// 7-20 ms, so terminals that open together (a Canvas page) waited for each other before their sockets opened.
+const sizing = new Map<string, Promise<unknown>>();
+function tmuxInOrder(session: string, ...args: string[]) {
+  const next = (sizing.get(session) || Promise.resolve()).then(() => tmux(...args)).catch(() => { /* the session ended */ });
+  sizing.set(session, next);
+  void next.then(() => { if (sizing.get(session) === next) sizing.delete(session); });
+}
 function sizeWindow(session: string) {
   const list = [...(viewers.get(session) || [])];
-  if (!list.length) { sizedBy.delete(session); tmuxSync('set-option', '-w', '-t', '=' + session + ':', '-u', 'window-size'); return; }
+  if (!list.length) { sizedBy.delete(session); tmuxInOrder(session, 'set-option', '-w', '-t', '=' + session + ':', '-u', 'window-size'); return; }
   const v = list.reduce((a, b) => (b.usedAt > a.usedAt ? b : a));
   const prev = sizedBy.get(session);
   if (prev === v && (v as Viewer & { applied?: string }).applied === `${v.cols}x${v.rows}`) return; // nothing changed
   sizedBy.set(session, v); (v as Viewer & { applied?: string }).applied = `${v.cols}x${v.rows}`;
   const [x, y] = clamp(v);
-  tmuxSync('resize-window', '-t', '=' + session + ':', '-x', x, '-y', y);
+  tmuxInOrder(session, 'resize-window', '-t', '=' + session + ':', '-x', x, '-y', y);
 }
 const use = (session: string, v: Viewer) => { v.usedAt = Date.now(); sizeWindow(session); };
 
@@ -98,10 +107,18 @@ export function attach(ws: WebSocket, session: string, cols: number, rows: numbe
   // also set here: a tmux server started by an earlier Taskboard version lacks these
   // mouse, clipboard and selection bindings (once per server process; the tmux server keeps them)
   if (!bindingsLoaded) { bindingsLoaded = true; loadCopyBindings().catch(() => { bindingsLoaded = false; }); }
-  const p = pty.spawn(TMUX_BIN, ['-L', TMUX_SOCKET, 'attach-session', '-t', '=' + session], {
-    name: 'xterm-256color', cols: Math.max(20, cols), rows: Math.max(5, rows),
-    env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' } as Record<string, string>,
-  });
+  let p: IPty;
+  try {
+    p = spawnPty(TMUX_BIN, ['-L', TMUX_SOCKET, 'attach-session', '-t', '=' + session], {
+      name: 'xterm-256color', cols: Math.max(20, cols), rows: Math.max(5, rows),
+      env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' } as Record<string, string>,
+    });
+  } catch (e) {
+    // for example no free pseudo-terminal: this terminal tries again (terminalSocket.ts); the server keeps running
+    console.error(`${new Date().toISOString()} could not attach a terminal to ${session}: ${(e as Error).message}`);
+    ws.close(1013, 'could not open a terminal');
+    return;
+  }
   const me: Viewer = { cols, rows, usedAt: Date.now(), ws, pid: p.pid, lastOut: Date.now(), healedAt: 0 };
   if (!viewers.has(session)) viewers.set(session, new Set());
   viewers.get(session)!.add(me);
