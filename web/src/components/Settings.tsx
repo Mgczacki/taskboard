@@ -288,7 +288,7 @@ function TaskBrowserSettings({ info, busy, save }: { info: MachineInfo | null; b
           <div className="sub">"Task browser only" turns off the Codex feature <code>browser_use_external</code> (ChatGPT for Chrome) for the task.</div></SettingItem>
         <SettingItem id="chromePath">
           <label className="opt" htmlFor="chrome-path">Chrome program</label>
-          <input id="chrome-path" value={chrome} onChange={e => setChrome(e.target.value)} placeholder={tpl?.chrome || '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome'} spellCheck={false} />
+          <input id="chrome-path" value={chrome} onChange={e => setChrome(e.target.value)} placeholder={tpl?.chrome || 'The path of the Chrome program'} spellCheck={false} />
           <div className="sub">Empty: the installed Google Chrome. Found now: {check?.chrome || 'no Chrome'}. Node for the MCP server: {check?.node || 'none found (needs Node 20.19 or 22.12 or newer)'}{check && !check.mcp ? '. The MCP server package is missing: run pnpm install.' : ''}.</div>
           <div><button className="btn" disabled={busy || chrome === (b.chromePath || '')} onClick={() => void save({ chromePath: chrome.trim() })}>Save</button></div>
         </SettingItem>
