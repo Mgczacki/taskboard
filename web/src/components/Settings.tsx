@@ -256,7 +256,7 @@ const MODES: { value: BrowserMode; label: string }[] = [
   { value: 'only', label: 'Task browser only' },
   { value: 'off', label: 'Off: only the agent\'s own browser tools' },
 ];
-function TaskBrowserSettings({ info, busy, save }: { info: MachineInfo | null; busy: boolean; save: (p: { browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; browserIdleStopMinutes?: number }) => Promise<void> }) {
+function TaskBrowserSettings({ info, busy, save }: { info: MachineInfo | null; busy: boolean; save: (p: { browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; browserIdleStopMinutes?: number; browserSharp?: boolean }) => Promise<void> }) {
   const [tpl, setTpl] = useState<BrowserStatus | null>(null);
   const [chrome, setChrome] = useState('');
   const [idle, setIdle] = useState('');
@@ -283,6 +283,10 @@ function TaskBrowserSettings({ info, busy, save }: { info: MachineInfo | null; b
           <label className="opt" htmlFor="browser-idle">Stop an unused task browser after</label>
           <div><input id="browser-idle" type="number" min={0} max={1440} step={1} style={{ width: '6em' }} value={idle} onChange={e => setIdle(e.target.value)} /> minutes <button className="btn" disabled={busy || idle === '' || Number(idle) === (b.idleStopMinutes ?? 10)} onClick={() => void save({ browserIdleStopMinutes: Number(idle) })}>Save</button></div>
           <div className="sub">A task browser stops when no agent sends it a command and no one views it on the dashboard for this time. Its pages are saved. The next tool call of the agent starts it again with the same pages, in a few seconds. 0 means never stop. Default: 10.</div>
+        </SettingItem>
+        <SettingItem id="browserSharp">
+          <label className="opt"><input type="checkbox" disabled={busy} checked={!!b.sharp} onChange={e => void save({ browserSharp: e.target.checked })} /> Sharp view on Retina screens</label>
+          <div className="sub">Task browsers start with two pixels for each point, so text in the Browser tab is sharp. The view then gets about 2.4 times more data, which can be slow from another computer. Agent screenshots are twice as large and use more tokens. A browser that runs now changes at its next start: stop it and start it again. Default: off.</div>
         </SettingItem>
       </>}
     </SettingGroup>

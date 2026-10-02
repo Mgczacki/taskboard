@@ -236,6 +236,10 @@ A move between windows never changes a task's groups. A new task goes after the 
   at the bottom (◨ moves the terminal to the right side, ⬓ moves it back). A click on 🌐 starts a stopped browser, and a
   second click shows the terminal only again. Each task keeps its own choice in this app or browser. Canvas → Browsers & processes shows a small still frame of each running task browser. `tb browser open <url>` and `$BROWSER`
   open a page in it. Archive and the idle suspend close the browser. Resume opens it again with the same pages.
+  Settings → Task browsers → Sharp view on Retina screens starts task browsers with `--force-device-scale-factor=2`,
+  so the view gets two pixels for each CSS pixel. It sends about 2.4 times more data, and agent screenshots are twice
+  as large. A running browser changes at its next start. (A DevTools pixel ratio override does not change the size of a
+  screencast frame; only this start flag does.)
   Settings → Task browsers chooses, for Claude Code and Codex, the task browser together with the shared Chrome
   extension, the task browser only (`--no-chrome` / `--disable browser_use_external`), or off.
 - **Usage limits:** the Accounts page shows each account's windows (5-hour, weekly) with % used and reset time.

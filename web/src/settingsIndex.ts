@@ -66,6 +66,7 @@ export const SECTIONS: SectionDef[] = [
       { id: 'browserCodex', label: 'Browser for Codex tasks', words: 'chrome mcp devtools chatgpt extension' },
       { id: 'chromePath', label: 'Chrome program', words: 'path binary chromium executable' },
       { id: 'browserIdleStop', label: 'Stop an unused task browser after', words: 'idle memory minutes timeout close' },
+      { id: 'browserSharp', label: 'Sharp view on Retina screens', words: 'retina sharp blurry pixel ratio scale resolution hidpi' },
     ] },
     { id: 'template', title: 'Template profile', settings: [
       { id: 'templateBrowser', label: 'Template browser for sign-ins', words: 'profile cookies login copy accounts' },
