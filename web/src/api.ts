@@ -55,7 +55,8 @@ export interface Proc { name: string; command: string; cwd: string; stop?: strin
 export interface RuntimeCount { browser: number; procs: number }
 export interface RuntimeItem { task: string; kind: 'browser' | 'proc'; name: string; state: string; port?: number; pages?: number; agents?: number; command?: string; memMb: number | null }
 export interface RuntimeList { items: RuntimeItem[]; total: { browsers: number; procs: number; memMb: number } }
-export interface BrowserTab { id: string; title: string; url: string; faviconUrl?: string }
+// dialog: a box that the page opened (alert, confirm, prompt, beforeunload) and that waits for an answer (server/task-browser.ts)
+export interface BrowserTab { id: string; title: string; url: string; faviconUrl?: string; dialog?: { type: 'alert' | 'confirm' | 'prompt' | 'beforeunload'; message: string; defaultPrompt?: string } }
 export interface BrowserStatus { id: string; running: boolean; port?: number; tabs: BrowserTab[]; profile: boolean; copiedFromTemplate?: string; suspended?: boolean; idleStopped?: boolean; idleStopMinutes: number; startMs?: number; started?: string; stoppedAt?: string; error?: string; memMb?: number | null; rssMb?: number | null; agents: number; viewers: number; chrome: string | null; sound: boolean; muted: boolean; sharp?: boolean; check?: { chrome: string | null; node: string | null; mcp: boolean } }
 // A worktree or a read folder that the user approved after the task started (server/scopes.ts)
 export interface Scope { id: string; kind: 'worktree' | 'read'; name: string; path: string; at: string; reason: string; repo?: string; branch?: string; base?: string; baseCommit?: string }

@@ -1,6 +1,11 @@
-// The browser of a task (or the template browser): a screencast of one tab over /ws/browser, with the tab strip, an
-// address bar, and mouse and key input sent back to the page (server/task-browser.ts). The view can pop out into its
-// own window; only one view of a browser streams at a time, so the panel shows a note meanwhile.
+// The browser of a task (or the template browser): a screencast of one tab over /ws/browser, with its controls, and
+// mouse and key input sent back to the page (server/task-browser.ts). The view can pop out into its own window; only
+// one view of a browser streams at a time, so the panel shows a note meanwhile.
+// Controls: in Canvas, the task panel and Settings, one 34 px row (back, forward, reload, the address with the page
+// title, the tab count that opens the tab list, new tab, sound, stop, and a More menu). The pop-out window and the
+// floating panel keep two rows: the tab strip and the address bar with its chips.
+// A tab whose page waits for an answer (tab.dialog: alert, confirm, prompt, beforeunload) has an orange dot. Headless
+// Chrome draws no box for it, so the view shows the question of the shown tab in a bar with OK and Cancel.
 // The sound switch (SoundSwitch) is in both views: a browser starts muted until the user turns its sound on.
 // The server sends the shown tab's loading state and history ("nav"), so back, forward and reload work like Chrome's.
 // Keys with Cmd: L focuses the address, R reloads, [ and ] go back and forward, V pastes, C and X copy. The other keys
@@ -107,10 +112,11 @@ const I = {
   globe: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9M12 3C9.5 5.6 8.2 8.6 8.2 12s1.3 6.4 3.8 9',
   sound: 'M5 9v6h4l5 4V5L9 9H5zM17 9a4 4 0 0 1 0 6M19.5 6.5a8 8 0 0 1 0 11', muted: 'M5 9v6h4l5 4V5L9 9H5zM17 9l5 6M22 9l-5 6',
   popout: 'M14 4h6v6M20 4l-8 8M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5', power: 'M12 3v8M7.1 6.3a7 7 0 1 0 9.8 0',
+  more: 'M5 12h.5M12 12h.5M19 12h.5', down: 'M6 9l6 6 6-6', canvas: 'M4 5h16v14H4zM4 13h16',
   grow: 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5', shrink: 'M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5', copy: 'M9 9h10v11H9zM5 15V4h10',
 };
-function Icon({ d, size = 16 }: { d: string; size?: number }) {
-  return <svg className="bw-svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={d} /></svg>;
+function Icon({ d, size = 16, weight = 2 }: { d: string; size?: number; weight?: number }) {
+  return <svg className="bw-svg" width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={weight} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d={d} /></svg>;
 }
 
 // The page icon from Chrome's tab list, or the first letter of the site when the page has none or it fails to load.
@@ -136,7 +142,8 @@ function urlParts(url: string): { scheme: string; host: string; rest: string; se
 const MOD = (e: { altKey: boolean; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) => (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0);
 const BUTTON = ['left', 'middle', 'right'] as const;
 
-export function BrowserView({ id, title = '', autostart = false, floating = false, archived = false, isTemplate = false }: { id: string; title?: string; autostart?: boolean; floating?: boolean; archived?: boolean; isTemplate?: boolean }) {
+// onCanvas: the task panel passes it, so the More menu can show the browser in the task's Canvas window
+export function BrowserView({ id, title = '', autostart = false, floating = false, archived = false, isTemplate = false, onCanvas }: { id: string; title?: string; autostart?: boolean; floating?: boolean; archived?: boolean; isTemplate?: boolean; onCanvas?: () => void }) {
   const isPopped = usePopped(id);
   if (isPopped && !floating) return (
     <div className="bw-empty"><div className="bw-card">
@@ -145,10 +152,10 @@ export function BrowserView({ id, title = '', autostart = false, floating = fals
       <div className="bw-actions"><button className="btn primary" onClick={() => popped.get(id)?.()}>Put it back here</button></div>
     </div></div>
   );
-  return <Live id={id} title={title} autostart={autostart} floating={floating} archived={archived} isTemplate={isTemplate} />;
+  return <Live id={id} title={title} autostart={autostart} floating={floating} archived={archived} isTemplate={isTemplate} onCanvas={onCanvas} />;
 }
 
-function Live({ id, title, autostart, floating, archived, isTemplate }: { id: string; title: string; autostart: boolean; floating: boolean; archived: boolean; isTemplate: boolean }) {
+function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }: { id: string; title: string; autostart: boolean; floating: boolean; archived: boolean; isTemplate: boolean; onCanvas?: () => void }) {
   const [tabs, setTabs] = useState<BrowserTab[]>([]);
   const [active, setActive] = useState('');
   const [state, setState] = useState<BrowserStatus | null>(null);
@@ -161,6 +168,8 @@ function Live({ id, title, autostart, floating, archived, isTemplate }: { id: st
   const [addr, setAddr] = useState('');
   const [editing, setEditing] = useState(false);
   const [framed, setFramed] = useState(false);
+  const [pop, setPop] = useState<'tabs' | 'menu' | null>(null);
+  const [promptText, setPromptText] = useState('');
   const canvas = useRef<HTMLCanvasElement>(null);
   const screen = useRef<HTMLDivElement>(null);
   const urlInput = useRef<HTMLInputElement>(null);
@@ -230,6 +239,16 @@ function Live({ id, title, autostart, floating, archived, isTemplate }: { id: st
 
   const activeTab = tabs.find(t => t.id === active);
   useEffect(() => { if (!editing) setAddr(activeTab?.url === 'about:blank' ? '' : activeTab?.url || ''); }, [activeTab?.url, editing]);
+  const dialog = activeTab?.dialog;
+  useEffect(() => { setPromptText(dialog?.defaultPrompt || ''); }, [active, dialog?.type, dialog?.message]);
+  const answer = (accept: boolean) => send({ type: 'dialog', id: active, accept, ...(dialog?.type === 'prompt' ? { text: promptText } : {}) });
+  // the tab list and the More menu close on a click outside them
+  useEffect(() => {
+    if (!pop) return;
+    const down = (e: PointerEvent) => { if (!(e.target as HTMLElement).closest?.('.bw-pop, .bw-popbtn')) setPop(null); };
+    addEventListener('pointerdown', down, true); return () => removeEventListener('pointerdown', down, true);
+  }, [pop]);
+  const copyAddress = () => { const u = activeTab?.url; if (u) navigator.clipboard?.writeText(u).then(() => note('Copied the address'), () => note('Could not copy')); };
 
   // mouse and keys
   const point = (e: { clientX: number; clientY: number }) => {
@@ -326,43 +345,99 @@ function Live({ id, title, autostart, floating, archived, isTemplate }: { id: st
   );
 
   const parts = urlParts(addr);
+  const compact = !floating;
+  const pageTitle = activeTab && activeTab.title && activeTab.title !== activeTab.url ? activeTab.title : '';
+  const waiting = tabs.some(t => t.dialog);
+  const tabName = (t: BrowserTab) => t.title && t.title !== t.url ? t.title : siteOf(t.url) || (t.url === 'about:blank' ? 'New tab' : t.url);
+  const navButtons = <>
+    <button className="bw-ib" onClick={back} disabled={!nav.canBack} aria-label="Back" title="Back (⌘[)"><Icon d={I.back} /></button>
+    <button className="bw-ib" onClick={forward} disabled={!nav.canForward} aria-label="Forward" title="Forward (⌘])"><Icon d={I.forward} /></button>
+    <button className="bw-ib" onClick={reload} aria-label={nav.loading ? 'Stop loading' : 'Reload'} title={nav.loading ? 'Stop loading' : 'Reload (⌘R)'}><Icon d={nav.loading ? I.stop : I.reload} /></button>
+  </>;
+  // In the compact row the address shows the page title and the host until the field has the focus.
+  const address = (
+    <div className={`bw-addr ${editing ? 'editing' : ''}`} onClick={() => !editing && focusAddress()}>
+      <span className={`bw-site ${parts.secure ? 'secure' : ''}`} title={parts.secure === null ? '' : parts.secure ? 'The connection uses HTTPS' : 'The connection is not secure'}>
+        <Icon d={parts.secure === false ? I.info : parts.secure ? I.lock : I.globe} size={14} />
+      </span>
+      <input ref={urlInput} className="bw-url" value={addr} placeholder="Search or type an address" aria-label="Address"
+        onFocus={e => { setEditing(true); setPop(null); e.target.select(); }} onBlur={() => setEditing(false)} onChange={e => setAddr(e.target.value)}
+        onKeyDown={e => { if (e.key === 'Enter') go(); if (e.key === 'Escape') { setEditing(false); setAddr(activeTab?.url || ''); screen.current?.focus(); } }} spellCheck={false} />
+      {!editing && addr && (compact && pageTitle
+        ? <span className="bw-urlview" aria-hidden="true" title={addr}><span className="bw-ttl">{pageTitle}</span>{parts.host && <span className="dim">{parts.host}</span>}</span>
+        : <span className="bw-urlview" aria-hidden="true"><span className="dim">{parts.scheme}</span>{parts.host}<span className="dim">{parts.rest}</span></span>)}
+      {compact && !editing && addr && <button className="bw-cp" onMouseDown={e => e.preventDefault()} onClick={e => { e.stopPropagation(); copyAddress(); }} aria-label="Copy the address" title="Copy the address"><Icon d={I.copy} size={13} /></button>}
+    </div>
+  );
+  const popOut = () => { setPop(null); popOutBrowser(id, title || (isTemplate ? 'Template browser' : 'Task browser'), isTemplate ? 'Sign in here. New task browsers copy this profile.' : ''); };
+  const stopButton = <button className="bw-ib danger" onClick={() => send({ type: 'stop' })} aria-label={isTemplate ? 'Close the template browser' : 'Stop the browser'} title={isTemplate ? 'Close the template browser. New task browsers can copy it only when it is closed.' : 'Stop the browser. Its pages open again at the next start.'}><Icon d={I.power} /></button>;
+  const sound = <SoundSwitch id={id} muted={muted} onChange={setMuted} onDone={s => setMuted(s.muted)} onError={setErr} />;
   return (
-    <div className={`bw ${inside ? 'kb' : ''}`} data-tb-browser="" onKeyDownCapture={leave} onFocus={() => setInside(true)} onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setInside(false); }}>
-      <div className="bw-tabs" onDoubleClick={e => { if (e.target === e.currentTarget) send({ type: 'new', url: 'about:blank' }); }}>
-        {tabs.map(t => (
-          <div key={t.id} className={`bw-tab ${t.id === active ? 'on' : ''}`} onClick={() => send({ type: 'select', id: t.id })}
-            onAuxClick={e => { if (e.button === 1) { e.preventDefault(); send({ type: 'close', id: t.id }); } }} title={t.title ? `${t.title}\n${t.url}` : t.url}>
-            {t.id === active && nav.loading ? <span className="bw-spin" aria-label="Loading" /> : <Favicon tab={t} />}
-            <span className="t">{t.title && t.title !== t.url ? t.title : siteOf(t.url) || (t.url === 'about:blank' ? 'New tab' : t.url)}</span>
-            <button className="bw-x" onClick={e => { e.stopPropagation(); send({ type: 'close', id: t.id }); }} aria-label="Close this tab" title="Close this tab (middle-click)"><Icon d={I.close} size={12} /></button>
-          </div>
-        ))}
-        <button className="bw-ib bw-new" onClick={() => send({ type: 'new', url: 'about:blank' })} aria-label="New tab" title="New tab"><Icon d={I.plus} /></button>
-      </div>
-      <div className="bw-bar">
-        <button className="bw-ib" onClick={back} disabled={!nav.canBack} aria-label="Back" title="Back (⌘[)"><Icon d={I.back} /></button>
-        <button className="bw-ib" onClick={forward} disabled={!nav.canForward} aria-label="Forward" title="Forward (⌘])"><Icon d={I.forward} /></button>
-        <button className="bw-ib" onClick={reload} aria-label={nav.loading ? 'Stop loading' : 'Reload'} title={nav.loading ? 'Stop loading' : 'Reload (⌘R)'}><Icon d={nav.loading ? I.stop : I.reload} /></button>
-        <div className={`bw-addr ${editing ? 'editing' : ''}`} onClick={() => !editing && focusAddress()}>
-          <span className={`bw-site ${parts.secure ? 'secure' : ''}`} title={parts.secure === null ? '' : parts.secure ? 'The connection uses HTTPS' : 'The connection is not secure'}>
-            <Icon d={parts.secure === false ? I.info : parts.secure ? I.lock : I.globe} size={14} />
-          </span>
-          <input ref={urlInput} className="bw-url" value={addr} placeholder="Search or type an address" aria-label="Address"
-            onFocus={e => { setEditing(true); e.target.select(); }} onBlur={() => setEditing(false)} onChange={e => setAddr(e.target.value)}
-            onKeyDown={e => { if (e.key === 'Enter') go(); if (e.key === 'Escape') { setEditing(false); setAddr(activeTab?.url || ''); screen.current?.focus(); } }} spellCheck={false} />
-          {!editing && addr && <span className="bw-urlview" aria-hidden="true"><span className="dim">{parts.scheme}</span>{parts.host}<span className="dim">{parts.rest}</span></span>}
-        </div>
-        <div className="bw-side">
+    <div className={`bw ${inside ? 'kb' : ''} ${compact ? 'compact' : ''}`} data-tb-browser="" onKeyDownCapture={leave} onFocus={() => setInside(true)} onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setInside(false); }}>
+      {compact ? (
+        <div className="bw-bar bw-row">
+          {navButtons}
+          {address}
           {flash && <span className="bw-chip flash">{flash}</span>}
-          {keyLabel('browserLeave') && <span className="bw-chip bw-leave" title={`While the focus is in this browser, every key goes to the page, also ⌘ and ⌃ keys. Press ${keysText('browserLeave')} to give the keys back to Taskboard.`}><kbd>{keyLabel('browserLeave')}</kbd> leaves</span>}
-          {agents > 0 && <span className="bw-chip agent" title="An agent is connected to this browser through its task-browser tools"><i />Agent</span>}
-          {!isTemplate && <BrowserMemory id={id} />}
-          <SoundSwitch id={id} muted={muted} onChange={setMuted} onDone={s => setMuted(s.muted)} onError={setErr} />
-          {!floating && <button className="bw-ib" onClick={() => popOutBrowser(id, title || (isTemplate ? 'Template browser' : 'Task browser'), isTemplate ? 'Sign in here. New task browsers copy this profile.' : '')} aria-label="Pop out" title="Show the browser in its own window"><Icon d={I.popout} /></button>}
-          <button className="bw-ib danger" onClick={() => send({ type: 'stop' })} aria-label={isTemplate ? 'Close the template browser' : 'Stop the browser'} title={isTemplate ? 'Close the template browser. New task browsers can copy it only when it is closed.' : 'Stop the browser. Its pages open again at the next start.'}><Icon d={I.power} /></button>
+          <button className={`bw-tabsbtn bw-popbtn ${pop === 'tabs' ? 'on' : ''}`} onClick={() => setPop(p => p === 'tabs' ? null : 'tabs')} aria-expanded={pop === 'tabs'} aria-label={`All ${tabs.length} tabs`} title={`All ${tabs.length} tabs${waiting ? '. A page waits for an answer.' : ''}`}>
+            <b>{tabs.length}</b><Icon d={I.down} size={12} />{waiting && <i className="bw-ask" />}
+          </button>
+          <button className="bw-ib" onClick={() => send({ type: 'new', url: 'about:blank' })} aria-label="New tab" title="New tab"><Icon d={I.plus} /></button>
+          {sound}
+          {stopButton}
+          <button className={`bw-ib bw-popbtn bw-more ${pop === 'menu' ? 'on' : ''}`} onClick={() => setPop(p => p === 'menu' ? null : 'menu')} aria-expanded={pop === 'menu'} aria-label="More" title="More: copy the address, pop out, memory, keys">
+            <Icon d={I.more} weight={3} />{agents > 0 && <i className="bw-agent" />}
+          </button>
+          {nav.loading && <div className="bw-progress" />}
+          {pop === 'tabs' && <TabList tabs={tabs} active={active} name={tabName}
+            onSelect={t => { setPop(null); send({ type: 'select', id: t }); screen.current?.focus(); }}
+            onClose={t => send({ type: 'close', id: t })} onNew={() => { setPop(null); send({ type: 'new', url: 'about:blank' }); }}
+            onDone={() => { setPop(null); screen.current?.focus(); }} />}
+          {pop === 'menu' && <div className="bw-pop bw-menu" role="menu">
+            {activeTab?.url && activeTab.url !== 'about:blank' && <button className="bw-mi" role="menuitem" onClick={() => { setPop(null); copyAddress(); }}><Icon d={I.copy} size={15} /><span>Copy the address</span></button>}
+            <button className="bw-mi" role="menuitem" onClick={popOut}><Icon d={I.popout} size={15} /><span>Pop out<small>Show the browser in its own window</small></span></button>
+            {onCanvas && <button className="bw-mi" role="menuitem" onClick={() => { setPop(null); onCanvas(); }}><Icon d={I.canvas} size={15} /><span>Show on Canvas<small>Above the terminal of this task</small></span></button>}
+            <div className="bw-msep" />
+            {!isTemplate && <BrowserMemory id={id} row />}
+            {agents > 0 && <div className="bw-minfo"><i className="bw-agent in" />An agent is connected to this browser</div>}
+            {keyLabel('browserLeave') && <div className="bw-minfo" title="While the focus is in this browser, every key goes to the page, also ⌘ and ⌃ keys."><kbd>{keyLabel('browserLeave')}</kbd> gives the keys back to Taskboard</div>}
+          </div>}
         </div>
-        {nav.loading && <div className="bw-progress" />}
-      </div>
+      ) : <>
+        <div className="bw-tabs" onDoubleClick={e => { if (e.target === e.currentTarget) send({ type: 'new', url: 'about:blank' }); }}>
+          {tabs.map(t => (
+            <div key={t.id} className={`bw-tab ${t.id === active ? 'on' : ''}`} onClick={() => send({ type: 'select', id: t.id })}
+              onAuxClick={e => { if (e.button === 1) { e.preventDefault(); send({ type: 'close', id: t.id }); } }} title={t.title ? `${t.title}\n${t.url}` : t.url}>
+              {t.id === active && nav.loading ? <span className="bw-spin" aria-label="Loading" /> : <Favicon tab={t} />}
+              {t.dialog && <i className="bw-ask" title="This page waits for an answer" />}
+              <span className="t">{tabName(t)}</span>
+              <button className="bw-x" onClick={e => { e.stopPropagation(); send({ type: 'close', id: t.id }); }} aria-label="Close this tab" title="Close this tab (middle-click)"><Icon d={I.close} size={12} /></button>
+            </div>
+          ))}
+          <button className="bw-ib bw-new" onClick={() => send({ type: 'new', url: 'about:blank' })} aria-label="New tab" title="New tab"><Icon d={I.plus} /></button>
+        </div>
+        <div className="bw-bar">
+          {navButtons}
+          {address}
+          <div className="bw-side">
+            {flash && <span className="bw-chip flash">{flash}</span>}
+            {keyLabel('browserLeave') && <span className="bw-chip bw-leave" title={`While the focus is in this browser, every key goes to the page, also ⌘ and ⌃ keys. Press ${keysText('browserLeave')} to give the keys back to Taskboard.`}><kbd>{keyLabel('browserLeave')}</kbd> leaves</span>}
+            {agents > 0 && <span className="bw-chip agent" title="An agent is connected to this browser through its task-browser tools"><i />Agent</span>}
+            {!isTemplate && <BrowserMemory id={id} />}
+            {sound}
+            {!floating && <button className="bw-ib" onClick={popOut} aria-label="Pop out" title="Show the browser in its own window"><Icon d={I.popout} /></button>}
+            {stopButton}
+          </div>
+          {nav.loading && <div className="bw-progress" />}
+        </div>
+      </>}
+      {dialog && <div className="bw-dialog" role="alertdialog" aria-label="The page waits for an answer">
+        <i className="bw-ask in" />
+        <span className="bw-dialog-t"><b>{dialog.type === 'beforeunload' ? 'Leave this page?' : dialog.type === 'alert' ? 'The page says:' : 'The page asks:'}</b> {dialog.message}</span>
+        {dialog.type === 'prompt' && <input className="bw-dialog-in" value={promptText} onChange={e => setPromptText(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') answer(true); if (e.key === 'Escape') answer(false); }} aria-label="Answer" />}
+        <button className="btn primary" onClick={() => answer(true)}>{dialog.type === 'beforeunload' ? 'Leave' : 'OK'}</button>
+        {dialog.type !== 'alert' && <button className="btn" onClick={() => answer(false)}>{dialog.type === 'beforeunload' ? 'Stay' : 'Cancel'}</button>}
+      </div>}
       {err && <div className="banner">{err} <button className="btn ghost" onClick={() => setErr('')}>OK</button></div>}
       <div className={`bw-screen ${framed ? 'framed' : ''}`} ref={screen} tabIndex={0}
         onMouseDown={e => { screen.current?.focus(); mouse('mousePressed', e, e.detail || 1); }}
@@ -379,6 +454,43 @@ function Live({ id, title, autostart, floating, archived, isTemplate }: { id: st
   );
 }
 
+// The tab list of the compact row: one row for each tab, with a find field from 8 tabs. Up and Down move the
+// selection, Enter shows the selected tab, Escape closes the list.
+function TabList({ tabs, active, name, onSelect, onClose, onNew, onDone }: { tabs: BrowserTab[]; active: string; name: (t: BrowserTab) => string; onSelect: (id: string) => void; onClose: (id: string) => void; onNew: () => void; onDone: () => void }) {
+  const [find, setFind] = useState('');
+  const [sel, setSel] = useState(-1);
+  const box = useRef<HTMLDivElement>(null), field = useRef<HTMLInputElement>(null);
+  const q = find.trim().toLowerCase();
+  const shown = q ? tabs.filter(t => (t.title + ' ' + t.url).toLowerCase().includes(q)) : tabs;
+  const at = sel >= 0 ? Math.min(sel, shown.length - 1) : Math.max(0, shown.findIndex(t => t.id === active));
+  useEffect(() => { (field.current || box.current)?.focus(); }, []);
+  useEffect(() => { box.current?.querySelector('.bw-li.sel')?.scrollIntoView({ block: 'nearest' }); }, [at]);
+  const keys = (e: React.KeyboardEvent) => {
+    if (e.key === 'ArrowDown') { e.preventDefault(); setSel(Math.min(shown.length - 1, at + 1)); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); setSel(Math.max(0, at - 1)); }
+    else if (e.key === 'Enter' && shown[at]) { e.preventDefault(); onSelect(shown[at].id); }
+    else if (e.key === 'Escape') { e.preventDefault(); onDone(); }
+  };
+  return (
+    <div className="bw-pop bw-list" ref={box} tabIndex={-1} onKeyDown={keys} role="listbox" aria-label="Tabs">
+      <div className="bw-lh"><b>{tabs.length} {tabs.length === 1 ? 'tab' : 'tabs'}</b><span>↑ ↓ · Enter</span></div>
+      {tabs.length >= 8 && <input ref={field} className="bw-lf" value={find} onChange={e => { setFind(e.target.value); setSel(0); }} placeholder="Find a tab" aria-label="Find a tab" spellCheck={false} />}
+      <div className="bw-lb">
+        {shown.map((t, i) => (
+          <div key={t.id} role="option" aria-selected={t.id === active} className={`bw-li ${t.id === active ? 'on' : ''} ${i === at ? 'sel' : ''}`} onClick={() => onSelect(t.id)} onMouseMove={() => { if (i !== at) setSel(i); }} title={t.url}>
+            <span className="bw-li-f"><Favicon tab={t} />{t.dialog && <i className="bw-ask" />}</span>
+            <span className="t">{name(t)}<small>{siteOf(t.url) || t.url}</small></span>
+            {t.dialog && <span className="bw-tag" title={t.dialog.message}>waits for an answer</span>}
+            <button className="bw-x" onClick={e => { e.stopPropagation(); onClose(t.id); }} aria-label="Close this tab" title="Close this tab"><Icon d={I.close} size={12} /></button>
+          </div>
+        ))}
+        {!shown.length && <div className="bw-lempty">No tab matches</div>}
+      </div>
+      <button className="bw-li add" onClick={onNew}><Icon d={I.plus} size={15} /><span className="t">New tab</span></button>
+    </div>
+  );
+}
+
 // Move the focus out of a browser view: to the terminal of the same Canvas window or task panel, or else to nothing.
 export function leaveBrowser(from: HTMLElement) {
   (document.activeElement as HTMLElement | null)?.blur?.();
@@ -386,7 +498,7 @@ export function leaveBrowser(from: HTMLElement) {
   term?.focus();
 }
 // The memory of a task browser (its footprint, from GET /api/runtime), read every 4 s while the view is open.
-function BrowserMemory({ id }: { id: string }) {
+function BrowserMemory({ id, row = false }: { id: string; row?: boolean }) {
   const [memMb, setMemMb] = useState<number | null>(null);
   useEffect(() => {
     let live = true;
@@ -394,6 +506,7 @@ function BrowserMemory({ id }: { id: string }) {
     void read(); const timer = setInterval(read, 4000);
     return () => { live = false; clearInterval(timer); };
   }, [id]);
+  if (memMb !== null && row) return <div className="bw-minfo" title="Memory of all Chrome processes of this browser, counted like Activity Monitor does (footprint)">Memory {mb(memMb)}</div>;
   return memMb === null ? null : <span className="bw-chip" title="Memory of all Chrome processes of this browser, counted like Activity Monitor does (footprint). The server reads it at most every 15 s.">{mb(memMb)}</span>;
 }
 

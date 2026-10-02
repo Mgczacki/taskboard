@@ -27,7 +27,10 @@ const ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,120}$/;
 // sound: the user's choice for this browser. muted: the state of the running browser. muteFlag: the running browser
 // started with --mute-audio because the sound extension did not load (see muteTabs).
 export interface Meta { pid?: number; port?: number; started?: string; startMs?: number; tabs?: string[]; suspended?: boolean; idleStopped?: boolean; stoppedAt?: string; error?: string; copiedFromTemplate?: string; sound?: boolean; muted?: boolean; muteFlag?: boolean; sharp?: boolean }
-export interface Tab { id: string; title: string; url: string; faviconUrl?: string }
+export interface Tab { id: string; title: string; url: string; faviconUrl?: string; dialog?: Dialog }
+// A box that a page opened with alert(), confirm(), prompt() or onbeforeunload. Headless Chrome draws no box, and the
+// page waits until a DevTools client answers it (Page.handleJavaScriptDialog).
+export interface Dialog { type: 'alert' | 'confirm' | 'prompt' | 'beforeunload'; message: string; defaultPrompt?: string }
 
 const folder = (id: string) => { if (!ID.test(id)) throw new Error('Invalid browser id.'); return join(DIR, id); };
 export const profileDir = (id: string) => join(folder(id), 'profile');
@@ -152,6 +155,7 @@ export function ensure(id: string): Promise<Meta & { ws: string }> {
     writeMeta(id, next);
     lastUse.set(id, Date.now());
     changed(id);
+    watchDialogs(id, v.webSocketDebuggerUrl);
     return { ...next, ws: v.webSocketDebuggerUrl };
   })();
   starting.set(id, p);
@@ -476,6 +480,54 @@ export function proxyAgent(client: WebSocket, id: string) {
   }).catch(e => { console.error(`task browser ${id}: ${(e as Error).message}`); try { client.close(1011, String((e as Error).message).slice(0, 120)); } catch { /* closed */ } done(); });
 }
 
+// ---------- dialogs ----------
+// The dialogs of every tab of a running browser. A dialog that a page opened before any DevTools client had the Page
+// domain on is not reported later, so one browser connection for each running browser watches all pages from the
+// start: ensure() starts it, and a dashboard view starts it for a browser that was running before this server.
+// The connection listens for Target.targetCreated, attaches to each page (flatten sessions) and turns the Page domain
+// on there. Page.javascriptDialogOpening and Page.javascriptDialogClosed keep dialogs (target id -> dialog). The
+// connection ends when Chrome stops. Chrome opens the dialog of a background tab only when that tab comes to the front,
+// so a dialog usually belongs to the shown tab or to a tab that the user left while its dialog was open.
+interface DialogWatch { ws: WebSocket; dialogs: Map<string, Dialog>; sessions: Map<string, string>; listeners: Set<() => void>; next: number }
+const dialogWatch = new Map<string, DialogWatch>();
+function watchDialogs(id: string, browserWs: string): DialogWatch {
+  const had = dialogWatch.get(id);
+  if (had && had.ws.readyState <= WebSocket.OPEN) return had;
+  const ws = new WebSocket(browserWs, { perMessageDeflate: false });
+  const w: DialogWatch = { ws, dialogs: new Map(), sessions: new Map(), listeners: new Set(had?.listeners), next: 0 };
+  dialogWatch.set(id, w);
+  const cmd = (method: string, params: object = {}, sessionId?: string) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ id: ++w.next, method, params, ...(sessionId ? { sessionId } : {}) })); };
+  const changed = () => { for (const fn of w.listeners) fn(); };
+  const attach = (t: { targetId: string; type: string }) => { if (t.type === 'page' && ![...w.sessions.values()].includes(t.targetId)) cmd('Target.attachToTarget', { targetId: t.targetId, flatten: true }); };
+  ws.on('open', () => cmd('Target.setDiscoverTargets', { discover: true }));
+  ws.on('message', d => {
+    const m = JSON.parse(d.toString());
+    if (m.method === 'Target.targetCreated') attach(m.params.targetInfo);
+    else if (m.method === 'Target.attachedToTarget') { w.sessions.set(m.params.sessionId, m.params.targetInfo.targetId); cmd('Page.enable', {}, m.params.sessionId); }
+    else if (m.method === 'Target.detachedFromTarget' || m.method === 'Target.targetDestroyed') {
+      const target = m.params.targetId ?? w.sessions.get(m.params.sessionId);
+      if (m.params.sessionId) w.sessions.delete(m.params.sessionId);
+      if (target && w.dialogs.delete(target)) changed();
+    }
+    else if (m.method === 'Page.javascriptDialogOpening' && m.sessionId) {
+      const target = w.sessions.get(m.sessionId); if (!target) return;
+      const p = m.params;
+      w.dialogs.set(target, { type: p.type, message: String(p.message || '').slice(0, 2000), ...(p.type === 'prompt' ? { defaultPrompt: String(p.defaultPrompt || '') } : {}) });
+      changed();
+    }
+    else if (m.method === 'Page.javascriptDialogClosed' && m.sessionId) { const target = w.sessions.get(m.sessionId); if (target && w.dialogs.delete(target)) changed(); }
+  });
+  ws.on('close', () => { if (dialogWatch.get(id) === w) dialogWatch.delete(id); });
+  ws.on('error', () => {});
+  return w;
+}
+function answerDialog(id: string, target: string, accept: boolean, promptText?: string) {
+  const w = dialogWatch.get(id);
+  const session = w && [...w.sessions].find(([, t]) => t === target)?.[0];
+  if (!w || !session || !w.dialogs.has(target) || w.ws.readyState !== WebSocket.OPEN) return;
+  w.ws.send(JSON.stringify({ id: ++w.next, method: 'Page.handleJavaScriptDialog', params: { accept, ...(promptText !== undefined ? { promptText } : {}) }, sessionId: session }));
+}
+
 // ---------- the dashboard: screencast of one tab, with mouse and key input ----------
 const FRAME_BACKLOG = 512 * 1024;
 interface PageConn { ws: WebSocket; target: string; next: number; pending: Map<number, (r: any) => void>; casting?: boolean }
@@ -507,6 +559,9 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     const t = list.find(x => x.id === target && x.type === 'page'); if (!t) return;
     closePage();
     active = target;
+    // tell the view now: a page with an open dialog answers the calls below only after the dialog closes, and the
+    // view must show that tab to show its question
+    send({ type: 'active', id: target });
     const ws = new WebSocket(t.webSocketDebuggerUrl, { perMessageDeflate: false, maxPayload: 64 * 1024 * 1024 });
     const conn: PageConn = { ws, target, next: 0, pending: new Map() };
     page = conn;
@@ -545,11 +600,16 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     if (ws.readyState === WebSocket.OPEN && !conn.casting) { conn.casting = true; count(screencasts, id, 1); }
     send({ type: 'active', id: target });
   }
+  const dialogChanged = () => { void poll(); };
+  // Polls can overlap (the timer, the view's messages and dialog changes start them). A poll can wait in open() for a
+  // long time: a page with an open dialog answers only after the dialog closes.
   async function poll() {
     if (closed) return;
-    const running = await isRunning(id);
-    if (!running) { closePage(); active = ''; known = new Set(); send({ type: 'state', ...(await status(id)) }); return; }
-    const list = await tabs(id);
+    const m = await live(id);
+    if (!m) { closePage(); active = ''; known = new Set(); send({ type: 'state', ...(await status(id)) }); return; }
+    const dw = watchDialogs(id, m.ws);
+    if (!dw.listeners.has(dialogChanged)) dw.listeners.add(dialogChanged);
+    const list = (await pageList(m.port!) || []).map(t => { const dialog = dw.dialogs.get(t.id); return dialog ? { ...t, dialog } : t; });
     const fresh = list.filter(t => !known.has(t.id));
     const first = !known.size;
     known = new Set(list.map(t => t.id));
@@ -562,7 +622,7 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
   }
   const timer = setInterval(() => { void poll(); }, 1000);
   let chosenTimer: NodeJS.Timeout | undefined;
-  client.on('close', () => { if (closed) return; closed = true; count(viewers, id, -1); clearInterval(timer); clearTimeout(chosenTimer); closePage(); });
+  client.on('close', () => { if (closed) return; closed = true; count(viewers, id, -1); clearInterval(timer); clearTimeout(chosenTimer); closePage(); dialogWatch.get(id)?.listeners.delete(dialogChanged); });
   client.on('message', async d => {
     let m: any; try { m = JSON.parse(d.toString()); } catch { return; }
     try {
@@ -591,6 +651,10 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
       }
       else if (m.type === 'new') { const t = await openTab(id, typeof m.url === 'string' && m.url ? m.url : 'about:blank'); chosen = true; await open(t.id); }
       else if (m.type === 'close' && typeof m.id === 'string') await closeTab(id, m.id);
+      else if (m.type === 'dialog' && typeof m.id === 'string') {
+        // answer the dialog of that tab: OK or Cancel, with the text for a prompt()
+        answerDialog(id, m.id, !!m.accept, typeof m.text === 'string' ? m.text.slice(0, 10000) : undefined);
+      }
     } catch (e) { send({ type: 'error', message: (e as Error).message }); }
   });
   async function key(m: { down: boolean; key: string; code: string; keyCode: number; modifiers: number }) {

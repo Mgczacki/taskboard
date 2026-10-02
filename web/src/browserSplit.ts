@@ -15,3 +15,9 @@ export const parseSplit = (raw: string | null): Split => {
 };
 export const readSplit = (id: string): Split => { try { return parseSplit(localStorage.getItem(STORE(id))); } catch { return NO_SPLIT; } };
 export const writeSplit = (id: string, s: Split) => { try { localStorage.setItem(STORE(id), JSON.stringify(s)); } catch { /* storage off */ } };
+// Open the browser in the Canvas window of this task (the task panel's More menu, TaskBrowser.tsx). The event tells a
+// Canvas that is on screen to read the saved value again.
+export const openBrowserSplit = (id: string) => {
+  writeSplit(id, { ...readSplit(id), open: true });
+  window.dispatchEvent(new CustomEvent('tb-split', { detail: id }));
+};
