@@ -13,13 +13,18 @@ export const MachineChip = ({ t }: { t: Task }) => t.machine ? <span className="
 export const StatusLabel = ({ s }: { s: Status }) => <span className={`st-label ${s}`}>{STATUS_LABEL[s]}</span>;
 
 // The three lines every task shows in the same place: goal (your words), where the agent is, what it waits for.
-export function ThreeLines({ t }: { t: Task }) {
+// fixed: the block keeps one height while the agent works (the task panel and triage put a terminal below it, and each
+// change of height resizes that terminal and its tmux window). Goal and Now show at most 2 lines and Now always takes 2;
+// Waiting always takes 1 line. The full text is in the tooltip.
+export function ThreeLines({ t, fixed = false }: { t: Task; fixed?: boolean }) {
   const waiting = ATTN.includes(t.status) ? (t.ask || t.stopReason || '') : '';
+  const now = t.now || (t.status === 'working' ? 'Working on it…' : '—');
   return (
-    <div className="three">
-      <div><b>Goal</b><span>{t.goal || t.title}</span></div>
-      <div><b>Now</b><span>{t.now || (t.status === 'working' ? 'Working on it…' : '—')}</span></div>
-      {waiting && <div className="w"><b>Waiting</b><span>{waiting} <em>· {fmtWait(t.waitMin)}</em></span></div>}
+    <div className={`three ${fixed ? 'fixed' : ''}`}>
+      <div><b>Goal</b><span title={fixed ? t.goal || t.title : undefined}>{t.goal || t.title}</span></div>
+      <div className="now"><b>Now</b><span title={fixed ? now : undefined}>{now}</span></div>
+      {waiting ? <div className="w"><b>Waiting</b><span title={fixed ? waiting : undefined}>{waiting} <em>· {fmtWait(t.waitMin)}</em></span></div>
+        : fixed && <div className="w none"><b>Waiting</b><span>—</span></div>}
     </div>
   );
 }

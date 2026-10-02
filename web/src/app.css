@@ -6,11 +6,13 @@
 .dot.ok { background: var(--st-unread); }
 
 /* terminals */
-.xterm-box { width: 100%; height: 100%; padding: 6px 0 0 8px; background: var(--term-bg); position: relative; }
+.xterm-box { width: 100%; height: 100%; background: var(--term-bg); position: relative; }
 /* says when the terminal does not show the agent's newest output (Terminal.tsx) */
 .term-bar { position: absolute; top: 6px; right: 12px; z-index: 10; display: flex; align-items: center; gap: 6px; padding: 3px 3px 3px 9px; font-size: 11.5px; color: var(--text); background: var(--panel); border: 1px solid color-mix(in srgb, var(--st-needs) 55%, var(--line)); border-radius: 7px; box-shadow: 0 2px 8px rgb(0 0 0 / .25); }
 .term-bar .btn { padding: 2px 8px; font-size: 11.5px; }
-.xterm-box .xterm { height: 100%; }
+/* The margin is padding of .xterm, not of .xterm-box: the fit addon subtracts the padding of .xterm from the height of
+   .xterm-box. With the padding on .xterm-box it counted those 6 pixels as room for rows, and the last row could be cut off. */
+.xterm-box .xterm { height: 100%; padding: 6px 0 0 8px; }
 .xterm-box .xterm-viewport { background: var(--term-bg) !important; }
 .xterm-box .taskboard-link-underline { position: absolute; inset: 0; pointer-events: none; z-index: 5; }
 .xterm-box .taskboard-link-underline span { position: absolute; border-bottom: 1px solid var(--accent); }
@@ -19,6 +21,17 @@
 .dr-body { display: flex; flex-direction: column; }
 .dr-body > .term-wrap { flex: 1; min-height: 0; }
 .logtext { white-space: pre-wrap; font: 12.5px/1.6 var(--mono); color: var(--text); margin: 0; }
+/* The blocks above a terminal keep one height while the agent works. Each change of their height changes the
+   terminal's rows, resizes the tmux window and makes the agent draw its screen again (ThreeLines fixed in ui.tsx). */
+.three.fixed span { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; line-height: 1.45; }
+.three.fixed .now span { min-height: 2.9em; }
+.three.fixed .w span { -webkit-line-clamp: 1; }
+.three.fixed .w.none span { color: var(--dim); }
+.dr-status > div { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dr-bar { white-space: nowrap; }
+.dr-bar-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tr-title { flex-wrap: nowrap; white-space: nowrap; }
+.tr-title h3 { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .tr-term { display: flex; }
 .tr-term .xterm-box { flex: 1; }
 

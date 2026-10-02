@@ -116,7 +116,9 @@ test('folding the header and changing the step keep the same terminal, with the 
   assert.ok(!/key=/.test(tag), 'the terminal has no key that changes with the layout');
   assert.match(term, /const renderer = 'dom'/);
   assert.doesNotMatch(term, /addon-webgl|addon-canvas/);
-  assert.match(term, /new ResizeObserver\(\(\) => \{ if \(!el\.clientWidth \|\| !el\.clientHeight\) return; try \{ fit\.fit\(\)/);
+  assert.match(term, /const refit = \(\) => \{ if \(!el\.clientWidth \|\| !el\.clientHeight\) return; try \{ fit\.fit\(\)/);
+  assert.match(term, /new ResizeObserver\(refit\)/);
+  assert.match(term, /term\.onResize\(\(\{ cols, rows \}\) => \{[^\n]*sizes\.changed\(cols, rows\)/);
   // the step is not a dependency of the effect that opens the terminal
   assert.match(term, /\}, \[taskId, session\]\);/);
   assert.match(term, /useEffect\(\(\) => \{ const t = termRef\.current; if \(t\) t\.options\.theme = readTerminalTheme\(glass\)\.theme; \}, \[glass\]\);/);

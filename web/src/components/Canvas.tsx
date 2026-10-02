@@ -422,10 +422,11 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
         {layout === 'columns' && !per && <><span className="lbl">Visible</span><div className="seg">{(['auto', 2, 3, 4, 5] as const).map(v => <button key={v} className={visible === v ? 'on' : ''} onClick={() => setVisible(v)}>{v === 'auto' ? 'Auto' : v}</button>)}</div></>}
         <span className="lbl">Per page</span><div className="seg">{PER_PAGE.map(v => <button key={v} className={perPage === v ? 'on' : ''} onClick={() => { setPerPage(v); setPage(0); }} title={v === 'off' ? 'Show every window' : `Show ${v} windows at a time`}>{v === 'off' ? 'Off' : v}</button>)}</div>
         {per > 0 && pageCount > 1 && <div className="pager">
-          <button className="btn" disabled={pg === 0} onClick={() => turnPage(-1)} title={`Previous page (${keysText('prevPage')})`}>‹{needBefore > 0 && <span className="pw">● {needBefore}</span>}</button>
+          <button className="btn" disabled={pg === 0} onClick={() => turnPage(-1)} title={`Previous page (${keysText('prevPage')})`}>‹<span className="pw" style={needBefore > 0 ? undefined : { visibility: 'hidden' }}>● {needBefore}</span></button>
           <span className="lbl" title={`Page ${pg + 1} of ${pageCount}`}>Page {pg + 1}/{pageCount} · windows {pg * per + 1}–{Math.min(wins.length, (pg + 1) * per)} of {wins.length}</span>
-          <button className="btn" disabled={pg === pageCount - 1} onClick={() => turnPage(1)} title={`Next page (${keysText('nextPage')})`}>{needAfter > 0 && <span className="pw">● {needAfter}</span>}›</button>
-          {needBefore + needAfter > 0 && <button className="btn pneed" onClick={() => { const t = nextNeedy(); if (t) focus(t.id); }} title={`Go to the next window on another page that needs you (${keysText('nextNeedy')})`}>● {needBefore + needAfter} need you on other pages</button>}
+          <button className="btn" disabled={pg === pageCount - 1} onClick={() => turnPage(1)} title={`Next page (${keysText('nextPage')})`}><span className="pw" style={needAfter > 0 ? undefined : { visibility: 'hidden' }}>● {needAfter}</span>›</button>
+          {/* hidden, not removed, when nothing waits: the toolbar wraps, and a new line would shrink every terminal below it */}
+          <button className="btn pneed" style={needBefore + needAfter > 0 ? undefined : { visibility: 'hidden' }} onClick={() => { const t = nextNeedy(); if (t) focus(t.id); }} title={`Go to the next window on another page that needs you (${keysText('nextNeedy')})`}>● {needBefore + needAfter} need you on other pages</button>
         </div>}
         {newInSmart > 0 && <button className="btn" onClick={() => { setFrozen(liveSet()); }} title="Windows never appear on their own while you work">{newInSmart} new · refresh</button>}
         <span className="sp" />

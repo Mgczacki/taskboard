@@ -14,6 +14,7 @@ import { continues, findPaths, joinRows, type Row } from '../terminalPaths';
 import { commandAt, commandsFrom, type CellRow } from '../bangCommand';
 import { beginHold } from '../holdRun';
 import { readTerminalTheme } from '../terminalTheme';
+import { sizeSender } from '../terminalSize';
 
 // Debug record: each terminal keeps its last 300 events (WebSocket messages with their size and first escape
 // sequences, input lengths, connection changes, stalls, messages from the server). It holds no text the agent printed
@@ -38,6 +39,7 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
   const glassRef = useRef(glass);
   glassRef.current = glass;
   const termRef = useRef<XTerm | null>(null);
+  const fitRef = useRef<() => void>(() => {});
   const tasks = useStore().tasks;
   const tasksRef = useRef(tasks);
   tasksRef.current = tasks;
@@ -187,14 +189,26 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
     const renderer = 'dom';
     // tmux sends copied text as OSC 52; this puts it on the system clipboard
     term.loadAddon(new ClipboardAddon());
-    try { fit.fit(); } catch { /* not visible yet */ }
+    // a hidden terminal (a parent with display: none) has no size; fitting it would make the tmux window 20 x 5
+    const refit = () => { if (!el.clientWidth || !el.clientHeight) return; try { fit.fit(); } catch { /* layout is not ready */ } };
+    fitRef.current = refit;
+    refit();
 
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     let ws: ReturnType<typeof terminalSocket> | null = null, lastState: unknown = null;
     const send = (m: object) => { if (ws && ws.readyState === 1) ws.send('\x00' + JSON.stringify(m)); };
+    // the box height, the cell height and the pixel ratio with each change of rows: the debug record shows what changed the size
+    const sizeLog = () => ({ box: +el.getBoundingClientRect().height.toFixed(2), cell: +((term as unknown as { _core: { _renderService: { dimensions: { css: { cell: { height: number } } } } } })._core._renderService.dimensions.css.cell.height || 0).toFixed(3), dpr: devicePixelRatio });
+    // terminalSize.ts: tell tmux a new size only once it settles, and only when tmux does not have it yet
+    const sizes = sizeSender((cols, rows) => {
+      if (!ws || ws.readyState !== 1) return false;
+      log('resize', { cols, rows, ...sizeLog() });
+      ws.send('\x00' + JSON.stringify({ t: 'resize', cols, rows }));
+      return true;
+    });
     let redrawnTimer: ReturnType<typeof setTimeout> | undefined;
     const showRedrawn = () => { setRedrawn(true); clearTimeout(redrawnTimer); redrawnTimer = setTimeout(() => setRedrawn(false), 6000); };
-    ws = terminalSocket(() => `${proto}://${location.host}/ws/term?${session ? 'session=' + encodeURIComponent(session) : 'task=' + encodeURIComponent(taskId)}&cols=${term.cols}&rows=${term.rows}`, {
+    ws = terminalSocket(() => (sizes.known(term.cols, term.rows), `${proto}://${location.host}/ws/term?${session ? 'session=' + encodeURIComponent(session) : 'task=' + encodeURIComponent(taskId)}&cols=${term.cols}&rows=${term.rows}`), {
       message: e => {
         const d = typeof e.data === 'string' ? e.data : '';
         // messages from the server start with a NUL byte, like the ones this page sends; everything else is output
@@ -211,7 +225,7 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
         term.write(typeof e.data === 'string' ? e.data : new Uint8Array(e.data));
       },
       // this terminal decides the tmux window size while it is the one you opened or typed in last
-      open: () => { log('open'); setOffline(false); sendFocus(); },
+      open: () => { log('open'); setOffline(false); sendFocus(); sizes.flush(term.cols, term.rows); },
       close: ev => {
         log('close', { code: ev.code, reason: ev.reason });
         setOffline(ev.code !== 4004);
@@ -227,7 +241,7 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
     const restoreDisplay = () => {
       if (document.visibilityState !== 'visible' || !el.clientWidth || !el.clientHeight) return;
       log('visible-refresh');
-      try { fit.fit(); } catch { /* layout is not ready */ }
+      refit();
       term.refresh(0, term.rows - 1);
       send({ t: 'refresh' });
     };
@@ -248,7 +262,7 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
     }, 1000);
     actions.current = {
       live: () => { log('back-to-live'); send({ t: 'live' }); },
-      refresh: () => { log('refresh'); try { fit.fit(); } catch { /* hidden */ } term.refresh(0, term.rows - 1); send({ t: 'refresh' }); },
+      refresh: () => { log('refresh'); refit(); term.refresh(0, term.rows - 1); send({ t: 'refresh' }); },
     };
     const id = taskId || session || '';
     const record = () => {
@@ -268,21 +282,21 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
       if (taskboardKey(e)) return false;
       return true;
     });
-    const sendSize = () => { log('resize', { cols: term.cols, rows: term.rows }); send({ t: 'resize', cols: term.cols, rows: term.rows }); };
-    // refit at once, but tell tmux only once the size settles: a drag changes it every frame, and each resize redraws the agent's screen
-    let sizeTimer: ReturnType<typeof setTimeout> | undefined;
-    // a hidden terminal (a parent with display: none) has no size; fitting it would make the tmux window 20 x 5
-    const ro = new ResizeObserver(() => { if (!el.clientWidth || !el.clientHeight) return; try { fit.fit(); clearTimeout(sizeTimer); sizeTimer = setTimeout(sendSize, 100); } catch { /* hidden */ } });
+    // refit at once, but tell tmux only once the size settles. Every fit goes through onResize: the box, a font size, the
+    // window coming back into view.
+    const resized = term.onResize(({ cols, rows }) => { log('fit', { cols, rows, ...sizeLog() }); sizes.changed(cols, rows); });
+    const ro = new ResizeObserver(refit);
     ro.observe(el);
     const sendFocus = () => send({ t: 'focus' });
     const onF = () => { sendFocus(); if (onFocus) onFocus(); };
     term.textarea?.addEventListener('focus', onF);
     if (autoFocus) setTimeout(() => term.focus(), 50);
 
-    return () => { document.removeEventListener('visibilitychange', restoreDisplay); window.removeEventListener('focus', restoreDisplay); clearTimeout(sizeTimer); clearTimeout(redrawnTimer); clearInterval(stallCheck); io.disconnect(); parsed.dispose(); rendered.dispose(); if (records.get(id) === record) records.delete(id); ro.disconnect(); input.dispose(); provider?.dispose(); underline.remove(); for (const type of ['mousedown', 'mouseup', 'click'] as const) el.removeEventListener(type, onModifiedMouse, true); el.removeEventListener('paste', onPaste, true); el.removeEventListener('mousedown', onHoldStart, true); term.textarea?.removeEventListener('focus', onF); ws?.dispose(); termRef.current = null; term.dispose(); };
+    return () => { document.removeEventListener('visibilitychange', restoreDisplay); window.removeEventListener('focus', restoreDisplay); sizes.dispose(); resized.dispose(); clearTimeout(redrawnTimer); clearInterval(stallCheck); io.disconnect(); parsed.dispose(); rendered.dispose(); if (records.get(id) === record) records.delete(id); ro.disconnect(); input.dispose(); provider?.dispose(); underline.remove(); for (const type of ['mousedown', 'mouseup', 'click'] as const) el.removeEventListener(type, onModifiedMouse, true); el.removeEventListener('paste', onPaste, true); el.removeEventListener('mousedown', onHoldStart, true); term.textarea?.removeEventListener('focus', onF); ws?.dispose(); termRef.current = null; fitRef.current = () => {}; term.dispose(); };
   }, [taskId, session]);
 
-  useEffect(() => { if (termRef.current) termRef.current.options.fontSize = fontSize; }, [fontSize]);
+  // a new font size changes the cell size but not the box, so the ResizeObserver does not see it: fit here
+  useEffect(() => { if (termRef.current) { termRef.current.options.fontSize = fontSize; fitRef.current(); } }, [fontSize]);
   useEffect(() => {
     // a new theme object makes xterm.js repaint with the new colours; the buffer and the session stay as they are
     const on = () => { const t = termRef.current; if (!t) return; const { theme, minimumContrastRatio } = readTerminalTheme(glassRef.current); t.options.theme = theme; t.options.minimumContrastRatio = minimumContrastRatio; };
