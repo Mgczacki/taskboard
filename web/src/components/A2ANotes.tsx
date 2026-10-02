@@ -20,7 +20,10 @@ interface Summary {
 }
 interface Detail extends Summary { body: string; review: { reason: string } | null; body_check: { state?: string; flags: { reason: string; text: string; code: string; start: number; end: number }[] } | null;
   agent_file: { name: string; sha256: string } | null; files: { name: string; size: number }[]; failure?: { code: string; reason: string }; error: string | null; rejected: { comment?: string } | null }
-export interface Setup { installed: boolean; version?: string; configured: boolean; running: boolean; serviceVersion?: string; linked: boolean; updateAvailable: boolean; restartStep: string; folder: string; port: number; checks: 'model' | 'rules'; checksOutdated: boolean }
+export interface Setup { installed: boolean; version?: string; configured: boolean; running: boolean; serviceVersion?: string; linked: boolean; updateAvailable: boolean; restartStep: string; folder: string; port: number; checks: 'model' | 'rules'; checksOutdated: boolean;
+  slack?: SlackAppInfo; slackApp: SlackAppInfo & { source: 'settings' | 'environment' | 'default' }; slackAppDiffers: boolean; signInHelp: string[] }
+// a Slack app as server/a2anotes/setup.ts SetupState reports it
+export interface SlackAppInfo { clientId: string; teamId: string; redirectUri: string; name?: string }
 export interface Status { enabled: boolean; url?: string; error?: string; setup?: Setup; identity?: { address?: string; name?: string }; connection?: { signed_in: boolean; last_scan_at: string | null; last_error: string | null; stale: boolean; missing_scopes: string[] } }
 export { request };
 

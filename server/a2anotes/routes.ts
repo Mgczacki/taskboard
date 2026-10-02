@@ -322,7 +322,7 @@ export function mountA2ANotes(app: Express, options: { delivery?: A2ADeps; setti
   app.post('/api/a2anotes/setup', endpoint(async req => {
     need(req, 'person');
     if (options.settings) throw new A2AError('not_configured', 'This server has fixed A2A Notes settings.');
-    return { setup: await setup(settingsFile, settingsFor) };
+    return { setup: await setup(settingsFile, settingsFor, { applySlackApp: req.body?.applySlackApp === true }) };
   }));
   // Slack sign-in for the A2A Notes service. After sign-in, Slack returns the browser to the Taskboard Settings page.
   app.post('/api/a2anotes/slack-sign-in', endpoint(req => service().call(need(req, 'person'), 'a2anotes_slack_sign_in', { return_to: `${URL_BASE}/#settings` })));
