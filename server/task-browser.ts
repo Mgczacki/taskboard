@@ -830,14 +830,9 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
       }
     } catch (e) { send({ type: 'error', message: (e as Error).message }); }
   });
-  async function key(m: { down: boolean; key: string; code: string; keyCode: number; modifiers: number }) {
-    const commands = m.down ? editCommands(m.key, m.modifiers || 0) : [];
-    const base = { key: m.key, code: m.code, windowsVirtualKeyCode: m.keyCode, nativeVirtualKeyCode: m.keyCode, modifiers: m.modifiers || 0, ...(commands.length ? { commands } : {}) };
-    if (!m.down) return call('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
-    const printable = m.key.length === 1 && !(m.modifiers & (2 | 4)); // no Ctrl, no Meta
-    if (printable) return call('Input.dispatchKeyEvent', { type: 'keyDown', ...base, text: m.key, unmodifiedText: m.key });
-    if (m.key === 'Enter') return call('Input.dispatchKeyEvent', { type: 'keyDown', ...base, text: '\r', unmodifiedText: '\r' });
-    return call('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...base });
+  async function key(m: KeyMessage) {
+    const e = keyEvent(m);
+    if (e) await call('Input.dispatchKeyEvent', e);
   }
   // the start runs while the view polls, so the view shows its progress (status().starting) and then its result
   void (async () => {
@@ -850,6 +845,25 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
 const COPY = `(() => { const a = document.activeElement;
   if (a && (a.tagName === 'TEXTAREA' || (a.tagName === 'INPUT' && a.type !== 'password')) && typeof a.selectionStart === 'number') return a.value.slice(a.selectionStart, a.selectionEnd);
   return String(getSelection() || ''); })()`;
+// The Input.dispatchKeyEvent parameters for a key of the dashboard's browser view, or null when the key does not go
+// to the page. The event has no nativeVirtualKeyCode. The view knows only the Windows key code, and Chrome on macOS
+// reads a native code as a Mac key code: 91 (the Windows code of Meta) is keypad 8 there. A Meta or Shift key down
+// with a native code made headless Chrome repeat that key without end (thousands of keydown events with metaKey set,
+// after the key up too). With that code, Cmd+V in the view made the task's Chrome run a macOS menu key equivalent
+// that opened the window About This Mac (macOS log, task 200).
+// A Meta key alone does not go to the page: the Cmd shortcuts that the page gets carry the Meta bit in modifiers.
+export interface KeyMessage { down: boolean; key: string; code: string; keyCode: number; modifiers: number }
+export function keyEvent(m: KeyMessage): Record<string, unknown> | null {
+  if (m.key === 'Meta') return null;
+  const mod = m.modifiers || 0;
+  const commands = m.down ? editCommands(m.key, mod) : [];
+  const base = { key: m.key, code: m.code, windowsVirtualKeyCode: m.keyCode, modifiers: mod, ...(commands.length ? { commands } : {}) };
+  if (!m.down) return { type: 'keyUp', ...base };
+  const printable = m.key.length === 1 && !(mod & (2 | 4)); // no Ctrl, no Meta
+  if (printable) return { type: 'keyDown', ...base, text: m.key, unmodifiedText: m.key };
+  if (m.key === 'Enter') return { type: 'keyDown', ...base, text: '\r', unmodifiedText: '\r' };
+  return { type: 'rawKeyDown', ...base };
+}
 // Chrome runs some editing shortcuts as commands. A key event from DevTools carries no command by itself, so
 // Cmd+A, Cmd+Z, Option+Arrow and the other usual text shortcuts would do nothing in the page without this list.
 // Modifier bits: 1 Alt, 2 Ctrl, 4 Meta, 8 Shift.

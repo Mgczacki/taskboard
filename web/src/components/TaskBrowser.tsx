@@ -9,7 +9,7 @@
 // The sound switch (SoundSwitch) is in both views: a browser starts muted until the user turns its sound on.
 // The server sends the shown tab's loading state and history ("nav"), so back, forward and reload work like Chrome's.
 // Keys with Cmd: L focuses the address, R reloads, [ and ] go back and forward, V pastes, C and X copy. The other keys
-// go to the page. Copy: after a mouse-up or a selection key the view asks the page for its selection ("copy" with
+// go to the page, except Cmd pressed alone. Copy: after a mouse-up or a selection key the view asks the page for its selection ("copy" with
 // peek, answered by "copied") and keeps it, so the browser's own copy event can put it on the clipboard at once.
 // Keys: the view carries data-tb-browser (keys.ts BROWSER_AREA), so no Taskboard key runs while the focus is in it and
 // every key goes to the page. The one exception is browserLeave (⌃⌥Esc by default), which moves the focus back to
@@ -298,6 +298,9 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
     if (e.metaKey && ['v', 'c', 'x'].includes(e.key.toLowerCase())) return; // these go through the paste, copy and cut events
     if (down && shortcut(e)) { e.preventDefault(); return; }
     if (e.metaKey && ['l', 'r', '[', ']'].includes(e.key.toLowerCase())) { e.preventDefault(); return; } // the key up of a shortcut
+    // Cmd alone does not go to the page. Its key down reached Chrome as a stuck key (see keyEvent in
+    // server/task-browser.ts). The Cmd shortcuts that go to the page carry the Meta bit in their modifiers.
+    if (e.key === 'Meta') return;
     e.preventDefault();
     send({ type: 'key', down, key: e.key, code: e.code, keyCode: e.keyCode, modifiers: MOD(e) });
     if (!down && (e.shiftKey || e.metaKey || e.altKey)) peek(); // Shift+Arrow, Cmd+A and the like change the selection
@@ -315,7 +318,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
   const leave = (e: React.KeyboardEvent) => {
     if (!hit(e.nativeEvent, 'browserLeave')) return;
     e.preventDefault(); e.stopPropagation();
-    for (const [key, code, keyCode] of [['Control', 'ControlLeft', 17], ['Alt', 'AltLeft', 18], ['Shift', 'ShiftLeft', 16], ['Meta', 'MetaLeft', 91]] as const) send({ type: 'key', down: false, key, code, keyCode, modifiers: 0 });
+    for (const [key, code, keyCode] of [['Control', 'ControlLeft', 17], ['Alt', 'AltLeft', 18], ['Shift', 'ShiftLeft', 16]] as const) send({ type: 'key', down: false, key, code, keyCode, modifiers: 0 });
     leaveBrowser(e.currentTarget as HTMLElement);
   };
   const go = () => { setEditing(false); if (addr.trim()) send({ type: 'nav', action: 'go', url: addr.trim() }); screen.current?.focus(); };
