@@ -14,6 +14,7 @@ import { planUngroup } from '../groupMove';
 import { runGroupChange, type Toast } from '../groupActions';
 import { TransferPanel } from './TransferPanel';
 import { BrowserView } from './TaskBrowser';
+import { openBrowserSplit } from '../browserSplit';
 import { ProcList } from './TaskProcs';
 import { RuntimeButton } from './TaskRuntime';
 import type { PanelTab } from '../panelShare';
@@ -221,7 +222,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
           ? <div className="empty" style={{ padding: 20 }}>Resuming with {t.agent === 'claude' ? 'claude --resume' : t.agent === 'codex' ? 'codex resume' : 'agy --conversation'} {t.sessionId}…</div>
           : <div className="term-wrap">{!collapsed && <div className={`term-brief ${briefOpen ? 'open' : ''}`} onClick={() => setBriefOpen(o => !o)} title={briefOpen ? 'Click to show only the first lines' : 'Click to show the whole task description'}><b>Task</b><span>{t.desc}</span><i className="more">{briefOpen ? 'less' : 'more'}</i></div>}<Terminal taskId={t.id} autoFocus glass={see ? see.alpha : 1} /></div>)}
         {tab === 'log' && <pre className="logtext">{log || 'No log entries yet.'}</pre>}
-        {tab === 'browser' && <BrowserView key={t.id} id={t.id} title={`#${t.num} ${t.title}`} archived={t.status === 'archived'} />}
+        {tab === 'browser' && <BrowserView key={t.id} id={t.id} title={`#${t.num} ${t.title}`} archived={t.status === 'archived'} onCanvas={() => { openBrowserSplit(t.id); onCanvas(t.id); }} />}
         {tab === 'procs' && <ProcList key={t.id} scope="tasks" id={t.id} cwd={t.cwd} />}
       </div>
     </aside>

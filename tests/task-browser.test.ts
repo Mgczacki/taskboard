@@ -18,7 +18,7 @@ writeFileSync(join(root, 'state', 'machine.json'), JSON.stringify({ name: 'brows
 const browser = await import('../server/task-browser.ts');
 const machine = await import('../server/machine.ts');
 const skip = browser.chromePath() ? false : 'Chrome is not installed';
-after(async () => { for (const id of ['template', 'b1', 'b2', 'b3', 'b4']) await browser.stop(id).catch(() => {}); });
+after(async () => { for (const id of ['template', 'b1', 'b2', 'b3', 'b4', 'b5']) await browser.stop(id).catch(() => {}); });
 
 function cdp(wsUrl: string, method: string, params: object = {}): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -121,6 +121,31 @@ test('keys typed in the view reach the page, and copy returns the selected text'
   let left = 'cnt';
   for (let i = 0; i < 50 && left !== ''; i++) { left = await value('q.value'); await new Promise(r => setTimeout(r, 100)); }
   assert.equal(left, '', '⌘X deletes the selection');
+  client.emit('close');
+});
+
+// A dialog of a page (here prompt()) shows in the tab list that the view gets, and the view's answer reaches the page:
+// the page puts the answer in its title. Chrome opens a dialog of a background tab only when that tab comes to the
+// front, so the view shows the tab first.
+test('the view sees a dialog of a page and answers it', { skip, timeout: 60000 }, async () => {
+  const b = await browser.ensure('b5');
+  const tab = await browser.openTab('b5', `data:text/html,<title>ask</title><script>setTimeout(() => { document.title = 'answer ' + prompt('Your name?', 'Mario') }, 500)</script>`);
+  const sent: any[] = [];
+  const client = Object.assign(new EventEmitter(), { readyState: WebSocket.OPEN, bufferedAmount: 0, send: (d: string | Buffer) => { if (typeof d === 'string') sent.push(JSON.parse(d)); } });
+  browser.attachViewer(client as unknown as WebSocket, 'b5', false);
+  const until = async (ok: () => boolean, what: string) => { for (let i = 0; i < 150 && !ok(); i++) await new Promise(r => setTimeout(r, 100)); assert.ok(ok(), what); };
+  const shown = () => [...sent].reverse().find(m => m.type === 'tabs')?.tabs.find((t: any) => t.id === tab.id);
+  client.emit('message', JSON.stringify({ type: 'select', id: tab.id }));
+  await until(() => shown()?.dialog?.type === 'prompt', 'the tab list reports the prompt');
+  assert.deepEqual(shown().dialog, { type: 'prompt', message: 'Your name?', defaultPrompt: 'Mario' });
+  client.emit('message', JSON.stringify({ type: 'dialog', id: tab.id, accept: true, text: 'Ada' }));
+  await until(() => !shown()?.dialog, 'the dialog is gone from the tab list');
+  let title = '';
+  for (let i = 0; i < 50 && title !== 'answer Ada'; i++) {
+    const list = await (await fetch(`http://127.0.0.1:${b.port}/json/list`)).json() as { id: string; title: string }[];
+    title = list.find(x => x.id === tab.id)?.title || ''; await new Promise(r => setTimeout(r, 100));
+  }
+  assert.equal(title, 'answer Ada', 'the page got the answer');
   client.emit('close');
 });
 

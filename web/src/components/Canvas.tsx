@@ -98,6 +98,11 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
   // the parts of a task that its open panel shows: the tile does not show them as well
   const held = (id: string) => panelHolds(id, panelTaskId, panelTab);
   const setSplit = (id: string, s: Split) => { writeSplit(id, s); setSplits(m => ({ ...m, [id]: s })); };
+  // the task panel opened the browser here (openBrowserSplit): forget the value read before, read the saved one again
+  useEffect(() => {
+    const reread = (e: Event) => { const id = (e as CustomEvent<string>).detail; setSplits(m => { const n = { ...m }; delete n[id]; return n; }); };
+    window.addEventListener('tb-split', reread); return () => window.removeEventListener('tb-split', reread);
+  }, []);
   const toggleBrowser = (id: string) => { const s = splitOf(id); if (s.open) startHere.current.delete(id); else startHere.current.add(id); setSplit(id, { ...s, open: !s.open }); };
   const toggleAsk = (id: string) => setAsking(s => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const stage = useRef<HTMLDivElement>(null);
