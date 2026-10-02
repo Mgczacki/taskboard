@@ -1,0 +1,97 @@
+/* Links between tasks: ports, card, markers, the Links section of the task panel and the linked work overview. */
+.lk-num { font-family: var(--mono); font-weight: 600; color: var(--accent); text-decoration: none; }
+.lk-num:hover { text-decoration: underline; }
+.lk-strike { text-decoration: line-through; text-decoration-color: var(--line2); color: var(--dim); }
+.lk-st { font-size: 10.5px; color: var(--dim); border: 1px solid var(--line2); border-radius: 8px; padding: 0 5px; margin-left: 5px; white-space: nowrap; }
+.lk-list { display: flex; flex-direction: column; gap: 6px; font-size: 12px; }
+.lk-none { color: var(--dim); }
+.lk-h { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--dim); margin-bottom: 2px; }
+.lk-row { display: grid; grid-template-columns: auto 1fr auto; gap: 6px; align-items: start; padding: 3px 5px; border-radius: 5px; }
+.lk-row:hover { background: var(--hover); }
+.lk-row > .dot { margin-top: 5px; }
+.lk-row.open { background: color-mix(in srgb, var(--st-stopped) 7%, transparent); }
+.lk-row.sug { border: 1px dashed var(--line2); }
+.lk-main { min-width: 0; overflow-wrap: anywhere; }
+.lk-note { color: var(--muted); font-size: 11.5px; }
+.lk-acts { display: flex; gap: 2px; }
+.lk-acts .btn { font-size: 11px; padding: 1px 6px; }
+.lk-list.compact .lk-row { padding: 2px 4px; }
+
+.lk-badge { font-size: 11px; line-height: 17px; padding: 0 7px; border-radius: 4px; white-space: nowrap; }
+.lk-badge.blocked { color: var(--st-stopped); background: color-mix(in srgb, var(--st-stopped) 12%, transparent); }
+.lk-badge.super { color: var(--dim); background: color-mix(in srgb, var(--dim) 14%, transparent); }
+.lk-badge.ready { color: var(--st-unread); background: color-mix(in srgb, var(--st-unread) 12%, transparent); }
+.lk-badge.waited { color: var(--st-needs); background: color-mix(in srgb, var(--st-needs) 12%, transparent); }
+
+.lk-mk { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; border-radius: 3px; font-size: 11px; font-weight: 700; flex: none; }
+.lk-mk.blocked { color: var(--st-stopped); background: color-mix(in srgb, var(--st-stopped) 14%, transparent); }
+.lk-mk.super { color: var(--dim); background: color-mix(in srgb, var(--dim) 16%, transparent); }
+.lk-mk.ready { color: var(--st-unread); background: color-mix(in srgb, var(--st-unread) 14%, transparent); }
+
+/* ports on the title bar of a Canvas window, and the card */
+.lk-pw { position: relative; flex: none; display: inline-flex; }
+.lk-port { display: inline-block; height: 17px; min-width: 17px; padding: 0 4px; border-radius: 9px; font: 600 10.5px/15px var(--mono); text-align: center; border: 1px solid var(--line2); color: var(--dim); cursor: default; outline: none; }
+.lk-port:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+.lk-port.empty { border-style: dashed; opacity: .6; }
+.lk-port.blocked { background: var(--st-stopped); border-color: var(--st-stopped); color: #fff; }
+.lk-port.ready { background: var(--st-unread); border-color: var(--st-unread); color: #fff; }
+.lk-port.out { background: var(--st-needs); border-color: var(--st-needs); color: #111; }
+.lk-port.rep { background: color-mix(in srgb, var(--dim) 18%, transparent); color: var(--muted); border-color: var(--dim); }
+.lk-card { position: fixed; z-index: 200; width: min(360px, calc(100vw - 16px)); overflow: auto; background: var(--panel); color: var(--text); border: 1px solid var(--line2); border-radius: 8px; padding: 8px 10px; box-shadow: 0 8px 24px rgba(0,0,0,.35); cursor: default; text-align: left; font-weight: 400; }
+.lk-card-h { font-weight: 600; font-size: 12.5px; margin-bottom: 1px; }
+.lk-card-sub { color: var(--muted); font-size: 11.5px; margin-bottom: 6px; }
+.lk-card-f { margin-top: 7px; padding-top: 6px; border-top: 1px solid var(--line); color: var(--dim); font-size: 11px; }
+.win.superseded .wh .ti { text-decoration: line-through; text-decoration-color: var(--line2); color: var(--dim); }
+
+/* the Links section of the task panel */
+.dr-links { border-top: 1px solid var(--line); padding: 8px 14px; display: flex; flex-direction: column; gap: 6px; max-height: 38vh; overflow: auto; }
+.lk-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.lk-head .sp { flex: 1; }
+.lk-fold { background: none; border: 0; color: var(--text); font: inherit; font-weight: 600; cursor: pointer; padding: 0; }
+.lk-count { color: var(--dim); font-size: 12px; }
+.lk-add { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding: 6px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg2); font-size: 12px; }
+.lk-add select, .lk-add input { font: inherit; background: var(--panel); color: var(--text); border: 1px solid var(--line2); border-radius: 5px; padding: 2px 6px; }
+.lk-add .lk-noteinput { flex: 1; min-width: 140px; }
+.lk-target { color: var(--muted); max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lk-target.bad, .lk-warn { color: var(--st-stopped); }
+
+/* sidebar tree and list indentation */
+.rail-item.lk-child { padding-left: calc(22px + var(--depth, 0) * 14px); font-size: 12px; }
+.rail-item.lk-child .t { color: var(--muted); }
+.rail-item .gcaret { width: 12px; color: var(--dim); font-size: 10px; cursor: pointer; flex: none; }
+.lk-indent { display: inline-block; color: var(--line2); font-family: var(--mono); }
+.lst-bar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; padding: 0 0 10px; font-size: 12px; color: var(--dim); }
+.lk-collapsed { color: var(--dim); font-size: 12px; padding: 6px 8px; cursor: pointer; }
+
+/* triage */
+.tq .why { display: block; color: var(--muted); font-size: 11.5px; margin-top: 2px; white-space: normal; }
+.tr-order { display: inline-flex; gap: 4px; align-items: center; font-size: 12px; color: var(--dim); }
+.tr-why { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 8px 10px; font-size: 12.5px; }
+.tr-why ol { margin: 4px 0 0; padding-left: 18px; color: var(--muted); }
+.tr-sec { font-size: 10.5px; text-transform: uppercase; letter-spacing: .04em; color: var(--dim); margin: 10px 6px 4px; }
+
+/* linked work overview */
+.lw-back { position: fixed; inset: 0; z-index: 80; background: rgba(0,0,0,.45); display: flex; align-items: flex-start; justify-content: center; padding: 5vh 16px; }
+.lw-box { width: min(980px, 100%); max-height: 90vh; overflow: auto; background: var(--bg); color: var(--text); border: 1px solid var(--line2); border-radius: 10px; box-shadow: 0 12px 40px rgba(0,0,0,.4); }
+.lw-head { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-bottom: 1px solid var(--line); position: sticky; top: 0; background: var(--bg); }
+.lw-head h2 { font-size: 15px; margin: 0; }
+.lw-head .sub { color: var(--dim); font-size: 12px; }
+.lw-head .sp { flex: 1; }
+.lw-body { padding: 12px 14px; display: flex; flex-direction: column; gap: 14px; }
+.lw-state { font-weight: 600; margin: 0; }
+.lw-empty { color: var(--dim); padding: 16px; }
+.lw-set { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); padding: 10px 12px; display: flex; flex-direction: column; gap: 10px; }
+.lw-set h3 { font-size: 13px; margin: 0; }
+.lw-tiles { display: flex; gap: 8px; flex-wrap: wrap; }
+.lw-tile { border: 1px solid var(--line); border-radius: 6px; padding: 4px 10px; display: flex; gap: 6px; align-items: baseline; background: var(--bg2); }
+.lw-tile b { font-size: 16px; }
+.lw-tile span { color: var(--dim); font-size: 12px; }
+.lw-tile.needs b { color: var(--st-needs); } .lw-tile.blocked b { color: var(--st-stopped); } .lw-tile.working b { color: var(--st-working); }
+.lw-tile.super b, .lw-tile.idle b, .lw-tile.archived b { color: var(--dim); }
+.lw-steps { display: flex; flex-wrap: wrap; gap: 6px 0; align-items: center; }
+.lw-stepwrap { display: inline-flex; align-items: center; }
+.lw-step { border: 1px solid var(--line2); border-radius: 6px; padding: 4px 8px; background: var(--bg2); font-size: 12px; }
+.lw-step.blocked { border-color: color-mix(in srgb, var(--st-stopped) 55%, var(--line2)); }
+.lw-arrow { color: var(--st-stopped); padding: 0 6px; }
+.lw-item { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; padding: 3px 0; font-size: 12.5px; }
+.lw-note { color: var(--dim); font-size: 12px; }

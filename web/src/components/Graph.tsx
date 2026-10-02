@@ -18,12 +18,14 @@ import '../graph.css';
 import { Dot } from './ui';
 import { hit, inBrowser } from '../keys';
 import { Face, MessagePanel, type MailBrief, type MailGraph, type MailPerson } from './GraphMail';
+import type { LinkKind } from '../api';
+import { current, depOpen, linkedSets, setLead } from '../links';
 
 type Tab = 'terminal' | 'log' | 'docs';
 interface Props { tasks: Task[]; groups: Group[]; open: (id: string, tab?: Tab) => void }
 interface Edge { from: string; to: string; name: string; at: string }
 interface OutDoc { name: string; path: string; kind: 'md' | 'html' | 'other'; mtime: string }
-type LaneMode = 'group' | 'folder' | 'status';
+type LaneMode = 'group' | 'folder' | 'status' | 'links';
 
 const PEOPLE = 'p:people', PERSON_W = 220, PERSON_H = 62;
 const SOURCES: Record<string, string> = { controller: 'Controller', user: 'You', unknown: 'Unknown sender' };
@@ -36,7 +38,8 @@ const STVAR: Record<Status, string> = {
 interface PersonStats { sent: number; unsent: number; received: number; unrouted: number; last: string }
 interface GNode { id: string; kind: 'task' | 'doc' | 'person' | 'source' | 'more'; lane: string; w: number; h: number; x: number; y: number; row: number; col: number; t?: Task; owner?: string; doc?: OutDoc; docOrder?: number; extraDocs?: number; expanded?: boolean; person?: MailPerson; stats?: PersonStats; src?: string }
 // message edges: ids of the messages on the edge, dashed (pending) while none of them is sent
-interface GEdge { a: string; b: string; kind: 'wrote' | 'handoff' | 'message'; ids?: string[]; pending?: boolean; last?: string }
+// link edges (links.ts): from the task that must come first to the task after it; relatedTo does not count for ranks
+interface GEdge { a: string; b: string; kind: 'wrote' | 'handoff' | 'message' | 'link' | 'parent'; ids?: string[]; pending?: boolean; last?: string; lk?: LinkKind; open?: boolean; folded?: boolean; note?: string; owner?: string; norank?: boolean }
 interface Lane { key: string; name: string; color: string; nodes: GNode[]; rows: number; y: number; h: number; alt: boolean; members: number }
 
 // Project folder of a task: the part before "-wt" for worktrees (~/code/app-wt/x → app), else the last segment.
@@ -47,10 +50,22 @@ export function folderOf(t: Task): string {
   return p.split('/').pop() || '—';
 }
 
-function build(tasksAll: Task[], groups: Group[], docsByTask: Record<string, OutDoc[]>, edgesAll: Edge[], mode: LaneMode, showDocs: boolean, showArch: boolean, mail: MailGraph, showPeople: boolean, expandedDocs: Set<string>) {
-  const tasks = tasksAll.filter(t => showArch || t.status !== 'archived');
+function build(tasksAll: Task[], groups: Group[], docsByTask: Record<string, OutDoc[]>, edgesAll: Edge[], mode: LaneMode, showDocs: boolean, showArch: boolean, mail: MailGraph, showPeople: boolean, expandedDocs: Set<string>, showLinks = true, startGroup = '') {
+  let tasks = tasksAll.filter(t => showArch || t.status !== 'archived');
+  // Lanes by links show only the tasks and their links: documents, handoffs and people would cross the link lines.
+  if (mode === 'links') { showDocs = false; showPeople = false; edgesAll = []; }
+  // Lanes by links: one lane for each set of linked tasks. Start from a group: only the sets that hold a task of it.
+  const sets = mode === 'links' ? linkedSets(tasks) : [];
+  if (mode === 'links' && startGroup) {
+    const g = groups.find(x => x.id === startGroup);
+    const keep = new Set(sets.filter(set => set.some(t => g?.tasks.includes(t.id))).flat().map(t => t.id));
+    g?.tasks.forEach(id => keep.add(id));
+    tasks = tasks.filter(t => keep.has(t.id));
+  }
+  const setOf = new Map<string, number>(); sets.forEach((set, i) => set.forEach(t => setOf.set(t.id, i)));
   const tset = new Set(tasks.map(t => t.id));
   const laneOfTask = (t: Task) => {
+    if (mode === 'links') return setOf.has(t.id) ? 'l:' + setOf.get(t.id) : 'l:__none';
     if (mode === 'group') { const g = groups.find(g => g.tasks.includes(t.id)); return g ? 'g:' + g.id : 'g:__none'; }
     if (mode === 'folder') return 'f:' + folderOf(t);
     return 's:' + t.status;
@@ -59,6 +74,19 @@ function build(tasksAll: Task[], groups: Group[], docsByTask: Record<string, Out
   const nodes = new Map<string, GNode>();
   tasks.forEach(t => nodes.set('t:' + t.id, { id: 't:' + t.id, kind: 'task', t, lane: laneOfTask(t), w: CELL_W, h: ROW_H, x: 0, y: 0, row: 0, col: 0 }));
   const edges: GEdge[] = [];
+  if (showLinks || mode === 'links') {
+    for (const t of tasks) for (const l of t.links || []) {
+      const open = l.kind === 'dependsOn' && depOpen(l, tasksAll);
+      const other = l.kind === 'dependsOn' && open ? current(l.to, tasksAll) : l.to;
+      if (!tset.has(other)) continue;
+      const base = { kind: 'link' as const, lk: l.kind, open, folded: l.folded, note: l.note, owner: t.id };
+      if (l.kind === 'dependsOn' || l.kind === 'followUpOf') edges.push({ ...base, a: 't:' + other, b: 't:' + t.id });
+      else if (l.kind === 'replaces') edges.push({ ...base, a: 't:' + other, b: 't:' + t.id });
+      else edges.push({ ...base, a: 't:' + t.id, b: 't:' + other, norank: true });
+    }
+    if (mode === 'links') for (const t of tasks) if (t.parent && t.parent !== 'controller' && tset.has(t.parent) && !edges.some(e => e.kind === 'link' && ((e.a === 't:' + t.parent && e.b === 't:' + t.id) || (e.b === 't:' + t.parent && e.a === 't:' + t.id))))
+      edges.push({ kind: 'parent', a: 't:' + t.parent, b: 't:' + t.id });
+  }
   const handoffs = edgesAll.filter(e => tset.has(e.from) && tset.has(e.to));
   if (showDocs) {
     for (const t of tasks) {
@@ -149,7 +177,7 @@ function build(tasksAll: Task[], groups: Group[], docsByTask: Record<string, Out
   // that person count, so the person is to the right of the task and the reply arrow goes back to the left.
   const receives = new Set(edges.filter(e => e.kind === 'message' && e.b.startsWith('p:')).map(e => e.b));
   const preds = new Map<string, string[]>([...nodes.keys()].map(k => [k, []]));
-  edges.forEach(e => { if (!(e.kind === 'message' && receives.has(e.a))) preds.get(e.b)?.push(e.a); });
+  edges.forEach(e => { if (!e.norank && !(e.kind === 'message' && receives.has(e.a))) preds.get(e.b)?.push(e.a); });
   const linked = new Set(edges.flatMap(e => [e.a, e.b]));
   const rank = new Map<string, number>();
   const rk = (id: string, seen = new Set<string>()): number => {
@@ -165,6 +193,7 @@ function build(tasksAll: Task[], groups: Group[], docsByTask: Record<string, Out
   let laneDefs: { key: string; name: string; color: string }[];
   if (mode === 'group') laneDefs = [...groups.map(g => ({ key: 'g:' + g.id, name: g.name, color: g.color })), { key: 'g:__none', name: 'Not in any group', color: 'var(--line2)' }];
   else if (mode === 'folder') laneDefs = [...new Set(tasks.map(folderOf))].sort((a, b) => a.localeCompare(b)).map(f => ({ key: 'f:' + f, name: f, color: 'var(--line2)' }));
+  else if (mode === 'links') laneDefs = [...sets.map((set, i) => ({ key: 'l:' + i, name: `Linked set of #${setLead(set).num}`, color: 'var(--accent)' })), { key: 'l:__none', name: 'No links', color: 'var(--line2)' }];
   else laneDefs = ORDER.map(s => ({ key: 's:' + s, name: STATUS_LABEL[s], color: `var(${STVAR[s]})` }));
   if (showPeople) laneDefs.push({ key: PEOPLE, name: 'People', color: 'var(--st-review)' });
 
@@ -250,6 +279,8 @@ export function GraphView({ tasks, groups, open }: Props) {
   const [showDocs, setShowDocs] = useState(() => localStorage.getItem('tb-graph-docs') !== '0');
   const [expandedDocs, setExpandedDocs] = useState<Set<string>>(() => new Set());
   const [showArch, setShowArch] = useState(false);
+  const [showLinks, setShowLinks] = useState(() => localStorage.getItem('tb-graph-links') !== '0');
+  const [startGroup, setStartGroup] = useState(() => localStorage.getItem('tb-graph-start') || '');
   const [showPeople, setShowPeople] = useState(() => localStorage.getItem('tb-graph-people') !== '0');
   const [mail, setMail] = useState<MailGraph>({ people: [], messages: [] });
   // the message panel: all messages of a node, or the messages on the edge from a to b
@@ -263,7 +294,7 @@ export function GraphView({ tasks, groups, open }: Props) {
   const stage = useRef<HTMLDivElement>(null);
   const tfRef = useRef(tf); tfRef.current = tf;
 
-  useEffect(() => { localStorage.setItem('tb-graph-lanes', mode); localStorage.setItem('tb-graph-docs', showDocs ? '1' : '0'); localStorage.setItem('tb-graph-people', showPeople ? '1' : '0'); }, [mode, showDocs, showPeople]);
+  useEffect(() => { localStorage.setItem('tb-graph-lanes', mode); localStorage.setItem('tb-graph-docs', showDocs ? '1' : '0'); localStorage.setItem('tb-graph-people', showPeople ? '1' : '0'); localStorage.setItem('tb-graph-links', showLinks ? '1' : '0'); localStorage.setItem('tb-graph-start', startGroup); }, [mode, showDocs, showPeople, showLinks, startGroup]);
 
   // documents and handoffs: refetch shortly after the task list changes
   const taskKey = tasks.map(t => `${t.id}:${t.docs?.inbox ?? 0}:${t.docs?.outbox ?? 0}`).join(',');
@@ -286,7 +317,7 @@ export function GraphView({ tasks, groups, open }: Props) {
     return () => { dead = true; clearTimeout(h); clearInterval(iv); };
   }, [taskKey, showPeople]);
 
-  const L = useMemo(() => build(tasks, groups, docsByTask, edgesAll, mode, showDocs, showArch, mail, showPeople, expandedDocs), [tasks, groups, docsByTask, edgesAll, mode, showDocs, showArch, mail, showPeople, expandedDocs]);
+  const L = useMemo(() => build(tasks, groups, docsByTask, edgesAll, mode, showDocs, showArch, mail, showPeople, expandedDocs, showLinks, startGroup), [tasks, groups, docsByTask, edgesAll, mode, showDocs, showArch, mail, showPeople, expandedDocs, showLinks, startGroup]);
   // every view change goes through clampView, so the content cannot leave the screen
   const size = useRef({ w: L.width, h: L.height }); size.current = { w: L.width, h: L.height };
   const setTf = useCallback((v: View | ((t: View) => View)) => setTfRaw(t => clampView(typeof v === 'function' ? v(t) : v, stage.current, size.current.w, size.current.h)), []);
@@ -300,7 +331,7 @@ export function GraphView({ tasks, groups, open }: Props) {
     setTf({ k, x: Math.max(PAD, (W - L.width * k) / 2), y: PAD });
   }, [L.width, setTf]);
   // fit when the options change (not on every live update, so zoom and pan are kept)
-  useEffect(() => { fit(); }, [mode, showDocs, showArch, showPeople]);
+  useEffect(() => { fit(); }, [mode, showDocs, showArch, showPeople, showLinks, startGroup]);
   const fitted = useRef(false);
   useEffect(() => { if (!fitted.current && L.nodes.size) { fitted.current = true; fit(); } }, [L.nodes.size, fit]);
   useEffect(() => { const on = () => fit(); addEventListener('resize', on); return () => removeEventListener('resize', on); }, [fit]);
@@ -426,9 +457,11 @@ export function GraphView({ tasks, groups, open }: Props) {
     <div className="graph">
       <div className="gtool">
         <span className="lbl">Lanes by</span>
-        <div className="seg">{(['group', 'folder', 'status'] as LaneMode[]).map(m => <button key={m} className={mode === m ? 'on' : ''} onClick={() => setMode(m)}>{m[0].toUpperCase() + m.slice(1)}</button>)}</div>
-        <label className="opt"><input type="checkbox" checked={showDocs} onChange={e => setShowDocs(e.target.checked)} /> Documents</label>
-        <label className="opt"><input type="checkbox" checked={showPeople} onChange={e => setShowPeople(e.target.checked)} /> People</label>
+        <div className="seg">{(['group', 'folder', 'status', 'links'] as LaneMode[]).map(m => <button key={m} className={mode === m ? 'on' : ''} onClick={() => setMode(m)} title={m === 'links' ? 'One lane for each set of linked tasks; a task that must finish first is to the left' : undefined}>{m[0].toUpperCase() + m.slice(1)}</button>)}</div>
+        {mode === 'links' && <label className="opt">Start from <select value={startGroup} onChange={e => setStartGroup(e.target.value)} aria-label="Start from"><option value="">All tasks</option>{groups.map(g => <option key={g.id} value={g.id}>Group: {g.name}</option>)}</select></label>}
+        {mode !== 'links' && <label className="opt"><input type="checkbox" checked={showLinks} onChange={e => setShowLinks(e.target.checked)} /> Links</label>}
+        {mode !== 'links' && <><label className="opt"><input type="checkbox" checked={showDocs} onChange={e => setShowDocs(e.target.checked)} /> Documents</label>
+        <label className="opt"><input type="checkbox" checked={showPeople} onChange={e => setShowPeople(e.target.checked)} /> People</label></>}
         <label className="opt"><input type="checkbox" checked={showArch} onChange={e => setShowArch(e.target.checked)} /> Archived</label>
         <span className="cnt">{nTasks} tasks · {nDocs} documents · {nHand} handoffs{showPeople && ` · ${nPeople} people · ${nMsg} messages`}</span>
         <span className="sp" />
@@ -436,6 +469,9 @@ export function GraphView({ tasks, groups, open }: Props) {
           {(['needs-you', 'stopped', 'unread', 'working', 'idle'] as Status[]).map(s => <span key={s}><Dot s={s} />{STATUS_LABEL[s]}</span>)}
           <span><svg width="26" height="10"><path d="M1 5h18" stroke="var(--accent)" strokeWidth="1.9" /><path d="M18 1.5 25 5l-7 3.5z" fill="var(--accent)" /></svg>handoff</span>
           <span><svg width="22" height="10"><path d="M1 5h20" stroke="var(--line2)" strokeWidth="1.6" /></svg>wrote</span>
+          {(showLinks || mode === 'links') && L.edges.some(e => e.kind === 'link') && <><span><svg width="26" height="10"><path d="M1 5h18" stroke="var(--st-stopped)" strokeWidth="2.2" /><path d="M18 1.5 25 5l-7 3.5z" fill="var(--st-stopped)" /></svg>blocks</span>
+            <span><svg width="26" height="10"><path d="M1 5h18" stroke="var(--dim)" strokeWidth="1.6" strokeDasharray="6 4" /><path d="M18 1.5 25 5l-7 3.5z" fill="var(--dim)" /></svg>replaced by</span>
+            <span><svg width="22" height="10"><path d="M1 5h20" stroke="var(--accent)" strokeWidth="2" strokeDasharray="1 4" strokeLinecap="round" /></svg>follow-up, related</span></>}
           {showPeople && <><span><svg width="26" height="10"><path d="M1 5h18" stroke="var(--st-review)" strokeWidth="1.9" /><path d="M18 1.5 25 5l-7 3.5z" fill="var(--st-review)" /></svg>message</span>
             <span><svg width="26" height="10"><path d="M1 5h18" stroke="var(--st-review)" strokeWidth="1.7" strokeDasharray="5 4" /><path d="M18 1.5 25 5l-7 3.5z" fill="var(--st-review)" /></svg>not sent yet</span></>}
         </div>
@@ -459,11 +495,20 @@ export function GraphView({ tasks, groups, open }: Props) {
             })}
             <svg className="gedges" width={L.width} height={L.height}>
               <defs><marker id="garr" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 10 5 0 10z" style={{ fill: 'var(--accent)' }} /></marker>
-                <marker id="gmarr" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 10 5 0 10z" style={{ fill: 'var(--st-review)' }} /></marker></defs>
+                <marker id="gmarr" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 10 5 0 10z" style={{ fill: 'var(--st-review)' }} /></marker>
+                <marker id="glarr" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="8" markerHeight="8" orient="auto"><path d="M0 0 10 5 0 10z" style={{ fill: 'var(--st-stopped)' }} /></marker>
+                <marker id="grarr" viewBox="0 0 10 10" refX="1" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0 0 10 5 0 10z" style={{ fill: 'var(--dim)' }} /></marker></defs>
               {L.edges.map((e, i) => {
                 const a = L.nodes.get(e.a), b = L.nodes.get(e.b); if (!a || !b) return null;
                 const both = e.kind === 'message' && L.edges.some(x => x.kind === 'message' && x.a === e.b && x.b === e.a);
                 const g = edgePath(a, b, e.kind, both), cls = `gedge ${e.kind} ${e.pending ? 'pending' : ''} ${chain?.eset.has(i) ? 'hl' : ''}`;
+                if (e.kind === 'link') {
+                  const what = e.lk === 'dependsOn' ? `${nodeName(e.b)} depends on ${nodeName(e.a)}${e.open ? '' : ' (done)'}` : e.lk === 'replaces' ? `${nodeName(e.a)} is ${e.folded ? 'folded into' : 'replaced by'} ${nodeName(e.b)}` : e.lk === 'followUpOf' ? `${nodeName(e.b)} is a follow-up of ${nodeName(e.a)}` : `${nodeName(e.a)} is related to ${nodeName(e.b)}`;
+                  return <g key={i} className={`gclick ${chain?.eset.has(i) ? 'hl' : ''}`} onClick={() => open(e.owner!)}>
+                    <title>{`${what}${e.note ? `: “${e.note}”` : ''}. Click to open the task that holds the link.`}</title>
+                    <path className={`${cls} ${e.lk} ${e.open ? 'open' : ''}`} d={g.d} markerEnd={e.lk === 'dependsOn' && e.open ? 'url(#glarr)' : e.lk === 'replaces' ? 'url(#grarr)' : undefined} /><path className="ghit" d={g.d} />
+                  </g>;
+                }
                 if (e.kind !== 'message') return <path key={i} className={cls} d={g.d} markerEnd={e.kind === 'handoff' ? 'url(#garr)' : undefined} />;
                 const n = e.ids!.length;
                 // the wide transparent path and the count take the click; the tooltip has no message text
@@ -529,8 +574,8 @@ function NodeCard({ n, groups, mode, sel, hl, onEnter, onLeave, onClick }: { n: 
   return (
     <div className={`gnode task ${t.status} ${cls}`} style={{ ...style, '--sc': `var(${STVAR[t.status]})` } as React.CSSProperties} onPointerEnter={onEnter} onPointerLeave={onLeave} onClick={onClick}>
       <div className="r1"><Dot s={t.status} /><span className="num">#{t.num}</span>{attn && <span className="wait">waiting {fmtWait(t.waitMin)}</span>}<span className="ag">{t.agent === 'claude' ? 'Claude' : AGENT_NAME[t.agent]}</span></div>
-      <div className="ti">{t.title}</div>
-      <div className="ln">{line}</div>
+      <div className={`ti ${t.link?.state === 'superseded' ? 'lk-strike' : ''}`}>{t.title}</div>
+      <div className="ln">{t.link?.state === 'blocked' ? <><b className="lk-blk">Blocked</b> {line}</> : line}</div>
       <div className="ft">
         {shown.map(g => <i key={g.id} style={{ background: g.color }} title={g.name} />)}
         {mode === 'group' && others.length > 0 ? <span className="also">also in {others.map(g => g.name).join(', ')}</span> : <span>{mode === 'folder' ? (t.branch || '') : folderOf(t)}</span>}

@@ -222,6 +222,12 @@ Use the \`tb\` command (run \`tb\` alone for help). Tasks are numbers like 12 or
   When one needs input, say what it asks; answer it only if the user already told you the answer.
 - List accounts and usage with \`tb accounts\`. When the user asks, move a task with \`tb move <task> --account <id>\`.\n  The task keeps its files. A different agent receives a handoff and continues the existing work.
 - Organise tasks into groups with \`tb group add|rm <group> <task…>\`; move documents with \`tb doc send <task>:<file> <task>\`.
+- Record how tasks connect, so the dashboard can show it:
+  - When a task needs the code or the result of another task, run \`tb dep add <task> --on <other> --note "<what it needs>"\`.
+  - When you start a task that continues, replaces or waits for another task, add \`--follows\`, \`--replaces\` or \`--after <task>\` to \`tb new\`.
+  - When one task takes over the work of another, run \`tb dep add <new> --replaces <old> --folded --note "<what moved>"\`. Taskboard parks the old task. Only the user archives it.
+  - When two tasks are about the same subject, run \`tb dep add <task> --related <other>\`.
+  - When the user asks for the state of some work, run \`tb deps <task> --all\` or \`tb deps --group <group>\` first.
 
 ## Rules
 Machine routing rules: ${machine.get().routingRules || '(none)'}
@@ -374,6 +380,7 @@ export function taskInstructions(t: Task, inlineRules = true) {
     `The server stops after the first failed step. Read the result with tb permit result <id> --wait.`,
     `Do not rerun an approved command yourself.`,
     `When a document in your outbox needs the user's review or approval, run: tb review <path>. Their comments arrive in your inbox.`,
+    ...linkLines(t),
     ...processAndBrowserRules(t),
     credentialGuidance(HOME),
     ...(t.agent === 'claude' ? [`Writing the log entry is always allowed, even if the user asked you not to use tools. Do it quietly: do not mention the log to the user.`] : []),
@@ -381,6 +388,12 @@ export function taskInstructions(t: Task, inlineRules = true) {
     // last, so the user's rules follow the Taskboard rules that they may not override (rules.ts section)
     ...taskRules(t, inlineRules),
   ].join('\n');
+}
+
+// When a task records links to other tasks (server/links.ts). Only the user and the controller add replaces links.
+function linkLines(t: Task): string[] {
+  if (t.role === 'controller') return [];
+  return [`Link your task to others: tb dep add ${t.num} --on <task> (you need its work), --follows <task> (you continue it) or --related <task>. Run tb deps ${t.num}. Do not add --replaces: tell the user.`];
 }
 
 // The scope requests (server/scopes.ts) and the worktrees and folders that the user approved for this task.

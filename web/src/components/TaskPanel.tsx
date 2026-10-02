@@ -5,6 +5,7 @@ import { AGENT_NAME, STATUS_LABEL, api, fmtWait, linkedTaskId, shortPath } from 
 import { AgentChip, ByController, Dot, MachineChip, ThreeLines, WhereChip } from './ui';
 import { Terminal } from './Terminal';
 import { DocsTab } from './Docs';
+import { LinksSection } from './Links';
 import { hasFiles, uploadAll } from '../drop';
 import { loadAccounts, usageText, type Account } from './Accounts';
 import { formatTokens } from '../formatTokens';
@@ -191,6 +192,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
             : <><button className="btn primary" onClick={() => { setConfirmNew(false); act(api.newControllerSession('after-turn')); }} title="Waits until the controller finishes its current turn">Start it when this turn ends</button><button className="btn danger" onClick={() => { setConfirmNew(false); act(api.newControllerSession('now')); }} title="Cuts off the current turn, including a running command">Stop it now and start</button></>}
           <button className="btn ghost" onClick={() => setConfirmNew(false)}>Cancel</button>
         </div>}
+        <LinksSection t={t} tasks={tasks} onGo={onOpenTask} toast={toast} />
         <div className="dr-actions">
           {t.role !== 'controller' && <button className="btn" disabled={moving} onClick={() => setMoveOpen(o => !o)}>Move account…</button>}
           {t.role !== 'controller' && !t.transfer && <button className="btn" onClick={() => setTransferOpen(o => !o)}>Move to machine…</button>}

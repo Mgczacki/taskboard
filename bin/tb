@@ -45,6 +45,62 @@ async function task(ref) {
   if (!t) { console.error(`tb: no task ${ref}`); process.exit(1); }
   return t;
 }
+// tb new --after / --replaces / --follows / --related (or the same fields in a --batch plan): a task number, or several
+// separated by commas. The server adds the links once the task exists and puts one line about each in its prompt.
+function startLinks(s) {
+  const list = v => (Array.isArray(v) ? v : String(v ?? '').split(',')).map(x => String(x).trim()).filter(Boolean);
+  const out = [
+    ...list(s.after).map(to => ({ kind: 'dependsOn', to })),
+    ...list(s.replaces).map(to => ({ kind: 'replaces', to, folded: !!s.folded })),
+    ...list(s.follows).map(to => ({ kind: 'followUpOf', to })),
+    ...list(s.related).map(to => ({ kind: 'relatedTo', to })),
+  ];
+  return out.length ? out : undefined;
+}
+// tb dep and tb deps (server/links.ts)
+const LINK_FLAGS = [['--on', 'dependsOn'], ['--replaces', 'replaces'], ['--follows', 'followUpOf'], ['--related', 'relatedTo']];
+function linkFlag() {
+  for (const [f, kind] of LINK_FLAGS) { const v = flag(f); if (v !== undefined) return { kind, to: v }; }
+  return null;
+}
+const OUT_LABEL = { dependsOn: 'Blocked by', replaces: 'Replaces', followUpOf: 'Follow-up of', relatedTo: 'Related to' };
+const IN_LABEL = { dependsOn: 'Waited on by', replaces: 'Replaced by', followUpOf: 'Followed up by', relatedTo: 'Related to' };
+const when = iso => iso ? iso.slice(0, 16).replace('T', ' ') : '';
+const who = by => by?.actor === 'task' ? `task ${by.task}` : by?.actor || '?';
+const ref = b => `#${b.num} ${b.status.padEnd(9)} ${b.title}`;
+function printDeps(d) {
+  console.log(`#${d.task.num} ${d.task.title}  (${d.task.status}${d.state ? `, ${d.state}` : ''})`);
+  const rows = [
+    ...d.out.map(l => ({ label: l.kind === 'dependsOn' && l.done ? 'Depended on (done)' : OUT_LABEL[l.kind], b: l.kind === 'dependsOn' && l.now && l.now.id !== l.to ? l.now : l.task, l, note: l.kind === 'dependsOn' && l.now && l.now.id !== l.to ? `replaces #${l.task.num}` : '' })),
+    ...d.in.map(l => ({ label: l.kind === 'dependsOn' && l.done ? 'Was waited on by (done)' : IN_LABEL[l.kind], b: l.from, l, note: '' })),
+  ];
+  if (!rows.length) console.log('  No links.');
+  for (const label of [...new Set(rows.map(x => x.label))]) {
+    console.log(`  ${label}:`);
+    for (const x of rows.filter(y => y.label === label))
+      console.log(`    ${ref(x.b)}${x.l.folded ? '  (folded)' : ''}${x.note ? `  (${x.note})` : ''}${x.l.note ? `  "${x.l.note}"` : ''}  [link ${x.l.id}, ${who(x.l.by)}, ${when(x.l.at)}]`);
+  }
+  if (d.parent && typeof d.parent === 'object') console.log(`  Started by: ${ref(d.parent)}`);
+  else if (d.parent === 'controller') console.log('  Started by: the controller');
+  if (d.children.length) console.log(`  Started: ${d.children.map(c => '#' + c.num).join(' ')}`);
+  if (d.set.length > 1) console.log(`  Linked set: ${d.set.map(c => '#' + c.num).join(' ')}`);
+}
+function printSet(s, byId) {
+  const num = id => '#' + (byId[id]?.num ?? id);
+  const c = s.counts;
+  const parts = [[c.waitsForYou, 'wait for you'], [c.blocked, 'blocked'], [c.working, 'working'], [c.other, 'idle or other'], [c.replaced, 'replaced or folded'], [c.archived, 'archived']].filter(([n]) => n).map(([n, t]) => `${n} ${t}`);
+  console.log(`Linked set: ${s.tasks.map(t => '#' + t.num).join(' ')}`);
+  console.log(`  ${parts.join(', ') || 'no open tasks'}.`);
+  if (s.chain.length) console.log(`  Longest chain: ${s.chain.map(id => `${num(id)} (${byId[id]?.status}${byId[id]?.state === 'blocked' ? ', blocked' : ''})`).join(' -> ')}`);
+  if (s.waiting.length) {
+    console.log('  Waits for you:');
+    for (const w of s.waiting) console.log(`    #${String(w.num).padEnd(4)} ${w.status.padEnd(10)} ${w.ask || w.title}${w.blockedBy.length ? `  (still blocked by ${w.blockedBy.map(num).join(' ')})` : ''}`);
+  }
+  if (s.links.length) {
+    console.log('  Links:');
+    for (const l of s.links) console.log(`    ${num(l.from)} ${l.kind}${l.kind === 'replaces' && l.folded ? ' (folded)' : ''}${l.done ? ' (done)' : ''} ${num(l.to)}${l.note ? `  "${l.note}"` : ''}`);
+  }
+}
 const line = t => `#${String(t.num).padEnd(4)} ${t.status.padEnd(10)} ${t.agent.padEnd(11)} ${t.title}${t.ask ? `  — waiting: ${t.ask}` : ''}`;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -63,11 +119,24 @@ const HELP = `tb — Taskboard command line
                                      holds it, then press Enter. Empty text is refused.
   tb resume <task>                   bring back a parked or archived task; then use tb send
   tb new --agent auto|claude|codex|antigravity --folder <path> [--account <id>] [--model <name>] [--title <t>] [--worktree <branch>|--no-worktree] [--group <name>] "<prompt>"
-  tb new --batch <plan.json>         [{ agent, folder, title, prompt, account?, model?, worktree?, group? }, …]
+                                     [--after <task>] [--replaces <task> [--folded]] [--follows <task>] [--related <task>]
+                                     link the new task to others (several tasks: 12,14). The prompt gets one line per link
+  tb new --batch <plan.json>         [{ agent, folder, title, prompt, account?, model?, worktree?, group?, after?, replaces?, follows?, related? }, …]
   tb ask spin-off <task> [--answer n] [--title <t>] [--agent claude|codex|antigravity] [--account <id>] [--folder <path>] [--worktree <branch>]
                                      start from a completed BTW answer; n is its 1-based position
   tb group list | tb group add <group> <task…> | tb group rm <group> <task…>
   tb doc send <task>:<file> <task>   send a document from one task's outbox to another task's inbox
+  tb dep add <task> --on <task> [--note "<text>"]     <task> is blocked by the other task until it is archived
+  tb dep add <task> --replaces <task> [--folded] [--note "<text>"]
+                                     <task> replaces the other task (--folded: its work went into <task>); parks it.
+                                     Only the user and the controller add this link
+  tb dep add <task> --follows <task> | --related <task> [--note "<text>"]
+  tb dep rm <task> <link id> | tb dep rm <task> --on|--replaces|--follows|--related <task>
+  tb dep done <task> <link id> | tb dep done <task> --on <task> [--note "<text>"]   mark one dependency as met
+                                     A task can add, remove and mark done links on itself only
+  tb deps <task> [--json]            the links of a task in both directions, its state and its linked set
+  tb deps <task> --all [--json]      the linked set of a task: counts, longest chain, what waits for you, all links
+  tb deps --group <group> [--json]   the same for each linked set that holds a task of the group
   tb mail                            messages with other people (A2A Notes over Slack) and notes to you: run for command help
   tb review <file>                   ask the user to review a document from your outbox
   tb release-request                 ask the user to allow one Taskboard release on the dashboard
@@ -340,12 +409,14 @@ switch (cmd) {
   }
   case 'new': {
     const batch = flag('--batch');
-    const specs = batch ? JSON.parse(readFileSync(batch, 'utf8')) : [{ agent: flag('--agent', 'claude'), account: flag('--account'), model: flag('--model'), folder: flag('--folder'), title: flag('--title'), worktree: has('--no-worktree') ? false : flag('--worktree'), group: flag('--group'), prompt: args.slice(1).join(' ') }];
+    const linkOpts = { after: flag('--after'), replaces: flag('--replaces'), follows: flag('--follows'), related: flag('--related'), folded: has('--folded') };
+    const specs = batch ? JSON.parse(readFileSync(batch, 'utf8')) : [{ ...linkOpts, agent: flag('--agent', 'claude'), account: flag('--account'), model: flag('--model'), folder: flag('--folder'), title: flag('--title'), worktree: has('--no-worktree') ? false : flag('--worktree'), group: flag('--group'), prompt: args.slice(1).join(' ') }];
     for (const s of specs) {
       if (!s.folder || !s.prompt) { console.error('tb new: --folder and a prompt are required'); process.exit(1); }
-      const t = await call('POST', '/api/tasks', { title: s.title || s.prompt.slice(0, 60), desc: s.prompt, agent: s.agent || 'claude', folder: resolve(s.folder.replace(/^~/, homedir())), worktree: s.worktree === false ? false : s.worktree ? true : undefined, branch: typeof s.worktree === 'string' ? s.worktree : undefined, parent: process.env.TASK_ID || undefined, group: s.group || undefined, account: s.account || undefined, model: s.model || undefined });
+      const t = await call('POST', '/api/tasks', { title: s.title || s.prompt.slice(0, 60), desc: s.prompt, agent: s.agent || 'claude', folder: resolve(s.folder.replace(/^~/, homedir())), worktree: s.worktree === false ? false : s.worktree ? true : undefined, branch: typeof s.worktree === 'string' ? s.worktree : undefined, parent: process.env.TASK_ID || undefined, group: s.group || undefined, account: s.account || undefined, model: s.model || undefined, links: startLinks(s) });
       if (t.approved) continue;
       console.log(`Started #${t.num} ${t.title} (${t.agent} on ${t.account}) in ${t.cwd}`);
+      for (const p of t.linkProblems || []) console.error(`tb: link not added: ${p}`);
     }
     break;
   }
@@ -364,6 +435,51 @@ switch (cmd) {
     const worktree = flag('--worktree');
     const created = await call('POST', '/api/tasks', { title, agent, account, folder: resolve(folder.replace(/^~/, homedir())), worktree: worktree ? true : undefined, branch: worktree, spinOff: { sourceNum: source.num, question: item.q, answer: item.a } });
     if (!created.approved) console.log(`Started #${created.num} ${created.title} (${created.agent}) in ${created.cwd}`);
+    break;
+  }
+  case 'dep': {
+    const sub = rest[0];
+    if (sub === 'add') {
+      const note = flag('--note'), folded = has('--folded'), l = linkFlag();
+      const from = args[2];
+      if (!from || !l) { console.error('tb dep add <task> --on|--replaces|--follows|--related <task> [--folded] [--note "<text>"]'); process.exit(1); }
+      const t = await task(from), to = await task(l.to);
+      const link = await call('POST', `/api/tasks/${encodeURIComponent(t.id)}/links`, { kind: l.kind, to: to.id, note, folded });
+      const parked = l.kind === 'replaces' && !['parked', 'archived'].includes(to.status);
+      console.log(`Added link ${link.id}: #${t.num} ${l.kind}${link.folded ? ' (folded)' : ''} #${to.num}.${parked ? ` Taskboard parked #${to.num}.` : ''}`);
+    } else if (sub === 'rm' || sub === 'done') {
+      const note = flag('--note'), l = linkFlag();
+      const from = args[2], id = args[3];
+      if (!from || (!id && !l)) { console.error(`tb dep ${sub} <task> <link id> | tb dep ${sub} <task> --on|--replaces|--follows|--related <task>${sub === 'done' ? ' [--note "<text>"]' : ''}`); process.exit(1); }
+      const t = await task(from);
+      let linkId = id;
+      if (!linkId) {
+        const to = await task(l.to);
+        const found = (t.links || []).find(x => x.kind === l.kind && x.to === to.id);
+        if (!found) { console.error(`tb: #${t.num} has no ${l.kind} link to #${to.num}.`); process.exit(1); }
+        linkId = found.id;
+      }
+      if (sub === 'rm') { const x = await call('DELETE', `/api/tasks/${encodeURIComponent(t.id)}/links/${encodeURIComponent(linkId)}`); console.log(`Removed link ${x.id} (${x.kind}) from #${t.num}.`); }
+      else { const x = await call('POST', `/api/tasks/${encodeURIComponent(t.id)}/links/${encodeURIComponent(linkId)}/done`, { note }); console.log(`Marked link ${x.id} of #${t.num} as done.`); }
+    } else { console.error('tb dep add|rm|done … (run tb for help)'); process.exit(1); }
+    break;
+  }
+  case 'deps': {
+    const json = has('--json'), all = has('--all'), group = flag('--group');
+    if (group || all) {
+      const q = group ? `group=${encodeURIComponent(group)}` : `task=${encodeURIComponent((await task(args[1])).id)}`;
+      const r = await call('GET', `/api/links/sets?${q}`);
+      if (json) { console.log(JSON.stringify(r, null, 2)); break; }
+      const byId = Object.fromEntries((await tasks()).map(t => [t.id, t]));
+      for (const s of r.sets) for (const t of s.tasks) byId[t.id] = { ...byId[t.id], ...t };
+      if (group) console.log(`Group ${r.group.name}: ${r.sets.length} linked set${r.sets.length === 1 ? '' : 's'}${r.unlinked ? `, ${r.unlinked} task${r.unlinked === 1 ? '' : 's'} without links` : ''}.`);
+      r.sets.forEach((s, i) => { if (i) console.log(''); printSet(s, byId); });
+      break;
+    }
+    if (!args[1]) { console.error('tb deps <task> [--all] [--json] | tb deps --group <group> [--json]'); process.exit(1); }
+    const t = await task(args[1]);
+    const d = await call('GET', `/api/tasks/${encodeURIComponent(t.id)}/links`);
+    if (json) console.log(JSON.stringify(d, null, 2)); else printDeps(d);
     break;
   }
   case 'group': {

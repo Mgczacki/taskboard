@@ -19,6 +19,8 @@ import { panelHolds, type PanelTab } from '../panelShare';
 import { BrowserView } from './TaskBrowser';
 import { readSplit, writeSplit, type Split } from '../browserSplit';
 import { countText, sumCounts } from '../runtimeText';
+import { LinkPorts } from './Links';
+import { linkOrder, showLinkedWork } from '../links';
 
 type Layout = 'columns' | 'grid' | 'rows';
 const MINW = 640;
@@ -55,6 +57,8 @@ interface Props {
 export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTaskId, panelTab, selected, toggleSel, clearSel, solo, focusMode, setFocusMode, toast, newTask, newTaskToFocus, onNewTaskFocused, onSpinOff }: Props) {
   const lk = (k: string) => `tb-cv-${view}-${k}`;
   const [layout, setLayout] = useState<Layout>(() => (localStorage.getItem(lk('layout')) as Layout) || 'columns');
+  // Links: a task after the open tasks that block it (links.ts). Computed on each change and never saved as the order.
+  const [order, setOrder] = useState<'saved' | 'links'>(() => localStorage.getItem(lk('order')) === 'links' ? 'links' : 'saved');
   const [visible, setVisible] = useState<number | 'auto'>(() => { const v = localStorage.getItem(lk('visible')); return v && v !== 'auto' ? Number(v) : 'auto'; });
   const [perPage, setPerPage] = useState<number | 'off'>(() => { const v = localStorage.getItem(lk('perpage')); return v && v !== 'off' ? Number(v) : 'off'; });
   const [page, setPage] = useState(() => Number(localStorage.getItem(lk('page'))) || 0);
@@ -100,8 +104,8 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
   const [W, setW] = useState(1200);
   useKeymap();
 
-  useEffect(() => { setLayout((localStorage.getItem(lk('layout')) as Layout) || 'columns'); const v = localStorage.getItem(lk('visible')); setVisible(v && v !== 'auto' ? Number(v) : 'auto'); const pp = localStorage.getItem(lk('perpage')); setPerPage(pp && pp !== 'off' ? Number(pp) : 'off'); setPage(Number(localStorage.getItem(lk('page'))) || 0); setFrozen(null); setExtra([]); setHidden([]); setMaxId(null); setFocused(null); }, [view]);
-  useEffect(() => { localStorage.setItem(lk('layout'), layout); localStorage.setItem(lk('visible'), String(visible)); localStorage.setItem(lk('perpage'), String(perPage)); localStorage.setItem(lk('page'), String(page)); }, [layout, visible, perPage, page, view]);
+  useEffect(() => { setOrder(localStorage.getItem(lk('order')) === 'links' ? 'links' : 'saved'); setLayout((localStorage.getItem(lk('layout')) as Layout) || 'columns'); const v = localStorage.getItem(lk('visible')); setVisible(v && v !== 'auto' ? Number(v) : 'auto'); const pp = localStorage.getItem(lk('perpage')); setPerPage(pp && pp !== 'off' ? Number(pp) : 'off'); setPage(Number(localStorage.getItem(lk('page'))) || 0); setFrozen(null); setExtra([]); setHidden([]); setMaxId(null); setFocused(null); }, [view]);
+  useEffect(() => { localStorage.setItem(lk('order'), order); localStorage.setItem(lk('layout'), layout); localStorage.setItem(lk('visible'), String(visible)); localStorage.setItem(lk('perpage'), String(perPage)); localStorage.setItem(lk('page'), String(page)); }, [order, layout, visible, perPage, page, view]);
   useEffect(() => { const ro = new ResizeObserver(() => setW(stage.current?.clientWidth || 1200)); if (stage.current) ro.observe(stage.current); return () => ro.disconnect(); }, []);
 
   // windows are for running agents: archived and suspended tasks are left out (suspended ones: see the Resume button)
@@ -122,7 +126,8 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
   const suspendedHere = (view.startsWith('g:') ? (group?.tasks || []) : view.startsWith('t:') ? view.slice(2).split(',') : view === 'ungrouped' ? ungrouped : []).map(id => tasks.find(t => t.id === id)).filter((t): t is Task => !!t && t.status === 'suspended');
   const newInSmart = (view === 'needs' || view === 'live') && frozen ? liveSet().filter(x => !frozen.includes(x)).length : 0;
 
-  const wins = ids.map(id => tasks.find(t => t.id === id)!).filter(Boolean);
+  const savedWins = ids.map(id => tasks.find(t => t.id === id)!).filter(Boolean);
+  const wins = order === 'links' ? linkOrder(savedWins, tasks) : savedWins;
   // the tasks whose browsers and processes the view lists: in a group view every task of the group that is not archived
   // (a suspended task can keep a stopped browser), in other views the windows on screen
   const runtimeTasks = group ? group.tasks.map(id => tasks.find(t => t.id === id)).filter((t): t is Task => !!t && t.status !== 'archived') : wins;
@@ -182,6 +187,8 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
     }, 0);
   };
   useEffect(() => { if (newTaskToFocus && wins.some(t => t.id === newTaskToFocus)) { focus(newTaskToFocus); onNewTaskFocused(); } }, [newTaskToFocus, wins]);
+  // a task number in a link card: the window when it is in this view, else the task panel
+  const goTask = (id: string) => { if (wins.some(t => t.id === id)) focus(id); else openPanel(id); };
   const turnPage = (d: number) => setPage(p => Math.max(0, Math.min(pageCount - 1, p + d)));
   const nextNeedy = () => { const l = wins.filter((t, i) => needsYou(t) && Math.floor(i / per) !== pg); return l.find(t => pageOf(t.id) > pg) || l[0]; };
 
@@ -322,6 +329,7 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
 
   // Saves a new window order for this view. Undo puts back the order from before the change.
   const reorderTiles = (moved: string, next: string[] | null) => {
+    if (order === 'links') setOrder('saved'); // a move by hand goes back to the saved order
     if (!next) return;
     const before = wins.map(t => t.id);
     const num = tasks.find(t => t.id === moved)?.num ?? '?';
@@ -419,6 +427,7 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
           {menu === 'add' && <div className="menu" onMouseLeave={() => setMenu(null)}><div className="mh">{group ? `Add to “${group.name}”` : 'Show here'}</div>{off.length ? off.map(t => <div className="mi" key={t.id} onClick={() => { addToView(t.id); setMenu(null); setTimeout(() => focus(t.id), 80); }}><Dot s={t.status} />#{t.num} {t.title}</div>) : <div className="mi">Every live task is already here.</div>}</div>}
         </div>
         <div className="seg">{(['columns', 'grid', 'rows'] as Layout[]).map(l => <button key={l} className={layout === l ? 'on' : ''} onClick={() => setLayout(l)}>{l[0].toUpperCase() + l.slice(1)}</button>)}</div>
+        {wins.some(t => t.link) && <><span className="lbl">Order</span><div className="seg"><button className={order === 'saved' ? 'on' : ''} onClick={() => setOrder('saved')} title="The order you set by moving windows">Saved</button><button className={order === 'links' ? 'on' : ''} onClick={() => setOrder('links')} title="Each task after the tasks that block it, and a replaced task after the task that replaces it. A move by hand goes back to Saved.">Links</button></div></>}
         {layout === 'columns' && !per && <><span className="lbl">Visible</span><div className="seg">{(['auto', 2, 3, 4, 5] as const).map(v => <button key={v} className={visible === v ? 'on' : ''} onClick={() => setVisible(v)}>{v === 'auto' ? 'Auto' : v}</button>)}</div></>}
         <span className="lbl">Per page</span><div className="seg">{PER_PAGE.map(v => <button key={v} className={perPage === v ? 'on' : ''} onClick={() => { setPerPage(v); setPage(0); }} title={v === 'off' ? 'Show every window' : `Show ${v} windows at a time`}>{v === 'off' ? 'Off' : v}</button>)}</div>
         {per > 0 && pageCount > 1 && <div className="pager">
@@ -444,9 +453,9 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
         {!wins.length && <div className="emptyview"><h2>{group ? `“${group.name}” is empty` : view === 'ungrouped' && !hidden.length ? 'Every live task is in a group' : 'No windows'}</h2><p>Use <b>＋ New task</b> to start an agent here. Use <b>＋ Add window</b> to show a task that already exists.</p></div>}
         {/* renderOrder: the page keeps the windows in one fixed order and CSS order puts them in place, so a move does not remount a terminal */}
         {renderOrder(shown).map(({ item: t, at: i }) => (
-          <div key={t.id} data-win={t.id} className={`win ${t.status} ${focused === t.id ? 'focus' : ''} ${selected.has(t.id) ? 'selected' : ''} ${tileDrag?.id === t.id ? 'dragging' : ''} ${tileSlotClass(i)} ${layout === 'rows' ? 'vslot' : ''}`} style={{ order: i, ...(layout === 'grid' && !maxId ? { gridColumn: `span ${i < tileCount - lastRow ? lastRow : gridCols}` } : {}) }} onMouseDown={() => { setFocused(t.id); if (t.status === 'unread') api.seen(t.id); }}>
+          <div key={t.id} data-win={t.id} className={`win ${t.status} ${t.link?.state === 'superseded' ? 'superseded' : ''} ${focused === t.id ? 'focus' : ''} ${selected.has(t.id) ? 'selected' : ''} ${tileDrag?.id === t.id ? 'dragging' : ''} ${tileSlotClass(i)} ${layout === 'rows' ? 'vslot' : ''}`} style={{ order: i, ...(layout === 'grid' && !maxId ? { gridColumn: `span ${i < tileCount - lastRow ? lastRow : gridCols}` } : {}) }} onMouseDown={() => { setFocused(t.id); if (t.status === 'unread') api.seen(t.id); }}>
             <div className="wh" onPointerDown={e => startDrag(e, t.id)} onDoubleClick={() => setMaxId(m => m ? null : t.id)}>
-              <span className="grip" title={`Drag to move this window between two others, or onto a group tab. Move it one place: ${keysText('windowEarlier')} / ${keysText('windowLater')}`}>⠿</span><span className="ix">{i + 1}</span><Dot s={t.status} /><span className="n">#{t.num}</span><span className="ti">{t.title}</span>
+              <span className="grip" title={`Drag to move this window between two others, or onto a group tab. Move it one place: ${keysText('windowEarlier')} / ${keysText('windowLater')}`}>⠿</span><span className="ix">{i + 1}</span><LinkPorts t={t} tasks={tasks} onGo={goTask} side="left" /><Dot s={t.status} /><span className="n">#{t.num}</span><span className="ti">{t.title}</span><LinkPorts t={t} tasks={tasks} onGo={goTask} side="right" />
               <span className={`st st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} /><RuntimeButton t={t} small onOpen={tab => openPanel(t.id, tab)} />
               {ending === t.id ? <><span className="sel-warn">End & archive?</span><button className="b" onClick={() => endTask(t)}>Yes, end it</button><button className="b" onClick={() => setEnding(null)}>Cancel</button></> : <>
               {(t.status === 'suspended' || t.openElsewhere) && <button className="b" onClick={() => openPanel(t.id)}>{t.openElsewhere ? 'Options…' : 'Resume…'}</button>}
@@ -509,6 +518,7 @@ function GroupMenu({ g, archiveCount, onArchiveAll, close, onDeleted }: { g: Gro
       <div style={{ color: 'var(--dim)', margin: '8px 0 2px' }}>Colour</div>
       <div className="colors">{GCOLORS.map(c => <i key={c} className={c === g.color ? 'on' : ''} style={{ background: c }} onClick={() => api.updateGroup(g.id, { color: c })} />)}</div>
       <div className="mi" onClick={() => { openInWindow('g:' + g.id); close(); }}>↗ Open in its own window</div>
+      <div className="mi" title="The state of every set of linked tasks that holds a task of this group" onClick={() => { showLinkedWork({ group: g.id }); close(); }}>Show linked work</div>
       <div className={`mi danger ${archiveCount ? '' : 'off'}`} title={archiveCount ? 'Ends every task in this group and archives it. You confirm first.' : 'No task in this group is left to archive'} onClick={() => { if (archiveCount) onArchiveAll(g, false); }}>Close and archive all ({archiveCount})</div>
       {archiveCount > 0 && <div className="mi danger" onClick={() => onArchiveAll(g, true)}>Close, archive all and delete group</div>}
       <div className="mi danger" onClick={async () => { const d = await api.deleteGroup(g.id); close(); onDeleted(d); }}>Delete group <span style={{ color: 'var(--dim)' }}>(tasks are not affected)</span></div>

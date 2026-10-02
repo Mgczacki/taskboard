@@ -15,6 +15,7 @@ import { HOME, HOST, machineId, PORT, ROOT, TB_DIR, TOKEN, URL_BASE } from './co
 import * as docs from './docs.ts';
 import * as events from './events.ts';
 import * as groups from './groups.ts';
+import * as links from './links.ts';
 import * as canvasOrder from './canvasOrder.ts';
 import * as importer from './importer.ts';
 import * as approvals from './approvals.ts';
@@ -74,6 +75,7 @@ await new Promise<void>(resolve => {
 const other = acquire();
 if (other) { console.error(`Taskboard is already running here: process ${other.pid}, ${other.url} (started ${other.started}). Not starting a second server.`); process.exit(1); }
 store.loadAll();
+links.start();
 permits.load();
 for (const p of push.allPushes()) if (p.state === 'pending' && p.approvalId) {
   const card = approvals.get(p.approvalId);
@@ -724,7 +726,7 @@ app.post('/api/machines', async (req, res) => {
 });
 app.delete('/api/machines/:id', (req, res) => { machines.remove(req.params.id); res.json({}); });
 
-const view = (t: store.Task) => ({ ...t, docs: docs.counts(t.id), queue: messageQueue.forView(t.id), waitMin: Math.round((Date.now() - Date.parse(t.statusAt)) / 60000), attach: `tmux -L taskboard attach -t ${t.session}`, ...(t.agent === 'antigravity' ? { tokenEstimate: stats.taskEstimate(t) } : {}) });
+const view = (t: store.Task) => ({ ...t, link: links.info(t), docs: docs.counts(t.id), queue: messageQueue.forView(t.id), waitMin: Math.round((Date.now() - Date.parse(t.statusAt)) / 60000), attach: `tmux -L taskboard attach -t ${t.session}`, ...(t.agent === 'antigravity' ? { tokenEstimate: stats.taskEstimate(t) } : {}) });
 const fail = (res: express.Response, e: unknown) => res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
 
 app.get('/api/tasks', (_req, res) => res.json([...store.all().map(view), ...machines.remoteTasks()]));
@@ -753,13 +755,16 @@ app.post('/api/tasks', async (req, res) => {
   try {
     const { title, desc, agent, folder, worktree, branch, parent, account, model } = req.body;
     if (!title || !folder || !['claude', 'codex', 'antigravity', 'auto'].includes(agent)) throw new Error('title, folder and agent are required');
-    const prompt = req.body.spinOff ? spinOffPrompt(req.body.spinOff) : (desc || title);
+    const startBy = links.actorFrom(req.get('x-tb-actor'));
+    const startLinks = links.planStart(req.body.links, startBy);
+    const prompt = (req.body.spinOff ? spinOffPrompt(req.body.spinOff) : (desc || title)) + (startLinks.length ? '\n\n' + startLinks.map(l => l.line).join('\n') : '');
     const images = agents.checkImages(req.body.images);
     await guarded(req, res, `start “${title}” (${agent === 'auto' ? 'Auto' : agents.agentName(agent)})`, `Folder: ${folder} · worktree: ${worktree === false ? 'no' : worktree === true ? 'yes' : 'automatic'}${branch ? ` · branch ${branch}` : ''}\nAccount: ${account && account !== 'auto' ? account : 'automatic'}\nModel: ${model || 'agent default'}\nPrompt: ${prompt}${images.length ? `\nImages: ${images.length} attached` : ''}`, 'new',
       async () => {
         const t = await agents.startTask({ title, desc: prompt, agent, folder, worktree, branch, parent, account, model, images });
         if (req.body.group) { const g = groups.all().find(x => x.name === req.body.group || x.id === req.body.group) || groups.create(String(req.body.group)); groups.update(g.id, { tasks: [...g.tasks, t.id] }); }
-        return view(t);
+        const linkProblems = links.addAtStart(t.id, startLinks, startBy);
+        return { ...view(store.get(t.id) || t), ...(linkProblems.length ? { linkProblems } : {}) };
       }, (t: any) => `Started #${t.num} ${t.title} with ${t.agent} on ${t.account} in ${t.cwd}${req.body.group ? ` (group ${req.body.group})` : ''}`);
   } catch (e) { fail(res, e); }
 });
@@ -1048,6 +1053,36 @@ app.post('/api/open-local-file', (req, res) => {
     if (error) return res.status(500).json({ error: 'The operating system could not open this file.' });
     res.json({ opened: path });
   });
+});
+// Links between tasks (server/links.ts). x-tb-actor tells who adds a link: no header is the user.
+app.get('/api/links', (_req, res) => res.json(links.all()));
+app.get('/api/links/suggestions', (_req, res) => res.json(links.suggestions()));
+app.post('/api/links/suggestions/dismiss', (req, res) => {
+  const { from, to, kind } = req.body || {};
+  if (!from || !to || !links.KINDS.includes(kind)) return fail(res, 'from, to and kind are required');
+  links.dismiss({ from: String(from), to: String(to), kind }); res.json({});
+});
+// The linked sets of a task (?task=) or of a group (?group= name or id), with counts, the longest chain and what waits.
+app.get('/api/links/sets', (req, res) => {
+  try {
+    if (req.query.task) return res.json(links.setsFor([links.resolve(String(req.query.task)).id]));
+    const g = groups.all().find(x => x.id === req.query.group || x.name === req.query.group);
+    if (!g) throw new Error(`No group ${req.query.group ?? ''}.`);
+    res.json({ group: { id: g.id, name: g.name }, ...links.setsFor(g.tasks) });
+  } catch (e) { fail(res, e); }
+});
+app.get('/api/tasks/:id/links', (req, res) => { try { res.json(links.detail(req.params.id)); } catch (e) { res.status(404).json({ error: e instanceof Error ? e.message : String(e) }); } });
+app.post('/api/tasks/:id/links', (req, res) => {
+  try {
+    const { kind, to, note, folded } = req.body || {};
+    res.json(links.add(req.params.id, { kind, to: String(to ?? ''), note, folded: folded === true }, links.actorFrom(req.get('x-tb-actor'))));
+  } catch (e) { fail(res, e); }
+});
+app.delete('/api/tasks/:id/links/:link', (req, res) => {
+  try { res.json(links.remove(req.params.id, req.params.link, links.actorFrom(req.get('x-tb-actor')))); } catch (e) { fail(res, e); }
+});
+app.post('/api/tasks/:id/links/:link/done', (req, res) => {
+  try { res.json(links.markDone(req.params.id, req.params.link, links.actorFrom(req.get('x-tb-actor')), req.body?.note)); } catch (e) { fail(res, e); }
 });
 app.get('/api/docs/edges', (_req, res) => res.json(docs.edges()));
 app.get('/api/docs/all', (_req, res) => res.json(Object.fromEntries(store.all().map(t => [t.id, docs.docsFor(t.id).outbox.map(d => ({ name: d.name, path: d.path, kind: d.kind, mtime: d.mtime }))]))));
