@@ -12,9 +12,12 @@ export interface Account {
   routingRules?: string;
   limited?: { at: string; note: string }; status: { signedIn: boolean; who?: string }; running: number;
   usage?: { windows: { label: string; usedPct: number; resetsAt?: number }[]; at: string; source: string; plan?: string };
+  usageStale?: boolean; usageStaleHours?: number; // data older than usageStaleHours counts as unknown (server/accounts.ts)
 }
-// "5-hour 12% · weekly 66%" (windows that already reset are left out)
-export const usageText = (a: Account) => (a.usage?.windows || []).filter(w => !w.resetsAt || w.resetsAt > Date.now()).map(w => `${w.label} ${w.usedPct}%`).join(' · ');
+const dataAge = (a: Account) => fmtWait(Math.round((Date.now() - Date.parse(a.usage?.at || '')) / 60000));
+// "5-hour 12% · weekly 66%" (windows that already reset are left out); old data shows as unknown with its age
+export const usageText = (a: Account) => a.usage && a.usageStale ? `usage unknown (data ${dataAge(a)} old)`
+  : (a.usage?.windows || []).filter(w => !w.resetsAt || w.resetsAt > Date.now()).map(w => `${w.label} ${w.usedPct}%`).join(' · ');
 const resetText = (ms?: number) => {
   if (!ms) return '';
   const d = new Date(ms), mins = Math.round((ms - Date.now()) / 60000);
@@ -31,6 +34,7 @@ function UsageBars({ a }: { a: Account }) {
         <span className="up">{done ? 'reset' : `${w.usedPct}%`}</span><span className="sub">{done ? '' : resetText(w.resetsAt)}</span>
       </div>); })}
     <div className="sub">{a.usage.plan ? `${a.usage.plan} plan · ` : ''}as of {ago < 1 ? 'just now' : fmtWait(ago) + ' ago'} · {a.usage.source}</div>
+    {a.usageStale && <div className="sub warn">These numbers are older than {a.usageStaleHours} h, so Taskboard counts this account's usage as unknown. Codex writes new numbers only after a turn that works.</div>}
   </div>;
 }
 const post = (path: string, body: unknown = {}) => fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then(async r => { const j = await r.json(); if (!r.ok) throw new Error(j.error || r.statusText); return j; });

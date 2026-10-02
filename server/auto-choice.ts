@@ -1,10 +1,12 @@
 import type { Account, AccountStatus } from './accounts.ts';
-import { unavailable } from './accounts.ts';
+import { unavailable, usageStale } from './accounts.ts';
 import { DEFAULT_ROUTING_RULES } from './machine.ts';
 
 export interface ChoiceInput { account: Account; status: AccountStatus; running: number }
 
+// Stale usage data counts as no spare share: unknown, not free.
 const spare = (a: Account, label: string) => {
+  if (usageStale(a)) return 0;
   const window = a.usage?.windows.find(w => w.label === label && (!w.resetsAt || w.resetsAt > Date.now()));
   return window ? Math.max(0, 100 - window.usedPct) : 0;
 };

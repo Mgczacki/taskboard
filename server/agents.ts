@@ -211,6 +211,7 @@ Use the \`tb\` command (run \`tb\` alone for help). Tasks are numbers like 12 or
 - Before starting tasks, run \`tb accounts\` to read current usage and routing rules.
 - Follow the user's explicit agent, account, or model choice. Otherwise use the routing rules and current usage.
 - Avoid accounts that are limited, not signed in, or already running their maximum number of tasks. Only the user changes that maximum, on the Accounts page.
+- Usage marked STALE in \`tb accounts\` is unknown, not free. Do not prefer an account because of old low numbers.
 - Start agents with \`tb new --agent claude|codex|antigravity --account <id> --folder <path> --title <title> "<prompt>"\`. Add \`--model <name>\` only when needed.
   For several pieces of work, write a plan to plans/<name>.json
   ([{"agent","folder","title","prompt","account"?,"model"?,"worktree"?,"group"?}]) and start them with one \`tb new --batch plans/<name>.json\`, each in its own worktree and one group.
@@ -590,8 +591,9 @@ export async function startTask(n: NewTask): Promise<Task> {
   } else acct = (await accounts.pick(n.agent, runningOn)).account;
   const agent = n.agent === 'auto' ? acct.agent : n.agent;
   if (acct.agent !== agent) throw new Error('That account is for the other agent.');
-  const why = accounts.unavailable(acct, runningOn(acct.id)); if (why) throw new Error(why);
-  if (!(await accounts.status(acct)).signedIn) throw new Error(`Account ${acct.id} is not signed in.`);
+  // An account you chose is used only when it can run the task; Taskboard never switches it without asking.
+  const why = accounts.refusal(acct, runningOn(acct.id), runningOn); if (why) throw new Error(why);
+  if (!(await accounts.status(acct)).signedIn) throw new Error(`Account ${acct.id} is not signed in.${accounts.alternatives(acct, runningOn)}`);
   const images = checkImages(n.images);
   const num = store.nextNum();
   const id = `${slug(n.title)}-${num}`;
@@ -609,6 +611,7 @@ export async function startTask(n: NewTask): Promise<Task> {
     id, num, title: n.title, agent, status: 'working', cwd, folder, branch, worktree,
     session: `task-${num}`, sessionId: agent === 'claude' ? randomUUID() : undefined,
     statusSource: n.parent === 'controller' ? 'Started by the controller (tb new) just now.' : 'Started just now.', goal: n.title, desc: n.desc, parent: n.parent, account: acct.id, model: n.model,
+    accountChosen: explicit ? 'user' : 'auto',
   });
   try { await launch(t, attachImages(t, n.desc, images), false); }
   catch (e) {
@@ -641,6 +644,7 @@ export async function resumeTask(t: Task, force = false): Promise<Task> {
     if (!s.dead) { launching.delete(t.id); return store.update(t.id, { status: 'idle', statusSource: 'Its session was still running.' })!; }
     await tmux.killSession(t.session);
   }
+  checkResumeAccount(t);
   if (t.handoff && (!t.sessionId || (t.agent === 'claude' && !t.transcript))) {
     await launch(t, handoffPrompt(t.handoff), false);
     return store.update(t.id, { status: 'working', statusSource: 'Started again with the saved handoff.' })!;
@@ -672,7 +676,7 @@ export function firstPrompt(t: Task) {
 export function checkResumeAccount(t: Task) {
   const account = accounts.get(t.account) || accounts.defaultFor(t.agent);
   const active = runningOn(account.id) - (['working', 'needs-you', 'unread', 'idle', 'review', 'stopped'].includes(t.status) ? 1 : 0);
-  const why = accounts.unavailable(account, active);
+  const why = accounts.refusal(account, active, runningOn);
   if (why) throw new Error(`${why} Or move the task to another account.`);
 }
 
@@ -681,7 +685,11 @@ const delivering = new Set<string>();
 // (Codex 0.158.0): "Update available · 0.158.0 → 0.160.0", "› 1. Update now (runs `sh -c 'curl -fsSL
 // https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh'`)", "2. Skip", "3. Skip until next version".
 // The last three patterns match any numbered choice that updates or installs software, or that runs a download into a shell.
-export const blockingQuestion = /trust this folder|Do you trust the (files|contents)|Select login method|Please log in|Sign in with ChatGPT|Update available[\s\S]*(Update now|Skip)|approval requested|Allow this action|Approve this tool|\d\.\s*(Update|Upgrade|Install)( now|\s+v?\d)|\(runs `[^`]*(curl|wget)[^`]*\|[^`]*sh\b|install\.sh\b/i;
+// Codex 0.160.0 limit dialogs (tasks 163 and 164): "Usage limit reached  Request a limit increase from your owner to
+// continue using codex. Request increase?  1. Yes (y)  2. No (default) (n)" and "Approaching rate limits  Switch to
+// gpt-6-luna for lower credit usage?  1. Switch to gpt-6-luna  2. Keep current model". Typed text answers them: Codex
+// changed the model of task 163 to gpt-6-luna while an inbox notice was typed, and a "y" asks the owner for more credit.
+export const blockingQuestion = /Usage limit reached[\s\S]*Request increase|Approaching rate limits[\s\S]*Keep current model|trust this folder|Do you trust the (files|contents)|Select login method|Please log in|Sign in with ChatGPT|Update available[\s\S]*(Update now|Skip)|approval requested|Allow this action|Approve this tool|\d\.\s*(Update|Upgrade|Install)( now|\s+v?\d)|\(runs `[^`]*(curl|wget)[^`]*\|[^`]*sh\b|install\.sh\b/i;
 
 // Resume before typing into a task whose tmux session has ended.
 export async function sendTaskText(t: Task, text: string): Promise<{ resumed: boolean; submitted: boolean; warning?: string }> {
@@ -773,6 +781,7 @@ export function importSession(c: { agent: Agent; account?: string; sessionId: st
 // End the copy running in another terminal (SIGTERM, then SIGKILL after 5 s) and resume the conversation here.
 // Both CLIs save the conversation as they go, so nothing is lost.
 export async function takeOver(t: Task): Promise<Task> {
+  checkResumeAccount(t); // before the other process ends: it keeps running when this account cannot start the agent
   const pid = t.openElsewhere?.pid;
   if (pid) {
     const alive = () => { try { process.kill(pid, 0); return true; } catch { return false; } };
@@ -834,7 +843,8 @@ function handoffPrompt(path: string): string {
 }
 
 // Claude Code can resume a copied conversation. Other transfers start with the saved task context.
-export async function moveAccount(task: Task, toId: string, instruction = ''): Promise<Task> {
+// auto: Taskboard moves the task after a failed first start on an account that it chose itself (launch-limit.ts).
+export async function moveAccount(task: Task, toId: string, instruction = '', opts: { auto?: boolean } = {}): Promise<Task> {
   const t = store.get(task.id);
   if (!t) throw new Error('Task no longer exists.');
   if (t.role === 'controller') throw new Error('Change the controller account on the Accounts page.');
@@ -845,11 +855,12 @@ export async function moveAccount(task: Task, toId: string, instruction = ''): P
   if (launching.has(t.id)) throw new Error('This task is already starting or moving.');
   if (t.openElsewhere) throw new Error('Move this session here from its other terminal before changing accounts.');
   if (!existsSync(t.cwd)) throw new Error('The task folder no longer exists.');
+  const refused = accounts.refusal(to, runningOn(to.id), runningOn); if (refused) throw new Error(refused);
   launching.add(t.id);
   let stopped = false;
   let old = { ...t };
   try {
-    if (!(await accounts.status(to)).signedIn) throw new Error('Sign in to the target account first.');
+    if (!(await accounts.status(to)).signedIn) throw new Error(`Sign in to the target account first.${accounts.alternatives(to, runningOn)}`);
     old = { ...t }; // status checks may have waited while the old agent reported its session id
     // Mark before stopping so late hooks from the old process cannot change the task.
     movingTasks.add(t.id);
@@ -873,7 +884,7 @@ export async function moveAccount(task: Task, toId: string, instruction = ''): P
     }
     const source = `Moved from ${from.name} (${old.agent}) to ${to.name} (${to.agent}). ${resume ? 'Resumed the conversation.' : 'Started a new conversation with a handoff.'}`;
     store.update(t.id, {
-      agent: to.agent, account: to.id, transcript: copied, handoff,
+      agent: to.agent, account: to.id, transcript: copied, handoff, accountChosen: opts.auto ? 'auto' : 'user',
       sessionId: resume ? old.sessionId : to.agent === 'claude' ? randomUUID() : undefined,
       pastSessions: !resume && old.sessionId ? [...new Set([...(old.pastSessions || []), old.sessionId])] : old.pastSessions,
       status: 'working', statusSource: source, stopReason: undefined, ask: undefined, now: undefined,

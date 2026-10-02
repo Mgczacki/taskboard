@@ -50,7 +50,7 @@ test('the maximum is a whole number from 1 to 100', () => {
 });
 
 test('a start on a full account is refused with the limit and the running tasks keep running', async () => {
-  await assert.rejects(agents.startTask({ title: 'One more', desc: 'x', agent: 'codex', folder: root, account: 'codex-work' }), /^Error: Account codex-work is at its limit of 2 tasks \(raise it on the Accounts page\)\.$/);
+  await assert.rejects(agents.startTask({ title: 'One more', desc: 'x', agent: 'codex', folder: root, account: 'codex-work' }), /^Error: Account codex-work is at its limit of 2 tasks \(raise it on the Accounts page\)\. Choose another Codex account: codex-default \(Codex \(default\), 0 running, usage unknown\)\.$/);
   accounts.update('codex-work', { maxParallel: 1 });
   assert.deepEqual(store.all().filter(t => t.account === 'codex-work').map(t => t.status), ['working', 'working']);
   await assert.rejects(agents.startTask({ title: 'One more', desc: 'x', agent: 'codex', folder: root, account: 'codex-work' }), /at its limit of 1 tasks/);

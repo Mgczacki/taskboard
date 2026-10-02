@@ -14,7 +14,8 @@ export type AgentKind = 'claude' | 'codex' | 'antigravity';
 export interface Account {
   id: string; agent: AgentKind; name: string; dir: string; isDefault?: boolean; maxParallel: number;
   routingRules?: string;
-  limited?: { at: string; note: string };   // hit a usage limit; cleared when a turn on it succeeds
+  limited?: { at: string; note: string };   // hit a usage limit or ran out of credit; cleared when a turn on it succeeds
+  limitClearedAt?: string;                    // when the mark was last cleared: older limit reports do not set it again
   usage?: Usage;                              // latest usage windows reported for this account
   created: string;
 }
@@ -115,7 +116,13 @@ async function checkStatus(a: Account): Promise<AccountStatus> {
 }
 
 export function markLimited(id: string | undefined, note: string) { const a = get(id); if (a && !a.limited) { a.limited = { at: new Date().toISOString(), note }; save(); } }
-export function clearLimited(id: string | undefined) { const a = get(id); if (a?.limited) { delete a.limited; save(); } }
+export function clearLimited(id: string | undefined) { const a = get(id); if (a?.limited) { delete a.limited; a.limitClearedAt = new Date().toISOString(); save(); } }
+// A limit report from `at` (an ISO time) still applies: it is newer than the last time the mark was cleared.
+export const reportApplies = (a: Account, at: string) => !a.limitClearedAt || Date.parse(at) > Date.parse(a.limitClearedAt);
+// The Codex error text for a rate_limit_reached_type in a session file (Codex 0.160.0 writes
+// "workspace_member_credits_depleted" with primary and secondary null when a workspace has no credits left).
+export const codexLimitNote = (type: string, message?: string) =>
+  `Codex: ${message || (/credits?_depleted|credits/.test(type) ? 'the workspace is out of credits' : 'usage limit reached')} (${type})`;
 
 export function setUsage(id: string | undefined, u: Usage) {
   const a = get(id); if (!a) return;
@@ -123,7 +130,15 @@ export function setUsage(id: string | undefined, u: Usage) {
   a.usage = u;
   if (!same) save(); // only write the file when a number changed
 }
-// A window at 100% that has not reset yet means the account cannot be used until then.
+// Usage data older than this is unknown: the account may have used its limits or its credit since then. Codex writes
+// new numbers only in a turn that the server accepts, so an account without credit keeps its last numbers for days.
+export const USAGE_STALE_MS = 6 * 3600 * 1000;
+export const usageAge = (a: Account) => a.usage ? Date.now() - (Date.parse(a.usage.at) || 0) : undefined;
+export const usageStale = (a: Account) => !a.usage || usageAge(a)! > USAGE_STALE_MS;
+// "43 h", "25 min": how old the usage data is
+export const ageText = (ms: number) => ms >= 3600000 ? `${Math.round(ms / 3600000)} h` : `${Math.max(1, Math.round(ms / 60000))} min`;
+// A window at 100% that has not reset yet means the account cannot be used until then (also from old data: the
+// used share of a window does not go down before it resets).
 export const fullUntil = (a: Account) => {
   const w = a.usage?.windows.filter(x => x.usedPct >= 100 && (!x.resetsAt || x.resetsAt > Date.now())) || [];
   return w.length ? Math.max(...w.map(x => x.resetsAt || 0)) : 0;
@@ -140,7 +155,24 @@ export function unavailable(a: Account, running: number): string | undefined {
   if (a.limited) return `Account ${a.id} stopped at a usage limit at ${clock(Date.parse(a.limited.at))} (${a.limited.note}). Clear the limit mark on the Accounts page after the limit resets.`;
   if (running >= a.maxParallel) return `Account ${a.id} is at its limit of ${a.maxParallel} tasks (raise it on the Accounts page).`;
 }
-const peak = (a: Account) => Math.max(0, ...(a.usage?.windows || []).filter(w => !w.resetsAt || w.resetsAt > Date.now()).map(w => w.usedPct));
+// The highest used share of the open windows, or undefined when the data is missing or stale (unknown, not free).
+const peak = (a: Account) => usageStale(a) ? undefined : Math.max(0, ...(a.usage?.windows || []).filter(w => !w.resetsAt || w.resetsAt > Date.now()).map(w => w.usedPct));
+const usageNote = (a: Account) => { const p = peak(a); return p !== undefined ? `${p}% used` : a.usage ? `usage unknown, data ${ageText(usageAge(a)!)} old` : 'usage unknown'; };
+
+// Other accounts of the same agent that can take a task now, for a refusal message. Sign-in comes from the cached
+// status (a check that has not run yet counts as signed in; the start checks it again).
+export function alternatives(a: Account, running: (id: string) => number): string {
+  const ok = accounts.filter(x => x.agent === a.agent && x.id !== a.id && !unavailable(x, running(x.id)) && statusCache.get(x.id)?.signedIn !== false);
+  const agentLabel = a.agent === 'claude' ? 'Claude Code' : a.agent === 'codex' ? 'Codex' : 'Antigravity';
+  return ok.length
+    ? ` Choose another ${agentLabel} account: ${ok.map(x => `${x.id} (${x.name}, ${running(x.id)} running, ${usageNote(x)})`).join('; ')}.`
+    : ` No other ${agentLabel} account is available now.`;
+}
+// Why a task cannot start on this account, with the accounts it can use instead; undefined when it can start.
+export function refusal(a: Account, running: number, runningOf: (id: string) => number): string | undefined {
+  const why = unavailable(a, running);
+  return why && why + alternatives(a, runningOf);
+}
 
 // Codex writes its current limits into every session file ("token_count" events with rate_limits). Read the newest.
 const windowLabel = (min?: number) => !min ? 'window' : min === 300 ? '5-hour' : min === 10080 ? 'weekly' : min % 1440 === 0 ? `${min / 1440}-day` : `${Math.round(min / 60)}-hour`;
@@ -160,10 +192,22 @@ export function refreshCodexUsage() {
       const size = statSync(f).size, start = Math.max(0, size - 524288), buf = Buffer.alloc(size - start);
       const fd = openSync(f, 'r'); try { readSync(fd, buf, 0, buf.length, start); } finally { closeSync(fd); }
       const lines = buf.toString('utf8').split('\n');
+      let error: string | undefined; // the message of a turn that failed after the newest rate_limits line
       for (let i = lines.length - 1; i >= 0; i--) {
-        if (!lines[i].includes('"rate_limits"')) continue;
+        if (!lines[i].includes('"rate_limits"') && !lines[i].includes('"task_complete"')) continue;
         let o: any; try { o = JSON.parse(lines[i]); } catch { continue; }
-        const rl = o.payload?.rate_limits ?? o.payload?.info?.rate_limits; if (!rl?.primary) continue;
+        if (o.payload?.type === 'task_complete') { error ??= o.payload.error?.message; continue; }
+        const rl = o.payload?.rate_limits ?? o.payload?.info?.rate_limits; if (!rl) continue;
+        // No credit or a reached limit: Codex writes the reason and no windows. Mark the account; keep the old numbers,
+        // whose age then shows that they are stale.
+        if (rl.rate_limit_reached_type) {
+          const at = o.timestamp || new Date(statSync(f).mtimeMs).toISOString();
+          if (reportApplies(a, at)) markLimited(a.id, codexLimitNote(rl.rate_limit_reached_type, error));
+          break;
+        }
+        if (!rl.primary) continue;
+        // a later turn that the server accepted: the account works again
+        if (a.limited && o.timestamp && Date.parse(o.timestamp) > Date.parse(a.limited.at)) clearLimited(a.id);
         const windows = [rl.primary, rl.secondary].filter(Boolean).map((w: any) => ({ label: windowLabel(w.window_minutes), usedPct: Math.round(w.used_percent), resetsAt: w.resets_at ? w.resets_at * 1000 : undefined }));
         setUsage(a.id, { windows, at: o.timestamp || new Date(statSync(f).mtimeMs).toISOString(), source: 'Codex session file', plan: rl.plan_type || undefined });
         break;
@@ -173,8 +217,8 @@ export function refreshCodexUsage() {
 }
 
 // Automatic choice: the signed-in account of that agent with the fewest running tasks, skipping limited and full ones.
-export async function pick(agent: AgentKind, running: (id: string) => number): Promise<{ account: Account; why: string }> {
-  const cands = accounts.filter(a => a.agent === agent);
+export async function pick(agent: AgentKind, running: (id: string) => number, exclude: string[] = []): Promise<{ account: Account; why: string }> {
+  const cands = accounts.filter(a => a.agent === agent && !exclude.includes(a.id));
   const skipped: string[] = [], ok: Account[] = [];
   for (const a of cands) {
     const why = unavailable(a, running(a.id));
@@ -183,9 +227,10 @@ export async function pick(agent: AgentKind, running: (id: string) => number): P
     ok.push(a);
   }
   if (!ok.length) throw new Error(`No ${agent} account is available (${skipped.join('; ')}).`);
-  // fewest running first; then the lowest usage; then the default account
-  const best = ok.sort((x, y) => running(x.id) - running(y.id) || peak(x) - peak(y) || Number(!!y.isDefault) - Number(!!x.isDefault))[0];
-  return { account: best, why: `${best.name} (${running(best.id)} running${best.usage ? `, ${peak(best)}% used` : ''})${skipped.length ? ` — skipped: ${skipped.join('; ')}` : ''}` };
+  // fewest running first; then the lowest usage, where unknown or stale usage counts as full; then the default account
+  const rank = (a: Account) => peak(a) ?? 100;
+  const best = ok.sort((x, y) => running(x.id) - running(y.id) || rank(x) - rank(y) || Number(!!y.isDefault) - Number(!!x.isDefault))[0];
+  return { account: best, why: `${best.name} (${running(best.id)} running, ${usageNote(best)})${skipped.length ? ` — skipped: ${skipped.join('; ')}` : ''}` };
 }
 
 export function usageSummary(running: (id: string) => number): string {
@@ -195,7 +240,8 @@ export function usageSummary(running: (id: string) => number): string {
       const reset = w.resetsAt ? `@${new Date(w.resetsAt).toISOString().slice(5, 16)}Z` : '';
       return `${w.label}=${w.resetsAt && w.resetsAt <= Date.now() ? 'reset' : `${w.usedPct}%`}${reset}`;
     }).join(', ') || 'usage unknown';
-    return `${a.id} (${a.name}; ${a.agent}) ${running(a.id)}/${a.maxParallel} ${a.limited ? 'limited ' : ''}${windows} data=${a.usage?.at.slice(5, 16) || 'unknown'}`;
+    const stale = a.usage && usageStale(a) ? ` STALE (${ageText(usageAge(a)!)} old; count as unknown)` : '';
+    return `${a.id} (${a.name}; ${a.agent}) ${running(a.id)}/${a.maxParallel} ${a.limited ? `limited (${a.limited.note}) ` : ''}${windows} data=${a.usage?.at.slice(5, 16) || 'unknown'}${stale}`;
   });
   return `[Account usage]\n${lines.join('\n')}`;
 }
