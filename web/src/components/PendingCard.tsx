@@ -1,10 +1,12 @@
 // The card for a question or dialog that a task waits on (server/pending.ts). The card shows on the Waiting page and
 // (short form) in the notification stack. Canvas windows and the task panel show only PendingMarker. Each answer shows
-// what Taskboard sends. A risky option (installs software, gives wide access, asks for credit, ends the session) opens a confirm
-// step first; the server refuses it without that step.
+// what Taskboard sends. A risky option (installs software, gives wide access, asks for credit, ends the session) shows a
+// tag with its risk. It opens a confirm step first when Settings has that step on for its risk kind (confirmRisk in
+// server/machine.ts; by default off for wide access only). The server refuses the option without the step when the
+// setting is on, and refuses it from the controller always.
 import { useState, type ReactNode } from 'react';
 import type { PendingItem, PendingOption, PendingRisk } from '../api';
-import { api, fmtWait, useStore } from '../api';
+import { api, fmtWait, loadConfirmRisk, RISK_SETTING, useStore } from '../api';
 import { showInStack } from '../stack';
 import { AgentChip } from './ui';
 
@@ -26,6 +28,7 @@ const RISK_TEXT: Record<PendingRisk, string> = {
 const minutes = (iso: string) => Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
 
 export function PendingCard({ item, compact, openTask, toast }: { item: PendingItem; compact?: boolean; openTask: (id: string) => void; toast: (s: string) => void }) {
+  const { confirmRisk } = useStore();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [text, setText] = useState('');
@@ -45,11 +48,18 @@ export function PendingCard({ item, compact, openTask, toast }: { item: PendingI
     try {
       const r = await api.answerPending(item.id, { ...body, ...(group.length ? { group: group.map(g => g.id) } : {}) });
       toast(`#${item.taskNum}: ${r.answer ? `answered "${r.answer.label}"` : 'answered'}. ${r.result || ''}`.trim());
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      // the setting was turned on in another window: read it again and show the confirm step
+      const o = item.options.find(x => x.key === body.option);
+      if (o?.risk && !body.confirm && /confirm step/.test(message)) { void loadConfirmRisk(); setConfirm(o); setAck(false); }
+      else setError(message);
+    }
     finally { setBusy(false); }
   };
+  const asks = (o: PendingOption) => !!o.risk && confirmRisk[RISK_SETTING[o.risk]] !== false;
   const choose = (o: PendingOption) => {
-    if (o.risk) { setConfirm(o); setAck(false); return; }
+    if (asks(o)) { setConfirm(o); setAck(false); return; }
     void send({ option: o.key, ...(o.deny && text.trim() ? { text } : {}) });
   };
   const safe = item.options.find(o => !o.risk && !o.deny) || item.options.find(o => !o.risk);
@@ -90,7 +100,7 @@ export function PendingCard({ item, compact, openTask, toast }: { item: PendingI
     {!item.answerable && item.kind !== 'signin' && <div className="pc-note info">Taskboard does not answer this prompt. Open the terminal to answer it.</div>}
     {item.answerable && item.options.length > 0 && <div className="pc-opts">{item.options.map(o =>
       <button key={o.key} className={`btn pc-opt ${o.risk ? 'risky' : ''}`} disabled={locked} onClick={() => choose(o)}>
-        <span className="pc-ol"><span className="l">{o.risk ? '⚠ ' : ''}{o.label}</span>{o.selected && <span className="pc-def">selected on screen</span>}{o.description && <span className="d">{o.description}</span>}{o.risk && <span className="d">Needs a confirm step</span>}</span>
+        <span className="pc-ol"><span className="l">{o.risk ? '⚠ ' : ''}{o.label}</span>{o.selected && <span className="pc-def">selected on screen</span>}{o.description && <span className="d">{o.description}</span>}{o.risk && <span className="d pc-risk">{RISK_LABEL[o.risk]}{asks(o) ? ' · needs a confirm step' : ' · sent at once, no confirm step'}</span>}</span>
         <span className="pc-send">{o.send}{count > 1 ? ` · for ${count} tasks` : ''}</span>
       </button>)}</div>}
     {item.answerable && item.questions && <div className="pc-form">{item.questions.map(q => <fieldset key={q.question}>

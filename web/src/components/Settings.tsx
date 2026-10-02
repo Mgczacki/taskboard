@@ -1,8 +1,8 @@
 // Settings: what the controller and other agents may do without asking, and this machine's controller. The page has
 // one section for each entry of SECTIONS in settingsIndex.ts, a side list of those sections and a search box.
 import { useEffect, useRef, useState } from 'react';
-import type { BrowserMode, BrowserStatus, MachineInfo, MessageLevel, PushRecord, RestartImpact, RestartResult, Task } from '../api';
-import { api, autoReload, confirmEnd, setAutoReload, setConfirmEnd } from '../api';
+import type { BrowserMode, BrowserStatus, ConfirmRisk, MachineInfo, MessageLevel, PushRecord, RestartImpact, RestartResult, Task } from '../api';
+import { api, autoReload, confirmEnd, DEFAULT_CONFIRM_RISK, setAutoReload, setConfirmEnd } from '../api';
 import { setTaskThinBar, setWindowSee, taskThinBar, windowSee, windowSeeSupported } from '../controllerView';
 import { GlassControls, useGlass, useReadable } from './GlassControls';
 import { ControllerBox, MaxTasksInput, loadAccounts } from './Accounts';
@@ -15,6 +15,14 @@ import type { KeyAction } from '../keys';
 import { ACTIONS, CTX_NAME, comboOf, fmtCombo, isCustom, keysOf, resetKeys, setKeys, setRecording, useKeymap } from '../keys';
 import { filterSettings, matcher, settingText } from '../settingsIndex';
 import { SettingGroup, SettingItem, SettingSection, SettingsFilterProvider, SettingsNav, hashSection, sectionAnchor } from './SettingsLayout';
+
+// One checkbox for each risk kind of a card option (server/machine.ts confirmRisk).
+const CONFIRM_RISK_ROWS: [keyof ConfirmRisk, string][] = [
+  ['wideAccess', 'Gives wide access: the answer adds a rule, for example "always allow access to <folder>"'],
+  ['installs', 'Installs software: the answer downloads or installs a program'],
+  ['spends', 'Asks for more credit: the answer asks for more credit or a higher limit'],
+  ['exits', 'Ends the agent session: the answer stops the agent of the task'],
+];
 
 // Search text for the keyboard shortcuts: the name of every action and of its place.
 const KEY_SEARCH = { keyboardShortcuts: ACTIONS.map(a => `${CTX_NAME[a.ctx]} ${a.label}`).join('\n') };
@@ -46,7 +54,7 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
     addEventListener('hashchange', go);
     return () => { clearTimeout(timer); removeEventListener('hashchange', go); };
   }, []);
-  const save = async (p: { routingRules?: string; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; holdPermissionHook?: boolean; permitFolders?: string[]; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; checkPrivateNotes?: boolean; confirmLowerControl?: boolean; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string }) => {
+  const save = async (p: { routingRules?: string; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; holdPermissionHook?: boolean; permitFolders?: string[]; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; checkPrivateNotes?: boolean; confirmLowerControl?: boolean; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; confirmRisk?: Partial<ConfirmRisk> }) => {
     setBusy(true); try { setInfo(await api.updateInfo(p)); } catch (e) { setErr(String((e as Error).message || e)); } setBusy(false);
   };
   const ctl = tasks.find(t => t.role === 'controller');
@@ -79,6 +87,11 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
                 {p && <SettingItem id="holdPermissionHook">
                   <label className="opt"><input type="checkbox" disabled={busy} checked={p.holdPermissionHook !== false} onChange={e => void save({ holdPermissionHook: e.target.checked })} /> Answer Claude Code permission questions on the Waiting page</label>
                   <div className="sub">Claude Code's permission hook waits up to 30 minutes for your answer on the Waiting page. The question also stays in the terminal, and an answer there closes the card. When this is off, Taskboard reads these questions from the screen and answers with keys.</div>
+                </SettingItem>}
+                {info && <SettingItem id="confirmRisk">
+                  <div className="opt">Ask again before Taskboard sends a risky answer on a waiting card</div>
+                  {CONFIRM_RISK_ROWS.map(([key, text]) => <label key={key} className="opt"><input type="checkbox" disabled={busy} checked={{ ...DEFAULT_CONFIRM_RISK, ...info.settings.confirmRisk }[key]} onChange={e => void save({ confirmRisk: { [key]: e.target.checked } })} /> {text}</label>)}
+                  <div className="sub">The option always shows its risk on the card. Without this step, one click sends the answer. The controller can never choose these options.</div>
                 </SettingItem>}
                 {info && <SettingItem id="permitFolders">
                   <label className="opt" htmlFor="permit-folders">Extra folders for permit steps</label>

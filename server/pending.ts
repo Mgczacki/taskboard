@@ -222,7 +222,12 @@ export const answeredList = () => history.slice(0, 40);
 export const get = (id: string) => live.get(id)?.item || history.find(h => h.id === id);
 
 // ---------- answers ----------
-export interface AnswerInput { option?: string; text?: string; confirm?: boolean; group?: string[]; by: 'user' | 'controller'; rule?: string }
+// confirmRisk: the machine setting (machine.ts) for the user's clicks. Without it, every option with a risk needs confirm.
+export interface AnswerInput { option?: string; text?: string; confirm?: boolean; group?: string[]; by: 'user' | 'controller'; rule?: string; confirmRisk?: Partial<Record<RiskKey, boolean>> }
+type RiskKey = 'wideAccess' | 'installs' | 'spends' | 'exits';
+const RISK_KEY: Record<Risk, RiskKey> = { 'wide-access': 'wideAccess', installs: 'installs', spends: 'spends', exits: 'exits' };
+// true when a user click on an option with this risk must come with the confirm step
+export const needsConfirm = (risk: Risk, confirmRisk?: AnswerInput['confirmRisk']) => confirmRisk?.[RISK_KEY[risk]] !== false;
 export class AnswerError extends Error { constructor(message: string, public status = 409) { super(message); } }
 
 async function typeKeys(t: Task, l: Live, index: number, expect?: string): Promise<string> {
@@ -286,7 +291,9 @@ export async function answer(id: string, input: AnswerInput): Promise<PendingIte
   if (!l.item.answerable) throw new AnswerError('Taskboard cannot answer this prompt. Open the terminal.', 400);
   const opt = input.option ? l.item.options.find(o => o.key === input.option) : undefined;
   if (input.option && input.option !== 'form' && !opt) throw new AnswerError('This answer does not exist for this card.', 400);
-  if (opt?.risk && !input.confirm) throw new AnswerError('This option needs the confirm step.', 400);
+  // the controller never chooses an option with a risk, whatever the confirm setting (controllerRule refuses it first)
+  if (opt?.risk && input.by !== 'user') throw new AnswerError('Only the user chooses an option that installs software, gives wide access, asks for credit or ends the session.', 403);
+  if (opt?.risk && !input.confirm && needsConfirm(opt.risk, input.confirmRisk)) throw new AnswerError('This option needs the confirm step.', 400);
   const group = (input.group || []).filter(x => x !== id);
   const allowed = new Set((list().find(i => i.id === id)?.sameIn || []).map(s => s.id));
   if (group.some(g => !allowed.has(g))) throw new AnswerError('A task in the group no longer waits on the same prompt. Nothing was sent.');
@@ -303,7 +310,8 @@ export async function answer(id: string, input: AnswerInput): Promise<PendingIte
       const t = io.getTask(x.item.taskId);
       if (t) {
         const who = input.by === 'user' ? 'The user' : `The controller (${input.rule})`;
-        io.log(t, `${who} answered "${x.item.question.slice(0, 160)}" with "${label}" on the Waiting page${nums.length > 1 ? ` (one answer for ${nums.map(n => '#' + n).join(', ')})` : ''}. Taskboard sent ${sent}.`);
+        const risk = opt?.risk ? ` The option has the risk ${opt.risk}, sent ${input.confirm ? 'after' : 'without'} the confirm step.` : '';
+        io.log(t, `${who} answered "${x.item.question.slice(0, 160)}" with "${label}" on the Waiting page${nums.length > 1 ? ` (one answer for ${nums.map(n => '#' + n).join(', ')})` : ''}. Taskboard sent ${sent}.${risk}`);
         if (x.item.source !== 'turn-end') io.answered(t, `Answered on the Waiting page at ${clock()}.`);
       }
       close(x, 'answered', `Sent ${sent}.`);

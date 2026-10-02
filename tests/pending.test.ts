@@ -152,3 +152,51 @@ test('a held hook is released when its tool ran (the user said Yes in the termin
   assert.equal(await b, undefined);
   assert.equal(pending.list().filter(i => i.taskId === 'k').length, 0);
 });
+
+// confirmRisk (server/machine.ts): the second confirm step for an option with a risk, one setting for each risk kind
+test('confirm step: needsConfirm follows each setting; without a setting every risk needs the step', () => {
+  for (const risk of ['wide-access', 'installs', 'spends', 'exits'] as const) assert.equal(pending.needsConfirm(risk), true, risk);
+  const defaults = { wideAccess: false, installs: true, spends: true, exits: true };
+  assert.equal(pending.needsConfirm('wide-access', defaults), false);
+  for (const risk of ['installs', 'spends', 'exits'] as const) assert.equal(pending.needsConfirm(risk, defaults), true, risk);
+  assert.equal(pending.needsConfirm('installs', { ...defaults, installs: false }), false);
+  assert.equal(pending.needsConfirm('spends', { ...defaults, spends: false }), false);
+  assert.equal(pending.needsConfirm('exits', { ...defaults, exits: false }), false);
+  assert.equal(pending.needsConfirm('wide-access', { ...defaults, wideAccess: true }), true);
+});
+
+test('confirm step off for wide access: the click is sent at once and the task log names the risk', async () => {
+  const t = task('cr1', 101);
+  screens.set(t.session, permission('ls', 0));
+  pending.scan(t, screens.get(t.session)!);
+  const item = itemFor('cr1');
+  const always = item.options.find(o => o.risk === 'wide-access')!;
+  assert.match(always.label, /always allow access to \/x/);
+  await assert.rejects(pending.answer(item.id, { option: always.key, by: 'user', confirmRisk: { wideAccess: true } }), /confirm step/);
+  const done = await pending.answer(item.id, { option: always.key, by: 'user', confirmRisk: { wideAccess: false, installs: true, spends: true, exits: true } });
+  assert.equal(done.state, 'answered');
+  assert.match(logs.at(-1)!, /^#101 The user answered .* The option has the risk wide-access, sent without the confirm step\.$/);
+});
+
+test('confirm step on for installs: refused without the step, sent with it, and the log says so', async () => {
+  const t = task('cr2', 102, 'codex');
+  screens.set(t.session, codexUpdate(0));
+  pending.scan(t, screens.get(t.session)!);
+  const item = itemFor('cr2');
+  await assert.rejects(pending.answer(item.id, { option: 'o0', by: 'user', confirmRisk: { wideAccess: false, installs: true } }), /confirm step/);
+  await pending.answer(item.id, { option: 'o0', by: 'user', confirm: true, confirmRisk: { wideAccess: false, installs: true } });
+  assert.match(logs.at(-1)!, /The option has the risk installs, sent after the confirm step\.$/);
+});
+
+test('the controller cannot choose a risky option, whatever the confirm setting', async () => {
+  const t = task('cr3', 103);
+  screens.set(t.session, permission('ls', 0));
+  pending.scan(t, screens.get(t.session)!);
+  const item = itemFor('cr3');
+  const always = item.options.find(o => o.risk === 'wide-access')!;
+  assert.throws(() => pending.controllerRule(item, { option: always.key }, { ok: true }, true), /cannot choose/);
+  const off = { wideAccess: false, installs: false, spends: false, exits: false };
+  await assert.rejects(pending.answer(item.id, { option: always.key, by: 'controller', rule: 'explicit user request', confirmRisk: off }), /Only the user/);
+  await assert.rejects(pending.answer(item.id, { option: always.key, by: 'controller', rule: 'explicit user request', confirm: true, confirmRisk: off }), /Only the user/);
+  assert.equal(pending.get(item.id)!.state, 'pending');
+});
