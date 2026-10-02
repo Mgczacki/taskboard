@@ -254,12 +254,22 @@ export function restartEffect(t: Task): string {
 // A read scope changes the command line of Claude Code only. Codex can already read the folder.
 export const needsRestart = (t: Task, kind: Scope['kind']) => kind === 'worktree' || t.agent === 'claude';
 
+// What tb scope request prints after the approval when the session must restart first (index.ts applyScope). The
+// agent cannot know when the restart comes, so the text says it, and says that the controller has no part in it.
+export function restartText(s: Scope): string {
+  const access = s.kind === 'worktree' ? `You have no write access to ${s.path} until this session restarts.` : `You cannot read ${s.path} until this session restarts.`;
+  return [access, 'Taskboard restarts this session after this turn ends, and resumes the same conversation.',
+    'End your turn now and wait. Do not try to work around it: do not use another folder, and do not ask for a permit.',
+    'Do not wait for the controller, and do not send it a message for this. Taskboard restarts the session by itself.',
+    'After the restart, Taskboard puts a note in your inbox. Background shells that you started stop. Processes from tb run keep running.'].join('\n');
+}
+
 export function noticeText(t: Task, s: Scope): string {
   if (s.kind === 'read') return [`# Scope ${s.id}: read access`, '', `The user approved read access to ${s.path} for task #${t.num}.`,
     t.agent === 'claude' ? 'Claude Code may now read files in that folder. It may not write there.' : 'Read files there with your shell tools. Do not write there.'].join('\n') + '\n';
   return [`# Scope ${s.id}: worktree ${s.name}`, '', `The user approved a worktree for task #${t.num}.`, '',
     `- Repository: ${s.repo}`, `- Branch: ${s.branch}`, `- Base: ${s.base} at ${s.baseCommit}`, `- Worktree folder: ${s.path}`, '',
-    `Work in ${s.path}. Do not change the main checkout ${s.repo}.`,
+    `This session has write access to ${s.path}. Work there. Do not change the main checkout ${s.repo}.`,
     `Run the tb git commands with --worktree ${s.name}, for example: tb git commit --worktree ${s.name} "<message>".`,
     `tb git rebase --worktree ${s.name} uses ${s.base} as the base when you give no base.`].join('\n') + '\n';
 }

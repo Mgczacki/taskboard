@@ -47,6 +47,7 @@ import * as taskRepair from './task-repair.ts';
 import * as push from './push.ts';
 import * as restart from './restart.ts';
 import * as permits from './permits.ts';
+import * as scopeRestart from './scope-restart.ts';
 import * as scopes from './scopes.ts';
 import { controllerMailToken } from './a2anotes/auth.ts';
 import * as tmux from './tmux.ts';
@@ -576,9 +577,17 @@ async function applyScope(t: store.Task, s: store.Scope): Promise<string> {
     : `Added read access to ${s.path}.`;
   if (live && scopes.needsRestart(t, s.kind)) {
     const current = store.get(t.id)!;
-    store.update(t.id, { scopeNotice: [current.scopeNotice, notice].filter(Boolean).join('\n'), restartWhenDone: true, status: betweenTurns(current) ? current.status : 'working', ask: '', statusSource: `Scope ${s.name} approved. The agent restarts after this turn.` });
-    return `${what}\nTaskboard restarts this agent session after the current turn ends and resumes the same conversation, so that the agent can use the new folder. ` +
-      'End your turn now. After the restart, Taskboard puts a note in your inbox. Background shells that you started stop. Processes from tb run keep running.';
+    // While the agent waits in tb scope request, its turn runs and the status is 'needs-you' with the ask of the request.
+    // Any other status was set by the end of the turn or later, so it stays. reconcile() decides when to restart.
+    const asking = current.status === 'needs-you' && (current.ask || '').startsWith('Approve scope request');
+    const ended = asking && turnEnded(current).ended;
+    store.update(t.id, {
+      scopeNotice: [current.scopeNotice, notice].filter(Boolean).join('\n'), restartWhenDone: true, restartWhenDoneAt: new Date().toISOString(),
+      restartFor: s.kind === 'worktree' ? `to give access to the new worktree ${s.name}` : `to give read access to ${s.path}`, restartOverdue: undefined, restartFailed: undefined,
+      ...(asking ? { status: ended ? 'unread' as const : 'working' as const, ask: '' } : {}),
+      statusSource: `Scope ${s.name} approved. The agent restarts after this turn.`,
+    });
+    return `${what}\n${scopes.restartText(s)}`;
   }
   scopeNotice(t.id, notice, !!live);
   store.update(t.id, { status: live ? 'working' : t.status, ask: '', statusSource: `Scope ${s.name} approved.` });
@@ -611,7 +620,8 @@ app.get('/api/scope', (req, res) => {
   const actor = req.get('x-tb-actor') || '';
   const task = store.get(actor);
   if (!task || task.role === 'controller') return res.status(403).json({ error: 'Run tb scope list inside a task.' });
-  res.json({ scopes: task.scopes || [], pending: approvals.pendingFor(actor).filter(a => a.action === 'scope').map(a => ({ id: a.id, summary: a.summary })) });
+  res.json({ scopes: task.scopes || [], pending: approvals.pendingFor(actor).filter(a => a.action === 'scope').map(a => ({ id: a.id, summary: a.summary })),
+    restart: task.restartWhenDone ? task.restartWait || `Waiting for the end of the turn${task.restartFor ? ` ${task.restartFor}` : ''}.` : undefined });
 });
 app.post('/api/scope/:id/controller-approve', async (req, res) => {
   if (req.get('x-tb-actor') !== 'controller' || req.get('x-tb-mail-controller') !== controllerMailToken)
@@ -805,7 +815,7 @@ app.post('/api/tasks/:id/seen', (req, res) => {
 });
 app.post('/api/tasks/:id/resume', async (req, res) => {
   const t = store.get(req.params.id); if (!t) return res.status(404).end();
-  try { res.json(view(await agents.resumeTask(t, !!req.body.force))); } catch (e) { fail(res, e); }
+  try { const r = await agents.resumeTask(t, !!req.body.force); res.json(view(r.restartFailed ? store.update(t.id, { restartFailed: undefined })! : r)); } catch (e) { fail(res, e); }
 });
 // Move a session from another terminal to here. Stopping that process cuts off a turn in progress, so
 // when: 'after-turn' only records the wish; watchElsewhere() does the move once the transcript shows the turn ended.
@@ -825,10 +835,13 @@ app.post('/api/tasks/:id/restart', async (req, res) => {
   if (req.body.when === 'cancel') {
     // a restart for a new scope: the agent gets the scope note now, and the new folder at its next start
     if (t.scopeNotice) scopeNotice(t.id, `${t.scopeNotice}\nThe user cancelled the restart. The new folder reaches the agent settings at the next start of this session.\n`, true);
-    return res.json(view(store.update(t.id, { restartWhenDone: undefined, scopeNotice: undefined })!));
+    return res.json(view(store.update(t.id, { ...RESTART_CLEARED, scopeNotice: undefined })!));
   }
-  if (req.body.when === 'after-turn' && !['suspended', 'stopped'].includes(t.status) && !betweenTurns(t)) return res.json(view(store.update(t.id, { restartWhenDone: true })!));
-  try { await restartTask(t); res.json(view(store.get(t.id)!)); } catch (e) { fail(res, e); }
+  if (req.body.when === 'after-turn' && !['suspended', 'stopped'].includes(t.status) && !betweenTurns(t))
+    return res.json(view(store.update(t.id, { restartWhenDone: true, restartWhenDoneAt: new Date().toISOString() })!));
+  await restartTask(t, 'the user');
+  const after = store.get(t.id)!;
+  after.restartFailed ? fail(res, `Restart failed: ${after.restartFailed}`) : res.json(view(after));
 });
 mountReview(app);
 // Messages between people and their agents, through A2A Notes (github.com/Mgczacki/a2a-notes) and its MCP server.
@@ -1426,13 +1439,59 @@ async function keepController(t: store.Task, s?: { dead: boolean }) {
 
 // Restart an agent in tmux with the current command line; it resumes the same conversation.
 // A restart for a new scope (applyScope) then puts the scope notice in the task inbox and tells the agent.
-async function restartTask(t: store.Task) {
-  const notice = t.scopeNotice;
-  store.update(t.id, { restartWhenDone: undefined, scopeNotice: undefined });
-  await tmux.killSession(t.session);
+// Every restart goes into the task log. A failed restart keeps its reason in restartFailed, which the task page and the
+// Canvas window show until the next start succeeds.
+const RESTART_CLEARED = { restartWhenDone: undefined, restartWhenDoneAt: undefined, restartFor: undefined, restartWait: undefined, restartOverdue: undefined } as const;
+// a log that cannot be written must not change the result of the restart
+const restartLog = (id: string, entry: { did: string; wait?: string; next?: string }) => { try { store.appendLog(id, entry); } catch (e) { console.error('restart log', e); } };
+async function restartTask(t: store.Task, by = 'Taskboard') {
+  const notice = t.scopeNotice, why = t.restartFor ? ` ${t.restartFor}` : '';
+  store.update(t.id, { ...RESTART_CLEARED, scopeNotice: undefined, restartFailed: undefined });
   let started = true;
-  try { await agents.resumeTask(store.get(t.id)!, true); } catch (e) { started = false; store.update(t.id, { status: 'suspended', statusSource: `Restart failed: ${e instanceof Error ? e.message : e}` }); }
+  try {
+    await tmux.killSession(t.session);
+    await agents.resumeTask(store.get(t.id)!, true);
+    // the resume sets 'idle'; a document that still waits for review keeps the task in 'review' (events.ts finishedStatus)
+    const review = pendingFor(t.id);
+    if (review) store.update(t.id, { status: 'review', ask: `Review ${review.name}` });
+    restartLog(t.id, { did: `Restarted the session${why} (${by}). It resumed the same conversation ${t.sessionId || ''}.`.replace(' .', '.'), next: notice ? 'Read the scope note in the inbox.' : '—' });
+  } catch (e) {
+    started = false;
+    const reason = e instanceof Error ? e.message : String(e);
+    console.error(`restart of #${t.num} failed:`, reason);
+    store.update(t.id, { status: 'suspended', restartFailed: reason, statusSource: `Restart failed: ${reason}` });
+    restartLog(t.id, { did: `The restart${why} failed: ${reason}`, wait: 'The user: open the task and use Try again, or resume it.' });
+  }
   if (notice) scopeNotice(t.id, notice, started);
+}
+
+// A task with restartWhenDone: restart it when restartWaitReason() finds nothing that the restart would cut off.
+// Otherwise record why it waits (restartWait), and after RESTART_WAIT_MS offer "Restart now" (restartOverdue).
+const RESTART_WAIT_MS = Number(process.env.TASKBOARD_RESTART_WAIT_MS) || 10 * 60000;
+function turnEnded(t: store.Task) {
+  const r = t.transcript ? external.readState(t.agent, t.transcript) : null;
+  return { ended: !!r && (r.state === 'finished' || r.state === 'aborted'), text: r?.text };
+}
+async function pendingRestart(t: store.Task): Promise<boolean> {
+  // the session started again after the approval (tb resume, Resume, a move): it already has the new folder
+  if ((store.launchedAt.get(t.id) || 0) > (Date.parse(t.restartWhenDoneAt || '') || Infinity)) {
+    store.update(t.id, RESTART_CLEARED);
+    restartLog(t.id, { did: `The session started again after the approval, so it already runs${t.restartFor ? ` ${t.restartFor.replace(/^to give/, 'with')}` : ' with the new settings'}. Taskboard did not restart it again.` });
+    if (t.scopeNotice) { scopeNotice(t.id, t.scopeNotice, true); store.update(t.id, { scopeNotice: undefined }); }
+    return false;
+  }
+  const turn = turnEnded(t);
+  const screen = (await tmux.capture(t.session, 0)).split('\n').filter(l => l.trim()).slice(-15).join('\n');
+  const { reason, overdue } = scopeRestart.restartWaitReason({
+    status: t.status, ended: turn.ended, lastText: turn.text, quiet: quietFor(t), quietLong: quietFor(t, 60000), screen, blocking: agents.blockingQuestion,
+    restartFor: t.restartFor, waitedMs: Date.now() - (Date.parse(t.restartWhenDoneAt || '') || Date.now()), limitMs: RESTART_WAIT_MS,
+  });
+  if (!reason) { await restartTask(t); return true; }
+  if (reason !== t.restartWait || overdue !== !!t.restartOverdue) {
+    store.update(t.id, { restartWait: reason, restartOverdue: overdue || undefined });
+    if (overdue && !t.restartOverdue) restartLog(t.id, { did: `The restart${t.restartFor ? ` ${t.restartFor}` : ''} still waits. ${reason}`, wait: 'The user: use Restart now on the task, or wait.' });
+  }
+  return false;
 }
 
 // "Between turns" as far as the server can tell: idle or unread, and neither the status nor the transcript changed for
@@ -1441,10 +1500,12 @@ async function restartTask(t: store.Task) {
 const QUIET_MS = 15000;
 const IDLE_SUSPEND_MINUTES = idleSuspendMinutes(process.env.TASKBOARD_IDLE_SUSPEND_MINUTES);
 function betweenTurns(t: store.Task) {
-  if (!['idle', 'unread'].includes(t.status)) return false;
+  return ['idle', 'unread'].includes(t.status) && quietFor(t);
+}
+function quietFor(t: store.Task, ms = QUIET_MS) {
   let last = Date.parse(t.statusAt) || 0;
   try { if (t.transcript) last = Math.max(last, statSync(t.transcript).mtimeMs); } catch { /* moved */ }
-  return Date.now() - Math.max(last, store.launchedAt.get(t.id) || 0) >= QUIET_MS;
+  return Date.now() - Math.max(last, store.launchedAt.get(t.id) || 0) >= ms;
 }
 let lastListWarn = 0;
 // first: the run at server start, before the status is read from the transcripts (see below)
@@ -1502,7 +1563,7 @@ async function reconcile(first = false) {
     }
     // after the activity checks above, so a new Codex turn is seen first
     const cur = store.get(t.id)!;
-    if (cur.restartWhenDone && betweenTurns(cur)) { await restartTask(cur); continue; }
+    if (cur.restartWhenDone && await pendingRestart(cur)) continue;
     if (IDLE_SUSPEND_MINUTES && betweenTurns(cur)) {
       let transcriptTime = 0;
       try { if (cur.transcript) transcriptTime = statSync(cur.transcript).mtimeMs; } catch { /* transcript moved */ }

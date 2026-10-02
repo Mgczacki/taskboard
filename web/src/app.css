@@ -95,6 +95,10 @@
 .wh .b { background: none; border: 0; color: var(--dim); cursor: pointer; padding: 3px 5px; border-radius: 4px; font-size: 12px; }
 .wh .b:hover { background: var(--hover); color: var(--text); }
 .win .wb { flex: 1; min-height: 0; display: flex; }
+/* a pending or failed restart of the session, below the window header (Canvas.tsx) */
+.win-note { flex: none; display: flex; align-items: center; gap: 8px; padding: 3px 8px; font-size: 11px; color: var(--text); background: var(--panel2); border-bottom: 1px solid var(--line); border-left: 3px solid var(--st-needs); }
+.win-note.bad { border-left-color: var(--st-stopped, #c33); }
+.win-note .b { margin-left: auto; background: none; border: 1px solid var(--line2); color: var(--text); cursor: pointer; padding: 1px 6px; border-radius: 4px; font-size: 11px; white-space: nowrap; }
 .wh .grip { cursor: grab; color: var(--dim); font-size: 13px; line-height: 1; padding: 2px 1px; margin-right: -3px; }
 .wh .grip:hover { color: var(--text); }
 /* dragging a window to a new position: the dragged window is faded and a bar in the gap marks the drop slot.

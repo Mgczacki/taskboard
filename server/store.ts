@@ -45,6 +45,11 @@ export interface Task {
   openElsewhere?: { pid: number; tty: string }; // imported while still open in another terminal
   moveWhenDone?: boolean;
   restartWhenDone?: boolean; // restart the agent (same conversation) as soon as its current turn ends
+  restartWhenDoneAt?: string; // when restartWhenDone was set; after RESTART_WAIT_MS the task offers "Restart now" (index.ts)
+  restartFor?: string;      // why the restart waits, for the task page: "to give access to the new worktree <name>"
+  restartWait?: string;     // why the restart has not run yet (server/scope-restart.ts restartWaitReason)
+  restartOverdue?: boolean; // the turn did not end within RESTART_WAIT_MS: the task shows "Restart now"
+  restartFailed?: string;   // the reason of the last failed restart, shown on the task until a start succeeds
   newSessionWhenDone?: boolean; // controller: start it in a new conversation as soon as its current turn ends
   unscrollable?: boolean;    // running full screen without mouse support (Codex started before --no-alt-screen)
   launchedAs?: string; // controller: the name / Remote Control / agent it was started with (restarted when these change)

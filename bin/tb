@@ -322,7 +322,10 @@ switch (cmd) {
     else { console.error(help); process.exit(1); }
     if (result?.body_check?.flags?.length) console.error(`The message check found ${result.body_check.flags.length} item(s). The user must approve this draft.`, ...result.body_check.flags.map(f => `\n- ${f.reason}${f.text && f.code !== 'ask_changed' && f.code !== 'check_failed' ? ` Text: ${f.text}` : ''}`));
     if (result?.body_check?.state === 'checking') console.error('The message check is still running. Read the draft again with tb mail get <id> in a minute.');
-    console.log(JSON.stringify(result, null, 2)); break;
+    console.log(JSON.stringify(result, null, 2));
+    // task 171 sent a request for the controller this way and waited for an answer that no agent could give
+    if (action === 'submit' && process.env.TASK_ID && process.env.TASK_ID !== 'controller') console.error('This note is in the user\'s Inbox. No agent reads it. To reach the controller, run tb send controller "<text>".');
+    break;
   }
   case 'info': {
     const i = await call('GET', '/api/info');
@@ -658,6 +661,7 @@ Example: tb scope request worktree --repo ~/code/app --base origin/master --bran
       const lines = r.scopes.map(s => s.kind === 'worktree' ? `${s.name.padEnd(20)} worktree  ${s.branch}  ${s.path}  (repository ${s.repo}, base ${s.base})` : `${s.name.padEnd(20)} read      ${s.path}`);
       console.log(lines.join('\n') || 'This task has no attached worktree or folder.');
       if (r.pending.length) console.log(`Waiting for the user: ${r.pending.map(p => `${p.id} ${p.summary}`).join('; ')}`);
+      if (r.restart) console.log(`Restart pending: ${r.restart} Until the restart, this session has no access to the new folder. End your turn and wait.`);
     } else if (action === 'approve') {
       if (process.env.TASK_ID !== 'controller') { console.error('tb scope approve: controller only. A task cannot approve its own scope request.'); process.exit(1); }
       if (!kind || !userRequest) { console.error('tb scope approve ID --user-request "<the user\'s exact chat message>"'); process.exit(1); }

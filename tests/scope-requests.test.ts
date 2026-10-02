@@ -32,8 +32,13 @@ const alpha = repo('alpha'), beta = repo('beta'), gamma = repo('gamma');
 git(beta, 'worktree', 'add', '-q', '-b', 'task/other', `${beta}-wt`);
 const taskNote = (f: Record<string, string | number | boolean>) => writeFileSync(join(vault, 'tasks', `${f.id}.md`),
   `---\n${Object.entries({ created: '2026-01-01T00:00:00.000Z', updated: '2026-01-01T00:00:00.000Z', statusAt: '2026-01-01T00:00:00.000Z', ...f }).map(([k, v]) => `${k}: ${typeof v === 'string' ? JSON.stringify(v) : v}`).join('\n')}\n---\n# ${f.title}\n`);
-taskNote({ id: 'plain-task', num: 1, title: 'Research without a worktree', agent: 'claude', status: 'working', cwd: workspace, folder: workspace, session: 'task-1', sessionId: '11111111-2222-3333-4444-555555555555' });
-taskNote({ id: 'other-task', num: 2, title: 'Other task', agent: 'codex', status: 'idle', cwd: `${beta}-wt`, folder: beta, branch: 'task/other', worktree: true, session: 'task-2' });
+// accounts in the test folder, not marked as default: Taskboard writes the folder trust of a default account into the
+// real ~/.claude.json and ~/.codex/config.toml (workspace-trust.ts)
+const testAccounts = ['claude', 'codex'].map(agent => ({ id: `${agent}-test`, agent, name: agent, dir: join(root, 'accounts', agent), isDefault: false, maxParallel: 8, created: new Date().toISOString() }));
+for (const a of testAccounts) mkdirSync(a.dir, { recursive: true });
+writeFileSync(join(tbdir, 'accounts.json'), JSON.stringify(testAccounts));
+taskNote({ id: 'plain-task', num: 1, title: 'Research without a worktree', agent: 'claude', account: 'claude-test', status: 'working', cwd: workspace, folder: workspace, session: 'task-1', sessionId: '11111111-2222-3333-4444-555555555555' });
+taskNote({ id: 'other-task', num: 2, title: 'Other task', agent: 'codex', account: 'codex-test', status: 'idle', cwd: `${beta}-wt`, folder: beta, branch: 'task/other', worktree: true, session: 'task-2' });
 const transcript = join(root, 'controller.jsonl');
 writeFileSync(transcript, JSON.stringify({ type: 'user', message: { content: 'What does task 1 wait for?' } }) + '\n');
 taskNote({ id: 'controller', num: 0, title: 'Controller', agent: 'claude', role: 'controller', status: 'idle', cwd: workspace, folder: workspace, session: 'controller', transcript });
@@ -101,7 +106,7 @@ test('a task without a worktree asks for scopes, and only the user approves them
     assert.equal(approved.data.state, 'approved', JSON.stringify(approved.data) + output);
     await cliDone;
     assert.match(cliOut, /Attached the worktree alpha/);
-    assert.match(cliOut, /restarts this agent session after the current turn/);
+    assert.match(cliOut, /restarts this session after this turn ends/);
     assert.equal(git(path1, 'branch', '--show-current'), 'task/alpha-change');
     assert.equal(git(alpha, 'rev-parse', 'HEAD'), alphaHead);
     assert.equal(git(alpha, 'branch', '--show-current'), 'master');
