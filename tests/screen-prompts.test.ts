@@ -80,6 +80,22 @@ test('Claude Code trust dialog: no digits, "No, exit" is selected and risky', ()
   assert.equal(p.question, 'Is this a project you created or one you trust?');
 });
 
+// Claude Code 2.1.288 at start, when Claude in Chrome is not turned off and the extension is installed (task 204's terminal)
+test('Claude Code "Claude in Chrome extension detected": a dialog with arrow keys, "No" selected, "Yes" gives wide access', () => {
+  const screen = [W, ' Claude in Chrome extension detected', '',
+    ' Claude will use your Chrome browser by default — navigating sites, filling forms, and', ' capturing screenshots in your existing session.', '',
+    ' This session is in Auto mode, so an AI classifier approves routine browser actions —', ' you are only prompted when it is unsure. Turn browser tools off for future sessions', ' with /chrome.', '',
+    ' ❯ No, keep browser tools off', '   Yes, use my browser', '', ' Enter to confirm · Esc to keep browser tools off'].join('\n');
+  const p = parsePrompt('claude', screen)!;
+  assert.equal(p.name, 'claude-chrome');
+  assert.equal(p.kind, 'dialog');
+  assert.equal(p.answerable, true);
+  assert.deepEqual(p.options.map(o => [o.label, o.key, o.risk]), [['No, keep browser tools off', undefined, undefined], ['Yes, use my browser', undefined, 'wide-access']]);
+  assert.equal(p.selected, 0);
+  assert.match(p.question, /Claude in Chrome extension detected/);
+  assert.match(p.excerpt, /Yes, use my browser/);
+});
+
 test('Claude Code AskUserQuestion on the screen is shown, not answered by keys', () => {
   const screen = [W, ' ☐ Button Color', 'Which color should the button be?', '❯ 1. Red', '     A red button', '  2. Blue', '     A blue button', '  3. Type something.', W, '  4. Chat about this', 'Enter to select · ↑/↓ to navigate · Esc to cancel'].join('\n');
   const p = parsePrompt('claude', screen)!;
