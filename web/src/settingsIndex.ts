@@ -14,6 +14,7 @@ export const SECTIONS: SectionDef[] = [
     ] },
     { id: 'permits', title: 'Permit requests', settings: [
       { id: 'controllerApprovesPermits', label: 'The controller may approve low risk suggestions', words: 'permit approval risk' },
+      { id: 'holdPermissionHook', label: 'Answer Claude Code permission questions on the Waiting page', words: 'waiting inbox question hook permission dialog' },
       { id: 'permitFolders', label: 'Extra folders for permit steps', words: 'permit path working folder shell' },
     ] },
   ] },

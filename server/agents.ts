@@ -75,6 +75,8 @@ const HOOK_EVENTS = ['SessionStart', 'UserPromptSubmit', 'Notification', 'Permis
 export function writeClaudeSettings() {
   const cmd = { type: 'command', command: `node ${tmux.quote(HOOK_SCRIPT)}`, timeout: 10 };
   const hooks: Record<string, unknown[]> = Object.fromEntries(HOOK_EVENTS.map(e => [e, [{ hooks: [cmd] }]]));
+  // the permission hook waits for an answer on the Waiting page (server/pending.ts); 1800 s was accepted by Claude Code 2.1.287
+  hooks.PermissionRequest = [{ hooks: [{ ...cmd, timeout: 1800 }] }];
   // blocks shell commands that would stop the real Taskboard server or its agents (see server/hooks/guard.mjs)
   hooks.PreToolUse = [{ matcher: 'Bash', hooks: [{ type: 'command', command: `node ${tmux.quote(GUARD_SCRIPT)}`, timeout: 5 }] }];
   // The log and documents live in the vault, outside the project folder; allow writing there without a prompt each turn.

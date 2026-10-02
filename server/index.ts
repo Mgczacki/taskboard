@@ -48,6 +48,7 @@ import * as push from './push.ts';
 import * as restart from './restart.ts';
 import * as permits from './permits.ts';
 import * as scopeRestart from './scope-restart.ts';
+import * as pending from './pending.ts';
 import * as scopes from './scopes.ts';
 import { controllerMailToken } from './a2anotes/auth.ts';
 import * as tmux from './tmux.ts';
@@ -134,9 +135,23 @@ const originOk = (o?: string) => !o || ALLOWED_ORIGINS.has(o);
 const tokenOk = (req: express.Request) => req.get('x-taskboard-token') === TOKEN;
 
 // ---------- hooks (from agents) ----------
-app.post('/api/hooks/claude', (req, res) => {
+// The PermissionRequest hook (server/hooks/claude-hook.mjs sends hold: true) waits here until the user answers the card
+// on the Waiting page (pending.ts). The dialog stays in the terminal meanwhile; an answer there makes Claude Code stop
+// the hook, which closes this request and the card. With no answer, the hook gets no decision and the dialog stays.
+const HOOK_HOLD_MS = 29.5 * 60_000;
+app.post('/api/hooks/claude', async (req, res) => {
   if (!tokenOk(req)) return res.status(401).end();
-  res.json(events.claudeEvent(req.body.taskId, req.body.input || {}));
+  const input = req.body.input || {};
+  const result = events.claudeEvent(req.body.taskId, input);
+  const t = store.get(String(req.body.taskId || ''));
+  if (input.hook_event_name === 'PermissionRequest' && req.body.hold === true && t && t.role !== 'controller' && t.status === 'needs-you' && machine.get().permissions.holdPermissionHook !== false) {
+    let ended = () => {};
+    res.on('close', () => { if (!res.writableFinished) ended(); });
+    const output = await pending.holdClaude(t, input, fn => { ended = fn; }, HOOK_HOLD_MS);
+    if (!res.writableEnded && !res.destroyed) res.json(output ? { output } : {});
+    return;
+  }
+  res.json(result);
 });
 // Usage windows from the Claude Code status line of a Taskboard session; stored on that task's account.
 app.post('/api/hooks/usage', (req, res) => {
@@ -215,6 +230,36 @@ async function guarded(req: express.Request, res: express.Response, summary: str
   res.status(202).json({ approval: a });
 }
 app.get('/api/approvals', (_req, res) => res.json(approvals.all()));
+// ---------- the Waiting page: questions and dialogs that agents wait on (pending.ts) ----------
+app.get('/api/pending', (req, res) => {
+  const actor = req.get('x-tb-actor');
+  if (actor && actor !== 'controller') return res.status(403).json({ error: 'Only the user and the controller read the Waiting list.' });
+  res.json({ items: pending.list(), answered: pending.answeredList() });
+});
+app.post('/api/pending/:id/answer', async (req, res) => {
+  const actor = req.get('x-tb-actor') || '';
+  const input = { option: typeof req.body.option === 'string' ? req.body.option : undefined, text: typeof req.body.text === 'string' ? req.body.text : undefined,
+    confirm: req.body.confirm === true, group: Array.isArray(req.body.group) ? req.body.group.map(String).slice(0, 20) : undefined };
+  try {
+    // a click on the dashboard (the browser sends its origin and no actor)
+    if (req.get('origin') && !actor) return res.json(await pending.answer(req.params.id, { ...input, by: 'user' }));
+    if (actor !== 'controller' || req.get('x-tb-mail-controller') !== controllerMailToken)
+      return res.status(403).json({ error: 'Only the user, on the dashboard, and the controller can answer a card.' });
+    const item = pending.get(req.params.id);
+    if (!item) return res.status(404).json({ error: 'This card does not exist.' });
+    const words = String(req.body.userRequest || '').trim();
+    if (words.length > 2000) return res.status(400).json({ error: 'Keep the user request under 2000 characters.' });
+    const controller = store.get('controller');
+    const transcript = controller?.transcript || (controller?.sessionId ? importer.transcriptFor(controller.agent, controller.sessionId, (accounts.get(controller.account) || accounts.defaultFor(controller.agent)).dir) : undefined);
+    const ok = !!words && words.includes(item.id) && permits.userWrote(transcript, controller?.agent || '', words);
+    const rule = pending.controllerRule(item, input, { ok }, machine.get().permissions.controllerCanApprovePermits);
+    res.json(await pending.answer(item.id, { ...input, confirm: false, by: 'controller', rule }));
+  } catch (e) { res.status(e instanceof pending.AnswerError ? e.status : 400).json({ error: e instanceof Error ? e.message : String(e) }); }
+});
+app.post('/api/pending/:id/hide', (req, res) => {
+  if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Use the dashboard.' });
+  try { pending.hide(req.params.id); res.json({}); } catch (e) { res.status(e instanceof pending.AnswerError ? e.status : 400).json({ error: e instanceof Error ? e.message : String(e) }); }
+});
 app.get('/api/stats', (req, res) => {
   try { res.json(stats.get(String(req.query.timeZone || 'UTC'))); } catch { res.status(400).json({ error: 'Invalid time zone.' }); }
 });
@@ -695,7 +740,7 @@ app.get('/api/info', (_req, res) => res.json(info()));
 app.patch('/api/info', async (req, res) => {
   if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Machine settings are changed on the dashboard.' });
   try {
-    const { name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, confirmLowerControl, defaultMaxParallel, newTaskDefaultAgent, applyMaxParallelToAll, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp } = req.body;
+    const { name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, holdPermissionHook, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, confirmLowerControl, defaultMaxParallel, newTaskDefaultAgent, applyMaxParallelToAll, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp } = req.body;
     // Letting the controller approve permits gives the user less control. The page asks first and then sends confirmLowerControl.
     if (confirmLowerControl !== true && controllerCanApprovePermits === true && !machine.get().permissions.controllerCanApprovePermits)
       return res.status(400).json({ error: 'Confirm on the Settings page before you give the controller more control.' });
@@ -706,7 +751,7 @@ app.patch('/api/info', async (req, res) => {
       return res.status(400).json({ error: 'Pick a valid model for questions.' });
     if (reviewAccount && accounts.get(reviewAccount)?.agent !== 'claude') return res.status(400).json({ error: 'Pick a Claude Code account for auto review.' });
     if (defaultMaxParallel !== undefined) machine.checkMaxParallel(defaultMaxParallel); // refuse before anything is saved
-    machine.update({ name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, defaultMaxParallel, newTaskDefaultAgent, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp });
+    machine.update({ name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, holdPermissionHook, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, defaultMaxParallel, newTaskDefaultAgent, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp });
     // the Settings page confirms first; running tasks keep running, only new starts check the new maximum
     if (applyMaxParallelToAll === true) accounts.setAllMaxParallel(machine.get().accounts.defaultMaxParallel);
     if (trustWorkspaces === false) trust.restore();
@@ -737,6 +782,19 @@ app.post('/api/machines', async (req, res) => {
 app.delete('/api/machines/:id', (req, res) => { machines.remove(req.params.id); res.json({}); });
 
 const view = (t: store.Task) => ({ ...t, link: links.info(t), docs: docs.counts(t.id), queue: messageQueue.forView(t.id), waitMin: Math.round((Date.now() - Date.parse(t.statusAt)) / 60000), attach: `tmux -L taskboard attach -t ${t.session}`, ...(t.agent === 'antigravity' ? { tokenEstimate: stats.taskEstimate(t) } : {}) });
+pending.setIo({
+  capture: session => tmux.capture(session, 0),
+  key: async (session, key, literal) => { await tmux.tmux('send-keys', '-t', '=' + session + ':', ...(literal ? ['-l', key] : [key])); },
+  cancelCopyMode: async session => {
+    const target = '=' + session + ':';
+    if ((await tmux.tmux('display-message', '-p', '-t', target, '#{pane_mode}')).trim() === 'copy-mode') await tmux.tmux('send-keys', '-X', '-t', target, 'cancel');
+  },
+  sendText: (t, text) => agents.sendTaskText(t, text),
+  getTask: id => store.get(id),
+  log: (t, did) => store.appendLog(t.id, { did, next: 'The agent continues.' }),
+  answered: (t, note) => { if (store.get(t.id)?.status === 'needs-you') store.update(t.id, { status: 'working', ask: '', statusSource: note }); },
+  wait: ms => new Promise(r => setTimeout(r, ms)),
+});
 const fail = (res: express.Response, e: unknown) => res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
 
 app.get('/api/tasks', (_req, res) => res.json([...store.all().map(view), ...machines.remoteTasks()]));
@@ -1264,6 +1322,7 @@ server.on('upgrade', (req, socket, head) => {
       sendEvent(ws, JSON.stringify({ type: 'groups', groups: groups.all() }));
       sendEvent(ws, JSON.stringify({ type: 'canvasOrder', orders: canvasOrder.all() }));
       sendEvent(ws, JSON.stringify({ type: 'approvals', approvals: approvals.all() }));
+      sendEvent(ws, JSON.stringify({ type: 'pending', items: pending.list(), answered: pending.answeredList() }));
       sendEvent(ws, JSON.stringify({ type: 'runtime', counts: runtime.runtimeCounts() }));
       const opened = new Set<string>();
       ws.on('message', m => {
@@ -1313,6 +1372,10 @@ approvals.onApprovalsChange(() => {
       store.update(t.id, { status: 'unread', ask: '', statusSource: 'The user denied the refused command.' });
   }
   const msg = JSON.stringify({ type: 'approvals', approvals: approvals.all() });
+  for (const c of eventClients) sendEvent(c, msg);
+});
+pending.onPendingChange(() => {
+  const msg = JSON.stringify({ type: 'pending', items: pending.list(), answered: pending.answeredList() });
   for (const c of eventClients) sendEvent(c, msg);
 });
 accounts.onAccountsChange(() => { for (const c of eventClients) sendEvent(c, JSON.stringify({ type: 'accounts' })); });
@@ -1516,6 +1579,8 @@ async function reconcile(first = false) {
   for (const t of store.all()) {
     if (t.role === 'controller') { await keepController(t, byName.get(t.session)); continue; }
     if (t.openElsewhere && !['archived', 'parked'].includes(t.status)) { watchElsewhere(t); continue; }
+    // a task that no longer runs, or that was set aside, has no open question cards
+    if (pending.hasOpen(t.id) && !['needs-you', 'working', 'idle', 'unread', 'review'].includes(t.status)) pending.forgetTask(t.id);
     if (['archived', 'parked'].includes(t.status) || agents.launching.has(t.id)) continue;
     const s = byName.get(t.session);
     // marked suspended but its session is running (for example after a listing problem): take it back
@@ -1563,6 +1628,8 @@ async function reconcile(first = false) {
     }
     // after the activity checks above, so a new Codex turn is seen first
     const cur = store.get(t.id)!;
+    // the Waiting page: read the question or dialog of a task that waits on the user, and close cards that are answered
+    if (cur.status === 'needs-you' || pending.hasOpen(cur.id)) pending.scan(cur, await tmux.capture(cur.session, 0));
     if (cur.restartWhenDone && await pendingRestart(cur)) continue;
     if (IDLE_SUSPEND_MINUTES && betweenTurns(cur)) {
       let transcriptTime = 0;

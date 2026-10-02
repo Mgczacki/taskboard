@@ -44,7 +44,7 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
     addEventListener('hashchange', go);
     return () => { clearTimeout(timer); removeEventListener('hashchange', go); };
   }, []);
-  const save = async (p: { routingRules?: string; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; permitFolders?: string[]; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; checkPrivateNotes?: boolean; confirmLowerControl?: boolean; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string }) => {
+  const save = async (p: { routingRules?: string; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; holdPermissionHook?: boolean; permitFolders?: string[]; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; checkPrivateNotes?: boolean; confirmLowerControl?: boolean; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string }) => {
     setBusy(true); try { setInfo(await api.updateInfo(p)); } catch (e) { setErr(String((e as Error).message || e)); } setBusy(false);
   };
   const ctl = tasks.find(t => t.role === 'controller');
@@ -73,6 +73,10 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
                   <label className="opt"><input type="checkbox" disabled={busy} checked={p.controllerCanApprovePermits} onChange={e => e.target.checked ? setConfirmPermits(true) : void save({ controllerCanApprovePermits: false })} /> The controller may approve low risk suggestions</label>
                   <div className="sub">Taskboard checks every step. The controller cannot approve network use, deletion, Git history changes, or commands with unknown effects.</div>
                   {confirmPermits && <div className="banner" role="alert"><p>The controller can approve low risk commands on its own judgment. High risk commands need your explicit words in its chat.</p><div className="ap-a"><button className="btn primary" disabled={busy} onClick={() => { void save({ controllerCanApprovePermits: true, confirmLowerControl: true }); setConfirmPermits(false); }}>Allow controller approval</button><button className="btn" onClick={() => setConfirmPermits(false)}>Cancel</button></div></div>}
+                </SettingItem>}
+                {p && <SettingItem id="holdPermissionHook">
+                  <label className="opt"><input type="checkbox" disabled={busy} checked={p.holdPermissionHook !== false} onChange={e => void save({ holdPermissionHook: e.target.checked })} /> Answer Claude Code permission questions on the Waiting page</label>
+                  <div className="sub">Claude Code's permission hook waits up to 30 minutes for your answer on the Waiting page. The question also stays in the terminal, and an answer there closes the card. When this is off, Taskboard reads these questions from the screen and answers with keys.</div>
                 </SettingItem>}
                 {info && <SettingItem id="permitFolders">
                   <label className="opt" htmlFor="permit-folders">Extra folders for permit steps</label>
