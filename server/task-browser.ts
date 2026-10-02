@@ -800,6 +800,9 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
   // acks: the view reports drawn frames. undrawn: frames sent to the view that it did not report yet. waiting: the
   // newest frame that the view had no room for. held: the acks that Chrome waits for.
   let acks = false, undrawn = 0, waiting: Buffer | null = null, held: (() => void)[] = [], heldTimer: NodeJS.Timeout | undefined;
+  // visible: the view is on the screen ('visible' from the view). A hidden view gets no screencast, so Chrome captures
+  // and encodes no frames for it. The view stays a viewer (viewers), so the idle stop does not stop the browser.
+  let visible = true;
   const sendFrame = (jpeg: Buffer) => { lastFrame = jpeg.length; undrawn++; client.send(jpeg); };
   // the view has room: send the waiting frame, then let Chrome capture again
   const drain = () => {
@@ -884,9 +887,11 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     await conn.chain;
     send({ type: 'active', id: target });
   }
-  // Start the screencast of this page at this quality, or stop it (null). A screencast that runs stops first.
+  // Start the screencast of this page at this quality, or stop it (null, and always while the view is hidden). A
+  // screencast that runs stops first.
   function cast(conn: PageConn, quality: number | null) {
     if (quality !== null) conn.quality = quality;
+    if (!visible) { quality = null; clearTimeout(conn.stillTimer); }
     conn.chain = conn.chain.then(async () => {
       if (page !== conn) return;
       if (conn.casting) await call('Page.stopScreencast');
@@ -924,6 +929,8 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     try {
       // a failed start shows in the state that poll() sends (status().error), not as a second message
       if (m.type === 'hello') acks = !!m.acks;
+      // a view that shows again gets a frame at once: Chrome sends one at each start of a screencast
+      else if (m.type === 'visible') { const on = !!m.on; if (on !== visible) { visible = on; if (page) cast(page, on ? QUALITY_STILL : null); } }
       else if (m.type === 'drawn') { undrawn = Math.max(0, undrawn - 1); drain(); }
       else if (m.type === 'start') { void ensure(id).then(() => poll(), () => poll()); await poll(); }
       else if (m.type === 'stop') { await stop(id); await poll(); }

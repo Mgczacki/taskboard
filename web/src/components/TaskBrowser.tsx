@@ -268,12 +268,25 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
         else if (m.type === 'state') { setRunning(m.running); setState(m); setMuted(m.muted ?? null); if (!m.running) { setTabs([]); setActive(''); setFramed(false); clearFrames(); } }
         else if (m.type === 'error') setErr(m.message);
       };
-      s.onopen = () => { send({ type: 'hello', acks: true }); sendSize(); };
+      s.onopen = () => { send({ type: 'hello', acks: true }); send({ type: 'visible', on: shown.current }); sendSize(); };
       s.onclose = () => { if (!closed) retry = setTimeout(connect, 2000); };
     };
     connect();
     return () => { closed = true; clearTimeout(retry); clearTimeout(flashTimer.current); clearTimeout(peekTimer.current); ws.current?.close(); };
   }, [id]);
+
+  // The server streams frames only while the view is on the screen: the page is visible (not a background tab, not a
+  // minimized window) and the view intersects the viewport (not display: none, not scrolled out of a Canvas).
+  const shown = useRef(true);
+  useEffect(() => {
+    const el = screen.current; if (!el) return;
+    let inView = true;
+    const report = () => { const on = inView && document.visibilityState === 'visible'; if (on !== shown.current) { shown.current = on; send({ type: 'visible', on }); } };
+    const io = new IntersectionObserver(es => { inView = es[es.length - 1].isIntersecting; report(); });
+    io.observe(el);
+    document.addEventListener('visibilitychange', report);
+    return () => { io.disconnect(); document.removeEventListener('visibilitychange', report); };
+  }, [running]);
 
   // the page's viewport is the size of this view, so a frame fills it without bars
   const sendSize = () => { const r = screen.current?.getBoundingClientRect(); if (r && r.width > 100 && r.height > 100) send({ type: 'size', w: r.width, h: r.height }); };
