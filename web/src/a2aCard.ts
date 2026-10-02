@@ -31,3 +31,13 @@ export function loadOrder() {
 export function messageCardsKey(approvals: { id: string; action: string; state: string }[]) {
   return approvals.filter(a => a.action === 'mail-out' || a.action === 'mail-in').map(a => `${a.id}:${a.state}`).join(',');
 }
+
+// The version line of the A2A Notes service on the Settings card and the Inbox lists. The service version comes from
+// its /healthz answer, the installed version from the a2a-notes package of this Taskboard (server/a2anotes/setup.ts).
+export interface VersionInput { installed: boolean; version?: string; running: boolean; serviceVersion?: string; updateAvailable: boolean; restartStep?: string }
+export function versionLines(s: VersionInput): { line: string; warning?: string; step?: string } {
+  const installed = s.installed && s.version ? `installed ${s.version}` : 'not installed';
+  const line = s.running ? `A2A Notes service: running ${s.serviceVersion || 'an unknown version'}, ${installed}.` : `A2A Notes service: not running, ${installed}.`;
+  if (!s.updateAvailable) return { line };
+  return { line, warning: `Running ${s.serviceVersion}, installed ${s.version}. Restart the A2A Notes service to use the new format.`, step: s.restartStep };
+}

@@ -325,6 +325,7 @@ switch (cmd) {
     else if (action === 'propose-route') result = await call('POST', `/api/a2anotes/messages/${id}/propose-route`, { task: b === 'none' ? null : (await task(b)).id });
     else { console.error(help); process.exit(1); }
     if (result?.body_check?.flags?.length) console.error(`The message check found ${result.body_check.flags.length} item(s). The user must approve this draft.`, ...result.body_check.flags.map(f => `\n- ${f.reason}${f.text && f.code !== 'ask_changed' && f.code !== 'check_failed' ? ` Text: ${f.text}` : ''}`));
+    if (result?.body_check?.warnings?.length) console.error(`The format check found ${result.body_check.warnings.length} item(s) that will not show well in Slack. Revise the body to fix them.`, ...result.body_check.warnings.map(w => `\n- ${w.reason}${w.text ? ` Text: ${w.text}` : ''}`));
     if (result?.body_check?.state === 'checking') console.error('The message check is still running. Read the draft again with tb mail get <id> in a minute.');
     if ((action === 'draft' || action === 'revise') && result?.state === 'draft' && process.env.TASK_ID !== 'controller')
       console.error('The draft is not sent. It waits on the user as a Message card on the Waiting page of the dashboard. A file in your inbox tells you when the user decides.');

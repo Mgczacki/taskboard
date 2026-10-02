@@ -43,6 +43,13 @@ export function packageVersion() {
   const dir = packageDir();
   return dir ? String(JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')).version) : undefined;
 }
+// The writing rules for message bodies that the a2a-notes package ships (0.4.0 and later). The controller instructions
+// point to it through TB_DIR/app, which stays the same across releases; a test server without TB_DIR/app uses its own package.
+export function writingGuide() {
+  const stable = join(TB_DIR, 'app', 'node_modules', 'a2a-notes', 'docs', 'WRITING-MESSAGES.md');
+  const dir = existsSync(join(TB_DIR, 'app')) ? undefined : packageDir();
+  return dir ? join(dir, 'docs', 'WRITING-MESSAGES.md') : stable;
+}
 // The release folder changes with each Taskboard release, and old releases are removed. TB_DIR/app always points
 // to the running release, so the LaunchAgent uses the command through that path.
 function command() {
@@ -94,10 +101,25 @@ export interface SetupState {
   linked: boolean; launchAgent: boolean; folder: string; port: number;
   // the running service is older than the package that Taskboard installed
   updateAvailable: boolean;
+  // how to restart the service on this install, for the warning on the dashboard
+  restartStep: string;
   // model: the config has the Claude check commands; rules: the fixed rules only
   checks: 'model' | 'rules';
   // the config has other check commands than this Taskboard would write (for example a new controller account)
   checksOutdated: boolean;
+}
+// true when version a is older than version b (both in the form 1.2.3; a part that is not a number counts as 0)
+export function olderVersion(a: string, b: string) {
+  const pa = a.split('.').map(n => parseInt(n, 10) || 0), pb = b.split('.').map(n => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) < (pb[i] || 0);
+  return false;
+}
+// The "Restart A2A Notes" button runs setup, which runs `a2a-notes stop`. The LaunchAgent (KeepAlive) then starts the
+// service again with the package under TB_DIR/app. A test server starts it again as a background process.
+function restartStep(launchAgent: boolean) {
+  return launchAgent && useLaunchAgent()
+    ? `Click Restart A2A Notes. Taskboard stops the service, and the LaunchAgent com.a2anotes.service starts it again with the installed package. In a terminal, the same step is: launchctl kickstart -k gui/${process.getuid?.() ?? '$(id -u)'}/com.a2anotes.service`
+    : 'Click Restart A2A Notes. Taskboard stops the service and starts it again as a background process with the installed package.';
 }
 export async function setupState(settings: Settings): Promise<SetupState> {
   const version = packageVersion(), h = await health();
@@ -105,7 +127,8 @@ export async function setupState(settings: Settings): Promise<SetupState> {
     installed: !!version, version, configured: existsSync(join(SERVICE_DIR, 'config.json')), running: !!h, serviceVersion: h?.version,
     linked: settings.enabled && (['person', 'reviewer', 'agent'] as Role[]).every(r => !!settings.tokens[r]),
     launchAgent: existsSync(AGENT_FILE), folder: SERVICE_DIR, port: servicePort(),
-    updateAvailable: !!(h && version && h.version && h.version !== version),
+    updateAvailable: !!(h && version && h.version && olderVersion(h.version, version)),
+    restartStep: restartStep(existsSync(AGENT_FILE)),
     checks: checksInConfig().reviewCommand ? 'model' : 'rules',
     checksOutdated: existsSync(configFile()) && !sameChecks(checksInConfig(), checkCommands()),
   };

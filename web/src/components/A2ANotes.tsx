@@ -3,7 +3,7 @@
 // Setup and Slack sign-in are on the Settings page (web/src/components/Integrations.tsx).
 import { useEffect, useRef, useState } from 'react';
 import { useStore, type Task } from '../api';
-import { cardControls, loadOrder, messageCardsKey } from '../a2aCard';
+import { cardControls, loadOrder, messageCardsKey, versionLines } from '../a2aCard';
 import { Face } from './GraphMail';
 import { FlaggedBody, date, proposer, request } from './messages';
 import '../graph.css';
@@ -20,7 +20,7 @@ interface Summary {
 }
 interface Detail extends Summary { body: string; review: { reason: string } | null; body_check: { state?: string; flags: { reason: string; text: string; code: string; start: number; end: number }[] } | null;
   agent_file: { name: string; sha256: string } | null; files: { name: string; size: number }[]; failure?: { code: string; reason: string }; error: string | null; rejected: { comment?: string } | null }
-export interface Setup { installed: boolean; version?: string; configured: boolean; running: boolean; serviceVersion?: string; linked: boolean; updateAvailable: boolean; folder: string; port: number; checks: 'model' | 'rules'; checksOutdated: boolean }
+export interface Setup { installed: boolean; version?: string; configured: boolean; running: boolean; serviceVersion?: string; linked: boolean; updateAvailable: boolean; restartStep: string; folder: string; port: number; checks: 'model' | 'rules'; checksOutdated: boolean }
 export interface Status { enabled: boolean; url?: string; error?: string; setup?: Setup; identity?: { address?: string; name?: string }; connection?: { signed_in: boolean; last_scan_at: string | null; last_error: string | null; stale: boolean; missing_scopes: string[] } }
 export { request };
 
@@ -31,6 +31,16 @@ function useStatus() {
   const [status, setStatus] = useState<Status | null>(null);
   useEffect(() => { const load = () => request('/status').then(setStatus).catch(() => {}); void load(); const timer = setInterval(load, 15_000); return () => clearInterval(timer); }, []);
   return status;
+}
+// The running and installed versions, and a warning with the restart step when the running service is older.
+export function ServiceVersion({ setup }: { setup?: Setup }) {
+  if (!setup) return null;
+  const v = versionLines(setup);
+  return <>
+    <div className="sub">{v.line}</div>
+    {v.warning && <div role="alert">{v.warning}</div>}
+    {v.step && <div className="sub">{v.step}</div>}
+  </>;
 }
 const connected = (s: Status | null) => !!(s?.enabled && !s.error && s.connection?.signed_in);
 function NotConnected({ status }: { status: Status }) {
@@ -80,6 +90,8 @@ export function MessageList({ tasks, direction, focus }: { tasks: Task[]; direct
     <section className="mail-settings">
       <p>Connected as {status.identity?.name}. Last scan: {c.last_scan_at ? new Date(c.last_scan_at).toLocaleString() : 'never'}{c.stale ? '. The inbox may be out of date.' : '.'} Connection settings are on the <a href="#settings">Settings page</a>.</p>
       {c.last_error && <p role="alert">Last scan error: {c.last_error}</p>}
+      <ServiceVersion setup={status.setup} />
+      {status.setup?.updateAvailable && <p className="sub">The Restart A2A Notes button is on the <a href="#settings">Settings page</a>, under Integrations.</p>}
       <div className="mail-tabs">
         <button className="btn" disabled={busy} onClick={() => act(() => request('/sync', {}))}>{busy ? 'Working…' : 'Check Slack now'}</button>
         <button className="btn" disabled={busy} onClick={() => act(async () => { const link = await request('/page-link', {}); window.open(link.url, '_blank', 'noopener'); })}>Open the A2A Notes review page</button>

@@ -6,15 +6,19 @@ function text(value: unknown, limit: number, label: string): string {
   if (typeof value !== 'string' || !value.trim() || Buffer.byteLength(value, 'utf8') > limit || /[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]/.test(value)) throw new Error(`Give the ${label} as text.`);
   return value.trim();
 }
+// Each section starts with a title line that ends with a colon, and the links are a list with one link on each line:
+// A2A Notes shows a title line as a bold title and a "- " line as a list item (docs/WRITING-MESSAGES.md in the
+// a2a-notes package).
 export function draftBody(input: DraftSections & { body?: unknown }): string {
   if (input.body !== undefined && input.body !== null && input.body !== '') return text(input.body, 20_000, 'message body');
   const context = text(input.context, 4000, 'reason for the message');
   const ask = text(input.ask, 4000, 'request');
-  const part = (heading: string, value: unknown) => typeof value === 'string' && value.trim() ? `${heading}\n${value.trim()}` : '';
-  const links = typeof input.links === 'string' ? input.links.split(/\n|,/).map(s => s.trim()).filter(Boolean) : input.links;
-  if (links !== undefined && (!Array.isArray(links) || links.some(link => typeof link !== 'string' || !/^https:\/\//.test(link)))) throw new Error('Links must use HTTPS.');
+  const part = (title: string, value: unknown) => typeof value === 'string' && value.trim() ? `${title}:\n${value.trim()}` : '';
+  // links are separated by a newline, a comma, or a space
+  const links = typeof input.links === 'string' ? input.links.split(/[\s,]+/).map(s => s.trim()).filter(Boolean) : input.links;
+  if (links !== undefined && (!Array.isArray(links) || links.some(link => typeof link !== 'string' || !/^https:\/\/\S+$/.test(link)))) throw new Error('Links must use HTTPS.');
   return text([part('Why you are getting this', context), part('What we found', input.found), part('What we need from you', ask), part('By when', input.by),
-    links?.length ? `Links\n${links.map((link: string) => `- ${link}`).join('\n')}` : ''].filter(Boolean).join('\n\n'), 20_000, 'message body');
+    links?.length ? `Links:\n${links.map((link: string) => `- ${link}`).join('\n')}` : ''].filter(Boolean).join('\n\n'), 20_000, 'message body');
 }
 
 // The body without the sentences that the message check flagged (for "Remove flagged text" on a card).

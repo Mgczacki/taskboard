@@ -21,7 +21,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.31.0",
     "@xterm/addon-clipboard": "^0.2.0",
-    "a2a-notes": "github:Mgczacki/a2a-notes#18d822dd702daf253fba0cdd232902a1791a9fdc",
+    "a2a-notes": "github:Mgczacki/a2a-notes#96077458355a216903c9e7c5e11e6fa2f56f0233",
     "chrome-devtools-mcp": "1.10.1",
     "dompurify": "^3.4.16",
     "express": "^5.2.1",
