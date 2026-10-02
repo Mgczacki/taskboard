@@ -10,7 +10,14 @@ const exec = promisify(execFile);
 const git = async (cwd: string, ...args: string[]) => (await exec('git', args, { cwd })).stdout.trim();
 const gitPath = async (cwd: string, name: string) => resolve(cwd, await git(cwd, 'rev-parse', '--git-path', name));
 export const rebasing = async (cwd: string) => existsSync(await gitPath(cwd, 'rebase-merge')) || existsSync(await gitPath(cwd, 'rebase-apply'));
-const pendingPath = (t: Task, file?: string) => file || join(TB_DIR, 'git-merges', `${encodeURIComponent(t.id)}.json`);
+// The files and refs of tb git belong to one worktree of a task: the task's own worktree (key = task id) or one of
+// its attached worktrees (key = task id, "--" and the scope name). See scopes.gitView.
+export const gitKey = (t: Task) => t.scopeKey ? `${t.id}--${t.scopeKey}` : t.id;
+// The text that the tb git refusals give to a task without a worktree.
+export const scopeHint = 'To change a repository, ask for a worktree: tb scope request worktree --repo <main checkout> --base origin/<branch> --branch <new branch> --reason "<why>". ' +
+  'For example: tb scope request worktree --repo ~/code/app --base origin/master --branch task/fix-login --reason "Fix the login bug". The user approves it on the dashboard.';
+const noWorktree = (command: string) => `This task has no worktree branch, so ${command} has nothing to work on. ${scopeHint}`;
+const pendingPath = (t: Task, file?: string) => file || join(TB_DIR, 'git-merges', `${encodeURIComponent(gitKey(t))}.json`);
 const readPending = (file: string): MergeState | null => {
   try { return JSON.parse(readFileSync(file, 'utf8')) as MergeState; } catch { return null; }
 };
@@ -30,7 +37,7 @@ export interface MergeState { source: string; target: string; branch: string }
 // tb git repair and tb git rebase save the old head of the task branch in refs/taskboard-backup/<task id>/<time>
 // before they rewrite the branch. tb git repair --list and --restore read these refs, and tb git push-request
 // offers a force push card when the remote head is in one of them.
-export const backupPrefix = (t: Task) => `refs/taskboard-backup/${t.id}/`;
+export const backupPrefix = (t: Task) => `refs/taskboard-backup/${gitKey(t)}/`;
 export async function saveBackup(t: Task, head: string, command: string): Promise<string> {
   const stamp = new Date().toISOString().replace(/[-:]/g, '').replace(/\.\d+Z$/, 'Z');
   for (let n = 0; n < 100; n++) {
@@ -56,7 +63,7 @@ async function rebaseOrigHead(cwd: string): Promise<string> {
 const backupLines = (name: string) => `Backup of the old head: ${name}\nUndo: tb git repair --restore ${name}`;
 
 export async function mergeState(t: Task): Promise<MergeState> {
-  if (!t.worktree || !t.branch || t.role === 'controller') throw new Error('This task has no worktree branch; start a task in a worktree before running tb git merge-request.');
+  if (!t.worktree || !t.branch || t.role === 'controller') throw new Error(noWorktree('tb git merge-request'));
   if (realpathSync(t.cwd) === realpathSync(t.folder)) throw new Error('This task uses master; start a task in a separate worktree before running tb git merge-request.');
   if (await rebasing(t.cwd)) throw new Error('The task has an unfinished rebase; run tb git rebase --continue or tb git rebase --abort.');
   const [sourceRoot, targetRoot, sourceCommon, targetCommon, sourceBranch, targetBranch, sourceStatus, targetStatus, source, target] = await Promise.all([
@@ -91,7 +98,7 @@ export async function commitTask(t: Task, message: string): Promise<string> {
 }
 
 export async function mergeStateForSource(t: Task, allowRebase = false) {
-  if (!t.worktree || !t.branch || t.role === 'controller') throw new Error('This task has no worktree branch; start a task in a worktree before running tb git rebase.');
+  if (!t.worktree || !t.branch || t.role === 'controller') throw new Error(noWorktree('tb git'));
   if (realpathSync(await git(t.cwd, 'rev-parse', '--show-toplevel')) !== realpathSync(t.cwd)) throw new Error('The task worktree changed; restore it before running tb git rebase.');
   const active = allowRebase && await rebasing(t.cwd);
   if (active) {
@@ -144,7 +151,7 @@ export async function resolveBase(t: Task, base = 'master'): Promise<{ name: str
 }
 
 // tb git rebase and tb git repair save the base that the task gives them, so that later commands use the same base.
-const baseFile = (t: Task) => join(TB_DIR, 'git-bases', `${encodeURIComponent(t.id)}.json`);
+const baseFile = (t: Task) => join(TB_DIR, 'git-bases', `${encodeURIComponent(gitKey(t))}.json`);
 export function recordBase(t: Task, name: string) {
   mkdirSync(resolve(baseFile(t), '..'), { recursive: true });
   writeFileSync(baseFile(t), JSON.stringify({ base: name, at: new Date().toISOString() }));
@@ -157,7 +164,8 @@ export interface TaskBase { name: string; ref: string; source: string }
 
 // Finds the base of a task branch without git fetch. The first rule that gives a base wins:
 // - the base that the command names (--base),
-// - local master, only when localFirst is set and refs/heads/master exists,
+// - local master, only when localFirst is set and refs/heads/master exists (an attached worktree with a recorded
+//   base skips this rule: Taskboard records the remote branch that the worktree started from),
 // - the base that the task last gave to tb git rebase or tb git repair,
 // - the remote default branch from refs/remotes/<remote>/HEAD,
 // - the value of git config taskboard.base in the repository,
@@ -178,7 +186,7 @@ export async function findBase(t: Task, options: { named?: string; remote?: stri
   };
   if (options.named) return use(options.named, 'given with --base');
   const master = await hasCommit(t.cwd, 'refs/heads/master');
-  if (options.localFirst && master) return { name: 'master', ref: 'refs/heads/master', source: 'local master' };
+  if (options.localFirst && master && !(t.scopeKey && recordedBase(t))) return { name: 'master', ref: 'refs/heads/master', source: 'local master' };
   const recorded = recordedBase(t);
   if (recorded) return use(recorded, 'the base this task last gave to tb git rebase or tb git repair');
   if (/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(remote)) {

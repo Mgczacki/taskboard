@@ -203,6 +203,8 @@ export async function check(t: store.Task, machineId: string, folder: string) {
   if (source.ignored.length) issues.push('Ignored source files stay on the source machine.');
   if (files.omitted.length) issues.push('Some task files cannot be sent.');
   if (workspace.omitted.length) issues.push('Some changed project files cannot be sent.');
+  // attached worktrees and read folders (server/scopes.ts) stay on this machine; the target task would not have them
+  if (t.scopes?.length) issues.push(`This task has ${t.scopes.length} attached worktree(s) or folder(s): ${t.scopes.map(s => s.path).join(', ')}. A transfer does not move them. Push their branches and remove them on the task page first.`);
   const report = { machine: machineId, folder: target.git.root, source, target: target.git as GitState,
     accounts: target.accounts as { id: string; name: string; agent: string; signedIn: boolean; unavailable?: string }[], files, workspace, transcript, bundle: bundleInfo, issues };
   return { ...report, fingerprint: sha(JSON.stringify(report)), ready: issues.filter(x => !x.startsWith('Ignored') && !x.startsWith('Some task') && !x.startsWith('Some changed')).length === 0 };
@@ -386,6 +388,7 @@ export async function move(t: store.Task, input: { machine: string; folder: stri
   const report = await check(t, input.machine, input.folder);
   if (report.fingerprint !== input.fingerprint) throw new Error('The transfer check changed. Review it again.');
   if (!report.ready && !input.handoffOnly && !input.useBundle) throw new Error(report.issues.join(' '));
+  if (t.scopes?.length) throw new Error('This task has attached worktrees or folders. A transfer does not move them. Push their branches and remove them on the task page first.');
   if (input.handoffOnly && input.includeWorkspace) throw new Error('A handoff-only transfer cannot copy project files.');
   if (input.useBundle && (!report.bundle?.available || input.handoffOnly || report.source.remote !== report.target.remote || report.target.changes.length)) throw new Error('The Git bundle is not available for this target.');
   if (input.includeWorkspace && report.workspace.omitted.length) throw new Error('Some changed project files cannot be sent. Choose a prepared target worktree or commit the changes.');

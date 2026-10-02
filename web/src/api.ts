@@ -11,6 +11,7 @@ export interface Task {
   created: string; updated: string; statusAt: string; statusSource?: string;
   goal?: string; now?: string; ask?: string; stopReason?: string; interrupted?: string; desc: string;
   waitMin: number; attach: string; docs?: { inbox: number; outbox: number }; role?: 'controller'; parent?: string; account?: string; model?: string; machine?: { id: string; name: string }; imported?: string; openElsewhere?: { pid: number; tty: string }; moveWhenDone?: boolean; remoteUrl?: string; restartWhenDone?: boolean; newSessionWhenDone?: boolean; unscrollable?: boolean; tokenEstimate?: number | null;
+  scopes?: Scope[];
   transfer?: { id: string; machine: string; task: string; direction: 'source' | 'target'; state: 'staged' | 'starting' | 'started' | 'failed'; worktreeCreated?: boolean; peerIdentity?: string };
 }
 
@@ -51,6 +52,8 @@ export interface RuntimeItem { task: string; kind: 'browser' | 'proc'; name: str
 export interface RuntimeList { items: RuntimeItem[]; total: { browsers: number; procs: number; memMb: number } }
 export interface BrowserTab { id: string; title: string; url: string; faviconUrl?: string }
 export interface BrowserStatus { id: string; running: boolean; port?: number; tabs: BrowserTab[]; profile: boolean; copiedFromTemplate?: string; suspended?: boolean; idleStopped?: boolean; idleStopMinutes: number; startMs?: number; started?: string; stoppedAt?: string; error?: string; memMb?: number | null; rssMb?: number | null; agents: number; viewers: number; chrome: string | null; sound: boolean; muted: boolean; sharp?: boolean; check?: { chrome: string | null; node: string | null; mcp: boolean } }
+// A worktree or a read folder that the user approved after the task started (server/scopes.ts)
+export interface Scope { id: string; kind: 'worktree' | 'read'; name: string; path: string; at: string; reason: string; repo?: string; branch?: string; base?: string; baseCommit?: string }
 export interface Approval { id: string; actor: string; action: string; summary: string; detail: string; created: string; state: 'pending' | 'running' | 'approved' | 'denied' | 'failed' | 'expired' | 'unknown' | 'returned'; result?: string; returnable?: boolean; payload?: { permitId?: string; pushId?: string; state?: { forcePush?: boolean }; canPermit?: boolean; message?: string; hash?: string; body?: string; quality?: { state: string; flags: { text: string; start: number; end: number; reason: string }[] } } }
 export interface Permit { id: string; taskId: string; taskNum: number; agent: Agent; reason: string; statedRisk?: string; createdAt: string; expiresAt: string; state: string; approvedBy?: string; approvalRule?: string; riskClass?: 'low' | 'high'; controllerRequestText?: string; decisionComment?: string; error?: string; riskFlags: string[]; steps: { command: string; cwd: string; timeoutSeconds: number; network: boolean; state: string; exitCode?: number | null; outputTail?: string; error?: string }[] }
 export interface PushRecord { id: string; at: string; taskId: string; branch: string; remote: string; remoteUrl: string; oldHead: string | null; newHead: string; state: string; result?: string; approvalId?: string }
@@ -180,6 +183,13 @@ export const api = {
   tellInbox: (id: string) => call<{ told: boolean; resumed?: boolean }>('POST', `/api/tasks/${id}/inbox/tell`, {}),
   decide: (id: string, approve: boolean) => call<Approval>('POST', `/api/approvals/${id}/${approve ? 'approve' : 'deny'}`, {}),
   permits: () => call<Permit[]>('GET', '/api/permits'),
+  // 409 with ignored: the worktree holds ignored files that a removal deletes; send confirm to remove it anyway
+  removeScope: async (id: string, name: string, confirm: boolean): Promise<{ result?: string; error?: string; ignored?: string[] }> => {
+    const r = await fetch(`/api/tasks/${encodeURIComponent(id)}/scopes/${encodeURIComponent(name)}/remove`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ confirm }) });
+    const data = await r.json().catch(() => ({ error: r.statusText }));
+    if (!r.ok && !(r.status === 409 && data.ignored)) throw new Error(data.error || r.statusText);
+    return data;
+  },
   permit: (id: string) => call<Permit>('GET', `/api/permits/${encodeURIComponent(id)}`),
   decidePermit: (id: string, approve: boolean, comment: string) => call<Permit>('POST', `/api/permits/${encodeURIComponent(id)}/decide`, { approve, comment }),
   pushes: () => call<PushRecord[]>('GET', '/api/git/pushes'),

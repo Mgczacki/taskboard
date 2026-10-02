@@ -103,6 +103,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
         <div className="dr-row1"><span className="num">#{t.num}</span><h2>{t.title}</h2><button className="btn ghost icon" onClick={() => setCompact(c => !c)} title={compact ? 'Show the details (chips, goal, now, since you last looked, buttons)' : 'Fold the details so the terminal gets the room'}>{compact ? '▾' : '▴'}</button><button className="btn ghost icon" onClick={onClose} title="Close">✕</button></div>
         {t.role === 'controller' && <div className="banner">The controller is {t.agent === 'antigravity' ? 'an' : 'a'} {AGENT_NAME[t.agent]} session in <code>~/AgentVault/controller</code> (choose its account and agent on the Accounts page).{t.remoteUrl && <> Remote Control is on: <a href={t.remoteUrl} target="_blank" rel="noreferrer">open it on claude.ai or the Claude app</a>.</>} It manages agents with the <code>tb</code> command: reading and organising run without asking; starting agents, typing into them and archiving wait for your approval here. Try: “what needs me?” or “split X into three parallel tasks”.</div>}
         <div className="dr-meta"><ByController t={t} /><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} />{acct && <span className="chip" title={acct.dir}>{acct.name}</span>}<span className="chip mono">{shortPath(t.cwd)}</span>{t.branch && <span className="chip mono">{t.worktree ? 'worktree · ' : ''}{t.branch}</span>}{t.agent === 'antigravity' && <span className="chip mono" title="Estimate from visible transcript text. Repeated model context is not included.">{tokenEstimate === null ? 'Estimate unavailable' : `~${formatTokens(tokenEstimate)} tokens`}</span>}</div>
+        {!!t.scopes?.length && <ScopeList t={t} toast={toast} />}
         <div className="dr-meta">
           {groups.filter(g => g.tasks.includes(t.id)).map(g => <span key={g.id} className="chip gchip" style={{ borderColor: g.color + '66', color: g.color }}><span className="sw" style={{ background: g.color }} />{g.name}<button className="gx" title={`Remove #${t.num} from ${g.name}. The agent keeps running.`} aria-label={`Remove from ${g.name}`} onClick={() => { const p = planUngroup(t.id, t.num, groups, g.id); if ('change' in p) runGroupChange(p.change, toast); }}>×</button></span>)}
           <select className="gsel" value="" onChange={async e => { const v = e.target.value; if (v === '__new') { const n = prompt('Name for the new group'); if (n) await api.createGroup(n, [t.id]); } else if (v) await api.updateGroup(v, { add: t.id }); }}>
@@ -200,4 +201,26 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
       </div>
     </aside>
   );
+}
+
+// The worktrees and read folders that the user approved for this task after its start (tb scope request). Remove keeps
+// the branch. The server refuses to remove a worktree with uncommitted changes, and asks first about ignored files.
+function ScopeList({ t, toast }: { t: Task; toast: Toast }) {
+  const remove = async (name: string, label: string) => {
+    if (!confirm(`Remove ${label} from #${t.num}? The branch stays in the repository. The agent gets a note in its inbox.`)) return;
+    try {
+      let r = await api.removeScope(t.id, name, false);
+      if (r.ignored) {
+        if (!confirm(`${r.error}\n\n${r.ignored.join('\n')}`)) return;
+        r = await api.removeScope(t.id, name, true);
+      }
+      toast(r.result || r.error || 'Removed.');
+    } catch (e) { toast((e as Error).message); }
+  };
+  return <div className="dr-scopes">{t.scopes!.map(s => <div key={s.id} className="scope-row">
+    <span className="chip mono">{s.kind === 'worktree' ? `worktree · ${s.name}` : 'read only'}</span>
+    {s.kind === 'worktree' && <><span className="mono" title="Repository (main checkout)">{shortPath(s.repo || '')}</span><span className="mono" title={`Base ${s.base} at ${s.baseCommit}`}>{s.branch}</span></>}
+    <span className="mono" title={s.path}>{shortPath(s.path)}</span>
+    <button className="btn ghost" title={s.reason} onClick={() => void remove(s.name, s.kind === 'worktree' ? `the worktree ${s.name}` : `read access to ${s.path}`)}>Remove</button>
+  </div>)}</div>;
 }

@@ -48,8 +48,20 @@ export interface Task {
   unscrollable?: boolean;    // running full screen without mouse support (Codex started before --no-alt-screen)
   launchedAs?: string; // controller: the name / Remote Control / agent it was started with (restarted when these change)
   remoteUrl?: string; // controller: its Remote Control address on claude.ai (read from its screen) // take the session over from that terminal as soon as its current turn ends
+  // worktrees and read folders that the user approved after the start (tb scope request, server/scopes.ts)
+  scopes?: Scope[];
+  scopeNotice?: string; // the text that Taskboard puts in the inbox after the restart that gives the agent a new scope
+  // only on the copy of a task that tb git uses for one attached worktree (scopes.gitView); never saved
+  scopeKey?: string;
   transfer?: { id: string; machine: string; task: string; direction: 'source' | 'target'; state: 'staged' | 'starting' | 'started' | 'failed'; worktreeCreated?: boolean; peerIdentity?: string };
   desc: string;
+}
+
+// One approved scope of a task. kind 'worktree': a linked worktree on a new branch in repo (the main checkout).
+// kind 'read': one more folder that the agent may read.
+export interface Scope {
+  id: string; kind: 'worktree' | 'read'; name: string; path: string; at: string; reason: string;
+  repo?: string; branch?: string; base?: string; baseCommit?: string;
 }
 
 const now = () => new Date().toISOString();

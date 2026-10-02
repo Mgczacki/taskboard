@@ -45,6 +45,7 @@ import * as taskRepair from './task-repair.ts';
 import * as push from './push.ts';
 import * as restart from './restart.ts';
 import * as permits from './permits.ts';
+import * as scopes from './scopes.ts';
 import { controllerMailToken } from './a2anotes/auth.ts';
 import * as tmux from './tmux.ts';
 import * as transfer from './transfer.ts';
@@ -222,6 +223,9 @@ app.post('/api/approvals/:id/:decision', async (req, res, next) => {
   const current = approvals.get(req.params.id);
   if (current?.action === 'git-push' || (req.params.decision === 'approve' && ['permit', 'tool-refusal'].includes(current?.action || '')))
     return res.status(403).json({ error: 'Use the dedicated decision on the dashboard.' });
+  // a task cannot decide its own scope request: tb sends the token and x-tb-actor, the dashboard sends neither
+  if (current?.action === 'scope' && (req.get('x-tb-actor') || req.get('x-taskboard-token')))
+    return res.status(403).json({ error: 'Only the user decides a scope request, on the dashboard.' });
   const a = await approvals.decide(req.params.id, req.params.decision === 'approve'); a ? res.json(a) : res.status(404).end();
 });
 // Send a message card back with a comment: to the controller (incoming) or to the agent that wrote the draft (outgoing).
@@ -229,6 +233,7 @@ app.post('/api/approvals/:id/return', async (req, res) => {
   if (!req.get('origin')) return res.status(403).json({ error: 'approvals are decided on the dashboard' });
   try { const a = await approvals.giveBack(req.params.id, String(req.body.comment || '')); a ? res.json(a) : res.status(404).end(); } catch (e) { fail(res, e); }
 });
+const scopeHintText = taskGit.scopeHint;
 function createPermit(task: store.Task, reason: string, steps: permits.StepInput[], refusalId?: string, statedRisk = '') {
     const actor = task.id;
     const p = permits.request(task, reason, steps, refusalId, statedRisk);
@@ -254,7 +259,8 @@ app.post('/api/permits', (req, res) => {
     if (argv[0] === 'git' && argv[1] === 'push') {
       const valid = argv.length === 4 && !argv.slice(2).some(x => x.startsWith('-') || x.startsWith(':') || x.includes(':') || x === '--tags');
       if (valid) {
-        createPushRequest(task, String(req.body.reason || ''), { remote: argv[2], branch: argv[3] })
+        const holder = task.scopes?.find(x => x.kind === 'worktree' && x.branch === argv[3] && existsSync(x.path));
+        createPushRequest(holder ? scopes.gitView(task, holder) : task, String(req.body.reason || ''), { remote: argv[2], branch: argv[3] })
           .then(result => res.status(result.approval ? 202 : 200).json({ ...result, message: 'This needs a push request: run tb git push-request.' }))
           .catch(e => fail(res, e));
         return;
@@ -276,7 +282,7 @@ app.post('/api/permits', (req, res) => {
     const message = e instanceof Error ? e.message : String(e);
     if (/task Git commands|release or rollback|restart of Taskboard|GitHub write/.test(message)) {
       const command = steps?.map(s => s.command).join('\n') || '';
-      const help = /restart/.test(message) ? 'Only the user restarts Taskboard, from the dashboard or a terminal.' : /release|rollback/.test(message) ? 'Use tb release-request for a release. Rollback needs a user action.' : 'Use tb git commit, tb git rebase, tb git repair, tb git merge-request, or tb git push-request.';
+      const help = /restart/.test(message) ? 'Only the user restarts Taskboard, from the dashboard or a terminal.' : /release|rollback/.test(message) ? 'Use tb release-request for a release. Rollback needs a user action.' : task.worktree || task.scopes?.some(x => x.kind === 'worktree') ? 'Use tb git commit, tb git rebase, tb git repair, tb git merge-request, or tb git push-request. For another repository, run tb scope request worktree.' : `Use the tb git commands in a worktree. ${scopeHintText}`;
       const card = approvals.request({ actor, action: 'tool-refusal', summary: 'review a refused command', detail: `${command}\n${help}`, payload: { command, canPermit: false } }, async () => help);
       store.update(actor, { status: 'needs-you', ask: `Refused: ${command}`, statusSource: help });
       return res.status(400).json({ error: `${message} ${help}`, refusal: card.id });
@@ -449,11 +455,15 @@ async function createPushRequest(task: store.Task, reason: string, options: { br
     pushNotice(task, record);
     return { push: record, approval };
 }
+// tb git commands take --worktree <name or path> (body.worktree). gitTask gives the task itself, or the copy of the
+// task for one attached worktree (scopes.gitTarget). Every rule of the tb git commands applies to that copy.
+const gitTask = (t: store.Task, ref: unknown) => scopes.gitTarget(t, typeof ref === 'string' && ref ? ref : undefined);
 app.post('/api/git/push-request', async (req, res) => {
-  const task = store.get(req.get('x-tb-actor') || '');
-  if (!task || task.role === 'controller') return res.status(403).json({ error: 'A task must request its own push.' });
+  const actorTask = store.get(req.get('x-tb-actor') || '');
+  if (!actorTask || actorTask.role === 'controller') return res.status(403).json({ error: 'A task must request its own push.' });
   if (req.body.force || req.body.delete || req.body.tags) return res.status(400).json({ error: 'Force pushes, branch deletions, and tags cannot use this command.' });
   try {
+    const task = gitTask(actorTask, req.body.worktree);
     if (req.body.base !== undefined && (typeof req.body.base !== 'string' || !req.body.base)) return res.status(400).json({ error: 'Give a base such as origin/prod or master with --base.' });
     const result = await createPushRequest(task, String(req.body.reason || ''), { branch: req.body.branch, remote: req.body.remote, base: req.body.base, thenRelease: req.body.thenRelease });
     res.status(result.approval ? 202 : 200).json(result);
@@ -491,12 +501,13 @@ app.post('/api/git/pushes/:id/decide', async (req, res) => {
 });
 app.post('/api/git/merge-request', async (req, res) => {
   const actor = req.get('x-tb-actor') || '';
-  const task = store.get(actor);
-  if (!task || task.role === 'controller') return res.status(403).json({ error: 'A Taskboard task must request its own merge.' });
+  const actorTask = store.get(actor);
+  if (!actorTask || actorTask.role === 'controller') return res.status(403).json({ error: 'A Taskboard task must request its own merge.' });
   try {
+    const task = gitTask(actorTask, req.body.worktree);
     const expected = await taskGit.mergeState(task);
-    const approval = approvals.request({ actor, action: 'git-merge', summary: `merge ${expected.branch} into local master`,
-      detail: `Task: #${task.num} ${task.title}\nBranch head: ${expected.source}\nMaster head: ${expected.target}\nRepository: ${task.folder}`, payload: expected },
+    const approval = approvals.request({ actor, action: 'git-merge', summary: `merge ${expected.branch} into local master${task.scopeKey ? ` of ${task.folder}` : ''}`,
+      detail: `Task: #${task.num} ${task.title}\nBranch head: ${expected.source}\nMaster head: ${expected.target}\nRepository: ${task.folder}${task.scopeKey ? `\nAttached worktree: ${task.scopeKey} (${task.cwd})` : ''}`, payload: expected },
       async () => {
         try {
           const result = await taskGit.mergeTask(task, expected);
@@ -514,7 +525,7 @@ app.post('/api/git/merge-request', async (req, res) => {
 app.post('/api/git/commit', async (req, res) => {
   const task = store.get(req.get('x-tb-actor') || '');
   if (!task || task.role === 'controller') return res.status(403).json({ error: 'A Taskboard task must commit its own branch.' });
-  try { res.json({ result: await taskGit.commitTask(task, String(req.body.message || '')) }); } catch (e) { fail(res, e); }
+  try { res.json({ result: await taskGit.commitTask(gitTask(task, req.body.worktree), String(req.body.message || '')) }); } catch (e) { fail(res, e); }
 });
 app.post('/api/git/rebase', async (req, res) => {
   const task = store.get(req.get('x-tb-actor') || '');
@@ -522,14 +533,15 @@ app.post('/api/git/rebase', async (req, res) => {
   const action = req.body.action || 'start';
   if (!['start', 'continue', 'abort'].includes(action)) return res.status(400).json({ error: 'Run tb git rebase [BASE], tb git rebase --continue, or tb git rebase --abort.' });
   if (req.body.base !== undefined && (typeof req.body.base !== 'string' || action !== 'start')) return res.status(400).json({ error: 'Give a base only to start a rebase, for example tb git rebase origin/master.' });
-  try { res.json({ result: await taskGit.rebaseTask(task, action, undefined, req.body.base || undefined) }); } catch (e) { fail(res, e); }
+  try { res.json({ result: await taskGit.rebaseTask(gitTask(task, req.body.worktree), action, undefined, req.body.base || undefined) }); } catch (e) { fail(res, e); }
 });
 app.post('/api/git/repair', async (req, res) => {
-  const task = store.get(req.get('x-tb-actor') || '');
-  if (!task || task.role === 'controller') return res.status(403).json({ error: 'A Taskboard task must run tb git repair on its own branch.' });
+  const actorTask = store.get(req.get('x-tb-actor') || '');
+  if (!actorTask || actorTask.role === 'controller') return res.status(403).json({ error: 'A Taskboard task must run tb git repair on its own branch.' });
   const { mode, base, commit, message, backup } = req.body as Record<string, unknown>;
   const text = (v: unknown) => typeof v === 'string' ? v : undefined;
   try {
+    const task = gitTask(actorTask, req.body.worktree);
     let result: string;
     if (mode === 'squash') result = await taskRepair.squashTask(task, text(base) || '', text(message) || '');
     else if (mode === 'drop') result = await taskRepair.dropCommit(task, text(commit) || '', text(base) || undefined);
@@ -542,7 +554,86 @@ app.post('/api/git/repair', async (req, res) => {
 app.post('/api/git/check', async (req, res) => {
   const task = store.get(req.get('x-tb-actor') || '');
   if (!task || task.role === 'controller') return res.status(403).json({ error: 'A Taskboard task must run tb git check on its own branch.' });
-  try { res.json({ result: await taskRepair.checkTask(task, typeof req.body.base === 'string' && req.body.base ? req.body.base : undefined) }); } catch (e) { fail(res, e); }
+  try { res.json({ result: await taskRepair.checkTask(gitTask(task, req.body.worktree), typeof req.body.base === 'string' && req.body.base ? req.body.base : undefined) }); } catch (e) { fail(res, e); }
+});
+
+// ---------- scope requests (server/scopes.ts) ----------
+// A task asks for a worktree or for read access to one more folder. The request always waits for the user's decision
+// on the dashboard, also when Settings lets agents act without approval cards. The controller approves only with the
+// user's exact words from its chat (POST /api/scope/:id/controller-approve).
+function scopeNotice(taskId: string, text: string, tell: boolean) {
+  const name = `scope-${Date.now()}.md`;
+  try { docs.uploadSystem(taskId, name, text); } catch (e) { console.error('could not write the scope notice', e); return; }
+  if (tell) void inboxDelivery.deliver(taskId, name); else inboxDelivery.track(taskId, name);
+}
+async function applyScope(t: store.Task, s: store.Scope): Promise<string> {
+  const notice = scopes.noticeText(t, s);
+  const live = await tmux.hasSession(t.session);
+  const what = s.kind === 'worktree' ? `Attached the worktree ${s.name}: ${s.path} on the new branch ${s.branch} from ${s.base} (${s.baseCommit?.slice(0, 12)}). Use --worktree ${s.name} with the tb git commands.`
+    : `Added read access to ${s.path}.`;
+  if (live && scopes.needsRestart(t, s.kind)) {
+    const current = store.get(t.id)!;
+    store.update(t.id, { scopeNotice: [current.scopeNotice, notice].filter(Boolean).join('\n'), restartWhenDone: true, status: betweenTurns(current) ? current.status : 'working', ask: '', statusSource: `Scope ${s.name} approved. The agent restarts after this turn.` });
+    return `${what}\nTaskboard restarts this agent session after the current turn ends and resumes the same conversation, so that the agent can use the new folder. ` +
+      'End your turn now. After the restart, Taskboard puts a note in your inbox. Background shells that you started stop. Processes from tb run keep running.';
+  }
+  scopeNotice(t.id, notice, !!live);
+  store.update(t.id, { status: live ? 'working' : t.status, ask: '', statusSource: `Scope ${s.name} approved.` });
+  return `${what}${live ? '' : '\nThe agent session is not running. Its next start uses the new scope.'}`;
+}
+app.post('/api/scope/request', async (req, res) => {
+  const actor = req.get('x-tb-actor') || '';
+  const task = store.get(actor);
+  if (!task || task.role === 'controller') return res.status(403).json({ error: 'A Taskboard task must request its own scope.' });
+  if (approvals.pendingFor(actor).filter(a => a.action === 'scope').length >= 3) return res.status(429).json({ error: 'This task already has three scope requests waiting. Wait for the user to decide them.' });
+  try {
+    const body = req.body as Record<string, unknown>;
+    const text = (v: unknown) => typeof v === 'string' ? v : '';
+    const plan: scopes.Plan = body.kind === 'worktree'
+      ? await scopes.planWorktree(task, { repo: text(body.repo), base: text(body.base), branch: text(body.branch), name: text(body.name) || undefined, reason: text(body.reason) })
+      : body.kind === 'read' ? scopes.planRead(task, { path: text(body.path), reason: text(body.reason) })
+      : (() => { throw new Error('Give the scope kind: tb scope request worktree … or tb scope request read ….'); })();
+    const summary = plan.kind === 'worktree' ? `attach a worktree on the new branch ${plan.branch} in ${plan.repo}` : `read ${plan.path}`;
+    const approval = approvals.request({ actor, action: 'scope', summary, detail: scopes.cardDetail(task, plan), payload: plan }, async () => {
+      const current = store.get(actor);
+      if (!current || current.status === 'archived') throw new Error('The task is archived. Nothing changed.');
+      const scope = plan.kind === 'worktree' ? await scopes.createWorktree(current, plan) : scopes.addRead(current, plan);
+      return applyScope(store.get(actor)!, scope);
+    }, { onDeny: () => store.update(actor, { status: 'unread', ask: '', statusSource: 'The user denied the scope request.' }) });
+    store.update(actor, { status: 'needs-you', ask: `Approve scope request ${approval.id}: ${summary}`, statusSource: 'Waiting for a scope decision on the dashboard.' });
+    res.status(202).json({ approval });
+  } catch (e) { fail(res, e); }
+});
+app.get('/api/scope', (req, res) => {
+  const actor = req.get('x-tb-actor') || '';
+  const task = store.get(actor);
+  if (!task || task.role === 'controller') return res.status(403).json({ error: 'Run tb scope list inside a task.' });
+  res.json({ scopes: task.scopes || [], pending: approvals.pendingFor(actor).filter(a => a.action === 'scope').map(a => ({ id: a.id, summary: a.summary })) });
+});
+app.post('/api/scope/:id/controller-approve', async (req, res) => {
+  if (req.get('x-tb-actor') !== 'controller' || req.get('x-tb-mail-controller') !== controllerMailToken)
+    return res.status(403).json({ error: 'Only the controller may use this route.' });
+  const card = approvals.get(req.params.id);
+  if (!card || card.action !== 'scope') return res.status(404).json({ error: 'No scope request with this id.' });
+  if (card.state !== 'pending') return res.status(409).json({ error: `The scope request is ${card.state}.` });
+  const words = String(req.body.userRequest || '').trim();
+  const controller = store.get('controller');
+  const transcript = controller?.transcript || (controller?.sessionId ? importer.transcriptFor(controller.agent, controller.sessionId, (accounts.get(controller.account) || accounts.defaultFor(controller.agent)).dir) : undefined);
+  if (!/\bapprove\b/i.test(words) || !words.includes(card.id) || !permits.userWrote(transcript, controller?.agent || '', words))
+    return res.status(403).json({ error: `The controller approves a scope request only with the user's exact chat message, and that message must say approve and name ${card.id}. Ask the user, or let the user decide on the dashboard.` });
+  const decided = await approvals.decide(card.id, true);
+  res.json(decided);
+});
+// The dashboard removes one scope. A worktree with uncommitted changes stays; ignored files need confirm: true.
+app.post('/api/tasks/:id/scopes/:name/remove', async (req, res) => {
+  if (!req.get('origin') || req.get('x-tb-actor') || req.get('x-taskboard-token')) return res.status(403).json({ error: 'Only the user removes a scope, on the dashboard.' });
+  const t = store.get(req.params.id); if (!t) return res.status(404).end();
+  try {
+    const r = await scopes.removeScope(t, req.params.name, req.body?.confirm === true);
+    if (r.ignored) return res.status(409).json({ error: r.result, ignored: r.ignored });
+    if (await tmux.hasSession(t.session)) scopeNotice(t.id, `# Scope removed\n\n${r.result}\nDo not use that folder any more.\n`, true);
+    res.json({ result: r.result, task: view(store.get(t.id)!) });
+  } catch (e) { fail(res, e); }
 });
 
 // ---------- other machines ----------
@@ -725,7 +816,11 @@ app.post('/api/tasks/:id/takeover', async (req, res) => {
 app.post('/api/tasks/:id/restart', async (req, res) => {
   const t = store.get(req.params.id); if (!t) return res.status(404).end();
   if (t.openElsewhere) return fail(res, 'This session runs in another terminal; use “Move it here” instead.');
-  if (req.body.when === 'cancel') return res.json(view(store.update(t.id, { restartWhenDone: undefined })!));
+  if (req.body.when === 'cancel') {
+    // a restart for a new scope: the agent gets the scope note now, and the new folder at its next start
+    if (t.scopeNotice) scopeNotice(t.id, `${t.scopeNotice}\nThe user cancelled the restart. The new folder reaches the agent settings at the next start of this session.\n`, true);
+    return res.json(view(store.update(t.id, { restartWhenDone: undefined, scopeNotice: undefined })!));
+  }
   if (req.body.when === 'after-turn' && !['suspended', 'stopped'].includes(t.status) && !betweenTurns(t)) return res.json(view(store.update(t.id, { restartWhenDone: true })!));
   try { await restartTask(t); res.json(view(store.get(t.id)!)); } catch (e) { fail(res, e); }
 });
@@ -1278,10 +1373,14 @@ async function keepController(t: store.Task, s?: { dead: boolean }) {
 }
 
 // Restart an agent in tmux with the current command line; it resumes the same conversation.
+// A restart for a new scope (applyScope) then puts the scope notice in the task inbox and tells the agent.
 async function restartTask(t: store.Task) {
-  store.update(t.id, { restartWhenDone: undefined });
+  const notice = t.scopeNotice;
+  store.update(t.id, { restartWhenDone: undefined, scopeNotice: undefined });
   await tmux.killSession(t.session);
-  try { await agents.resumeTask(store.get(t.id)!, true); } catch (e) { store.update(t.id, { status: 'suspended', statusSource: `Restart failed: ${e instanceof Error ? e.message : e}` }); }
+  let started = true;
+  try { await agents.resumeTask(store.get(t.id)!, true); } catch (e) { started = false; store.update(t.id, { status: 'suspended', statusSource: `Restart failed: ${e instanceof Error ? e.message : e}` }); }
+  if (notice) scopeNotice(t.id, notice, started);
 }
 
 // "Between turns" as far as the server can tell: idle or unread, and neither the status nor the transcript changed for
