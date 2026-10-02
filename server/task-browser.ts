@@ -997,7 +997,6 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
   })();
 }
 
-// The text that a copy takes: the selection in a focused text field, else the selection of the page.
 // The cursor that Chrome would show at a point of the page: the CSS cursor of the element there, and for "auto" the
 // text cursor over text and in a text field, else the arrow. Only the keyword is used (a cursor image is not sent).
 const CURSOR_MS = 100;
@@ -1009,6 +1008,7 @@ const CURSOR = `(x, y) => { const e = document.elementFromPoint(x, y); if (!e) r
   if (n?.nodeType === 3 && n.textContent.trim()) { const t = document.createRange(); t.selectNodeContents(n);
     for (const b of t.getClientRects()) if (x >= b.left && x <= b.right && y >= b.top && y <= b.bottom) return 'text'; }
   return 'default'; }`;
+// The text that a copy takes: the selection in a focused text field, else the selection of the page.
 const COPY = `(() => { const a = document.activeElement;
   if (a && (a.tagName === 'TEXTAREA' || (a.tagName === 'INPUT' && a.type !== 'password')) && typeof a.selectionStart === 'number') return a.value.slice(a.selectionStart, a.selectionEnd);
   return String(getSelection() || ''); })()`;
