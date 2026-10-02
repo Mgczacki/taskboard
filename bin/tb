@@ -200,7 +200,7 @@ switch (cmd) {
     }
     const st = sub === 'start' || sub === 'stop' ? await call('POST', `${o.path}/browser/${sub}`, {}) : await call('GET', `${o.path}/browser`);
     if (sub === 'tabs') { console.log(st.tabs.map(t => `${t.title || '(no title)'}  ${t.url}`).join('\n') || 'No tabs.'); break; }
-    console.log(st.running ? `The browser of ${o.label} is running (port ${st.port}, ${st.tabs.length} tab(s)${st.rssMb ? `, about ${st.rssMb} MB` : ''}).` : `The browser of ${o.label} is not running. It starts when you use a task-browser tool or run tb browser open <url>.`);
+    console.log(st.running ? `The browser of ${o.label} is running (port ${st.port}, ${st.tabs.length} tab(s)${(st.memMb ?? st.rssMb) ? `, about ${st.memMb ?? st.rssMb} MB` : ''}).` : `The browser of ${o.label} is not running. It starts when you use a task-browser tool or run tb browser open <url>.`);
     break;
   }
   case 'mail': {

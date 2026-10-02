@@ -9,6 +9,7 @@ import * as agents from './agents.ts';
 import * as store from './store.ts';
 import * as procs from './task-procs.ts';
 import * as browser from './task-browser.ts';
+import * as memory from './memory.ts';
 import * as summary from './runtime-summary.ts';
 
 export const taskOwner = (t: store.Task) => procs.taskOwner(t, agents.baseEnv(t));
@@ -94,8 +95,9 @@ export function mount(app: express.Express, fail: Fail) {
     const x = owner(req); if (!x) return res.status(404).end();
     try {
       const list = await procs.refresh(x.o);
-      const rss = list.some(p => p.pid) ? await summary.rssByGroup() : new Map<number, number>();
-      res.json(list.map(p => ({ ...p, memMb: p.state === 'running' || p.state === 'starting' ? summary.memMb(rss, p.pid) : null })));
+      const on = (p: procs.Proc) => p.state === 'running' || p.state === 'starting';
+      const mem = await memory.byGroup(list.filter(on).map(p => p.pid || 0).filter(Boolean));
+      res.json(list.map(p => ({ ...p, memMb: on(p) ? summary.memMb(mem, p.pid) : null })));
     } catch (e) { fail(res, e); }
   });
   app.post('/api/tasks/:id/procs', async (req, res) => {

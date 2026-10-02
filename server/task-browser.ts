@@ -18,13 +18,14 @@ import { basename, join } from 'node:path';
 import WebSocket from 'ws';
 import { PORT, ROOT, TB_DIR, TOKEN } from './config.ts';
 import * as machine from './machine.ts';
+import * as memory from './memory.ts';
 
 export const DIR = join(TB_DIR, 'browsers');
 export const TEMPLATE = 'template';
 const ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,120}$/;
 
 export interface Meta { pid?: number; port?: number; started?: string; startMs?: number; tabs?: string[]; suspended?: boolean; idleStopped?: boolean; stoppedAt?: string; error?: string; copiedFromTemplate?: string; sound?: boolean; muted?: boolean }
-export interface Tab { id: string; title: string; url: string }
+export interface Tab { id: string; title: string; url: string; faviconUrl?: string }
 
 const folder = (id: string) => { if (!ID.test(id)) throw new Error('Invalid browser id.'); return join(DIR, id); };
 export const profileDir = (id: string) => join(folder(id), 'profile');
@@ -69,8 +70,8 @@ export async function tabs(id: string): Promise<Tab[]> {
 // The pages of a running browser, or null when Chrome does not answer in `timeout` ms.
 async function pageList(port: number, timeout = 1500): Promise<Tab[] | null> {
   try {
-    const list = await (await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(timeout) })).json() as { id: string; type: string; title: string; url: string }[];
-    return list.filter(t => t.type === 'page').map(t => ({ id: t.id, title: t.title, url: t.url }));
+    const list = await (await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(timeout) })).json() as { id: string; type: string; title: string; url: string; faviconUrl?: string }[];
+    return list.filter(t => t.type === 'page').map(t => ({ id: t.id, title: t.title, url: t.url, ...(t.faviconUrl ? { faviconUrl: t.faviconUrl } : {}) }));
   } catch { return null; }
 }
 
@@ -240,25 +241,18 @@ export async function resetFromTemplate(id: string) {
 // The task was removed from Taskboard: stop its browser and delete its profile (it holds copied sign-ins).
 export async function remove(id: string) { await stop(id).catch(() => {}); rmSync(folder(id), { recursive: true, force: true }); }
 
-function rssMb(pid?: number): number | null {
-  if (!pid) return null;
-  try {
-    const out = execFileSync('ps', ['-axo', 'pgid=,rss='], { encoding: 'utf8' });
-    let kb = 0; for (const l of out.split('\n')) { const [g, r] = l.trim().split(/\s+/); if (Number(g) === pid) kb += Number(r) || 0; }
-    return Math.round(kb / 1024);
-  } catch { return null; }
-}
-
-export interface Status { id: string; running: boolean; port?: number; tabs: Tab[]; profile: boolean; copiedFromTemplate?: string; suspended?: boolean; idleStopped?: boolean; idleStopMinutes: number; startMs?: number; started?: string; stoppedAt?: string; error?: string; rssMb?: number | null; agents: number; viewers: number; chrome: string | null; sound: boolean; muted: boolean }
+export interface Status { id: string; running: boolean; port?: number; tabs: Tab[]; profile: boolean; copiedFromTemplate?: string; suspended?: boolean; idleStopped?: boolean; idleStopMinutes: number; startMs?: number; started?: string; stoppedAt?: string; error?: string; memMb?: number | null; rssMb?: number | null; agents: number; viewers: number; chrome: string | null; sound: boolean; muted: boolean }
 // a running browser has the mute flag it started with (none for a browser started before this setting existed); a
 // stopped browser gets the saved choice at its next start
 const mutedNow = (m: Meta, running: boolean) => running ? !!m.muted : !m.sound;
 export async function status(id: string): Promise<Status> {
   const m = readMeta(id), running = await live(id);
+  const mem = running ? await memory.groupMb(m.pid) : null;
   return { id, running: !!running, port: running?.port, tabs: running ? await tabs(id) : (m.tabs || []).map((url, i) => ({ id: `saved-${i}`, title: url, url })),
     profile: existsSync(profileDir(id)), copiedFromTemplate: m.copiedFromTemplate, suspended: m.suspended, idleStopped: m.idleStopped, idleStopMinutes: idleStopMs() / 60000,
     startMs: m.startMs, started: running ? m.started : undefined, stoppedAt: m.stoppedAt, error: m.error,
-    rssMb: running ? rssMb(m.pid) : null, agents: agentCount(id), viewers: viewers.get(id) || 0, chrome: chromePath(), sound: !!m.sound, muted: mutedNow(m, !!running) };
+    // memMb is the footprint of the browser's processes (memory.ts). rssMb has the same value for older callers.
+    memMb: mem, rssMb: mem, agents: agentCount(id), viewers: viewers.get(id) || 0, chrome: chromePath(), sound: !!m.sound, muted: mutedNow(m, !!running) };
 }
 
 export async function openTab(id: string, url: string): Promise<Tab> {
@@ -376,6 +370,13 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     const n = ++page.next; page.pending.set(n, resolve); page.ws.send(JSON.stringify({ id: n, method, params }));
   });
   const closePage = () => { if (page) { try { page.ws.close(); } catch { /* closed */ } page = null; } };
+  // The shown tab's loading state and history, for the back, forward, reload and stop buttons of the dashboard.
+  let mainFrame = '', loading = false, history: { currentIndex: number; entries: { id: number }[] } | null = null;
+  const navState = async () => {
+    history = await call('Page.getNavigationHistory');
+    const i = history?.currentIndex ?? 0, n = history?.entries.length ?? 0;
+    send({ type: 'nav', loading, canBack: i > 0, canForward: i < n - 1 });
+  };
   const viewport = () => call('Emulation.setDeviceMetricsOverride', { width: size.w, height: size.h, deviceScaleFactor: 1, mobile: false });
   async function open(target: string) {
     const m = await live(id); if (!m || closed) return;
@@ -389,6 +390,12 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     ws.on('message', d => {
       const msg = JSON.parse(d.toString());
       if (msg.id && conn.pending.has(msg.id)) { conn.pending.get(msg.id)!(msg.result); conn.pending.delete(msg.id); return; }
+      if (page !== conn) return;
+      const frame = msg.params?.frameId ?? msg.params?.frame?.id;
+      if (msg.method === 'Page.frameStartedLoading' && frame === mainFrame) { loading = true; void navState(); }
+      else if ((msg.method === 'Page.frameStoppedLoading' && frame === mainFrame) || msg.method === 'Page.loadEventFired') { loading = false; void navState(); }
+      else if (msg.method === 'Page.frameNavigated' && !msg.params.frame.parentId) { mainFrame = msg.params.frame.id; void navState(); }
+      else if (msg.method === 'Page.navigatedWithinDocument' && frame === mainFrame) void navState();
       if (msg.method === 'Page.screencastFrame') {
         ws.send(JSON.stringify({ id: ++conn.next, method: 'Page.screencastFrameAck', params: { sessionId: msg.params.sessionId } }));
         send({ type: 'frame', data: msg.params.data, w: msg.params.metadata.deviceWidth, h: msg.params.metadata.deviceHeight });
@@ -399,6 +406,9 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     await new Promise(r => ws.once('open', r));
     await fetch(`http://127.0.0.1:${m.port}/json/activate/${target}`).catch(() => {});
     await call('Page.enable');
+    const tree = await call('Page.getFrameTree');
+    mainFrame = tree?.frameTree?.frame?.id || ''; loading = false;
+    await navState();
     await viewport();
     await call('Page.startScreencast', { format: 'jpeg', quality: 70, maxWidth: 1920, maxHeight: 1920, everyNthFrame: 1 });
     if (ws.readyState === WebSocket.OPEN && !conn.casting) { conn.casting = true; count(screencasts, id, 1); }
@@ -432,17 +442,29 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
       else if (m.type === 'mouse') await call('Input.dispatchMouseEvent', { type: m.event, x: m.x, y: m.y, button: m.button || 'none', buttons: m.buttons || 0, clickCount: m.clickCount || 0, modifiers: m.modifiers || 0, ...(m.event === 'mouseWheel' ? { deltaX: m.dx || 0, deltaY: m.dy || 0 } : {}) });
       else if (m.type === 'key') await key(m);
       else if (m.type === 'text' && typeof m.text === 'string') await call('Input.insertText', { text: m.text.slice(0, 100000) });
+      else if (m.type === 'copy') {
+        // the selected text of the page, or of the focused text field; the dashboard puts it on the Mac's clipboard
+        const r = await call('Runtime.evaluate', { returnByValue: true, expression: COPY });
+        send({ type: 'copied', peek: !!m.peek, text: typeof r?.result?.value === 'string' ? r.result.value : '' });
+        if (m.cut && !m.peek) await call('Input.dispatchKeyEvent', { type: 'rawKeyDown', key: 'x', code: 'KeyX', windowsVirtualKeyCode: 88, modifiers: 4, commands: ['cut'] });
+      }
       else if (m.type === 'nav') {
         if (m.action === 'go' && typeof m.url === 'string') { const url = /^(https?|file|about|data):/i.test(m.url) ? m.url : 'http://' + m.url; await call('Page.navigate', { url }); }
         else if (m.action === 'reload') await call('Page.reload');
-        else if (m.action === 'back' || m.action === 'forward') await call('Runtime.evaluate', { expression: m.action === 'back' ? 'history.back()' : 'history.forward()' });
+        else if (m.action === 'stop') { await call('Page.stopLoading'); loading = false; await navState(); }
+        else if (m.action === 'back' || m.action === 'forward') {
+          const h = await call('Page.getNavigationHistory') as typeof history;
+          const entry = h?.entries[h.currentIndex + (m.action === 'back' ? -1 : 1)];
+          if (entry) await call('Page.navigateToHistoryEntry', { entryId: entry.id });
+        }
       }
       else if (m.type === 'new') { const t = await openTab(id, typeof m.url === 'string' && m.url ? m.url : 'about:blank'); chosen = true; await open(t.id); }
       else if (m.type === 'close' && typeof m.id === 'string') await closeTab(id, m.id);
     } catch (e) { send({ type: 'error', message: (e as Error).message }); }
   });
   async function key(m: { down: boolean; key: string; code: string; keyCode: number; modifiers: number }) {
-    const base = { key: m.key, code: m.code, windowsVirtualKeyCode: m.keyCode, nativeVirtualKeyCode: m.keyCode, modifiers: m.modifiers || 0 };
+    const commands = m.down ? editCommands(m.key, m.modifiers || 0) : [];
+    const base = { key: m.key, code: m.code, windowsVirtualKeyCode: m.keyCode, nativeVirtualKeyCode: m.keyCode, modifiers: m.modifiers || 0, ...(commands.length ? { commands } : {}) };
     if (!m.down) return call('Input.dispatchKeyEvent', { type: 'keyUp', ...base });
     const printable = m.key.length === 1 && !(m.modifiers & (2 | 4)); // no Ctrl, no Meta
     if (printable) return call('Input.dispatchKeyEvent', { type: 'keyDown', ...base, text: m.key, unmodifiedText: m.key });
@@ -453,6 +475,34 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     if (!(await isRunning(id)) && autostart) { try { await ensure(id); } catch (e) { send({ type: 'error', message: (e as Error).message }); } }
     await poll();
   })();
+}
+
+// The text that a copy takes: the selection in a focused text field, else the selection of the page.
+const COPY = `(() => { const a = document.activeElement;
+  if (a && (a.tagName === 'TEXTAREA' || a.tagName === 'INPUT') && typeof a.selectionStart === 'number') return a.value.slice(a.selectionStart, a.selectionEnd);
+  return String(getSelection() || ''); })()`;
+// Chrome on macOS runs editing shortcuts as commands. A key event from DevTools carries no command by itself, so
+// Cmd+A, Cmd+Z, Option+Arrow and the other usual text shortcuts would do nothing in the page without this list.
+// Modifier bits: 1 Alt, 2 Ctrl, 4 Meta, 8 Shift.
+export function editCommands(key: string, mod: number): string[] {
+  const meta = !!(mod & 4), alt = !!(mod & 1), shift = !!(mod & 8), sel = shift ? 'AndModifySelection' : '';
+  if (meta && !alt) {
+    const k = key.toLowerCase();
+    if (k === 'a') return ['selectAll'];
+    if (k === 'z') return [shift ? 'redo' : 'undo'];
+    if (key === 'ArrowLeft') return ['moveToBeginningOfLine' + sel];
+    if (key === 'ArrowRight') return ['moveToEndOfLine' + sel];
+    if (key === 'ArrowUp') return ['moveToBeginningOfDocument' + sel];
+    if (key === 'ArrowDown') return ['moveToEndOfDocument' + sel];
+    if (key === 'Backspace') return ['deleteToBeginningOfLine'];
+  }
+  if (alt && !meta) {
+    if (key === 'ArrowLeft') return ['moveWordLeft' + sel];
+    if (key === 'ArrowRight') return ['moveWordRight' + sel];
+    if (key === 'Backspace') return ['deleteWordBackward'];
+    if (key === 'Delete') return ['deleteWordForward'];
+  }
+  return [];
 }
 
 // ---------- the browser MCP server that agents use ----------

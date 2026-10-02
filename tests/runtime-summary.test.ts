@@ -30,17 +30,20 @@ test('memory text uses MB below 1 GB, and a dash when it is unknown', () => {
   assert.equal(totalText({ browsers: 1, procs: 2, memMb: 400 }), '1 browser and 2 processes running · about 400 MB');
 });
 
-test('parseRss adds up the resident memory of each process group, and total counts only running items', async () => {
+test('memory falls back to the sum of RSS when footprint cannot read the processes, and total counts only running items', async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-rt-unit-')));
   process.env.TASKBOARD_DIR = join(root, 'state'); process.env.TASKBOARD_VAULT = join(root, 'vault');
   mkdirSync(process.env.TASKBOARD_DIR);
   writeFileSync(join(root, 'state', 'machine.json'), JSON.stringify({ controller: { autostart: false, remoteControl: false } }));
   const summary = await import('../server/runtime-summary.ts');
-  const rss = summary.parseRss('  100  2048\n  100  1024\n  200   512\nbad line\n');
-  assert.equal(rss.get(100), 3072);
-  assert.equal(summary.memMb(rss, 100), 3);
-  assert.equal(summary.memMb(rss, 300), null, 'a process group that ps does not list has no number');
-  assert.equal(summary.memMb(rss, undefined), null);
+  const memory = await import('../server/memory.ts');
+  // process ids that do not exist: footprint fails, so the number is the sum of RSS of the group
+  const ps = memory.parsePs(' 999999991  999999990  2048\n 999999992  999999990  1024\n 999999993  999999980   512\nbad line\n');
+  assert.equal(ps.length, 3);
+  const mem = await memory.byGroup([999999990, 999999970], ps);
+  assert.equal(summary.memMb(mem, 999999990), 3);
+  assert.equal(summary.memMb(mem, 999999970), null, 'a process group that ps does not list has no number');
+  assert.equal(summary.memMb(mem, undefined), null);
   const t = summary.total([
     { task: 'a', kind: 'browser', name: 'Browser', state: 'running', memMb: 300 },
     { task: 'a', kind: 'proc', name: 'web', state: 'running', memMb: 50 },
@@ -48,6 +51,18 @@ test('parseRss adds up the resident memory of each process group, and total coun
     { task: 'b', kind: 'browser', name: 'Browser', state: 'stopped', memMb: null },
   ]);
   assert.deepEqual(t, { browsers: 1, procs: 1, memMb: 350 });
+});
+
+test('memory of a real process group is a positive number, below the sum of RSS on macOS', async () => {
+  const memory = await import('../server/memory.ts');
+  const ps = await memory.processes();
+  const me = ps.find(p => p.pid === process.pid);
+  assert.ok(me, 'ps lists this test process');
+  const mb = (await memory.byGroup([me.pgid], ps)).get(me.pgid);
+  assert.ok(mb && mb > 0);
+  const rssMb = Math.round(ps.filter(p => p.pgid === me.pgid).reduce((n, p) => n + p.rssKb, 0) / 1024);
+  if (process.platform === 'darwin') assert.ok(mb <= rssMb, `footprint ${mb} MB is not above the sum of RSS ${rssMb} MB`);
+  else assert.equal(mb, rssMb);
 });
 
 test('a group lists the processes of its tasks, a task that leaves takes its items along, and deleting the group stops nothing', async () => {

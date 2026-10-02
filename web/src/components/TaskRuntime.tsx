@@ -58,11 +58,11 @@ export function RuntimeList({ tasks, showOwner, onOpen, pictures = false }: { ta
   return (
     <div className="rtl">
       {err && <div className="banner">{err} <button className="btn ghost" onClick={() => setErr('')}>OK</button></div>}
-      {showOwner && data && <div className="rtl-total" title="Memory is the resident memory (RSS) of each item's process group, read with ps every 4 s while this view is open.">{totalText(data.total)}</div>}
+      {showOwner && data && <div className="rtl-total" title="Memory is the footprint of each item's processes, counted like Activity Monitor does. The server reads it at most every 15 s while this view is open.">{totalText(data.total)}</div>}
       {data && !items.length && <div className="sub rtl-none">No browsers or processes. {showOwner ? 'A task gets them when its agent uses its browser or runs tb run.' : 'The agent starts them with its browser tools or tb run.'}</div>}
       {!data && !err && <div className="sub rtl-none">Reading…</div>}
       {!!items.length && <table className="rtl-table">
-        <thead><tr>{showOwner && <th>Task</th>}<th>Item</th><th>State</th><th>Port</th><th title="Resident memory (RSS) of the item's process group, read with ps. Shared pages count in each process.">Memory</th><th /></tr></thead>
+        <thead><tr>{showOwner && <th>Task</th>}<th>Item</th><th>State</th><th>Port</th><th title="Footprint of the item's processes, counted like Activity Monitor does.">Memory</th><th /></tr></thead>
         <tbody>{items.map(i => {
           const t = byId.get(i.task);
           const k = `${i.task}/${i.kind}/${i.name}`;
