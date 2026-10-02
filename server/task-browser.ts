@@ -894,8 +894,9 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     if (!visible) { quality = null; clearTimeout(conn.stillTimer); }
     conn.chain = conn.chain.then(async () => {
       if (page !== conn) return;
+      // every frame gets its ack, also a frame of the screencast that stops now
+      for (const ack of held.splice(0)) ack();
       if (conn.casting) await call('Page.stopScreencast');
-      held = []; // Chrome does not wait for the acks of a stopped screencast
       if (quality !== null && page === conn) await call('Page.startScreencast', { format: 'jpeg', quality, maxWidth: 1920, maxHeight: 1920, everyNthFrame: 1 });
       const on = quality !== null && page === conn && conn.ws.readyState === WebSocket.OPEN;
       if (on !== !!conn.casting) { conn.casting = on; count(screencasts, id, on ? 1 : -1); }
