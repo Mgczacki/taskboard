@@ -14,10 +14,11 @@ import { GraphView } from './components/Graph';
 import { LinkedWork, LinkMarker } from './components/Links';
 import { isReplaced, linkOrder, treeDepth, waitingCount } from './links';
 import { InboxPage } from './components/Mail';
-import { FlaggedBody, request as messageRequest } from './components/messages';
 import { AccountsPage } from './components/Accounts';
 import { SettingsPage } from './components/Settings';
-import { PermitDetails, PermitsPage } from './components/Permits';
+import { PermitsPage } from './components/Permits';
+import { NoticeStack } from './components/NoticeStack';
+import { WaitingPage, waitingRows } from './components/Waiting';
 import { StatsPage } from './components/Stats';
 import type { DocumentLink } from './documentLinks';
 import { previewHtml, readMarkdown } from './components/Docs';
@@ -26,14 +27,14 @@ import { cancelHold, holdView, subscribeHold } from './holdRun';
 import { HOLD_MS, SHOW_MS } from './bangCommand';
 import type { PanelTab } from './panelShare';
 
-type Page = 'list' | 'board' | 'canvas' | 'graph' | 'inbox' | 'permits' | 'accounts' | 'stats' | 'settings';
+type Page = 'list' | 'board' | 'canvas' | 'graph' | 'waiting' | 'inbox' | 'permits' | 'accounts' | 'stats' | 'settings';
 // #list · #board · #canvas · #canvas:<view>  (view = g:<group> | needs | live | t:<id,id>) · #settings:<section>
 function parseHash(): { page: Page; view?: string } {
   const h = decodeURIComponent(location.hash.slice(1));
   if (h === 'review') return { page: 'inbox' };
   if (h.startsWith('canvas:')) return { page: 'canvas', view: h.slice(7) };
   if (h.startsWith('settings:')) return { page: 'settings' }; // #settings:<section> (Settings scrolls to it)
-  return { page: (['list', 'board', 'canvas', 'graph', 'inbox', 'permits', 'accounts', 'stats', 'settings'].includes(h) ? h : 'list') as Page };
+  return { page: (['list', 'board', 'canvas', 'graph', 'waiting', 'inbox', 'permits', 'accounts', 'stats', 'settings'].includes(h) ? h : 'list') as Page };
 }
 export const SOLO = new URLSearchParams(location.search).get('solo') === '1';
 export interface Toast { id: number; text: string; expiresAt: number; action?: { label: string; fn: () => void } }
@@ -83,7 +84,7 @@ function HoldCard({ tasks }: { tasks: Task[] }) {
 }
 
 export function App() {
-  const { tasks: allTasks, groups, approvals, machines, connected } = useStore();
+  const { tasks: allTasks, groups, approvals, pending, machines, connected } = useStore();
   useKeymap();
   const [addMachine, setAddMachine] = useState(false);
   const [keysHelp, setKeysHelp] = useState(false);
@@ -144,7 +145,6 @@ export function App() {
   // groups opened as a tree in the sidebar
   const [openGroups, setOpenGroups] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem('tb-rail-groups') || '[]'); } catch { return []; } });
   const toggleGroup = (id: string) => setOpenGroups(l => { const n = l.includes(id) ? l.filter(x => x !== id) : [...l, id]; try { localStorage.setItem('tb-rail-groups', JSON.stringify(n)); } catch { /* storage off */ } return n; });
-  const [cardComments, setCardComments] = useState<Record<string, string>>({}); // comments for Send back on message cards
   const [railHidden, setRailHidden] = useState(() => SOLO || localStorage.getItem('tb-rail') === 'hidden');
   const [focusMode, setFocusMode] = useState(false);
   const [showArchived, setShowArchived] = useState(false);
@@ -185,6 +185,8 @@ export function App() {
   }, [openId, controller?.status]);
   const queue = useMemo(() => tasks.filter(t => ATTN.includes(t.status)).sort((a, b) => b.waitMin - a.waitMin), [tasks]);
   const needs = tasks.filter(t => t.status === 'needs-you'), unread = tasks.filter(t => t.status === 'unread');
+  // everything on the Waiting page: question cards, approval cards, and tasks that wait with no card
+  const waitingCount = useMemo(() => waitingRows(tasks, approvals, pending).length, [tasks, approvals, pending]);
   const canvasIds = useMemo(() => {
     if (page !== 'canvas') return [];
     if (view.startsWith('g:')) return groups.find(g => g.id === view.slice(2))?.tasks || [];
@@ -240,7 +242,7 @@ export function App() {
         <div className="rail-item ctl-item" onClick={openController} title={`The controller agent manages the other agents. Shortcut: ${keysText('controller')}`}>{controller ? <Dot s={controller.status} /> : <span className="dot idle" />}<span className="t"><b>Controller</b>{controller ? '' : ' · start'}</span>{controller?.remoteUrl && <a className="rc-link" href={controller.remoteUrl} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} title="Remote Control is on: open the controller on claude.ai or the Claude mobile app">📱</a>}{keyLabel('controller') && <kbd>{keyLabel('controller')}</kbd>}</div>
         <button className="importbtn" onClick={() => setImportOpen(true)} title="Bring in Claude Code, Codex and Antigravity sessions you started outside Taskboard">⇪ Import sessions</button>
         <nav className="nav">
-          {(['list', 'board', 'graph', 'canvas', 'inbox', 'permits', 'accounts', 'stats', 'settings'] as Page[]).map(p => <a key={p} href={p === 'canvas' ? `#canvas:${encodeURIComponent(view)}` : `#${p}`} className={page === p ? 'on' : ''} onClick={() => go(p)}>{p[0].toUpperCase() + p.slice(1)}{p === 'list' && <span className="n">{tasks.filter(t => t.status !== 'archived').length}</span>}{p === 'inbox' && reviewCount > 0 && <span className="n" style={{ color: 'var(--st-review)' }}>{reviewCount}</span>}</a>)}
+          {(['list', 'board', 'graph', 'canvas', 'waiting', 'inbox', 'permits', 'accounts', 'stats', 'settings'] as Page[]).map(p => <a key={p} href={p === 'canvas' ? `#canvas:${encodeURIComponent(view)}` : `#${p}`} className={page === p ? 'on' : ''} onClick={() => go(p)}>{p[0].toUpperCase() + p.slice(1)}{p === 'list' && <span className="n">{tasks.filter(t => t.status !== 'archived').length}</span>}{p === 'waiting' && waitingCount > 0 && <span className="n needs">{waitingCount}</span>}{p === 'inbox' && reviewCount > 0 && <span className="n" style={{ color: 'var(--st-review)' }}>{reviewCount}</span>}</a>)}
         </nav>
         <div className="rail-scroll">
           <div className="rail-sec"><h6>Needs you<span>{needs.length}</span></h6>{needs.map(item)}{!needs.length && <div className="rail-empty">Nothing waiting</div>}</div>
@@ -271,7 +273,7 @@ export function App() {
           <h1>{SOLO ? viewName(view, groups, tasks) : page[0].toUpperCase() + page.slice(1)}</h1>
           <span className="spacer" />
           <div className="attn-wrap">{approvals.some(a => a.state === 'pending') && <span className="attn" style={{ marginRight: 8 }}>{approvals.filter(a => a.state === 'pending').length} to approve</span>}{queue.length
-            ? <button className="attn" onClick={() => setTriage(true)} title={`Triage: everything waiting on you. Shortcut: ${keysText('triage')}`}>{queue.length} waiting on you<span className="sep">·</span><span className="long">longest {fmtWait(queue[0].waitMin)}</span>{keyLabel('triage') && <kbd>{keyLabel('triage')}</kbd>}</button>
+            ? <button className="attn" onClick={() => go('waiting')} title={`The Waiting page: everything waiting on you. Triage shortcut: ${keysText('triage')}`}>{queue.length} waiting on you<span className="sep">·</span><span className="long">longest {fmtWait(queue[0].waitMin)}</span>{keyLabel('triage') && <kbd>{keyLabel('triage')}</kbd>}</button>
             : <span className="attn quiet">Nothing waiting</span>}</div>
           <span className="spacer" />
           {page === 'list' && <label className="opt"><input type="checkbox" checked={showArchived} onChange={e => setShowArchived(e.target.checked)} /> Show archived</label>}
@@ -284,6 +286,7 @@ export function App() {
           {page === 'stats' && <StatsPage />}
           {page === 'settings' && <SettingsPage tasks={allTasks} />}
           {page === 'permits' && <PermitsPage openTask={setOpenId} />}
+          {page === 'waiting' && <WaitingPage tasks={tasks} allTasks={allTasks} openTask={setOpenId} openController={openController} toast={toast} />}
           {page === 'inbox' && <InboxPage tasks={tasks} open={(id, tab) => setOpenId(id, tab)} documentLink={documentLink?.reviewId ? documentLink : null} />}
           {page === 'graph' && <GraphView tasks={tasks} groups={groups} open={(id, tab) => setOpenId(id, tab)} />}
           {page === 'canvas' && <Canvas tasks={tasks} groups={groups} view={view} setView={setView} openPanel={(id, tab) => setOpenId(id, tab)} panelTaskId={openId} panelTab={panelTab} selected={selected} toggleSel={toggleSel} clearSel={() => setSelected(new Set())} solo={SOLO} focusMode={focusMode} setFocusMode={setFocusMode} toast={toast} newTask={() => setNewOpen(true)} newTaskToFocus={newTaskToFocus} onNewTaskFocused={() => setNewTaskToFocus(null)} onSpinOff={(exchange, task) => { setSpinOff({ exchange, task }); setNewOpen(true); }} />}
@@ -305,23 +308,7 @@ export function App() {
       {addMachine && <AddMachine close={() => setAddMachine(false)} />}
       {linked && <LinkedWork q={linked} tasks={tasks} close={() => setLinked(null)} onGo={id => setOpenId(id)} />}
       {triage && <Triage queue={queue} tasks={tasks} close={() => setTriage(false)} open={id => { setTriage(false); setOpenId(id); }} />}
-      {approvals.some(a => (page !== 'permits' || a.action !== 'permit') && (a.state === 'pending' || (a.action === 'permit' && a.state === 'running'))) && <div className="approvals">{approvals.filter(a => (page !== 'permits' || a.action !== 'permit') && (a.state === 'pending' || (a.action === 'permit' && a.state === 'running'))).map(a => (
-        <div key={a.id} className={`approval${a.action === 'git-push' ? ' push-card' : ''}`}>
-          {a.action === 'permit' && a.payload?.permitId ? <PermitDetails id={a.payload.permitId} decision openTask={setOpenId} /> : a.action === 'git-push' && a.payload?.pushId ? <><div className="ap-h"><span className="dot needs-you" /><b>Task #{allTasks.find(t => t.id === a.actor)?.num || a.actor} asks to push</b><span className="sub">Expires {new Date(Date.parse(a.created) + 600000).toLocaleTimeString()}</span></div><pre className="ap-d">{a.detail}</pre><textarea className="routing-rule" rows={2} aria-label="Push decision comment" placeholder="Comment for the task" value={cardComments[a.id] || ''} onChange={e => setCardComments(c => ({ ...c, [a.id]: e.target.value }))} /><div className="ap-a"><button className="btn primary" onClick={() => void api.decidePush(a.payload!.pushId!, true, cardComments[a.id] || '').catch(e => toast(String(e.message || e)))}>{a.payload?.state?.forcePush ? 'Approve force push' : 'Approve push'}</button><button className="btn" onClick={() => void api.decidePush(a.payload!.pushId!, false, cardComments[a.id] || '').catch(e => toast(String(e.message || e)))}>Deny</button><button className="btn ghost" onClick={() => setOpenId(a.actor)}>Open task</button></div></> : a.action === 'tool-refusal' ? <><div className="ap-h"><span className="dot needs-you" /><b>Task #{allTasks.find(t => t.id === a.actor)?.num || a.actor} had a tool call refused</b></div><pre className="ap-d">{a.detail}</pre><div className="ap-a">{a.payload?.canPermit && <button className="btn primary" onClick={() => void api.permitRefusal(a.id).catch(e => toast(String(e.message || e)))}>Allow this once</button>}<button className="btn" onClick={() => void api.decide(a.id, false)}>Deny</button><button className="btn ghost" onClick={() => setOpenId(a.actor)}>Open task</button></div></> : <>
-          <div className="ap-h"><span className="dot needs-you" /><b>{a.actor === 'controller' ? 'The controller' : `Task #${allTasks.find(t => t.id === a.actor)?.num || a.actor}`} wants to {a.summary}</b>{a.action === 'scope' && <span className="sub">Scope request {a.id}</span>}</div>
-          {a.detail && (a.action === 'mail-out' && a.payload?.body
-            ? <><pre className="ap-d">{a.detail.slice(0, a.detail.lastIndexOf(a.payload.body))}</pre><FlaggedBody body={a.payload.body} quality={a.payload.quality} /></>
-            : <pre className="ap-d">{a.detail}</pre>)}
-          {a.returnable && <textarea className="routing-rule" rows={2} aria-label="Comment for Send back" placeholder={a.action === 'mail-in' ? 'What is wrong with the message or the task? The controller receives this comment.' : 'What should change in the draft? The agent that wrote it receives this comment.'} value={cardComments[a.id] || ''} onChange={e => setCardComments(c => ({ ...c, [a.id]: e.target.value }))} />}
-          <div className="ap-a"><button className="btn primary" onClick={() => void api.decide(a.id, true).then(r => { if (a.returnable && r.result) toast(r.result); }).catch(e => toast((e as Error).message))}>Approve</button>
-            {a.action === 'mail-out' && a.payload?.quality?.flags.length && <button className="btn" onClick={() => void (async () => {
-              await messageRequest(`/messages/${a.payload!.message}/remove-flagged`, { hash: a.payload!.hash });
-              toast('Flagged text was removed. Taskboard checks the edited draft again.');
-            })().catch(e => toast((e as Error).message))}>Remove flagged text</button>}
-            {/* the result says where the comment went (server/a2anotes/cards.ts giveBack) */}
-            {a.returnable && <button className="btn" disabled={!cardComments[a.id]?.trim()} onClick={() => void api.giveBack(a.id, cardComments[a.id]).then(r => { if (r.result) toast(r.result); }).catch(e => toast((e as Error).message))}>Send back</button>}
-            <button className="btn" onClick={() => api.decide(a.id, false)}>Deny</button><button className="btn ghost" onClick={() => a.actor === 'controller' ? openController() : setOpenId(a.actor)}>{a.actor === 'controller' ? 'Open controller' : 'Open task'}</button></div></>}
-        </div>))}</div>}
+      {page !== 'waiting' && <NoticeStack approvals={approvals.filter(a => (page !== 'permits' || a.action !== 'permit') && (a.state === 'pending' || (a.action === 'permit' && a.state === 'running')))} pending={pending.filter(i => i.taskId !== openId)} allTasks={allTasks} setOpenId={setOpenId} openController={openController} toast={toast} showAll={() => go('waiting')} />}
       <div className="toasts"><HoldCard tasks={allTasks} />{toasts.map(t => <ToastNotice key={t.id} toast={t} dismiss={() => setToasts(x => x.filter(y => y.id !== t.id))} />)}</div>
     </div>
   );

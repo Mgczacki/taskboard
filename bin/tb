@@ -147,6 +147,10 @@ const HELP = `tb — Taskboard command line
   tb suggest --steps steps.json --why "reason" [--risk "risk"]
   tb permit result ID [--wait] | tb permit list
   tb permit approve ID [--user-request "the user's chat message"]   controller only
+  tb pending list [--json]          controller only: the questions and dialogs that tasks wait on (the Waiting page)
+  tb pending answer ID --option KEY | --text "answer" [--user-request "the user's chat message"]
+                                     controller only. The words must be one user message in your chat that names
+                                     the card ID. Without them, only low risk command cards when Settings allows it.
   tb scope request worktree --repo <main checkout> --base <remote branch or commit> --branch <new branch> --reason "text"
                                      ask the user for a new worktree on a new branch. Taskboard creates it and
                                      attaches it to your task. Then use tb git … --worktree <name>
@@ -551,6 +555,28 @@ switch (cmd) {
     const r = spawnSync(process.execPath, [script, ...args.slice(1)], { stdio: 'inherit' });
     if (r.error) console.error(`tb restart: cannot run ${script}: ${r.error.message}`);
     process.exit(r.status ?? 1);
+  }
+  case 'pending': {
+    if (process.env.TASK_ID !== 'controller') { console.error('tb pending: controller only'); process.exit(1); }
+    if (rest[0] === 'list') {
+      const json = has('--json');
+      const { items } = await call('GET', '/api/pending');
+      if (json) { console.log(JSON.stringify(items, null, 2)); break; }
+      if (!items.length) { console.log('Nothing waits on the user.'); break; }
+      for (const i of items) {
+        console.log(`${i.id}  #${i.taskNum} ${i.agent} ${i.kind}${i.answerable ? '' : ' (answer in the terminal)'}: ${i.question}`);
+        if (i.details?.command) console.log(`    command: ${i.details.command}`);
+        for (const o of i.options) console.log(`    --option ${o.key}  ${o.label}${o.risk ? `  [${o.risk}: user only]` : ''}`);
+        if (i.text) console.log(`    --text "..."  ${i.text.placeholder}`);
+      }
+    } else if (rest[0] === 'answer') {
+      const option = flag('--option'), text = flag('--text'), userRequest = flag('--user-request');
+      const id = args[2];
+      if (!id || (!option && !text)) { console.error('tb pending answer ID --option KEY | --text "answer" [--user-request "the user chat message"]'); process.exit(1); }
+      const r = await call('POST', `/api/pending/${encodeURIComponent(id)}/answer`, { option, text, userRequest });
+      console.log(`${r.state}: ${r.result || ''}`);
+    } else { console.error('tb pending list | answer'); process.exit(1); }
+    break;
   }
   case 'suggest':
   case 'permit': {

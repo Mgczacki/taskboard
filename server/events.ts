@@ -3,6 +3,7 @@ import { statSync } from 'node:fs';
 import { lastRefusal } from './claude-refusal.ts';
 import { lastCodexRefusal, type CommandRefusal } from './command-refusal.ts';
 import * as permits from './permits.ts';
+import * as pending from './pending.ts';
 import * as approvals from './approvals.ts';
 import * as agents from './agents.ts';
 import * as docs from './docs.ts';
@@ -81,6 +82,9 @@ export function claudeEvent(taskId: string, input: any): { output?: unknown } {
   // an archived task stays archived whatever its agent still reports
   if (t.status === 'archived' || !acceptsEvent(t, 'claude', input.session_id)) return {};
   const ev = input.hook_event_name;
+  // a permission hook that still waits for a card answer is released when the agent moved on (pending.releaseClaude)
+  if (ev === 'PostToolUse') pending.releaseClaude(t.id, input);
+  else if (['UserPromptSubmit', 'Stop', 'StopFailure', 'SessionStart'].includes(ev)) pending.releaseClaude(t.id);
   switch (ev) {
     case 'SessionStart':
       sessionStarted.add(t.id);

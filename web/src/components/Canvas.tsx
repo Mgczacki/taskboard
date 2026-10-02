@@ -6,6 +6,7 @@ import type { Group, SpinOffExchange, Task } from '../api';
 import { ATTN, STATUS_LABEL, api, confirmEnd, useStore } from '../api';
 import { AgentChip, Dot, MachineChip, WhereChip } from './ui';
 import { Terminal, terminalDebugRecord } from './Terminal';
+import { TaskPending } from './PendingCard';
 import { hit as key, hitIn, inBrowser, keyLabel, keysText, useKeymap } from '../keys';
 import { AskPanel } from './Ask';
 import { archiveAll, archiveAndDelete, archivePlan, restoreAll, restoreGroupAndTasks, type ArchiveResult, type ArchiveTarget } from '../groupArchive';
@@ -484,6 +485,7 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
               // the terminal stays the last child, so opening or closing the browser does not mount it again
               : <>{splitOf(t.id).open && canRun(t) && !held(t.id).browser && <div className="wb-browser"><BrowserView id={t.id} title={`#${t.num} ${t.title}`} autostart={startHere.current.has(t.id)} /></div>}
                 <Terminal taskId={t.id} fontSize={font[t.id] || 13} onFocus={() => setFocused(t.id)} /></>}</div>
+            <TaskPending taskId={t.id} compact openTask={id => openPanel(id)} toast={toast} />
           </div>
         ))}
       </div>

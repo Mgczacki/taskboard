@@ -25,7 +25,7 @@ export interface ImportCandidate {
   updated: string; source?: string; running?: { pid: number; tty: string; exact: boolean };
 }
 
-export interface MachineInfo { role?: 'production' | 'sandbox'; root?: string; machine: string; machineId?: string; host: string; url: string; settings: { name: string; routingRules: string; newTaskDefaultAgent: Agent | 'auto'; controller: { autostart: boolean; remoteControl: boolean; dangerouslySkipPermissions: boolean; models: Record<Agent, string> }; permissions: { controllerNeedsApproval: boolean; agentsNeedApproval: boolean; trustWorkspaces: boolean; autoReview: boolean; controllerCanApprovePermits: boolean }; permitFolders: string[]; pushes: { taskBranches: 'run' | 'ask' | 'never'; ownRepositories: string[]; protectedBranches: string[] }; ask: { agent: 'claude' | 'codex'; account: string; model: string }; review: { account: string; model: string }; messages: { incoming: MessageLevel; outgoing: MessageLevel; checkPrivateNotes: boolean }; accounts: { defaultMaxParallel: number }; browser: { claude: BrowserMode; codex: BrowserMode; chromePath: string; idleStopMinutes: number; sharp?: boolean } }; controller: null | { agent: string; account?: string; status: string; remoteUrl?: string; label: string } }
+export interface MachineInfo { role?: 'production' | 'sandbox'; root?: string; machine: string; machineId?: string; host: string; url: string; settings: { name: string; routingRules: string; newTaskDefaultAgent: Agent | 'auto'; controller: { autostart: boolean; remoteControl: boolean; dangerouslySkipPermissions: boolean; models: Record<Agent, string> }; permissions: { controllerNeedsApproval: boolean; agentsNeedApproval: boolean; trustWorkspaces: boolean; autoReview: boolean; controllerCanApprovePermits: boolean; holdPermissionHook?: boolean }; permitFolders: string[]; pushes: { taskBranches: 'run' | 'ask' | 'never'; ownRepositories: string[]; protectedBranches: string[] }; ask: { agent: 'claude' | 'codex'; account: string; model: string }; review: { account: string; model: string }; messages: { incoming: MessageLevel; outgoing: MessageLevel; checkPrivateNotes: boolean }; accounts: { defaultMaxParallel: number }; browser: { claude: BrowserMode; codex: BrowserMode; chromePath: string; idleStopMinutes: number; sharp?: boolean } }; controller: null | { agent: string; account?: string; status: string; remoteUrl?: string; label: string } }
 // the user's rules files for the controller and for task sessions (server/rules.ts)
 export type RulesKind = 'controller' | 'task';
 export interface RulesFile { kind: RulesKind; file: string; text: string; chars: number; max: number; updated: string | null; preview: { lines: string[]; more: boolean } }
@@ -62,6 +62,22 @@ export interface BrowserStatus { id: string; running: boolean; port?: number; ta
 export interface Scope { id: string; kind: 'worktree' | 'read'; name: string; path: string; at: string; reason: string; repo?: string; branch?: string; base?: string; baseCommit?: string }
 export interface Approval { id: string; actor: string; action: string; summary: string; detail: string; created: string; state: 'pending' | 'running' | 'approved' | 'denied' | 'failed' | 'expired' | 'unknown' | 'returned'; result?: string; returnable?: boolean; payload?: { permitId?: string; pushId?: string; state?: { forcePush?: boolean }; canPermit?: boolean; message?: string; hash?: string; body?: string; quality?: { state: string; flags: { text: string; start: number; end: number; reason: string }[] } } }
 export interface Permit { id: string; taskId: string; taskNum: number; agent: Agent; reason: string; statedRisk?: string; createdAt: string; expiresAt: string; state: string; approvedBy?: string; approvalRule?: string; riskClass?: 'low' | 'high'; controllerRequestText?: string; decisionComment?: string; error?: string; riskFlags: string[]; steps: { command: string; cwd: string; timeoutSeconds: number; network: boolean; state: string; exitCode?: number | null; outputTail?: string; error?: string }[] }
+// A question or dialog that a task waits on (server/pending.ts): the Waiting page, the notification stack, the task panel
+export type PendingRisk = 'wide-access' | 'installs' | 'spends' | 'exits';
+export interface PendingOption { key: string; label: string; description?: string; send: string; risk?: PendingRisk; deny?: boolean; selected?: boolean }
+export interface PendingItem {
+  id: string; taskId: string; taskNum: number; taskTitle: string; agent: Agent;
+  kind: 'command' | 'choice' | 'text' | 'dialog' | 'plan' | 'signin' | 'unknown'; source: 'claude-hook' | 'screen' | 'turn-end'; name?: string;
+  question: string; header?: string; options: PendingOption[];
+  text?: { mode: 'answer' | 'deny' | 'change'; placeholder: string; send: string };
+  questions?: { question: string; header?: string; options: { label: string; description?: string }[]; multiSelect: boolean }[];
+  details?: { command?: string; cwd?: string; reason?: string; title?: string; plan?: string };
+  screen?: { hash: string; excerpt: string; partial?: boolean };
+  answerable: boolean; createdAt: string; state: 'pending' | 'sending' | 'answered' | 'gone' | 'failed'; result?: string;
+  answer?: { by: 'user' | 'controller'; label: string; sent: string; at: string; rule?: string; tasks?: number[] };
+  repeats?: { count: number; lastAnswer: string };
+  sameIn?: { id: string; taskId: string; taskNum: number }[];
+}
 export interface PushRecord { id: string; at: string; taskId: string; branch: string; remote: string; remoteUrl: string; oldHead: string | null; newHead: string; state: string; result?: string; approvalId?: string }
 // questions about a task, answered by a separate read-only agent (server/ask.ts)
 export interface AskItem { q: string; a?: string; state: 'running' | 'done' | 'failed' | 'stopped'; steps: string[]; costUsd?: number; ms?: number; agent?: 'claude' | 'codex'; model: string; account: string; at: string }
@@ -102,13 +118,15 @@ let groups: Group[] = [];
 // the order of the terminals in each Canvas view that is not a group (server/canvasOrder.ts)
 let canvasOrder: Record<string, string[]> = {};
 let approvals: Approval[] = [];
+let pending: PendingItem[] = [];
+let answered: PendingItem[] = [];
 let runtime: Record<string, RuntimeCount> = {};
 let machines: Machine[] = [];
 const loadMachines = () => fetch('/api/machines').then(r => r.json()).then(m => { machines = m; publish(); }).catch(() => {});
 let connected = false;
 const subs = new Set<() => void>();
 const emit = () => subs.forEach(f => f());
-let snapshot = { tasks, groups, canvasOrder, approvals, machines, connected, runtime };
+let snapshot = { tasks, groups, canvasOrder, approvals, pending, answered, machines, connected, runtime };
 
 let ws: WebSocket | null = null;
 let viewingIds: string[] = [];
@@ -132,6 +150,7 @@ function connect() {
     if (m.type === 'groups') groups = m.groups;
     if (m.type === 'canvasOrder') canvasOrder = m.orders;
     if (m.type === 'approvals') approvals = m.approvals;
+    if (m.type === 'pending') { pending = m.items || []; answered = m.answered || []; }
     if (m.type === 'runtime') runtime = m.counts || {};
     if (m.type === 'machines') { loadMachines(); return; }
     if (m.type === 'removed') tasks = tasks.filter(t => t.id !== m.id);
@@ -139,7 +158,7 @@ function connect() {
     publish();
   };
 }
-function publish() { snapshot = { tasks, groups, canvasOrder, approvals, machines, connected, runtime }; emit(); }
+function publish() { snapshot = { tasks, groups, canvasOrder, approvals, pending, answered, machines, connected, runtime }; emit(); }
 connect();
 
 // the groups as they are now, for an Undo that runs after the page has re-rendered
@@ -186,7 +205,7 @@ export const api = {
   restart: (id: string, when: 'now' | 'after-turn' | 'cancel') => call<Task>('POST', `/api/tasks/${encodeURIComponent(id)}/restart`, { when }),
   remove: (id: string) => call('DELETE', `/api/tasks/${encodeURIComponent(id)}`),
   info: () => call<MachineInfo>('GET', '/api/info'),
-  updateInfo: (patch: { name?: string; routingRules?: string; newTaskDefaultAgent?: Agent | 'auto'; autostart?: boolean; remoteControl?: boolean; dangerouslySkipPermissions?: boolean; controllerModels?: Partial<Record<Agent, string>>; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; permitFolders?: string[]; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; checkPrivateNotes?: boolean; confirmLowerControl?: boolean; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; browserIdleStopMinutes?: number; browserSharp?: boolean }) => call<MachineInfo>('PATCH', '/api/info', patch),
+  updateInfo: (patch: { name?: string; routingRules?: string; newTaskDefaultAgent?: Agent | 'auto'; autostart?: boolean; remoteControl?: boolean; dangerouslySkipPermissions?: boolean; controllerModels?: Partial<Record<Agent, string>>; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; holdPermissionHook?: boolean; permitFolders?: string[]; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; checkPrivateNotes?: boolean; confirmLowerControl?: boolean; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; browserIdleStopMinutes?: number; browserSharp?: boolean }) => call<MachineInfo>('PATCH', '/api/info', patch),
   agentLoad: () => call<{ agents: number; medianMb: number; totalMb: number; memMb: number; noteAbove: number }>('GET', '/api/agent-load'),
   setControllerAccount: (account: string) => call<Task>('POST', '/api/controller/account', { account }),
   // sent as raw bytes; octet-stream so the server's JSON parser leaves .json files alone
@@ -223,6 +242,8 @@ export const api = {
   decidePush: (id: string, approve: boolean, comment: string) => call<PushRecord>('POST', `/api/git/pushes/${encodeURIComponent(id)}/decide`, { approve, comment }),
   permitRefusal: (id: string) => call<{ permit: Permit }>('POST', `/api/refusals/${encodeURIComponent(id)}/permit`, {}),
   // a message card goes back to the controller or to the agent that wrote the draft, with the comment
+  answerPending: (id: string, body: { option?: string; text?: string; confirm?: boolean; group?: string[] }) => call<PendingItem>('POST', `/api/pending/${id}/answer`, body),
+  hidePending: (id: string) => call('POST', `/api/pending/${id}/hide`, {}),
   giveBack: (id: string, comment: string) => call<Approval>('POST', `/api/approvals/${id}/return`, { comment }),
   moveAccount: (id: string, account: string) => call<Task>('POST', `/api/tasks/${id}/move-account`, { account }),
   transferMachines: (id: string) => call<{ id: string; name: string; online: boolean }[]>('GET', `/api/tasks/${encodeURIComponent(id)}/transfer/machines`),

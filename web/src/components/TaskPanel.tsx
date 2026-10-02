@@ -4,6 +4,7 @@ import type { Group, Task } from '../api';
 import { AGENT_NAME, STATUS_LABEL, api, fmtWait, linkedTaskId, shortPath } from '../api';
 import { AgentChip, ByController, Dot, MachineChip, ThreeLines, WhereChip } from './ui';
 import { Terminal } from './Terminal';
+import { TaskPending } from './PendingCard';
 import { DocsTab } from './Docs';
 import { LinksSection } from './Links';
 import { hasFiles, uploadAll } from '../drop';
@@ -136,6 +137,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
           </select>
         </div>
         <div className={`dr-status ${t.status}`}><Dot s={t.status} /><div title={t.statusSource}><span className={`st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span>{['needs-you', 'stopped', 'review'].includes(t.status) && <span className="waitchip">waiting {fmtWait(t.waitMin)}</span>} · {t.statusSource}</div></div>
+        <TaskPending taskId={t.id} openTask={onOpenTask} toast={toast} />
         <div className="ctx"><ThreeLines t={t} fixed />
           {since && !since.first && (since.entries.length > 0 || since.files.length > 0 || since.commits.length > 0) && <div className="since">
             <div className="since-h" onClick={() => setSinceOpen(o => !o)} style={{ cursor: 'pointer' }}>Since you last looked <span>{fmtWait(Math.round((Date.now() - Date.parse(since.since)) / 60000))} ago · {sinceOpen ? 'hide' : 'show'}</span></div>
