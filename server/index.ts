@@ -54,6 +54,7 @@ import { stopTaskSandboxes } from './sandbox-cleanup.ts';
 import * as runtime from './runtime-routes.ts';
 import { trimTerminalLog } from './terminal-log.ts';
 import { idleSuspendMinutes, maySuspendIdleTask } from './idle-suspend.ts';
+import * as launchLimit from './launch-limit.ts';
 
 const execFileP = promisify(execFile);
 // a development checkout never runs as the real Taskboard, and a sandbox never uses the real one's port, folders or tmux
@@ -736,7 +737,7 @@ mountA2ANotes(app, { delivery: inboxDelivery });
 inboxDelivery.start();
 
 // ---------- accounts ----------
-const acctView = async (a: accounts.Account, fresh = false) => ({ ...a, status: await accounts.status(a, fresh), running: store.all().filter(t => (t.account || accounts.defaultFor(t.agent).id) === a.id && !['archived', 'parked', 'suspended'].includes(t.status)).length });
+const acctView = async (a: accounts.Account, fresh = false) => ({ ...a, status: await accounts.status(a, fresh), usageStale: accounts.usageStale(a), usageStaleHours: accounts.USAGE_STALE_MS / 3600000, running: store.all().filter(t => (t.account || accounts.defaultFor(t.agent).id) === a.id && !['archived', 'parked', 'suspended'].includes(t.status)).length });
 app.get('/api/accounts', async (req, res) => res.json(await Promise.all(accounts.all().map(a => acctView(a, req.query.fresh === '1')))));
 app.post('/api/accounts', async (req, res) => { try { const { agent, name } = req.body; if (!['claude', 'codex', 'antigravity'].includes(agent) || !name) throw new Error('agent and name are required'); const a = await accounts.create(agent, String(name)); if (a.agent === 'antigravity') await agents.installAgyPlugin(a); res.json(await acctView(a)); } catch (e) { fail(res, e); } });
 // The maximum number of tasks protects an account's usage, so only the dashboard changes it (not tb, agents or the controller).
@@ -1312,9 +1313,13 @@ async function reconcile(first = false) {
     }
     // missing from the list: confirm with tmux directly before treating the session as gone
     if (!s && (await tmux.hasSession(t.session)) !== false) continue;
+    // a task stopped for its account (launch-limit.ts ends the session) keeps its reason until you act on it
+    if (!s && t.status === 'stopped') continue;
     if (!s) { store.update(t.id, { status: 'suspended', interrupted: t.status === 'working' ? 'The session ended while the agent was working.' : undefined, statusSource: 'The tmux session is gone (restart or crash). Opening the task resumes it.' }); continue; }
     if (s.dead) { store.update(t.id, { status: 'suspended', statusSource: 'The agent exited. Resume to continue the conversation.' }); continue; }
     if (!!t.unscrollable !== s.unscrollable) store.update(t.id, { unscrollable: s.unscrollable || undefined });
+    // no credit, a billing problem, a usage limit or an expired sign-in, read from the screen or the Codex rollout file
+    if (await launchLimit.check(t)) continue;
     // Questions the CLIs ask before any hook can fire (trust this folder, sign in, update) are read from the screen:
     // during the first 90 s after the agent was launched, and afterwards for as long as such a question keeps the task
     // in "needs you". Only the bottom 15 non-empty lines of the visible screen count (where a question waiting for an

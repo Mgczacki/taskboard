@@ -47,6 +47,8 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
     void load(); const timer = setInterval(load, 5000); return () => { live = false; clearInterval(timer); };
   }, [t.id, t.agent, t.machine?.id, t.tokenEstimate]);
   const acct = accts.find(a => a.id === (t.account || `${t.agent}-default`));
+  // stopped for its account (server/launch-limit.ts): the reason names the account and t.ask says what to do
+  const accountStop = !!acct && !!t.stopReason?.startsWith(acct.name);
 
   // read what changed since your last visit first, then mark the task as seen
   const [since, setSince] = useState<Awaited<ReturnType<typeof api.since>> | null>(null);
@@ -116,7 +118,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
           </div>}
         </div>
         {t.interrupted && t.status !== 'suspended' && <div className="banner"><b>Resumed.</b> {t.interrupted} <button className="btn" onClick={() => act(api.send(t.id, 'continue where you left off'))}>Continue</button></div>}
-        {t.status === 'stopped' && <div className="banner stopped"><b>{t.stopReason || 'Stopped'}.</b> {acct?.limited ? `${acct.name} reached a usage limit. ` : ''}The agent is not working. <button className="btn" onClick={() => act(api.send(t.id, 'continue'))}>Retry now</button>{t.role !== 'controller' && <button className="btn" onClick={() => setMoveOpen(true)}>Move account…</button>}<a className="btn ghost" href="#accounts">Accounts…</a></div>}
+        {t.status === 'stopped' && <div className="banner stopped"><b>{(t.stopReason || 'Stopped').replace(/\.$/, '')}.</b> {acct?.limited && !accountStop ? `${acct.name} has a limit mark (${acct.limited.note}). ` : ''}{accountStop && t.ask ? `${t.ask} ` : ''}The agent is not working. <button className="btn" onClick={() => act(api.send(t.id, 'continue'))}>Retry now</button>{t.role !== 'controller' && <button className="btn" onClick={() => setMoveOpen(true)}>Move account…</button>}<a className="btn ghost" href="#accounts">Accounts…</a></div>}
         {moveOpen && t.role !== 'controller' && <div className="banner">
           <label htmlFor="move-account">Move to account</label>
           <select id="move-account" className="acct-sel" value={targetAccount} disabled={moving} onChange={e => setTargetAccount(e.target.value)}>

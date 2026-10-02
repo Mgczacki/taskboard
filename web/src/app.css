@@ -618,3 +618,4 @@ table.keyset .keycell { text-align: right; white-space: normal; }
 .rtl-act { text-align: right; white-space: nowrap; }
 .rtl-act .btn { margin-left: 4px; padding: 2px 8px; font-size: 12px; }
 .rtl-table a { color: var(--accent); }
+.sub.warn { color: var(--st-needs); }
