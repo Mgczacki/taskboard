@@ -4,14 +4,14 @@
 // Saved per browser or app in localStorage 'tb-keys' (only the actions the user changed); other windows follow.
 import { useSyncExternalStore } from 'react';
 
-export type KeyCtx = 'app' | 'triage' | 'canvas' | 'review' | 'graph' | 'browser';
+export type KeyCtx = 'app' | 'triage' | 'canvas' | 'review' | 'graph' | 'browser' | 'waiting';
 export interface KeyAction {
   id: string; ctx: KeyCtx; label: string; keys: string[];
   // false: never while the cursor is in a terminal or a text field, also with ⌘ or ⌃ (⌘↩ in a comment box saves the comment)
   inFields?: false;
 }
 
-export const CTX_NAME: Record<KeyCtx, string> = { app: 'Anywhere', triage: 'Triage', canvas: 'Canvas', review: 'Review page', graph: 'Graph page', browser: 'Task browser' };
+export const CTX_NAME: Record<KeyCtx, string> = { app: 'Anywhere', triage: 'Triage', canvas: 'Canvas', review: 'Review page', graph: 'Graph page', browser: 'Task browser', waiting: 'Waiting page' };
 
 // Every default key has ⌘, ⌃ or ⌥ in it: a key without one ran by accident while the user meant to type (C opened the
 // controller). The Settings page still lets the user add a key without a modifier by hand.
@@ -55,6 +55,8 @@ export const ACTIONS: KeyAction[] = [
   { id: 'reviewComment', ctx: 'review', label: 'Comment on the selected text', keys: ['Ctrl+Alt+KeyC'] },
   { id: 'reviewAccept', ctx: 'review', label: 'Accept the document', keys: ['Ctrl+Alt+KeyA'] },
   { id: 'reviewSend', ctx: 'review', label: 'Send feedback to the task', keys: ['Meta+Enter', 'Ctrl+Enter'], inFields: false },
+  // Waiting.tsx; not in a text field, where ⌘⌫ deletes the line
+  { id: 'waitingDismiss', ctx: 'waiting', label: 'Dismiss the selected item (it shows again when something new happens)', keys: ['Meta+Backspace'], inFields: false },
   { id: 'graphFit', ctx: 'graph', label: 'Fit the graph to the window', keys: ['Ctrl+Alt+KeyF'] },
   // the only key that a task browser keeps: every other key goes to the page (TaskBrowser.tsx)
   { id: 'browserLeave', ctx: 'browser', label: 'Leave the browser: give the keys back to Taskboard', keys: ['Ctrl+Alt+Escape'] },

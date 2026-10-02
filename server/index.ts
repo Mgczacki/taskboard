@@ -51,6 +51,7 @@ import * as restart from './restart.ts';
 import * as permits from './permits.ts';
 import * as scopeRestart from './scope-restart.ts';
 import * as pending from './pending.ts';
+import * as dismiss from './dismiss.ts';
 import * as scopes from './scopes.ts';
 import { controllerMailToken } from './a2anotes/auth.ts';
 import * as tmux from './tmux.ts';
@@ -240,7 +241,8 @@ app.get('/api/pending', (req, res) => {
   const actor = req.get('x-tb-actor');
   if (actor && actor !== 'controller') return res.status(403).json({ error: 'Only the user and the controller read the Waiting list.' });
   // messages: the A2A Notes cards that wait on the user (server/a2anotes/cards.ts list), without message text
-  res.json({ items: pending.list(), answered: pending.answeredList(), messages: a2aNotes?.cards.list() ?? [] });
+  // dismissed: every item that the user dismissed (dismiss.ts), also task rows with no card
+  res.json({ items: pending.list(), answered: pending.answeredList(), messages: a2aNotes?.cards.list() ?? [], dismissed: dismiss.all() });
 });
 app.post('/api/pending/:id/answer', async (req, res) => {
   const actor = req.get('x-tb-actor') || '';
@@ -265,6 +267,26 @@ app.post('/api/pending/:id/answer', async (req, res) => {
 app.post('/api/pending/:id/hide', (req, res) => {
   if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Use the dashboard.' });
   try { pending.hide(req.params.id); res.json({}); } catch (e) { res.status(e instanceof pending.AnswerError ? e.status : 400).json({ error: e instanceof Error ? e.message : String(e) }); }
+});
+// ---------- dismissed items of the Waiting page (dismiss.ts) ----------
+// Only the user dismisses, on the dashboard. The controller reads the dismissed field in tb pending and has no command.
+app.get('/api/dismissed', (_req, res) => res.json({ entries: dismiss.all() }));
+app.post('/api/dismiss', (req, res) => {
+  if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Only the user dismisses an item, on the dashboard.' });
+  if (req.body.item) {
+    const i = pending.list().find(x => x.id === String(req.body.item));
+    if (!i?.sig) return res.status(404).json({ error: 'This card does not wait any more.' });
+    const hold = pending.holdsHook(i);
+    return res.json(dismiss.dismiss({ sig: i.sig, kind: 'item', taskId: i.taskId, taskNum: i.taskNum, title: i.taskTitle, question: i.question, label: String(req.body.label || i.kind) }, hold));
+  }
+  const t = store.get(String(req.body.task || ''));
+  const sig = t && waitSig(t);
+  if (!t || !sig) return res.status(404).json({ error: 'This task does not wait on you any more.' });
+  res.json(dismiss.dismiss({ sig, kind: 'task', taskId: t.id, taskNum: t.num, title: t.title, question: t.ask || t.stopReason || '', label: String(req.body.label || t.status) }, false));
+});
+app.post('/api/dismiss/bring-back', (req, res) => {
+  if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Use the dashboard.' });
+  res.json({ ok: dismiss.bringBack(String(req.body.sig || '')) });
 });
 app.get('/api/stats', (req, res) => {
   try { res.json(stats.get(String(req.query.timeZone || 'UTC'))); } catch { res.status(400).json({ error: 'Invalid time zone.' }); }
@@ -789,7 +811,10 @@ app.post('/api/machines', async (req, res) => {
 });
 app.delete('/api/machines/:id', (req, res) => { machines.remove(req.params.id); res.json({}); });
 
-const view = (t: store.Task) => ({ ...t, link: links.info(t), docs: docs.counts(t.id), queue: messageQueue.forView(t.id), waitMin: Math.round((Date.now() - Date.parse(t.statusAt)) / 60000), attach: `tmux -L taskboard attach -t ${t.session}`, ...(t.agent === 'antigravity' ? { tokenEstimate: stats.taskEstimate(t) } : {}) });
+// waitSig: the signature of the task row on the Waiting page, for a dismiss (dismiss.ts taskSignature)
+const WAITS_ON_USER = ['needs-you', 'stopped', 'review'];
+const waitSig = (t: store.Task) => WAITS_ON_USER.includes(t.status) ? dismiss.taskSignature(t, t.status === 'review' ? pendingFor(t.id) : undefined) : undefined;
+const view = (t: store.Task) => ({ ...t, waitSig: waitSig(t), link: links.info(t), docs: docs.counts(t.id), queue: messageQueue.forView(t.id), waitMin: Math.round((Date.now() - Date.parse(t.statusAt)) / 60000), attach: `tmux -L taskboard attach -t ${t.session}`, ...(t.agent === 'antigravity' ? { tokenEstimate: stats.taskEstimate(t) } : {}) });
 pending.setIo({
   capture: session => tmux.capture(session, 0),
   key: async (session, key, literal) => { await tmux.tmux('send-keys', '-t', '=' + session + ':', ...(literal ? ['-l', key] : [key])); },
@@ -810,8 +835,12 @@ app.get('/api/perf', async (_req, res) => res.json(await perf.snapshot()));
 app.get('/api/tasks', (_req, res) => res.json([...store.all().map(view), ...machines.remoteTasks()]));
 // The few fields that the Mac app reads every 3 s for its Dock badge and menu-bar menu (desktop/main.cjs), for the
 // tasks that are not archived. The whole list was 540 KB with 185 tasks, parsed on the app's main thread.
-app.get('/api/tasks/summary', (_req, res) => res.json([...store.all(), ...machines.remoteTasks()].filter(t => t.status !== 'archived')
-  .map(t => ({ id: t.id, num: t.num, title: t.title, status: t.status, role: t.role, waitMin: Math.round((Date.now() - Date.parse(t.statusAt)) / 60000) }))));
+// dismissed: the user dismissed what this task waits on (dismiss.ts); the badge leaves it out
+app.get('/api/tasks/summary', (_req, res) => {
+  const quiet = dismiss.quietTasks(store.all().map(t => ({ id: t.id, waitSig: waitSig(t) })), pending.list());
+  res.json([...store.all(), ...machines.remoteTasks()].filter(t => t.status !== 'archived')
+    .map(t => ({ id: t.id, num: t.num, title: t.title, status: t.status, role: t.role, waitMin: Math.round((Date.now() - Date.parse(t.statusAt)) / 60000), ...(quiet.has(t.id) ? { dismissed: true } : {}) })));
+});
 app.get('/api/tasks/:id/token-estimate', (req, res) => {
   const t = store.get(req.params.id);
   if (!t) return res.status(404).json({ error: 'Task not found.' });
@@ -1360,6 +1389,7 @@ function onSocket(ws: import('ws').WebSocket, url: URL) {
       sendEvent(ws, JSON.stringify({ type: 'canvasOrder', orders: canvasOrder.all() }));
       sendEvent(ws, JSON.stringify({ type: 'approvals', approvals: approvals.all() }));
       sendEvent(ws, JSON.stringify({ type: 'pending', items: pending.list(), answered: pending.answeredList() }));
+      sendEvent(ws, JSON.stringify({ type: 'dismissed', entries: dismiss.all() }));
       sendEvent(ws, JSON.stringify({ type: 'runtime', counts: runtime.runtimeCounts() }));
       const opened = new Set<string>();
       ws.on('message', m => {
@@ -1411,6 +1441,13 @@ approvals.onApprovalsChange(() => {
   }
   const msg = JSON.stringify({ type: 'approvals', approvals: approvals.all() });
   for (const c of eventClients) sendEvent(c, msg);
+});
+dismiss.load(TB_DIR);
+// a dismiss changes the dismissed field of the question cards: send both lists
+dismiss.onDismissChange(() => {
+  const msg = JSON.stringify({ type: 'dismissed', entries: dismiss.all() });
+  const items = JSON.stringify({ type: 'pending', items: pending.list(), answered: pending.answeredList() });
+  for (const c of eventClients) { sendEvent(c, msg); sendEvent(c, items); }
 });
 pending.onPendingChange(() => {
   const msg = JSON.stringify({ type: 'pending', items: pending.list(), answered: pending.answeredList() });
@@ -1734,6 +1771,8 @@ setInterval(() => {
     if (t.status !== 'archived') waits[t.id] = t.waitMin;
   const msg = JSON.stringify({ type: 'waits', waits });
   for (const c of eventClients) sendEvent(c, msg);
+  // drop dismissals of items that no longer wait, and old ones (dismiss.ts prune)
+  dismiss.prune(new Set([...pending.list().map(i => i.sig), ...store.all().map(waitSig)].filter((x): x is string => !!x)));
 }, 60000);
 const resourceCounts = () => ({ tasks: store.all().length, eventClients: eventClients.size, terminalViewers: terminalViewerCount(), approvals: approvals.count(), pendingTouches: pendingTouch.size, ...stats.cacheCounts() });
 sampleResources(resourceCounts);

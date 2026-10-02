@@ -8,6 +8,7 @@ import { useState, type ReactNode } from 'react';
 import type { PendingItem, PendingOption, PendingRisk } from '../api';
 import { api, fmtWait, loadConfirmRisk, RISK_SETTING, useStoreValue } from '../api';
 import { showInStack } from '../stack';
+import { DISMISS_TITLE, dismissItem, holdsHook, HOOK_TITLE } from '../dismiss';
 import { AgentChip } from './ui';
 
 export const KIND_LABEL: Record<PendingItem['kind'], string> = {
@@ -27,7 +28,8 @@ const RISK_TEXT: Record<PendingRisk, string> = {
 };
 const minutes = (iso: string) => Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
 
-export function PendingCard({ item, compact, openTask, toast }: { item: PendingItem; compact?: boolean; openTask: (id: string) => void; toast: (s: string) => void }) {
+type Toast = (s: string, action?: { label: string; fn: () => void }) => void;
+export function PendingCard({ item, compact, openTask, toast }: { item: PendingItem; compact?: boolean; openTask: (id: string) => void; toast: Toast }) {
   const confirmRisk = useStoreValue(s => s.confirmRisk);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -131,6 +133,8 @@ export function PendingCard({ item, compact, openTask, toast }: { item: PendingI
     {busy && <div className="pc-note info">Sending…</div>}
     <div className="pc-f">
       <button className="btn ghost" onClick={() => openTask(item.taskId)}>Open terminal</button>
+      {/* Dismiss never answers the card. A held hook card comes back after 10 minutes (server/dismiss.ts). */}
+      {item.state === 'pending' && <button className="btn ghost" disabled={busy} onClick={() => void dismissItem(item, KIND_LABEL[item.kind], toast)} title={holdsHook(item) ? HOOK_TITLE : DISMISS_TITLE}>{holdsHook(item) ? 'Dismiss for 10 min' : 'Dismiss'}</button>}
       {item.source === 'screen' && !item.answerable && item.kind === 'unknown' && <button className="btn ghost" onClick={() => void api.hidePending(item.id).catch(e => setError(String((e as Error).message || e)))} title="Hide this card. A different screen makes a new card.">Not a question</button>}
     </div>
     {confirm && <div className="scrim open" onMouseDown={e => { if (e.target === e.currentTarget) setConfirm(null); }}>
@@ -154,14 +158,18 @@ export function PendingCard({ item, compact, openTask, toast }: { item: PendingI
 // header or of the thin panel bar), the marker makes that label the button and adds no width. Without children it
 // shows "Answer". The button brings the card to the front of the notification stack (or selects it on the Waiting
 // page), where the user answers it.
-export function PendingMarker({ taskId, small, children }: { taskId: string; small?: boolean; children?: ReactNode }) {
+// dismiss: the task panel row adds a Dismiss button after the marker (a Canvas header has no room for it)
+export function PendingMarker({ taskId, small, children, dismiss }: { taskId: string; small?: boolean; children?: ReactNode; dismiss?: Toast }) {
   // only the cards: a change of a task does not draw this again
   const pending = useStoreValue(s => s.pending);
   const items = pending.filter(i => i.taskId === taskId);
   if (!items.length) return <>{children}</>;
   const q = items[0].question.replace(/\s+/g, ' ').trim();
-  return <button className={`${small ? 'b' : 'btn'} pc-mark ${children ? 'label' : ''}`} onClick={e => { e.stopPropagation(); showInStack(taskId); }} onPointerDown={e => e.stopPropagation()}
+  const mark = <button className={`${small ? 'b' : 'btn'} pc-mark ${children ? 'label' : ''}`} onClick={e => { e.stopPropagation(); showInStack(taskId); }} onPointerDown={e => e.stopPropagation()}
     title={`Waiting: ${q}${items.length > 1 ? ` (and ${items.length - 1} more)` : ''}\nOpens the card in the notification stack.`}>
     {children || <><span className="dot needs-you" />Answer</>}{items.length > 1 ? ` (${items.length})` : ''}
   </button>;
+  if (!dismiss) return mark;
+  const first = items[0];
+  return <>{mark}<button className="btn ghost pc-mark-x" onClick={e => { e.stopPropagation(); void dismissItem(first, KIND_LABEL[first.kind], dismiss); }} title={holdsHook(first) ? HOOK_TITLE : DISMISS_TITLE}>Dismiss</button></>;
 }

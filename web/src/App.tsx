@@ -21,6 +21,7 @@ import { SettingsPage } from './components/Settings';
 import { PermitsPage } from './components/Permits';
 import { NoticeStack } from './components/NoticeStack';
 import { WaitingPage, waitingRows } from './components/Waiting';
+import { quietTaskIds } from './dismiss';
 import { StatsPage } from './components/Stats';
 import { PerfMonitor } from './components/PerfMonitor';
 import type { DocumentLink } from './documentLinks';
@@ -87,7 +88,7 @@ function HoldCard({ tasks }: { tasks: Task[] }) {
 }
 
 export function App() {
-  const { tasks: allTasks, groups, approvals, pending, machines, connected, link, banner } = useStore();
+  const { tasks: allTasks, groups, approvals, pending, dismissedPending, dismissals, machines, connected, link, banner } = useStore();
   // the "for N s" in the server line and the banner count while the server does not answer
   const [, setTick] = useState(0);
   useEffect(() => { if (connected) return; const timer = setInterval(() => setTick(n => n + 1), 1000); return () => clearInterval(timer); }, [connected]);
@@ -194,10 +195,12 @@ export function App() {
     };
     addEventListener('taskboard:open', on); return () => removeEventListener('taskboard:open', on);
   }, [openId, controller?.status]);
-  const queue = useMemo(() => tasks.filter(t => ATTN.includes(t.status)).sort((a, b) => b.waitMin - a.waitMin), [tasks]);
-  const needs = tasks.filter(t => t.status === 'needs-you'), unread = tasks.filter(t => t.status === 'unread');
+  // quiet: tasks whose waiting item the user dismissed (dismiss.ts); the counts and triage leave them out
+  const quiet = useMemo(() => quietTaskIds(tasks, pending, dismissedPending, dismissals), [tasks, pending, dismissedPending, dismissals]);
+  const queue = useMemo(() => tasks.filter(t => ATTN.includes(t.status) && !quiet.has(t.id)).sort((a, b) => b.waitMin - a.waitMin), [tasks, quiet]);
+  const needs = tasks.filter(t => t.status === 'needs-you' && !quiet.has(t.id)), unread = tasks.filter(t => t.status === 'unread');
   // everything on the Waiting page: question cards, approval cards, and tasks that wait with no card
-  const waitingCount = useMemo(() => waitingRows(tasks, approvals, pending).length, [tasks, approvals, pending]);
+  const waitingCount = useMemo(() => waitingRows(tasks, approvals, pending, quiet).length, [tasks, approvals, pending, quiet]);
   const canvasIds = useMemo(() => {
     if (page !== 'canvas') return [];
     if (view.startsWith('g:')) return groups.find(g => g.id === view.slice(2))?.tasks || [];
@@ -265,7 +268,7 @@ export function App() {
             {machines.map(m => <div key={m.id} className={`rail-item ${m.online ? '' : 'off'}`} title={m.local ? 'This machine' : `${m.url}${m.error ? ' · ' + m.error : ''}`}><span className={`mdot ${m.online ? '' : 'off'}`} /><span className="t">{m.name}{m.local ? ' (this)' : ''}</span><span className="m">{m.local ? tasks.filter(t => !t.machine && t.status !== 'archived').length : m.online ? `${m.latency ?? '?'} ms · ${m.tasks ?? 0}` : 'offline'}</span></div>)}
           </div>}
           <div className="rail-sec"><h6>Groups<span className="addg" title="New group" onClick={() => setGroupPrompt([])}>＋</span></h6>
-            {groups.map(g => { const w = g.tasks.filter(id => ATTN.includes(tasks.find(t => t.id === id)?.status as Task['status'])).length; return (
+            {groups.map(g => { const w = g.tasks.filter(id => ATTN.includes(tasks.find(t => t.id === id)?.status as Task['status']) && !quiet.has(id)).length; return (
               <div key={g.id}><div className={`rail-item ${page === 'canvas' && view === 'g:' + g.id ? 'on' : ''}`} onClick={() => { setView('g:' + g.id); setPage('canvas'); }}>
                 <span className="gcaret" role="button" aria-label={openGroups.includes(g.id) ? 'Close the task tree' : 'Open the task tree'} title="Show the tasks of this group, each under the task it waits for" onClick={e => { e.stopPropagation(); toggleGroup(g.id); }}>{openGroups.includes(g.id) ? '▾' : '▸'}</span>
                 <span className="dot" style={{ background: g.color, borderRadius: 3 }} /><span className="t">{g.name}</span><span className="m">{w > 0 && <span style={{ color: 'var(--st-needs)' }}>● </span>}{g.tasks.length}</span>
@@ -340,7 +343,7 @@ const FIXED: [string, string, string][] = [
 ];
 function KeysHelp({ close, settings }: { close: () => void; settings: () => void }) {
   useKeymap();
-  const order = ['Anywhere', 'Mac app', 'Triage', 'Canvas', 'Review page', 'Graph page', 'Task browser', 'Board and canvas'];
+  const order = ['Anywhere', 'Mac app', 'Triage', 'Canvas', 'Waiting page', 'Review page', 'Graph page', 'Task browser', 'Board and canvas'];
   const rows: [string, string, string][] = [...ACTIONS.map(a => [CTX_NAME[a.ctx], keysOf(a.id).map(fmtCombo).join(' / ') || '—', a.label] as [string, string, string]), ...FIXED]
     .sort((x, y) => order.indexOf(x[0]) - order.indexOf(y[0]));
   return (

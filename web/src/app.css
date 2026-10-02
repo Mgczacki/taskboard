@@ -834,6 +834,7 @@ table.keyset .keycell { text-align: right; white-space: normal; }
 .wh .b.pc-mark { padding: 0 7px; color: var(--text); border: 1px solid color-mix(in srgb, var(--st-needs) 55%, transparent); border-radius: 10px; background: color-mix(in srgb, var(--st-needs) 16%, transparent); font-size: 11.5px; }
 .dr-status .pc-mark { margin: -3px 0 -3px auto; }
 .pc-mark.label { gap: 0; padding: 0 6px; }
+.pc-mark-x { flex: none; height: 20px; line-height: 18px; padding: 0 7px; font-size: 11.5px; margin: -3px 0 -3px 4px; }
 .wh .b.pc-mark.label { padding: 0 6px; }
 .pc-confirm { width: 560px; }
 .pc-confirm .body { display: grid; gap: 8px; }

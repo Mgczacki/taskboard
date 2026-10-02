@@ -196,7 +196,8 @@ async function poll() {
   const wasUp = serverUp;
   serverUp = !!tasks;
   if (serverUp && !wasUp) backOnline(); // came back: every window leaves the waiting page for where it was
-  waiting = (tasks || []).filter(t => ATTN.includes(t.status) && t.role !== 'controller').sort((a, b) => (b.waitMin || 0) - (a.waitMin || 0));
+  // dismissed: the user dismissed what the task waits on (server/dismiss.ts); the status is unchanged
+  waiting = (tasks || []).filter(t => ATTN.includes(t.status) && t.role !== 'controller' && !t.dismissed).sort((a, b) => (b.waitMin || 0) - (a.waitMin || 0));
   const unread = (tasks || []).filter(t => t.status === 'unread' && t.role !== 'controller').length;
   app.dock?.setBadge(waiting.length ? String(waiting.length) : '');
   // groups for the New Window menus (rebuilt only when they change)

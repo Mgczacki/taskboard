@@ -12,7 +12,7 @@ export interface Task {
   cwd: string; folder: string; branch?: string; worktree?: boolean; session: string; sessionId?: string;
   created: string; updated: string; statusAt: string; statusSource?: string;
   goal?: string; now?: string; ask?: string; stopReason?: string; interrupted?: string; desc: string;
-  waitMin: number; attach: string; docs?: { inbox: number; outbox: number }; role?: 'controller'; parent?: string; links?: TaskLink[]; link?: LinkInfo; account?: string; model?: string; machine?: { id: string; name: string }; imported?: string; openElsewhere?: { pid: number; tty: string }; moveWhenDone?: boolean; remoteUrl?: string; restartWhenDone?: boolean; restartFor?: string; restartWait?: string; restartOverdue?: boolean; restartFailed?: string; newSessionWhenDone?: boolean; unscrollable?: boolean; tokenEstimate?: number | null;
+  waitMin: number; waitSig?: string; attach: string; docs?: { inbox: number; outbox: number }; role?: 'controller'; parent?: string; links?: TaskLink[]; link?: LinkInfo; account?: string; model?: string; machine?: { id: string; name: string }; imported?: string; openElsewhere?: { pid: number; tty: string }; moveWhenDone?: boolean; remoteUrl?: string; restartWhenDone?: boolean; restartFor?: string; restartWait?: string; restartOverdue?: boolean; restartFailed?: string; newSessionWhenDone?: boolean; unscrollable?: boolean; tokenEstimate?: number | null;
   scopes?: Scope[];
   // messages that Taskboard could not type into the agent yet (server/message-queue.ts), and inbox notices not delivered yet
   queue?: QueuedMessage[];
@@ -91,7 +91,10 @@ export interface PendingItem {
   answer?: { by: 'user' | 'controller'; label: string; sent: string; at: string; rule?: string; tasks?: number[] };
   repeats?: { count: number; lastAnswer: string };
   sameIn?: { id: string; taskId: string; taskNum: number }[];
+  sig?: string; dismissed?: { at: string; until?: string };
 }
+// An item that the user dismissed on the Waiting page (server/dismiss.ts). until: a held hook card shows again then.
+export interface Dismissal { sig: string; kind: 'item' | 'task'; taskId: string; taskNum: number; title: string; question: string; label: string; at: string; until?: string }
 export interface PushRecord { id: string; at: string; taskId: string; branch: string; remote: string; remoteUrl: string; oldHead: string | null; newHead: string; state: string; result?: string; approvalId?: string }
 // questions about a task, answered by a separate read-only agent (server/ask.ts)
 export interface AskItem { q: string; a?: string; state: 'running' | 'done' | 'failed' | 'stopped'; steps: string[]; costUsd?: number; ms?: number; agent?: 'claude' | 'codex'; model: string; account: string; at: string }
@@ -134,6 +137,9 @@ let canvasOrder: Record<string, string[]> = {};
 let approvals: Approval[] = [];
 let pending: PendingItem[] = [];
 let answered: PendingItem[] = [];
+// pending has the question cards that show; the dismissed ones are in dismissedPending (server/dismiss.ts)
+let dismissedPending: PendingItem[] = [];
+let dismissals: Dismissal[] = [];
 let runtime: Record<string, RuntimeCount> = {};
 let machines: Machine[] = [];
 const loadMachines = () => fetch('/api/machines').then(r => r.json()).then(m => { machines = m; publish(); }).catch(() => {});
@@ -151,7 +157,7 @@ let attempt = 0, openedAt = 0, retryTimer: ReturnType<typeof setTimeout> | undef
 export const dismissBanner = () => { banner = null; publish(); };
 const subs = new Set<() => void>();
 const emit = () => subs.forEach(f => f());
-let snapshot = { tasks, groups, canvasOrder, approvals, pending, answered, machines, connected, runtime, confirmRisk, link, server: server as ServerHealth | null, banner: banner as Banner };
+let snapshot = { tasks, groups, canvasOrder, approvals, pending, answered, dismissedPending, dismissals, machines, connected, runtime, confirmRisk, link, server: server as ServerHealth | null, banner: banner as Banner };
 
 let ws: WebSocket | null = null;
 let viewingIds: string[] = [];
@@ -193,17 +199,18 @@ function connect() {
     if (m.type === 'groups') groups = m.groups;
     if (m.type === 'canvasOrder') canvasOrder = m.orders;
     if (m.type === 'approvals') approvals = m.approvals;
-    if (m.type === 'pending') { pending = m.items || []; answered = m.answered || []; }
+    if (m.type === 'pending') { const items: PendingItem[] = m.items || []; pending = items.filter(i => !i.dismissed); dismissedPending = items.filter(i => i.dismissed); answered = m.answered || []; }
+    if (m.type === 'dismissed') dismissals = m.entries || [];
     if (m.type === 'runtime') runtime = m.counts || {};
     if (m.type === 'machines') { loadMachines(); return; }
     if (m.type === 'removed') tasks = tasks.filter(t => t.id !== m.id);
     if (m.type === 'task') { const i = tasks.findIndex(t => t.id === m.task.id); if (i >= 0) tasks = tasks.map(t => t.id === m.task.id ? m.task : t); else tasks = [m.task, ...tasks]; notifyIfNeeded(m.task); }
     // a message that changes nothing here (for example "accounts", which the Accounts page reads itself) draws nothing
-    if (!['tasks', 'waits', 'groups', 'canvasOrder', 'approvals', 'pending', 'runtime', 'removed', 'task'].includes(m.type)) return;
+    if (!['tasks', 'waits', 'groups', 'canvasOrder', 'approvals', 'pending', 'dismissed', 'runtime', 'removed', 'task'].includes(m.type)) return;
     publishSoon();
   };
 }
-function publish() { cancelSoon(); snapshot = { tasks, groups, canvasOrder, approvals, pending, answered, machines, connected, runtime, confirmRisk, link, server, banner }; emit(); }
+function publish() { cancelSoon(); snapshot = { tasks, groups, canvasOrder, approvals, pending, answered, dismissedPending, dismissals, machines, connected, runtime, confirmRisk, link, server, banner }; emit(); }
 // Messages often come in bursts (a task, its question card and its runtime count). The page draws once for each burst:
 // at the next animation frame, or after 250 ms when the page is hidden and draws no frames.
 let soon: { frame: number; timer: ReturnType<typeof setTimeout> } | null = null;
@@ -308,6 +315,10 @@ export const api = {
   // a message card goes back to the controller or to the agent that wrote the draft, with the comment
   answerPending: (id: string, body: { option?: string; text?: string; confirm?: boolean; group?: string[] }) => call<PendingItem>('POST', `/api/pending/${id}/answer`, body),
   hidePending: (id: string) => call('POST', `/api/pending/${id}/hide`, {}),
+  // Dismiss: hide one waiting item until something new happens for it (server/dismiss.ts). The task status does not change.
+  dismissItem: (id: string, label: string) => call<Dismissal>('POST', '/api/dismiss', { item: id, label }),
+  dismissTask: (taskId: string, label: string) => call<Dismissal>('POST', '/api/dismiss', { task: taskId, label }),
+  bringBack: (sig: string) => call<{ ok: boolean }>('POST', '/api/dismiss/bring-back', { sig }),
   giveBack: (id: string, comment: string) => call<Approval>('POST', `/api/approvals/${id}/return`, { comment }),
   moveAccount: (id: string, account: string) => call<Task>('POST', `/api/tasks/${id}/move-account`, { account }),
   transferMachines: (id: string) => call<{ id: string; name: string; online: boolean }[]>('GET', `/api/tasks/${encodeURIComponent(id)}/transfer/machines`),
