@@ -53,7 +53,7 @@ export function ProcList({ scope, id, cwd, compact = false }: { scope: ProcScope
       </div>}
       {list && !list.length && !adding && <div className="sub procs-none">No processes. An agent starts one with <code>tb run &lt;name&gt; -- &lt;command&gt;</code>. You can add one here.</div>}
       {!!list?.length && <table className="procs-table">
-        <thead><tr><th>Name</th><th>State</th>{!compact && <th>Command</th>}<th>Port</th><th title="Resident memory (RSS) of the process group, read with ps while this tab is open. Shared pages count in each process.">Memory</th>{!compact && <th>Started by</th>}<th /></tr></thead>
+        <thead><tr><th>Name</th><th>State</th>{!compact && <th>Command</th>}<th>Port</th><th title="Footprint of the process group, counted like Activity Monitor does. The server reads it at most every 15 s.">Memory</th>{!compact && <th>Started by</th>}<th /></tr></thead>
         <tbody>{list.map(p => {
           const on = p.state === 'running' || p.state === 'starting';
           return (
