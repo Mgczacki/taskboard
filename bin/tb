@@ -59,7 +59,8 @@ const HELP = `tb — Taskboard command line
   tb accounts [--json]              accounts with sign-in state, usage, and routing rules
   tb move <task> --account <id> [--instruction "<text>"]
                                      continue the task on that account, with a handoff when needed
-  tb send <task> "<text>"            type text into the agent's terminal and press Enter
+  tb send <task> "<text>"            type (or paste, when long) text into the agent's input box, check that the box
+                                     holds it, then press Enter. Empty text is refused.
   tb resume <task>                   bring back a parked or archived task; then use tb send
   tb new --agent auto|claude|codex|antigravity --folder <path> [--account <id>] [--model <name>] [--title <t>] [--worktree <branch>|--no-worktree] [--group <name>] "<prompt>"
   tb new --batch <plan.json>         [{ agent, folder, title, prompt, account?, model?, worktree?, group? }, …]
@@ -319,7 +320,14 @@ switch (cmd) {
     if (!moved.approved) console.log(`Moved #${moved.num} to ${moved.account} (${moved.agent}). ${moved.statusSource}`);
     break;
   }
-  case 'send': { const t = await task(rest[0]); await call('POST', `/api/tasks/${t.id}/send`, { text: rest.slice(1).join(' ') }); console.log(`Sent to #${t.num}.`); break; }
+  case 'send': {
+    const text = rest.slice(1).join(' ');
+    if (!text.trim()) { console.error('tb send: the text is empty. Nothing was sent, and Enter was not pressed.'); process.exit(1); }
+    const t = await task(rest[0]); const r = await call('POST', `/api/tasks/${t.id}/send`, { text });
+    if (r?.approved) break;
+    console.log(`Sent to #${t.num}.${r?.warning ? ` ${r.warning}` : ''}`);
+    break;
+  }
   case 'new': {
     const batch = flag('--batch');
     const specs = batch ? JSON.parse(readFileSync(batch, 'utf8')) : [{ agent: flag('--agent', 'claude'), account: flag('--account'), model: flag('--model'), folder: flag('--folder'), title: flag('--title'), worktree: has('--no-worktree') ? false : flag('--worktree'), group: flag('--group'), prompt: args.slice(1).join(' ') }];

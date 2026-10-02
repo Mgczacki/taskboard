@@ -4,7 +4,7 @@
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { prepareWorktreeDependencies, useTaskWorktree } from './task-worktree.ts';
 import { randomUUID } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { hostname } from 'node:os';
 import { promisify } from 'node:util';
@@ -23,6 +23,8 @@ import * as workspaceTrust from './trust.ts';
 import { credentialGuidance } from './credential-guidance.ts';
 import * as rules from './rules.ts';
 import * as taskBrowser from './task-browser.ts';
+import { bottom, deliverText, textError } from './deliver-text.ts';
+import { readyForInput, type PromptAgent } from './type-command.ts';
 
 const exec = promisify(execFile);
 
@@ -144,12 +146,32 @@ function agyTrusted(t: Task) {
     return list.some(p => real(p) === real(t.cwd));
   } catch { return false; }
 }
-export const pendingPrompt = new Map<string, string>();
+// A first prompt that waits to be typed in: for Antigravity in a folder it does not trust yet (see above), and for any
+// agent when the prompt does not fit on the tmux command line (see launchInner). It is kept in a file in the task
+// folder, so a Taskboard restart before the agent shows its input box does not lose it.
+const pendingFile = (id: string) => join(store.taskDir(id), 'pending-prompt.txt');
+export const pendingPrompt = {
+  get: (id: string) => { try { return readFileSync(pendingFile(id), 'utf8'); } catch { return undefined; } },
+  has: (id: string) => existsSync(pendingFile(id)),
+  set: (id: string, text: string) => { mkdirSync(store.taskDir(id), { recursive: true }); writeFileSync(pendingFile(id), text); },
+  delete: (id: string) => rmSync(pendingFile(id), { force: true }),
+};
+const typingPrompt = new Set<string>();
+// Called by the server's status loop with the visible screen. Types the prompt in once the agent shows an empty input
+// box and no question or dialog (Codex's update dialog has "Update now" as its default answer).
 export async function typePendingPrompt(t: Task, screen: string) {
-  const p = pendingPrompt.get(t.id); if (!p) return;
-  if (/Do you trust the contents/i.test(screen) || !/\? for shortcuts/.test(screen)) return; // not at the prompt yet
-  pendingPrompt.delete(t.id);
-  await tmux.paste(t.session, p);
+  const p = pendingPrompt.get(t.id); if (!p || typingPrompt.has(t.id)) return;
+  if (blockingQuestion.test(bottom(screen)) || !readyForInput(screen, t.agent as PromptAgent)) return; // not at the prompt yet
+  typingPrompt.add(t.id);
+  try {
+    pendingPrompt.delete(t.id);
+    // Antigravity's paste placeholder is not known, so its box cannot be checked; its prompt is pasted as before
+    if (t.agent === 'antigravity') { await tmux.paste(t.session, p); return; }
+    const r = await deliverText(t, p);
+    if (r.warning) store.update(t.id, { statusSource: `First prompt: ${r.warning}` });
+  } catch (e) {
+    store.update(t.id, { status: 'needs-you', ask: 'The first prompt was not submitted. Check the terminal.', statusSource: `First prompt not submitted: ${e instanceof Error ? e.message : e}` });
+  } finally { typingPrompt.delete(t.id); }
 }
 
 // The controller's rules for messages between people (A2A Notes, server/a2anotes). A2A Notes enforces the levels on
@@ -464,6 +486,9 @@ function codexFlags(): string[] {
     '-c', 'tui.notifications=["approval-requested"]',
     '-c', 'tui.notification_method="bel"',
     '-c', codexHookSetting(),
+    // Codex shows "Update available" at start, and its default answer "Update now" runs an installer; Enter from
+    // tb send chose it once. Taskboard does not update Codex.
+    '-c', 'check_for_update_on_startup=false',
     // inline mode: output stays in the terminal's history, so it can be scrolled (the full-screen mode has none)
     '--no-alt-screen',
   ];
@@ -585,7 +610,12 @@ export async function startTask(n: NewTask): Promise<Task> {
     session: `task-${num}`, sessionId: agent === 'claude' ? randomUUID() : undefined,
     statusSource: n.parent === 'controller' ? 'Started by the controller (tb new) just now.' : 'Started just now.', goal: n.title, desc: n.desc, parent: n.parent, account: acct.id, model: n.model,
   });
-  await launch(t, attachImages(t, n.desc, images), false);
+  try { await launch(t, attachImages(t, n.desc, images), false); }
+  catch (e) {
+    const why = e instanceof Error ? e.message : String(e);
+    store.update(t.id, { status: 'suspended', statusSource: `Did not start: ${why}` });
+    throw new Error(`#${num} was created${worktree ? ` with its worktree ${cwd}` : ''}, but ${agentName(agent)} did not start: ${why}`);
+  }
   const f = store.state.folders[n.folder] || { uses: 0, last: '' };
   store.state.folders[n.folder] = { ...f, uses: f.uses + 1, last: new Date().toISOString() };
   store.saveState();
@@ -615,9 +645,28 @@ export async function resumeTask(t: Task, force = false): Promise<Task> {
     await launch(t, handoffPrompt(t.handoff), false);
     return store.update(t.id, { status: 'working', statusSource: 'Started again with the saved handoff.' })!;
   }
+  if (neverStarted(t)) {
+    await launch(t, firstPrompt(t), false);
+    return store.update(t.id, { status: 'working', statusSource: 'Started a new session with its first prompt, because it had no saved session.' })!;
+  }
   if (!t.sessionId) throw new Error('No session id recorded for this task, so it cannot be resumed.');
   await launch(t, null, true);
   return store.update(t.id, { status: 'idle', statusSource: `Resumed with ${resumeCommand(t.agent)} ${t.sessionId}.` })!;
+}
+
+// A task whose agent never saved a conversation: Codex and Antigravity report their session id only after they
+// start, and a Claude Code session id has no transcript until the first prompt. Resuming it starts a new session.
+export function neverStarted(t: Task) {
+  if (t.role === 'controller' || t.handoff || t.imported) return false;
+  if (t.agent !== 'claude') return !t.sessionId;
+  return !!t.sessionId && !t.transcript && !transcriptFor('claude', t.sessionId, (accounts.get(t.account) || accounts.defaultFor('claude')).dir);
+}
+// The prompt the task was started with, and the paths of the images attached to it
+export function firstPrompt(t: Task) {
+  const dir = join(store.taskDir(t.id), 'attachments');
+  let files: string[] = []; try { files = readdirSync(dir).filter(f => /^image-\d+\./.test(f)).sort().map(f => join(dir, f)); } catch { /* none */ }
+  const prompt = t.desc || t.title;
+  return files.length ? `${prompt}\n\nAttached ${files.length === 1 ? 'image' : 'images'} (open ${files.length === 1 ? 'it' : 'each file'} to view):\n${files.map(f => `- ${f}`).join('\n')}` : prompt;
 }
 
 export function checkResumeAccount(t: Task) {
@@ -628,11 +677,15 @@ export function checkResumeAccount(t: Task) {
 }
 
 const delivering = new Set<string>();
-export const blockingQuestion = /trust this folder|Do you trust the (files|contents)|Select login method|Please log in|Sign in with ChatGPT|Update available[\s\S]*(Update now|Skip)|approval requested|Allow this action|Approve this tool/i;
-const readyPrompt = /(?:^|\n)\s*[❯›>]\s*(?:$|\n)|\? for shortcuts/i;
+// Questions and dialogs in the bottom lines of an agent's screen that keys must not answer. Codex's update dialog is
+// (Codex 0.158.0): "Update available · 0.158.0 → 0.160.0", "› 1. Update now (runs `sh -c 'curl -fsSL
+// https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh'`)", "2. Skip", "3. Skip until next version".
+// The last three patterns match any numbered choice that updates or installs software, or that runs a download into a shell.
+export const blockingQuestion = /trust this folder|Do you trust the (files|contents)|Select login method|Please log in|Sign in with ChatGPT|Update available[\s\S]*(Update now|Skip)|approval requested|Allow this action|Approve this tool|\d\.\s*(Update|Upgrade|Install)( now|\s+v?\d)|\(runs `[^`]*(curl|wget)[^`]*\|[^`]*sh\b|install\.sh\b/i;
 
 // Resume before typing into a task whose tmux session has ended.
-export async function sendTaskText(t: Task, text: string): Promise<{ resumed: boolean }> {
+export async function sendTaskText(t: Task, text: string): Promise<{ resumed: boolean; submitted: boolean; warning?: string }> {
+  const empty = textError(text); if (empty) throw new Error(empty);
   if (delivering.has(t.id)) throw new Error('A message is already being sent to this task.');
   delivering.add(t.id);
   try {
@@ -646,23 +699,25 @@ export async function sendTaskText(t: Task, text: string): Promise<{ resumed: bo
       checkResumeAccount(t);
       await resumeTask(t);
       resumed = true;
-      let ready = false;
-      for (let i = 0; i < 60; i++) {
+      // Wait for an empty input box that stays for one second: Codex drew its input box before its update dialog when
+      // it resumed task 144, and the Enter that followed chose "Update now".
+      let readySince = 0;
+      for (let i = 0; i < 120; i++) {
         const live = (await tmux.listSessions())?.find(s => s.name === t.session);
         if (!live || live.dead) throw new Error('The agent stopped before it could receive the message.');
-        const screen = (await tmux.capture(t.session, 0)).split('\n').filter(line => line.trim()).slice(-15).join('\n');
-        if (blockingQuestion.test(screen)) throw new Error('The agent asks a question in its terminal. Answer it before sending feedback.');
-        if (readyPrompt.test(screen)) { ready = true; break; }
+        const screen = await tmux.capture(t.session, 0);
+        if (blockingQuestion.test(bottom(screen))) throw new Error('The agent asks a question in its terminal. Answer it before sending feedback.');
+        if (!readyForInput(screen, t.agent as PromptAgent)) readySince = 0;
+        else if (!readySince) readySince = Date.now();
+        else if (Date.now() - readySince >= 1000) break;
         await new Promise(r => setTimeout(r, 250));
       }
-      if (!ready) throw new Error('The agent did not reach its input prompt. Open its terminal and try again.');
+      if (!readySince || Date.now() - readySince < 1000) throw new Error('The agent did not reach its input prompt. Open its terminal and try again.');
     }
     const current = store.get(t.id)!;
-    const screen = (await tmux.capture(t.session, 0)).split('\n').filter(line => line.trim()).slice(-15).join('\n');
-    if (current.status === 'needs-you' || blockingQuestion.test(screen))
-      throw new Error('The agent asks a question in its terminal. Answer it before sending feedback.');
-    await tmux.sendKeys(t.session, text.replace(/\n/g, ' '));
-    return { resumed };
+    if (current.status === 'needs-you') throw new Error('The agent asks a question in its terminal. Answer it before sending feedback.');
+    const r = await deliverText(current, text);
+    return { resumed, ...r };
   } finally { delivering.delete(t.id); }
 }
 
@@ -684,7 +739,16 @@ async function launchInner(t: Task, prompt: string | null, resume: boolean) {
   }
   if (machine.get().permissions.trustWorkspaces) workspaceTrust.trust(t);
   const codexTrust = await codexHookTrust(t);
-  await tmux.newSession(t.session, t.cwd, baseEnv(t), command(t, prompt, resume, codexTrust), async () => { await ensureTmuxConfigured(); });
+  const env = baseEnv(t);
+  let cmd = command(t, prompt, resume, codexTrust);
+  // A first prompt that makes the command too long for tmux (task 158: about 11.5 KB of instructions and a 5 KB
+  // prompt) is typed into the agent's input box once it shows, by typePendingPrompt.
+  if (prompt && tmux.commandBytes(tmux.newSessionArgs(t.session, t.cwd, env, cmd)) > tmux.MAX_COMMAND_BYTES) {
+    const text = t.agent === 'antigravity' && t.role !== 'controller' ? `${taskInstructions(t, false)}\n\n---\n\n${prompt}` : prompt;
+    cmd = command(t, null, resume, codexTrust);
+    pendingPrompt.set(t.id, text);
+  }
+  await tmux.newSession(t.session, t.cwd, env, cmd, async () => { await ensureTmuxConfigured(); });
   await ensureTmuxConfigured();
   await tmux.pipeToFile(t.session, store.terminalLog(t.id));
 }

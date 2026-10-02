@@ -92,7 +92,8 @@ if (agent === 'codex' && process.argv.includes('app-server')) {
 if (process.argv.includes('status')) { console.log(agent === 'claude' ? '{"loggedIn":true}' : 'Logged in'); process.exit(0); }
 if (agent === 'agy' && (process.argv.includes('models') || process.argv.includes('plugin'))) { console.log('test\\tmodel'); process.exit(0); }
 fs.writeFileSync(path.join(process.env.TASK_DIR, 'launch.json'), JSON.stringify({ agent, args: process.argv.slice(2), cwd: process.cwd(), accountDir: process.env.CLAUDE_CONFIG_DIR || process.env.CODEX_HOME }));
-console.log(agent === 'agy' ? '? for shortcuts' : 'TEST_AGENT_READY');
+// Antigravity draws its input box between two rules (server/type-command.ts); its first prompt is typed in there
+console.log(agent === 'agy' ? ['─'.repeat(40), '> ', '─'.repeat(40), '  ? for shortcuts'].join('\\n') : 'TEST_AGENT_READY');
 if (agent === 'agy') process.stdin.on('data', chunk => fs.appendFileSync(path.join(process.env.TASK_DIR, 'pasted.txt'), chunk));
 setInterval(() => {}, 1000);
 }

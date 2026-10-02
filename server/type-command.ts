@@ -28,7 +28,7 @@ export function commandError(command: unknown): string | null {
 //   the footer follow. Codex also shows earlier user messages with "›", so the box must be the last thing on screen.
 // All three show "!" in place of the prompt mark in shell mode, and run the text as a shell command on Enter.
 export type PromptAgent = 'claude' | 'codex' | 'antigravity';
-const MARK: Record<PromptAgent, RegExp> = { claude: /^❯(?:\s|$)/, antigravity: /^>(?:\s|$)/, codex: /^›(?:\s|$)/ };
+export const MARK: Record<PromptAgent, RegExp> = { claude: /^❯(?:\s|$)/, antigravity: /^>(?:\s|$)/, codex: /^›(?:\s|$)/ };
 const FOOTER_ROWS = 4; // at most this many rows with text below the box (status rows)
 const below = (lines: string[], from: number) => lines.slice(from).filter(l => l.trim()).length;
 
@@ -52,7 +52,7 @@ export function inputBox(screen: string, agent: PromptAgent = 'claude'): string 
   if (top < 0 || bottom - top < 2 || below(lines, bottom + 1) > FOOTER_ROWS) return null;
   return lines.slice(top + 1, bottom).map(l => l.trim()).join('\n');
 }
-const squash = (s: string) => s.replace(/\s+/g, '');
+export const squash = (s: string) => s.replace(/\s+/g, '');
 // The agents' own questions. A permission prompt lists numbered answers after a mark ("❯ 1. Yes", "> 1. Yes, run
 // command"). Its text is, for example, "Do you want to proceed?", "Would you like to run" or "Run this command?".
 const QUESTION = /Do you want to|Would you like to|Requesting permission|Run this command\?|^\s*[❯>›]\s*\d+\.\s/m;

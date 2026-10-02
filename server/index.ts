@@ -27,6 +27,7 @@ import * as machines from './machines.ts';
 import * as machine from './machine.ts';
 import * as rules from './rules.ts';
 import { typeCommand } from './type-command.ts';
+import { deliverText, textError } from './deliver-text.ts';
 import * as trust from './trust.ts';
 import * as agyReview from './agy-review.ts';
 import { acquire } from './lock.ts';
@@ -674,16 +675,24 @@ app.post('/api/tasks/:id/status', async (req, res) => {
   if (!['idle', 'parked', 'archived'].includes(s)) return fail(res, 'status must be idle, parked or archived');
   const t0 = store.get(req.params.id); if (!t0) return res.status(404).end();
   const controllerResume = req.get('x-tb-actor') === 'controller' && s === 'idle';
+  // a suspended task whose agent never started (for example a start that failed) can also be resumed with tb resume
+  const resumable = (t: store.Task) => ['parked', 'archived'].includes(t.status) || (t.status === 'suspended' && agents.neverStarted(t));
   if (controllerResume && machine.get().permissions.controllerNeedsApproval)
     return res.status(403).json({ error: 'The controller cannot resume tasks while "The controller may create and manage tasks without asking" is off in Settings.' });
-  if (controllerResume && !['parked', 'archived'].includes(t0.status))
+  if (controllerResume && !resumable(t0))
     return fail(res, `#${t0.num} is ${t0.status}. Only parked or archived tasks can be resumed with tb resume.`);
   await guarded(req, res, `${s === 'archived' ? 'archive' : s === 'parked' ? 'park' : 'unpark'} #${t0.num} ${t0.title}`, '', 'status',
     async () => {
       if (controllerResume) {
         const current = store.get(t0.id)!;
-        if (!['parked', 'archived'].includes(current.status)) throw new Error(`#${current.num} is ${current.status}. Only parked or archived tasks can be resumed with tb resume.`);
+        if (!resumable(current)) throw new Error(`#${current.num} is ${current.status}. Only parked or archived tasks can be resumed with tb resume.`);
         agents.checkResumeAccount(current);
+      }
+      // A task without a saved session has nothing that tb send could resume later: start it now with its first prompt.
+      if (s === 'idle' && agents.neverStarted(store.get(t0.id)!) && (await tmux.hasSession(t0.session)) === false) {
+        const started = await agents.resumeTask(store.get(t0.id)!);
+        if (controllerResume) store.appendLog(t0.id, { did: 'Task started again by the controller with its first prompt.', next: 'Continue the task.' });
+        return view(started);
       }
       if (s === 'archived') { await tmux.killSession(t0.session); await stopTaskSandboxes(t0.id); await runtime.stopTaskRuntime(t0, 'stopped'); trimTerminalLog(store.terminalLog(t0.id)); }
       const updated = store.update(t0.id, { status: s, statusSource: controllerResume ? 'Resumed by the controller.' : `Set at ${new Date().toTimeString().slice(0, 5)}.` })!;
@@ -859,12 +868,13 @@ app.post('/api/import', (req, res) => {
 app.post('/api/tasks/:id/send', async (req, res) => {
   const t = store.get(req.params.id); if (!t) return res.status(404).end();
   const text = String(req.body.text || '');
-  if (t.role === 'controller') { try { await tmux.sendKeys(t.session, text); res.json({}); } catch (e) { fail(res, e); } return; }
+  const empty = textError(text); if (empty) return fail(res, empty);
+  if (t.role === 'controller') { try { res.json(await deliverText(t, text)); } catch (e) { fail(res, e); } return; }
   await guarded(req, res, `type into #${t.num} ${t.title}`, text, 'send', async () => {
     const delivery = await agents.sendTaskText(t, text);
     store.update(t.id, { status: 'working', ask: '', statusSource: `Message sent by you${delivery.resumed ? ' after resuming the task' : ''}.` });
     return delivery;
-  }, () => `Typed into #${t.num}.`);
+  }, (d: { warning?: string }) => `Typed into #${t.num}.${d?.warning ? ` ${d.warning}` : ''}`);
 });
 // Hold to run: the dashboard types a "! <command>" that the user held the mouse button on (server/type-command.ts).
 // Only the dashboard page may call this. tb and agents send the token or x-tb-actor, so they are refused.
@@ -1312,13 +1322,15 @@ async function reconcile(first = false) {
     const screenQuestion = t.status === 'needs-you' && t.statusSource?.startsWith(events.SCREEN_SOURCE);
     if (screenQuestion || (Date.now() - launched < 90000 && !events.sessionStarted.has(t.id) && ['working', 'idle'].includes(t.status)))
       events.screenCheck(t, (await tmux.capture(t.session, 0)).split('\n').filter(l => l.trim()).slice(-15).join('\n'));
-    // Antigravity: type in the first prompt once the trust question is answered; read approval questions from the screen
-    // while a tool call waits (agy has no event for either)
-    if (t.agent === 'antigravity' && (agents.pendingPrompt.has(t.id) || t.status === 'working')) {
-      const screen = (await tmux.capture(t.session, 0)).split('\n').filter(l => l.trim()).slice(-20).join('\n');
-      await agents.typePendingPrompt(t, screen);
-      events.agyApprovalCheck(store.get(t.id)!, screen);
+    // A first prompt that waits to be typed in (agents.ts pendingPrompt) goes in once the input box shows. It is not
+    // awaited: the check of the box before Enter can take some seconds, and the other tasks must not wait for it.
+    if (agents.pendingPrompt.has(t.id)) {
+      const screen = await tmux.capture(t.session, 0);
+      void agents.typePendingPrompt(t, screen).catch(e => console.error(`first prompt for #${t.num}:`, e));
     }
+    // Antigravity: read approval questions from the screen while a tool call waits (agy has no event for it)
+    if (t.agent === 'antigravity' && t.status === 'working')
+      events.agyApprovalCheck(store.get(t.id)!, (await tmux.capture(t.session, 0)).split('\n').filter(l => l.trim()).slice(-20).join('\n'));
     if (t.agent === 'codex' && t.sessionId) {
       let tr = t.transcript;
       if (!tr) { tr = importer.transcriptFor('codex', t.sessionId, (accounts.get(t.account) || accounts.defaultFor('codex')).dir); if (tr) store.update(t.id, { transcript: tr }); }
