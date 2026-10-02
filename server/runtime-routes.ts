@@ -9,6 +9,7 @@ import * as agents from './agents.ts';
 import * as store from './store.ts';
 import * as procs from './task-procs.ts';
 import * as browser from './task-browser.ts';
+import * as signins from './browser-signins.ts';
 import * as memory from './memory.ts';
 import * as summary from './runtime-summary.ts';
 
@@ -154,6 +155,26 @@ export function mount(app: express.Express, fail: Fail) {
   };
   app.post('/api/tasks/:id/browser/sound', async (req, res) => { const t = task(req, res); if (t) await sound(req, res, t.id); });
   app.post('/api/browser-template/sound', (req, res) => sound(req, res, browser.TEMPLATE));
+  // ---------- shared sign-ins (browser-signins.ts) ----------
+  // Only the dashboard calls these. They return site names, counts and dates, never a cookie value. The lists use POST
+  // because a browser sends no Origin header with a same-origin GET.
+  const signinRoute = (path: string, fn: (req: express.Request) => Promise<unknown>) => app.post(path, async (req, res) => {
+    if (!dashboardOnly(req)) return res.status(403).json({ error: 'Shared sign-ins are changed only on the dashboard.' });
+    try { res.json(await fn(req)); } catch (e) { fail(res, e); }
+  });
+  const taskId = (req: express.Request) => { const t = store.get(String(req.params.id)); if (!t) throw new Error('No such task.'); return t.id; };
+  signinRoute('/api/tasks/:id/browser/signins/sites', async req => ({ sites: await signins.sites(taskId(req)) }));
+  signinRoute('/api/tasks/:id/browser/signins/save-template', async req => signins.saveAsTemplate(taskId(req)));
+  signinRoute('/api/tasks/:id/browser/signins/sync', async req => signins.syncFromTemplate(taskId(req), Array.isArray(req.body?.sites) ? req.body.sites.map(String) : []));
+  signinRoute('/api/tasks/:id/browser/signins/shared', async req => { const id = taskId(req); signins.setShared(id, req.body?.on === true); return browser.status(id); });
+  signinRoute('/api/browser-signins/overview', async () => {
+    const o = await signins.overview();
+    return { ...o, browsers: o.browsers.map(b => { const t = store.get(b.id); return { ...b, num: t?.num, title: t?.title, status: t?.status }; }) };
+  });
+  signinRoute('/api/browser-signins/remove', async req => { await signins.removeSite(String(req.body?.site || '')); return signins.overview(); });
+  signinRoute('/api/browser-signins/sign-out-all', async () => signins.signOutAll());
+  signinRoute('/api/browser-signins/live', async req => signins.setLive({ live: typeof req.body?.live === 'boolean' ? req.body.live : undefined, liveSites: Array.isArray(req.body?.liveSites) ? req.body.liveSites : undefined }));
+  signinRoute('/api/browser-template/window', async () => { await browser.openTemplateWindow(); return browser.status(browser.TEMPLATE); });
   app.post('/api/tasks/:id/browser/:action', async (req, res) => {
     const t = task(req, res); if (!t) return;
     if (!mayChange(req, [t.id])) return res.status(403).json({ error: 'An agent can change only its own task browser.' });

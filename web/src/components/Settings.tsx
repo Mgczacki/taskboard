@@ -13,6 +13,7 @@ import { MessageLevels } from './MessageLevels';
 import { Integrations } from './Integrations';
 import { RulesFiles } from './RulesFiles';
 import { BrowserView } from './TaskBrowser';
+import { SigninSettings } from './BrowserSignins';
 import type { Account } from './Accounts';
 import type { KeyAction } from '../keys';
 import { ACTIONS, CTX_NAME, comboOf, fmtCombo, isCustom, keysOf, resetKeys, setKeys, setRecording, useKeymap } from '../keys';
@@ -339,6 +340,7 @@ function TaskBrowserSettings({ info, busy, save }: { info: MachineInfo | null; b
   const [chrome, setChrome] = useState('');
   const [idle, setIdle] = useState('');
   const [open, setOpen] = useState(false);
+  const [tplErr, setTplErr] = useState('');
   useEffect(() => { setChrome(info?.settings.browser?.chromePath || ''); }, [info?.settings.browser?.chromePath]);
   useEffect(() => { setIdle(String(info?.settings.browser?.idleStopMinutes ?? 10)); }, [info?.settings.browser?.idleStopMinutes]);
   useEffect(() => { const load = () => api.browserTemplate().then(setTpl).catch(() => {}); void load(); const t = setInterval(load, 4000); return () => clearInterval(t); }, []);
@@ -376,9 +378,20 @@ function TaskBrowserSettings({ info, busy, save }: { info: MachineInfo | null; b
       <SettingItem id="templateBrowser">
         <div className="opt">Template browser for sign-ins</div>
         <div className="sub">Sign in here to the sites that agents need. Each new task browser copies this profile when it first starts. Every agent can use the accounts in it, so add only those accounts. Close the template browser before new task browsers start, because Chrome locks an open profile.</div>
-        <div className="sub">{tpl ? (tpl.running ? `Open now (${tpl.tabs.length} tab(s)).` : tpl.profile ? 'Closed. The profile exists.' : 'No template profile yet.') : '…'}</div>
-        <div><button className="btn" onClick={() => setOpen(o => !o)}>{open ? 'Hide the template browser' : 'Show the template browser'}</button></div>
-        {open && <div className="tpl-browser"><BrowserView id="template" title="Template browser" isTemplate /></div>}
+        <div className="sub">{tpl ? (tpl.headed ? 'Open in a Chrome window now. Sign in there, then quit that Chrome window (Chrome menu, Quit Google Chrome).' : tpl.running ? `Open now (${tpl.tabs.length} tab(s)).` : tpl.profile ? 'Closed. The profile exists.' : 'No template profile yet.') : '…'}</div>
+        <div className="si-row">
+          <button className="btn" disabled={!!tpl?.headed} onClick={() => setOpen(o => !o)}>{open ? 'Hide the template browser' : 'Show the template browser'}</button>
+          {tpl?.headed
+            ? <button className="btn" onClick={() => void api.browserTemplateAction('stop').then(setTpl).catch(e => setTplErr(String(e.message || e)))}>Close the Chrome window</button>
+            : <button className="btn" onClick={() => { setOpen(false); void api.templateWindow().then(setTpl).catch(e => setTplErr(String(e.message || e))); }} title="Opens the template profile in a normal Chrome window, without headless mode and without the debugging port">Sign in with a normal Chrome window</button>}
+        </div>
+        <div className="sub">Google and some other sites refuse a sign-in in a browser that a program controls. The task browsers run headless with a debugging port, so they report HeadlessChrome and navigator.webdriver. The normal Chrome window has neither. Taskboard does not see or control that window.</div>
+        {tplErr && <div className="banner">{tplErr}</div>}
+        {open && !tpl?.headed && <div className="tpl-browser"><BrowserView id="template" title="Template browser" isTemplate /></div>}
+      </SettingItem>
+      <SettingItem id="signinSharing">
+        <div className="opt">Sign-in sharing</div>
+        <SigninSettings />
       </SettingItem>
     </SettingGroup>
   </>;

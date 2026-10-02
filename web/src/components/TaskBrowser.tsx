@@ -8,6 +8,8 @@
 // Chrome draws no box for it, so the view shows the question of the shown tab in a bar with OK and Cancel.
 // The sound switch (SoundSwitch) is in both views: a browser starts muted until the user turns its sound on.
 // The server sends the shown tab's loading state and history ("nav"), so back, forward and reload work like Chrome's.
+// Shared sign-ins (BrowserSignins.tsx): a line when the template has none or this browser opted out, and in the More
+// menu and the card of a stopped browser: save as the template, sync from the template, the opt-out, and Reset.
 // Keys with Cmd: L focuses the address, R reloads, [ and ] go back and forward, V pastes, C and X copy. The other keys
 // go to the page, except Cmd pressed alone. Copy: after a mouse-up or a selection key the view asks the page for its selection ("copy" with
 // peek, answered by "copied") and keeps it, so the browser's own copy event can put it on the clipboard at once.
@@ -21,6 +23,7 @@ import { api } from '../api';
 import { mb } from '../runtimeText';
 import { countMessage } from '../perfStats';
 import { hit, keyLabel, keysText, useKeymap } from '../keys';
+import { SigninDialog, SigninNote, useSharing, type SigninMode } from './BrowserSignins';
 
 // ---------- which browsers are popped out ----------
 // Pop out opens the view in its own window (/?browser=<id>, BrowserWindowPage below; an app window in the desktop app).
@@ -171,6 +174,15 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
   const [framed, setFramed] = useState(false);
   const [pop, setPop] = useState<'tabs' | 'menu' | null>(null);
   const [promptText, setPromptText] = useState('');
+  const [signin, setSignin] = useState<SigninMode | null>(null);
+  const [told, setTold] = useState('');
+  const [sharing, reloadSharing] = useSharing(id, isTemplate || archived, running);
+  const setShared = (on: boolean) => api.signinShared(id, on).then(() => { reloadSharing(); setTold(on ? 'This browser gets shared sign-ins again.' : 'This browser gets no shared sign-ins now. It keeps the sign-ins it has: Reset gives an empty profile.'); }).catch(e => setErr(String(e.message || e)));
+  const signinParts = !isTemplate && !archived && <>
+    <SigninNote status={sharing} onMode={setSignin} onShared={on => void setShared(on)} />
+    {told && <div className="banner bw-signins">{told} <button className="btn ghost" onClick={() => setTold('')}>OK</button></div>}
+    {signin && <SigninDialog id={id} mode={signin} onClose={() => setSignin(null)} onDone={text => { setSignin(null); setTold(text); reloadSharing(); }} />}
+  </>;
   const canvas = useRef<HTMLCanvasElement>(null);
   const screen = useRef<HTMLDivElement>(null);
   const urlInput = useRef<HTMLInputElement>(null);
@@ -365,9 +377,15 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
       </div>}
       {!archived && memoryNote}
       {err && err !== state?.error && <div className="banner">{err}</div>}
+      {signinParts}
       {!isTemplate && state && <div className="bw-card-foot">
-        <span>{state.profile ? `Profile ${state.copiedFromTemplate ? `copied from the template on ${new Date(state.copiedFromTemplate).toLocaleDateString()}` : 'without a template copy'}.` : 'The first start copies the template profile.'}</span>
-        {state.profile && !archived && <button className="btn ghost" onClick={() => api.browserAction(id, 'reset').then(setState).catch(e => setErr(String(e.message || e)))} title="Delete this task's profile and copy the template again. The task loses its own sign-ins.">Reset from template</button>}
+        <span>{state.profile ? `Profile ${state.copiedFromTemplate ? `copied from the template on ${new Date(state.copiedFromTemplate).toLocaleDateString()}` : 'without a template copy'}${state.syncedAt ? `, synced on ${new Date(state.syncedAt).toLocaleDateString()}` : ''}.` : state.noShared ? 'The first start makes an empty profile.' : 'The first start copies the template profile.'}</span>
+        {!archived && <label className="bw-share" title="Off: this browser does not copy the template, cannot sync, and is not part of live sharing. Use this for tasks that open untrusted pages."><input type="checkbox" checked={!state.noShared} onChange={e => void setShared(e.target.checked)} /> Shared sign-ins</label>}
+      </div>}
+      {!isTemplate && state?.profile && !archived && <div className="bw-actions bw-signin-actions">
+        {!state.noShared && <button className="btn ghost" onClick={() => setSignin('sync')} title="Add the template's cookies of the sites you choose. This browser keeps its own state.">Sync sign-ins from the template</button>}
+        <button className="btn ghost" onClick={() => setSignin('save')} title="Copy the sign-ins and site data of this browser into the template, for new tasks">Use this browser's sign-ins for new tasks</button>
+        <button className="btn ghost danger" onClick={() => setSignin('reset')} title={state.noShared ? 'Delete the profile of this task browser. The next start makes an empty profile.' : "Delete this task's profile and copy the template again. The task loses its own sign-ins."}>{state.noShared ? 'Reset to an empty profile' : 'Reset from template'}</button>
       </div>}
     </div></div>
   );
@@ -426,6 +444,13 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
             <button className="bw-mi" role="menuitem" onClick={popOut}><Icon d={I.popout} size={15} /><span>Pop out<small>Show the browser in its own window</small></span></button>
             {onCanvas && <button className="bw-mi" role="menuitem" onClick={() => { setPop(null); onCanvas(); }}><Icon d={I.canvas} size={15} /><span>Show on Canvas<small>Above the terminal of this task</small></span></button>}
             <div className="bw-msep" />
+            {!isTemplate && !archived && <>
+              {!sharing?.noShared && <button className="bw-mi" role="menuitem" onClick={() => { setPop(null); setSignin('sync'); }}><Icon d={I.reload} size={15} /><span>Sync sign-ins from the template<small>Adds its cookies for the sites you choose</small></span></button>}
+              <button className="bw-mi" role="menuitem" onClick={() => { setPop(null); setSignin('save'); }}><Icon d={I.copy} size={15} /><span>Use this browser's sign-ins for new tasks<small>Copies them into the template</small></span></button>
+              <button className="bw-mi" role="menuitemcheckbox" aria-checked={!sharing?.noShared} onClick={() => { setPop(null); void setShared(!!sharing?.noShared); }}><Icon d={sharing?.noShared ? I.close : I.lock} size={15} /><span>Shared sign-ins: {sharing?.noShared ? 'off' : 'on'}<small>{sharing?.noShared ? 'Click to get the template and live sign-ins' : 'Click to turn off, for untrusted pages'}</small></span></button>
+              <button className="bw-mi danger" role="menuitem" onClick={() => { setPop(null); setSignin('reset'); }}><Icon d={I.stop} size={15} /><span>{sharing?.noShared ? 'Reset to an empty profile' : 'Reset from template'}<small>Deletes this browser's own sign-ins</small></span></button>
+              <div className="bw-msep" />
+            </>}
             {!isTemplate && <BrowserMemory id={id} row />}
             {agents > 0 && <div className="bw-minfo"><i className="bw-agent in" />An agent is connected to this browser</div>}
             {keyLabel('browserLeave') && <div className="bw-minfo" title="While the focus is in this browser, every key goes to the page, also ⌘ and ⌃ keys."><kbd>{keyLabel('browserLeave')}</kbd> gives the keys back to Taskboard</div>}
@@ -467,6 +492,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
         {dialog.type !== 'alert' && <button className="btn" onClick={() => answer(false)}>{dialog.type === 'beforeunload' ? 'Stay' : 'Cancel'}</button>}
       </div>}
       {err && <div className="banner">{err} <button className="btn ghost" onClick={() => setErr('')}>OK</button></div>}
+      {signinParts}
       <div className={`bw-screen ${framed ? 'framed' : ''}`} ref={screen} tabIndex={0}
         onMouseDown={e => { screen.current?.focus(); mouse('mousePressed', e, e.detail || 1); }}
         onMouseUp={e => { mouse('mouseReleased', e, e.detail || 1); peek(); }}

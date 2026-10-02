@@ -75,6 +75,7 @@ export const SECTIONS: SectionDef[] = [
     ] },
     { id: 'template', title: 'Template profile', settings: [
       { id: 'templateBrowser', label: 'Template browser for sign-ins', words: 'profile cookies login copy accounts' },
+      { id: 'signinSharing', label: 'Sign-in sharing', words: 'shared sign-ins cookies live sync sign out google accounts opt out' },
     ] },
   ] },
   { id: 'messages', title: 'Messages and integrations', help: 'The sign-ins that Taskboard uses, and who approves messages between you, your agents and other people.', groups: [

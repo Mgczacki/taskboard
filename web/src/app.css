@@ -892,3 +892,21 @@ table.starts td:last-child { word-break: break-word; }
 .perfmon b { color: var(--text); font-weight: 600; margin-right: 4px; }
 .perfmon-warn { color: var(--st-needs); margin-top: 3px; }
 .perfmon-x { position: absolute; top: 4px; right: 4px; border: 0; background: none; color: var(--dim); cursor: pointer; font-size: 12px; }
+
+/* ---------- shared sign-ins of task browsers (BrowserSignins.tsx) ---------- */
+.bw-signins { margin: 6px 8px 0; }
+.bw .bw-signins { margin: 4px 6px; }
+.bw-signin-actions { flex-wrap: wrap; justify-content: flex-start; }
+.btn.ghost.danger, .bw-mi.danger { color: var(--st-stopped); }
+.bw-share { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); white-space: nowrap; }
+.si-modal { width: 560px; max-width: calc(100vw - 32px); }
+.si-modal .body { font-size: 13px; color: var(--muted); }
+.si-warn { border-left: 3px solid var(--st-stopped); padding: 6px 10px; background: color-mix(in srgb, var(--st-stopped) 8%, transparent); border-radius: 6px; }
+.si-warn b { color: var(--text); }
+.si-list { margin: 0; padding-left: 18px; display: grid; gap: 3px; max-height: 240px; overflow: auto; }
+.si-list label { display: inline-flex; gap: 6px; align-items: center; color: var(--text); }
+.si-table { border-collapse: collapse; font-size: 12.5px; width: 100%; max-width: 640px; }
+.si-table th, .si-table td { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--line); }
+.si-table th { color: var(--dim); font-weight: 500; }
+.si-row, .si-add { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.si-add input { width: 16em; }
