@@ -19,6 +19,7 @@ import { createRoot } from 'react-dom/client';
 import type { BrowserStatus, BrowserTab } from '../api';
 import { api } from '../api';
 import { mb } from '../runtimeText';
+import { countMessage } from '../perfStats';
 import { hit, keyLabel, keysText, useKeymap } from '../keys';
 
 // ---------- which browsers are popped out ----------
@@ -204,11 +205,13 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
       ws.current = s;
       s.binaryType = 'blob';
       s.onmessage = ev => {
+        countMessage(ev.data);
         // a binary message is one JPEG frame of the page
         if (ev.data instanceof Blob) { showFrame(ev.data); return; }
         const m = JSON.parse(ev.data);
         if (m.type === 'frameSize') frameSize.current = { w: m.w, h: m.h };
-        else if (m.type === 'tabs') { setTabs(m.tabs); setRunning(true); setAgents(m.agents || 0); setMuted(m.muted ?? null); setErr(''); }
+        // the server sends the tabs every second: an unchanged list keeps the old array, so the view does not draw again
+        else if (m.type === 'tabs') { setTabs(prev => JSON.stringify(prev) === JSON.stringify(m.tabs) ? prev : m.tabs); setRunning(true); setAgents(m.agents || 0); setMuted(m.muted ?? null); setErr(''); }
         else if (m.type === 'active') setActive(m.id);
         else if (m.type === 'nav') setNav({ loading: !!m.loading, canBack: !!m.canBack, canForward: !!m.canForward });
         else if (m.type === 'copied') {

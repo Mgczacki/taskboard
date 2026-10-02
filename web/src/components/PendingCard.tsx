@@ -6,7 +6,7 @@
 // setting is on, and refuses it from the controller always.
 import { useState, type ReactNode } from 'react';
 import type { PendingItem, PendingOption, PendingRisk } from '../api';
-import { api, fmtWait, loadConfirmRisk, RISK_SETTING, useStore } from '../api';
+import { api, fmtWait, loadConfirmRisk, RISK_SETTING, useStoreValue } from '../api';
 import { showInStack } from '../stack';
 import { AgentChip } from './ui';
 
@@ -28,7 +28,7 @@ const RISK_TEXT: Record<PendingRisk, string> = {
 const minutes = (iso: string) => Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
 
 export function PendingCard({ item, compact, openTask, toast }: { item: PendingItem; compact?: boolean; openTask: (id: string) => void; toast: (s: string) => void }) {
-  const { confirmRisk } = useStore();
+  const confirmRisk = useStoreValue(s => s.confirmRisk);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [text, setText] = useState('');
@@ -151,7 +151,8 @@ export function PendingCard({ item, compact, openTask, toast }: { item: PendingI
 // shows "Answer". The button brings the card to the front of the notification stack (or selects it on the Waiting
 // page), where the user answers it.
 export function PendingMarker({ taskId, small, children }: { taskId: string; small?: boolean; children?: ReactNode }) {
-  const { pending } = useStore();
+  // only the cards: a change of a task does not draw this again
+  const pending = useStoreValue(s => s.pending);
   const items = pending.filter(i => i.taskId === taskId);
   if (!items.length) return <>{children}</>;
   const q = items[0].question.replace(/\s+/g, ' ').trim();

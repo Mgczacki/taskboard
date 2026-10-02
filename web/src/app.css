@@ -884,3 +884,10 @@ table.keyset .keycell { text-align: right; white-space: normal; }
 table.starts { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
 table.starts th, table.starts td { text-align: left; padding: 3px 8px 3px 0; border-bottom: 1px solid var(--line, rgba(127,127,127,.2)); vertical-align: top; }
 table.starts td:last-child { word-break: break-word; }
+
+
+/* The performance monitor (components/PerfMonitor.tsx), off by default. Bottom left, above the page, no animation. */
+.perfmon { position: fixed; left: 10px; bottom: 10px; z-index: 60; max-width: min(720px, calc(100vw - 20px)); padding: 7px 28px 7px 10px; border: 1px solid var(--line2); border-radius: 8px; background: var(--panel2); color: var(--muted); font: 11.5px/1.45 ui-monospace, Menlo, monospace; box-shadow: 0 6px 18px rgba(0,0,0,.25); }
+.perfmon b { color: var(--text); font-weight: 600; margin-right: 4px; }
+.perfmon-warn { color: var(--st-needs); margin-top: 3px; }
+.perfmon-x { position: absolute; top: 4px; right: 4px; border: 0; background: none; color: var(--dim); cursor: pointer; font-size: 12px; }

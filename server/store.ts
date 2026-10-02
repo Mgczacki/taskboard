@@ -83,6 +83,11 @@ export interface Scope {
 const now = () => new Date().toISOString();
 const tasks = new Map<string, Task>();
 const listeners = new Set<(t: Task) => void>();
+// version: changes with every change of a task, so other modules can keep values computed from all tasks until the
+// next change (links.ts). sorted: the tasks by number, newest first, until a task is added or removed.
+let changes = 0, sorted: Task[] | null = null;
+export const version = () => changes;
+const changed = (order = false) => { changes++; if (order) sorted = null; };
 
 export function onTaskChange(fn: (t: Task) => void) { listeners.add(fn); return () => listeners.delete(fn); }
 export const taskDir = (id: string) => join(TASKS_DIR, id);
@@ -104,9 +109,11 @@ export function loadAll() {
       tasks.set(data.id, { ...(data as Task), desc });
     } catch (e) { console.error('could not read task', f, e); }
   }
+  changed(true);
 }
 
-export function all(): Task[] { return [...tasks.values()].sort((a, b) => b.num - a.num); }
+// A copy of the sorted list: the sort ran for each call before, and some requests call this once for each task.
+export function all(): Task[] { return (sorted ||= [...tasks.values()].sort((a, b) => b.num - a.num)).slice(); }
 export function get(id: string) { return tasks.get(id); }
 
 export function nextNum(): number {
@@ -120,7 +127,7 @@ export function create(t: Omit<Task, 'created' | 'updated' | 'statusAt'>): Task 
   const full: Task = { ...t, created: now(), updated: now(), statusAt: now() };
   mkdirSync(taskDir(t.id), { recursive: true });
   if (!existsSync(logFile(t.id))) writeFileSync(logFile(t.id), `# Log: ${t.title}\n`);
-  tasks.set(t.id, full); write(full); emit(full);
+  tasks.set(t.id, full); changed(true); write(full); emit(full);
   return full;
 }
 
@@ -128,6 +135,7 @@ export function update(id: string, patch: Partial<Task>): Task | undefined {
   const t = tasks.get(id); if (!t) return;
   const statusChanged = patch.status && patch.status !== t.status;
   Object.assign(t, patch, { updated: now() }, statusChanged ? { statusAt: now() } : {});
+  changed('num' in patch);
   write(t);
   if (statusChanged && t.status === 'archived' && t.role !== 'controller')
     try { appendFileSync(join(TB_DIR, 'daily-archive-events.jsonl'), JSON.stringify({ id: t.id, at: t.statusAt }) + '\n'); }
@@ -146,6 +154,7 @@ export function remove(id: string) {
   mkdirSync(dest, { recursive: true });
   for (const p of [join(TASKS_DIR, id + '.md'), taskDir(id)]) if (existsSync(p)) renameSync(p, join(dest, basename(p)));
   tasks.delete(id);
+  changed(true);
   launchedAt.delete(id);
   for (const fn of removeListeners) fn(id);
 }
@@ -155,6 +164,7 @@ export function discardStagedTransfer(id: string) {
   rmSync(join(TASKS_DIR, id + '.md'), { force: true });
   rmSync(taskDir(id), { recursive: true, force: true });
   tasks.delete(id);
+  changed(true);
   launchedAt.delete(id);
   for (const fn of removeListeners) fn(id);
 }

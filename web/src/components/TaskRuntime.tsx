@@ -7,7 +7,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import type { RuntimeItem, RuntimeList as RuntimeData, Task } from '../api';
-import { api, useStore } from '../api';
+import { api, useStoreValue } from '../api';
 import { Dot } from './ui';
 import { popOutBrowser } from './TaskBrowser';
 import { countText, mb, plural, totalText } from '../runtimeText';
@@ -94,7 +94,7 @@ export function RuntimeList({ tasks, showOwner, onOpen, pictures = false }: { ta
 
 // The count on a task. Nothing is shown when nothing runs.
 export function RuntimeButton({ t, onOpen, small = false }: { t: Task; onOpen: (tab: RuntimeTab) => void; small?: boolean }) {
-  const c = useStore().runtime[t.id];
+  const c = useStoreValue(s => s.runtime[t.id]);
   const [open, setOpen] = useState(false);
   const btn = useRef<HTMLButtonElement>(null);
   const text = countText(c);

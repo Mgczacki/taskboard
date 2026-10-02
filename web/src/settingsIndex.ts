@@ -104,6 +104,10 @@ export const SECTIONS: SectionDef[] = [
     { id: 'updates', title: 'Updates', settings: [
       { id: 'autoReload', label: 'Reload automatically when Taskboard is updated', words: 'release reload' },
     ] },
+    { id: 'performance', title: 'Performance', settings: [
+      { id: 'termWebgl', label: 'Draw terminals with WebGL', words: 'gpu webgl renderer terminal slow cpu draw fast' },
+      { id: 'perfMonitor', label: 'Show the performance monitor', words: 'slow freeze lag cpu memory swap load event loop long task monitor' },
+    ] },
   ] },
   { id: 'keys', title: 'Keyboard shortcuts', help: 'The keys for each action. These keys are saved in this app or browser only.', groups: [
     { id: 'keys', settings: [

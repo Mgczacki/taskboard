@@ -1,19 +1,21 @@
 // A live terminal: xterm.js attached to the task's tmux session through /ws/term.
 import { FitAddon } from '@xterm/addon-fit';
 import { WebLinksAddon } from '@xterm/addon-web-links';
+import { WebglAddon } from '@xterm/addon-webgl';
 import { ClipboardAddon } from '@xterm/addon-clipboard';
 import { Terminal as XTerm } from '@xterm/xterm';
 import type { IBufferRange, ILink } from '@xterm/xterm';
 import '@xterm/xterm/css/xterm.css';
-import { useEffect, useRef, useState } from 'react';
+import { memo, useEffect, useRef, useState } from 'react';
 import { terminalSocket } from '../terminalSocket';
 import { taskboardKey } from '../keys';
-import { useStore } from '../api';
+import { currentTasks } from '../api';
 import { openDocumentLink, type DocumentLink } from '../documentLinks';
 import { continues, findPaths, joinRows, type Row } from '../terminalPaths';
 import { commandAt, commandsFrom, type CellRow } from '../bangCommand';
 import { beginHold } from '../holdRun';
 import { readTerminalTheme } from '../terminalTheme';
+import { onRendererChange, webglOn } from '../terminalRenderer';
 import { sizeSender } from '../terminalSize';
 import { drawText, liveScreen, paneText, saveScreen, savedScreen, serialize, type PaneScreen } from '../terminalSnapshot';
 
@@ -35,17 +37,20 @@ function escapes(d: string) {
 interface PaneState { copy: boolean; scroll: number; selection: boolean; hidden: boolean }
 
 // glass below 1 is the alpha of a see-through background (the controller view, controllerView.ts)
-export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, onFocus, glass = 1, tint = 'panel' }: { taskId: string; session?: string; fontSize?: number; autoFocus?: boolean; onFocus?: () => void; glass?: number; tint?: 'panel' | 'page' }) {
+type Props = { taskId: string; session?: string; fontSize?: number; autoFocus?: boolean; onFocus?: () => void; glass?: number; tint?: 'panel' | 'page' };
+// A terminal draws again only when one of its own values changes, not with each change of any task. onFocus is not
+// compared: callers pass a new function on each draw, and the terminal calls the newest one.
+export const Terminal = memo(TerminalView, (a, b) => a.taskId === b.taskId && a.session === b.session && a.fontSize === b.fontSize && a.autoFocus === b.autoFocus && a.glass === b.glass && a.tint === b.tint && !a.onFocus === !b.onFocus);
+function TerminalView({ taskId, session, fontSize = 13, autoFocus = false, onFocus, glass = 1, tint = 'panel' }: Props) {
   const box = useRef<HTMLDivElement>(null);
   const glassRef = useRef(glass);
   glassRef.current = glass;
   const tintRef = useRef(tint);
   tintRef.current = tint;
+  const onFocusRef = useRef(onFocus);
+  onFocusRef.current = onFocus;
   const termRef = useRef<XTerm | null>(null);
   const fitRef = useRef<() => void>(() => {});
-  const tasks = useStore().tasks;
-  const tasksRef = useRef(tasks);
-  tasksRef.current = tasks;
   const [pane, setPane] = useState<PaneState | null>(null);
   // why the terminal is not connected (the close code), or '' while it is connected
   const [offline, setOffline] = useState<'' | 'away' | 'no-session' | 'no-terminal'>('');
@@ -62,7 +67,7 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
       fontFamily: '"JetBrains Mono", "SF Mono", ui-monospace, Menlo, monospace',
       fontSize, lineHeight: 1.25, cursorBlink: true, allowProposedApi: true, scrollback: 10000,
       macOptionIsMeta: false, macOptionClickForcesSelection: true, theme, minimumContrastRatio,
-      // only the canvas and WebGL renderers read this; the DOM renderer used here takes the alpha in theme.background
+      // the WebGL renderer reads this; the DOM renderer takes the alpha in theme.background
       allowTransparency: true,
     });
     const fit = new FitAddon();
@@ -99,7 +104,7 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
     };
     for (const type of ['mousedown', 'mouseup', 'click'] as const) el.addEventListener(type, onModifiedMouse, true);
     // Hold to run (bangCommand.ts): a "! <command>" that the agent printed, typed into this task's agent prompt
-    const holdable = () => !!taskId && !session && !taskId.includes('~') && tasksRef.current.some(t => t.id === taskId);
+    const holdable = () => !!taskId && !session && !taskId.includes('~') && currentTasks().some(t => t.id === taskId);
     // buffer rows first to last, with the character and the foreground color of each cell
     const cellRows = (first: number, last: number): CellRow[] => {
       const buffer = term.buffer.active, rows: CellRow[] = [];
@@ -155,7 +160,7 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
       const refLinks: ILink[] = [];
       for (const ref of refs) {
         const num = Number(ref.text.replace(/\D/g, ''));
-        const task = tasksRef.current.find(t => t.num === num);
+        const task = currentTasks().find(t => t.num === num);
         if (!task) continue;
         refLinks.push({ range: range(ref.start, ref.start + ref.text.length), text: ref.text,
           activate: event => { if (modified(event)) dispatchEvent(new CustomEvent('taskboard:task-link', { detail: task.id })); },
@@ -193,8 +198,22 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
     } }) : null;
     const events: Record<string, unknown>[] = [];
     const log = (k: string, x: Record<string, unknown> = {}) => { events.push({ at: Date.now(), k, ...x }); if (events.length > 300) events.shift(); };
-    // Use xterm's default renderer. A new WebGL context for each pane mount can leave a live terminal blank.
-    const renderer = 'dom';
+    // The renderer (terminalRenderer.ts): WebGL while the setting is on, else xterm's DOM renderer. A lost WebGL context
+    // (browsers keep about 16, the oldest goes first) puts this terminal back on the DOM renderer until the next mount.
+    let renderer = 'dom', webgl: WebglAddon | null = null;
+    const useWebgl = (on: boolean) => {
+      if (on && !webgl) {
+        try {
+          const gl = new WebglAddon();
+          gl.onContextLoss(() => { log('webgl-context-lost'); if (webgl === gl) { webgl = null; renderer = 'dom'; gl.dispose(); term.refresh(0, term.rows - 1); } });
+          term.loadAddon(gl); webgl = gl; renderer = 'webgl';
+        } catch (e) { log('webgl-failed', { error: String(e) }); }
+      } else if (!on && webgl) { webgl.dispose(); webgl = null; renderer = 'dom'; }
+      log('renderer', { renderer });
+      term.refresh(0, term.rows - 1);
+    };
+    useWebgl(webglOn());
+    const unRenderer = onRendererChange(() => useWebgl(webglOn()));
     // tmux sends copied text as OSC 52; this puts it on the system clipboard
     term.loadAddon(new ClipboardAddon());
     // a hidden terminal (a parent with display: none) has no size; fitting it would make the tmux window 20 x 5
@@ -350,11 +369,11 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
     const ro = new ResizeObserver(refit);
     ro.observe(el);
     const sendFocus = () => send({ t: 'focus' });
-    const onF = () => { sendFocus(); if (onFocus) onFocus(); };
+    const onF = () => { sendFocus(); onFocusRef.current?.(); };
     term.textarea?.addEventListener('focus', onF);
     if (autoFocus) setTimeout(() => term.focus(), 50);
 
-    return () => { document.removeEventListener('visibilitychange', restoreDisplay); window.removeEventListener('focus', restoreDisplay); sizes.dispose(); resized.dispose(); clearTimeout(redrawnTimer); clearTimeout(coverQuiet); clearTimeout(coverMax); clearInterval(stallCheck); io.disconnect(); parsed.dispose(); rendered.dispose(); if (records.get(id) === record) records.delete(id); ro.disconnect(); input.dispose(); keyed.dispose(); provider?.dispose(); underline.remove(); for (const type of ['mousedown', 'mouseup', 'click'] as const) el.removeEventListener(type, onModifiedMouse, true); el.removeEventListener('paste', onPaste, true); el.removeEventListener('mousedown', onHoldStart, true); term.textarea?.removeEventListener('focus', onF); ws?.dispose(); termRef.current = null; fitRef.current = () => {};
+    return () => { unRenderer(); document.removeEventListener('visibilitychange', restoreDisplay); window.removeEventListener('focus', restoreDisplay); sizes.dispose(); resized.dispose(); clearTimeout(redrawnTimer); clearTimeout(coverQuiet); clearTimeout(coverMax); clearInterval(stallCheck); io.disconnect(); parsed.dispose(); rendered.dispose(); if (records.get(id) === record) records.delete(id); ro.disconnect(); input.dispose(); keyed.dispose(); provider?.dispose(); underline.remove(); for (const type of ['mousedown', 'mouseup', 'click'] as const) el.removeEventListener(type, onModifiedMouse, true); el.removeEventListener('paste', onPaste, true); el.removeEventListener('mousedown', onHoldStart, true); term.textarea?.removeEventListener('focus', onF); ws?.dispose(); termRef.current = null; fitRef.current = () => {};
       unlist(); gone = true;
       // keep the screen only once tmux drew it: before that, the terminal shows the saved one (or nothing)
       if (timing.firstParsed !== undefined) { try { saveScreen(id, serialize(term)); } catch { /* not readable */ } }

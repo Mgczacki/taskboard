@@ -62,6 +62,7 @@ import * as runtime from './runtime-routes.ts';
 import { trimTerminalLog } from './terminal-log.ts';
 import { idleSuspendMinutes, maySuspendIdleTask } from './idle-suspend.ts';
 import * as launchLimit from './launch-limit.ts';
+import * as perf from './perf.ts';
 
 const execFileP = promisify(execFile);
 // a development checkout never runs as the real Taskboard, and a sandbox never uses the real one's port, folders or tmux
@@ -804,7 +805,13 @@ pending.setIo({
 });
 const fail = (res: express.Response, e: unknown) => res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
 
+// the dashboard's performance monitor (server/perf.ts); the page reads it only while the monitor is on
+app.get('/api/perf', async (_req, res) => res.json(await perf.snapshot()));
 app.get('/api/tasks', (_req, res) => res.json([...store.all().map(view), ...machines.remoteTasks()]));
+// The few fields that the Mac app reads every 3 s for its Dock badge and menu-bar menu (desktop/main.cjs), for the
+// tasks that are not archived. The whole list was 540 KB with 185 tasks, parsed on the app's main thread.
+app.get('/api/tasks/summary', (_req, res) => res.json([...store.all(), ...machines.remoteTasks()].filter(t => t.status !== 'archived')
+  .map(t => ({ id: t.id, num: t.num, title: t.title, status: t.status, role: t.role, waitMin: Math.round((Date.now() - Date.parse(t.statusAt)) / 60000) }))));
 app.get('/api/tasks/:id/token-estimate', (req, res) => {
   const t = store.get(req.params.id);
   if (!t) return res.status(404).json({ error: 'Task not found.' });
@@ -1428,14 +1435,21 @@ canvasOrder.onCanvasOrderChange(() => {
   const msg = JSON.stringify({ type: 'canvasOrder', orders: canvasOrder.all() });
   for (const c of eventClients) sendEvent(c, msg);
 });
+// the last task message sent for each task, without its `updated` time: a change that the page does not see (the same
+// values written again, or an inbox or outbox write that leaves the counts as they were) sends nothing
+const lastTaskView = new Map<string, string>();
 store.onTaskRemoved(id => {
   events.forgetTask(id);
+  lastTaskView.delete(id);
   const msg = JSON.stringify({ type: 'removed', id });
   for (const c of eventClients) sendEvent(c, msg);
 });
 store.onTaskChange(t => {
   if (t.status === 'archived') { events.forgetTask(t.id); store.launchedAt.delete(t.id); }
-  const msg = JSON.stringify({ type: 'task', task: view(t) });
+  const v = view(t), same = JSON.stringify({ ...v, updated: undefined });
+  if (lastTaskView.get(t.id) === same) return;
+  lastTaskView.set(t.id, same);
+  const msg = JSON.stringify({ type: 'task', task: v });
   for (const c of eventClients) sendEvent(c, msg);
 });
 
@@ -1602,11 +1616,23 @@ function quietFor(t: store.Task, ms = QUIET_MS) {
   return Date.now() - Math.max(last, store.launchedAt.get(t.id) || 0) >= ms;
 }
 let lastListWarn = 0;
+// The last screen read by the status loop for each session, with the window activity time it had then. tmux keeps
+// window_activity in whole seconds, so a screen read at least 1 s after that time is still current while the time
+// does not change. The loop reads it again only then: a task that waits on you does not start a tmux process every 2 s.
+const loopScreens = new Map<string, { at: number; activity: number; text: string }>();
+async function loopScreen(session: string, activity: number) {
+  const c = loopScreens.get(session);
+  if (c && c.activity === activity && c.at >= activity + 1000) return c.text;
+  const at = Date.now(), text = await tmux.capture(session, 0);
+  loopScreens.set(session, { at, activity, text });
+  return text;
+}
 // first: the run at server start, before the status is read from the transcripts (see below)
 async function reconcile(first = false) {
   const sessions = await tmux.listSessions();
   if (!sessions) { if (Date.now() - lastListWarn > 60000) { lastListWarn = Date.now(); console.error(`${new Date().toISOString()} tmux did not answer; skipping status checks`); } return; }
   const byName = new Map(sessions.map(s => [s.name, s]));
+  for (const name of loopScreens.keys()) if (!byName.has(name)) loopScreens.delete(name);
   for (const t of store.all()) {
     if (t.role === 'controller') { await keepController(t, byName.get(t.session)); continue; }
     if (t.openElsewhere && !['archived', 'parked'].includes(t.status)) { watchElsewhere(t); continue; }
@@ -1635,7 +1661,7 @@ async function reconcile(first = false) {
     const launched = store.launchedAt.get(t.id) || Date.parse(t.created) || 0;
     const screenQuestion = t.status === 'needs-you' && t.statusSource?.startsWith(events.SCREEN_SOURCE);
     if (screenQuestion || (Date.now() - launched < 90000 && !events.sessionStarted.has(t.id) && ['working', 'idle'].includes(t.status)))
-      events.screenCheck(t, (await tmux.capture(t.session, 0)).split('\n').filter(l => l.trim()).slice(-15).join('\n'));
+      events.screenCheck(t, (await loopScreen(t.session, s.activity)).split('\n').filter(l => l.trim()).slice(-15).join('\n'));
     // A first prompt that waits to be typed in (agents.ts pendingPrompt) goes in once the input box shows. It is not
     // awaited: the check of the box before Enter can take some seconds, and the other tasks must not wait for it.
     if (agents.pendingPrompt.has(t.id)) {
@@ -1644,7 +1670,7 @@ async function reconcile(first = false) {
     }
     // Antigravity: read approval questions from the screen while a tool call waits (agy has no event for it)
     if (t.agent === 'antigravity' && t.status === 'working')
-      events.agyApprovalCheck(store.get(t.id)!, (await tmux.capture(t.session, 0)).split('\n').filter(l => l.trim()).slice(-20).join('\n'));
+      events.agyApprovalCheck(store.get(t.id)!, (await loopScreen(t.session, s.activity)).split('\n').filter(l => l.trim()).slice(-20).join('\n'));
     if (t.agent === 'codex' && t.sessionId) {
       let tr = t.transcript;
       if (!tr) { tr = importer.transcriptFor('codex', t.sessionId, (accounts.get(t.account) || accounts.defaultFor('codex')).dir); if (tr) store.update(t.id, { transcript: tr }); }
@@ -1655,12 +1681,12 @@ async function reconcile(first = false) {
       // and for 10 s after the rollout file or the status changed (the questions appear right after the call is written).
       const c = store.get(t.id)!;
       if (events.codexQuestionsOpen(c) || Date.now() - Math.max(mtime, Date.parse(c.statusAt) || 0) < 10000)
-        events.codexQuestionCheck(c, (await tmux.capture(c.session, 0)).split('\n').filter(l => l.trim()).slice(-15).join('\n'));
+        events.codexQuestionCheck(c, (await loopScreen(c.session, s.activity)).split('\n').filter(l => l.trim()).slice(-15).join('\n'));
     }
     // after the activity checks above, so a new Codex turn is seen first
     const cur = store.get(t.id)!;
     // the Waiting page: read the question or dialog of a task that waits on the user, and close cards that are answered
-    if (cur.status === 'needs-you' || pending.hasOpen(cur.id)) pending.scan(cur, await tmux.capture(cur.session, 0));
+    if (cur.status === 'needs-you' || pending.hasOpen(cur.id)) pending.scan(cur, await loopScreen(cur.session, s.activity));
     if (cur.restartWhenDone && await pendingRestart(cur)) continue;
     if (IDLE_SUSPEND_MINUTES && betweenTurns(cur)) {
       let transcriptTime = 0;
@@ -1700,8 +1726,15 @@ setInterval(() => {
   reconciling = true;
   reconcile().catch(e => console.error('reconcile', e)).finally(() => { reconciling = false; });
 }, 2000);
-// "waiting N min" changes over time; push a refresh every minute
-setInterval(() => { const msg = JSON.stringify({ type: 'tasks', tasks: [...store.all().map(view), ...machines.remoteTasks()] }); for (const c of eventClients) sendEvent(c, msg); }, 60000);
+// "waiting N min" changes over time: push the minutes of the tasks that are not archived every minute. The whole list
+// was sent before (540 KB with 185 tasks, to each window, and each window drew every task again).
+setInterval(() => {
+  const waits: Record<string, number> = {};
+  for (const t of [...store.all().map(t => ({ id: t.id, status: t.status, waitMin: Math.round((Date.now() - Date.parse(t.statusAt)) / 60000) })), ...machines.remoteTasks()])
+    if (t.status !== 'archived') waits[t.id] = t.waitMin;
+  const msg = JSON.stringify({ type: 'waits', waits });
+  for (const c of eventClients) sendEvent(c, msg);
+}, 60000);
 const resourceCounts = () => ({ tasks: store.all().length, eventClients: eventClients.size, terminalViewers: terminalViewerCount(), approvals: approvals.count(), pendingTouches: pendingTouch.size, ...stats.cacheCounts() });
 sampleResources(resourceCounts);
 setInterval(() => {
