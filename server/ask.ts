@@ -98,7 +98,7 @@ export async function ask(t: Task, question: string): Promise<AskThread> {
   const agent = settings.agent;
   const model = settings.model;
   const acct = accounts.get(settings.account) || accounts.defaultFor(agent);
-  if (acct.agent !== agent) throw new Error('The Ask account does not match its agent. Change it in Settings.');
+  if (acct.agent !== agent) throw new Error('The BTW account does not match its agent. Change it in Settings.');
   const thread = get(t.id);
   // a conversation lives in one account's folder and uses one model
   if (thread.accountId !== acct.id || thread.agent !== agent || thread.model !== model) {

@@ -6,7 +6,7 @@ import { loadAccounts, usageText, type Account } from './Accounts';
 
 export function NewTask({ onClose, onStarted, initialFolder, initialMachine = 'local', groups = [], initialGroup, spinOff }: { onClose: () => void; onStarted: (id: string, group: string, choice?: string) => void; initialFolder?: string; initialMachine?: string; groups?: Group[]; initialGroup?: string; spinOff?: SpinOffExchange }) {
   const [title, setTitle] = useState(spinOff?.question.slice(0, 80) || '');
-  const [desc, setDesc] = useState(spinOff ? `Start a new task from this Ask exchange about task #${spinOff.sourceNum}. Read task #${spinOff.sourceNum}'s log if you need more context. Do not send a message to the source task.\n\nQuestion:\n${spinOff.question}\n\nAnswer:\n${spinOff.answer}` : '');
+  const [desc, setDesc] = useState(spinOff ? `Start a new task from this BTW exchange about task #${spinOff.sourceNum}. Read task #${spinOff.sourceNum}'s log if you need more context. Do not send a message to the source task.\n\nQuestion:\n${spinOff.question}\n\nAnswer:\n${spinOff.answer}` : '');
   // Images pasted into the description (⌘V / Ctrl+V). The server saves them in the task folder and lists their paths in the first prompt.
   const [images, setImages] = useState<{ type: string; data: string; url: string }[]>([]);
   const [agent, setAgent] = useState<Agent | 'auto'>('claude');
@@ -90,7 +90,7 @@ export function NewTask({ onClose, onStarted, initialFolder, initialMachine = 'l
   return (
     <div className="scrim open" onMouseDown={e => { if (e.target === e.currentTarget) onClose(); }} onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) go(); if (e.key === 'Escape') onClose(); }}>
       <div className="modal">
-        <header><h2>{spinOff ? `New task from Ask #${spinOff.sourceNum}` : 'New task'}</h2><button className="btn ghost icon" onClick={onClose}>✕</button></header>
+        <header><h2>{spinOff ? `New task from BTW #${spinOff.sourceNum}` : 'New task'}</h2><button className="btn ghost icon" onClick={onClose}>✕</button></header>
         <div className="body">
           <div className="field"><label>Title</label><input ref={titleRef} type="text" value={title} onChange={e => setTitle(e.target.value)} placeholder="Short name shown on the board" /></div>
           <div className="field"><label>Task description · sent to the agent as its first prompt</label><textarea value={desc} readOnly={!!spinOff} onChange={e => setDesc(e.target.value)} onPaste={spinOff ? undefined : onPaste} placeholder="What should the agent do? Paste images with ⌘V." />

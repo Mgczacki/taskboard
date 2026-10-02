@@ -1,4 +1,4 @@
-// Ask panel on a canvas tile: questions about the task, answered by a separate read-only agent (server/ask.ts).
+// Ask panel on a canvas tile, labeled BTW in the interface: questions about the task, answered by a separate read-only agent (server/ask.ts).
 // The task's own agent gets no input. The panel polls the thread while an answer is on its way.
 import { useEffect, useRef, useState } from 'react';
 import DOMPurify from 'dompurify';
@@ -34,11 +34,11 @@ export function AskPanel({ task, close, onSpinOff }: { task: Task; close: () => 
   return (
     <div className="ask" onMouseDown={e => e.stopPropagation()}>
       <div className="ask-h">
-        <b>Ask about #{task.num}</b>
-        <span className="sub">A separate agent reads the terminal and the transcript. #{task.num} does not see the question.</span>
+        <b>BTW about #{task.num}</b>
+        <span className="sub" title="BTW: ask a separate agent a side question about this session. The running agent does not see it.">Ask a separate agent a side question about this session. #{task.num} does not see it.</span>
         <span className="sp" />
         {count > 0 && !busy && <button className="btn" title="Start a new thread (the next question starts a new conversation)" onClick={() => api.askClear(task.id).then(setThread)}>New thread</button>}
-        <button className="btn ghost icon" title="Close (the thread is kept)" aria-label="Close Ask panel" onClick={close}>✕</button>
+        <button className="btn ghost icon" title="Close (the thread is kept)" aria-label="Close BTW panel" onClick={close}>✕</button>
       </div>
       <div className="ask-list" ref={list}>
         {!count && <div className="ask-empty">For example: “What has it done so far?”, “Why is it waiting?”, “Which files did it change?”</div>}
@@ -55,9 +55,9 @@ export function AskPanel({ task, close, onSpinOff }: { task: Task; close: () => 
       </div>
       {err && <div className="ask-err">{err}</div>}
       <div className="ask-in field">
-        <textarea value={q} autoFocus rows={2} aria-label="Question about this session" placeholder={busy ? 'Wait for the answer…' : count ? 'Ask a follow-up question (Enter sends, Shift+Enter adds a line)' : 'Ask a question about this session (Enter sends)'}
+        <textarea value={q} autoFocus rows={2} aria-label="BTW side question about this session" placeholder={busy ? 'Wait for the answer…' : count ? 'Ask a follow-up side question (Enter sends, Shift+Enter adds a line)' : 'Ask a side question about this session (Enter sends)'}
           onChange={e => setQ(e.target.value)} onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } if (e.key === 'Escape') close(); }} />
-        <button className="btn primary" disabled={busy || !q.trim()} onClick={send}>Ask</button>
+        <button className="btn primary" disabled={busy || !q.trim()} onClick={send}>Send</button>
       </div>
     </div>
   );

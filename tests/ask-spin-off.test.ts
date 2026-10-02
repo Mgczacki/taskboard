@@ -12,6 +12,6 @@ test('a new task receives the source number, question, and answer', () => {
 
 test('a spin off requires a completed exchange and a valid source number', () => {
   assert.throws(() => spinOffPrompt({ sourceNum: 0, question: 'What next?', answer: 'Fix it.' }), /source task number/);
-  assert.throws(() => spinOffPrompt({ sourceNum: 42, question: '', answer: 'Fix it.' }), /completed Ask question/);
-  assert.throws(() => spinOffPrompt({ sourceNum: 42, question: 'What next?', answer: '' }), /completed Ask answer/);
+  assert.throws(() => spinOffPrompt({ sourceNum: 42, question: '', answer: 'Fix it.' }), /completed BTW question/);
+  assert.throws(() => spinOffPrompt({ sourceNum: 42, question: 'What next?', answer: '' }), /completed BTW answer/);
 });

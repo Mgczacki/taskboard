@@ -54,10 +54,10 @@ export const SECTIONS: SectionDef[] = [
       { id: 'reviewAccount', label: 'Review account', words: 'auto review antigravity' },
       { id: 'reviewModel', label: 'Review model', words: 'auto review sonnet opus' },
     ] },
-    { id: 'ask', title: 'Questions about a session', settings: [
-      { id: 'askAgent', label: 'Agent', words: 'ask question ? claude codex' },
-      { id: 'askAccount', label: 'Account', words: 'ask question ?' },
-      { id: 'askModel', label: 'Model', words: 'ask question ? sonnet haiku opus' },
+    { id: 'ask', title: 'BTW: side questions about a session', settings: [
+      { id: 'askAgent', label: 'Agent', words: 'btw ask side question ? claude codex' },
+      { id: 'askAccount', label: 'Account', words: 'btw ask side question ?' },
+      { id: 'askModel', label: 'Model', words: 'btw ask side question ? sonnet haiku opus' },
     ] },
   ] },
   { id: 'taskBrowsers', title: 'Task browsers', help: 'The Chrome browser of each task, the template profile that new task browsers copy, and which agents use them.', groups: [

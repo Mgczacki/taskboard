@@ -41,7 +41,7 @@ export function describeImpact(impact, serverAnswers) {
   }
   if (!impact) {
     lines.push('The running server is an older release. It cannot list what a restart stops.');
-    lines.push('Agent sessions run in tmux and normally keep running. Answers of Ask questions and permit results that are running now are lost.');
+    lines.push('Agent sessions run in tmux and normally keep running. Answers of BTW questions and permit results that are running now are lost.');
     return { lines, mustConfirm: true };
   }
   const n = impact.sessions.length;

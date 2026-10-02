@@ -686,7 +686,7 @@ app.patch('/api/info', async (req, res) => {
     // Letting the controller approve permits gives the user less control. The page asks first and then sends confirmLowerControl.
     if (confirmLowerControl !== true && controllerCanApprovePermits === true && !machine.get().permissions.controllerCanApprovePermits)
       return res.status(400).json({ error: 'Confirm on the Settings page before you give the controller more control.' });
-    if (askAgent && !['claude', 'codex'].includes(askAgent)) return res.status(400).json({ error: 'Antigravity does not have verified read-only Ask controls.' });
+    if (askAgent && !['claude', 'codex'].includes(askAgent)) return res.status(400).json({ error: 'Antigravity does not have verified read-only BTW controls.' });
     const agent = askAgent || machine.get().ask.agent;
     if (askAccount && accounts.get(askAccount)?.agent !== agent) return res.status(400).json({ error: `Pick a ${agent} account for questions.` });
     if (askModel && (typeof askModel !== 'string' || !(agent === 'claude' ? ['sonnet', 'haiku', 'opus'].includes(askModel) : /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(askModel))))

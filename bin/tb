@@ -65,7 +65,7 @@ const HELP = `tb — Taskboard command line
   tb new --agent auto|claude|codex|antigravity --folder <path> [--account <id>] [--model <name>] [--title <t>] [--worktree <branch>|--no-worktree] [--group <name>] "<prompt>"
   tb new --batch <plan.json>         [{ agent, folder, title, prompt, account?, model?, worktree?, group? }, …]
   tb ask spin-off <task> [--answer n] [--title <t>] [--agent claude|codex|antigravity] [--account <id>] [--folder <path>] [--worktree <branch>]
-                                     start from a completed Ask answer; n is its 1-based position
+                                     start from a completed BTW answer; n is its 1-based position
   tb group list | tb group add <group> <task…> | tb group rm <group> <task…>
   tb doc send <task>:<file> <task>   send a document from one task's outbox to another task's inbox
   tb mail                            messages with other people (A2A Notes over Slack) and notes to you: run for command help

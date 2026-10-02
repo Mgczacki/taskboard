@@ -45,7 +45,7 @@ export function restartImpact(i: ImpactInput): RestartImpact {
   const stops: RestartStop[] = [];
   const add = (id: string, what: string) => { const t = byId.get(id); stops.push({ num: t?.num ?? 0, title: t ? label(t) : id, what }); };
   if (tmuxStops) for (const t of i.tasks.filter(t => t.status !== 'archived' && live.has(t.session))) add(t.id, 'its agent session can stop with Taskboard');
-  for (const id of i.askRunning) add(id, 'the answer to the running Ask question is lost');
+  for (const id of i.askRunning) add(id, 'the answer to the running BTW question is lost');
   for (const p of i.permitsRunning) add(p.taskId, `permit ${p.id} keeps running, but Taskboard records its result as unknown`);
   for (const id of i.moving) add(id, 'the move to another account is cut off; check the task after the restart');
   for (const t of i.tasks) if (t.transfer?.state === 'starting') add(t.id, 'the transfer to another machine is cut off; check the task after the restart');
