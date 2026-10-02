@@ -109,10 +109,10 @@ Agents that work on Taskboard itself run inside the real one, so the setup keeps
 
 | Page | What it is |
 |---|---|
-| List | Every task grouped by status, with Goal / Now / Waiting. Tick tasks to group them or open them together. |
+| List | Every task grouped by status, or by linked set (indented by Depends on or Started by), with Goal / Now / Waiting. Tick tasks to group them or open them together. |
 | Board | Columns by status, or by group (drag a card onto a group to add it. Hold ⌥ to move it). |
-| Graph | Tasks in lanes (group, folder or status). Arrows show documents sent from one task to another. |
-| Canvas | Live terminals. Tabs across the top are your groups. Columns / Grid / Rows. |
+| Graph | Tasks in lanes (group, folder, status or links). Arrows show documents sent from one task to another, and links between tasks. |
+| Canvas | Live terminals. Tabs across the top are your groups. Columns / Grid / Rows. Ports on each title bar show task links. |
 | Inbox | Messages with other people (A2A Notes), notes from your tasks, and documents to review. The Sent tab shows drafts and sent messages. |
 | Accounts | Settings folders per account, sign-in, limit marks, and limit resets (only you can use them). |
 
@@ -206,7 +206,13 @@ A move between windows never changes a task's groups. A new task goes after the 
   The controller reads `tb accounts` before it starts work. A Claude Code controller also gets current usage in its prompt hook.
   The user can choose an agent, account, or model in a request. `tb new` accepts `--account` and `--model`.
 - **`tb`** (linked into `~/.local/bin/tb`): `tb list`, `tb show`, `tb log`, `tb tail`, `tb result`, `tb wait`, `tb send`,
-  `tb accounts`, `tb new` (also `--batch plan.json`), `tb group`, `tb doc send`, `tb review`, `tb park|archive`. Run `tb` for help.
+  `tb accounts`, `tb new` (also `--batch plan.json`), `tb group`, `tb doc send`, `tb dep`, `tb deps`, `tb review`, `tb park|archive`. Run `tb` for help.
+- **Task links:** a task can depend on, replace, follow up or relate to another task. The links are in the task note frontmatter
+  (`links`). The server computes the other direction and a state: blocked, ready, superseded or done (archived). A replaces link
+  parks the old task. When a task is no longer blocked, Taskboard tells it and the controller in their inboxes. Add links with
+  `tb dep add <task> --on|--replaces|--follows|--related <task>`, `tb new --after <task>`, or the Links section of the task panel.
+  `tb deps <task> --all` and the linked work overview show every task linked to a task, whatever groups they are in.
+  Suggestions come from task parents, sent documents and equal titles. They change nothing until you confirm one.
 - **New task files:** Taskboard creates a separate worktree and task branch when the chosen folder is a Git repository root.
   Use `tb new --no-worktree` or "Use the folder as is" in the new task form when you need the original folder.
   A new worktree uses the source folder's `node_modules` when present. Otherwise Taskboard installs dependencies from a supported lockfile.
