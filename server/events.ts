@@ -271,6 +271,7 @@ const SCREEN_QUESTIONS: [RegExp, string][] = [
   [/trust this folder|Do you trust the (files|contents)/i, 'Asks whether to trust this folder (first run here). Answer in the terminal.'],
   [/Select login method|Please log in|Sign in with ChatGPT/i, 'Asks you to sign in. Answer in the terminal.'],
   [/Update available[\s\S]*(Update now|Skip)/i, 'Offers an update before starting. Answer in the terminal (Skip continues).'],
+  [/Claude in Chrome extension detected/, 'Asks whether Claude may use your own Chrome browser (Claude in Chrome). Answer on the Waiting page or in the terminal.'],
   // while it is on screen, an Antigravity approval (set by agyApprovalCheck) stays in "needs you"
   [AGY_APPROVAL, 'Asks to approve a tool call. Answer in the terminal.'],
 ];

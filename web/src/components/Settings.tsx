@@ -330,11 +330,11 @@ function ServerStarts() {
 // Keyboard shortcuts: every action in keys.ts with its keys. ＋ waits for the next key and adds it; × removes a key.
 // A search that matches only some action names shows only those actions.
 const MODES: { value: BrowserMode; label: string }[] = [
-  { value: 'task', label: 'Task browser, and the shared Chrome extension' },
+  { value: 'task', label: 'Task browser added' },
   { value: 'only', label: 'Task browser only' },
-  { value: 'off', label: 'Off: only the agent\'s own browser tools' },
+  { value: 'off', label: 'Off: no task browser' },
 ];
-function TaskBrowserSettings({ info, busy, save }: { info: MachineInfo | null; busy: boolean; save: (p: { browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; browserIdleStopMinutes?: number; browserSharp?: boolean }) => Promise<void> }) {
+function TaskBrowserSettings({ info, busy, save }: { info: MachineInfo | null; busy: boolean; save: (p: { browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; browserIdleStopMinutes?: number; browserSharp?: boolean; claudeInChromeTasks?: boolean; claudeInChromeController?: boolean }) => Promise<void> }) {
   const [tpl, setTpl] = useState<BrowserStatus | null>(null);
   const [chrome, setChrome] = useState('');
   const [idle, setIdle] = useState('');
@@ -348,9 +348,13 @@ function TaskBrowserSettings({ info, busy, save }: { info: MachineInfo | null; b
     <SettingGroup section="taskBrowsers" id="agents" title="Agents" help={<>Each task gets its own headless Chrome, shown in the task's Browser tab. Agents use it through the MCP server <code>task-browser</code>. A change reaches an agent when its session starts or resumes. Antigravity keeps its own browser.</>}>
       {b && <>
         <SettingItem id="browserClaude"><label className="opt">Browser for Claude Code tasks <select disabled={busy} value={b.claude} onChange={e => void save({ browserClaude: e.target.value as BrowserMode })}>{MODES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}</select></label>
-          <div className="sub">"Task browser only" starts Claude Code with <code>--no-chrome</code>, so it cannot use Claude in Chrome in your own Chrome.</div></SettingItem>
+          <div className="sub">"Task browser only" always starts Claude Code with <code>--no-chrome</code>. In the other modes, the setting "Claude in Chrome for Claude Code tasks" decides.</div></SettingItem>
         <SettingItem id="browserCodex"><label className="opt">Browser for Codex tasks <select disabled={busy} value={b.codex} onChange={e => void save({ browserCodex: e.target.value as BrowserMode })}>{MODES.map(m => <option key={m.value} value={m.value}>{m.label}</option>)}</select></label>
           <div className="sub">"Task browser only" turns off the Codex feature <code>browser_use_external</code> (ChatGPT for Chrome) for the task.</div></SettingItem>
+        <SettingItem id="claudeInChromeTasks"><label className="opt">Claude in Chrome for Claude Code tasks <select disabled={busy} value={info?.settings.claudeInChrome?.tasks ? 'on' : 'off'} onChange={e => void save({ claudeInChromeTasks: e.target.value === 'on' })}><option value="off">Off</option><option value="on">On</option></select></label>
+          <div className="sub">Claude in Chrome is the Claude extension in your own Chrome, with your sign-ins. Off: tasks start with <code>--no-chrome</code>, so Claude Code does not ask "Claude in Chrome extension detected" at start. On: Claude Code can ask once, and the answer is saved in the account. A change reaches a task when its session starts or resumes. Default: Off.</div></SettingItem>
+        <SettingItem id="claudeInChromeController"><label className="opt">Claude in Chrome for the controller <select disabled={busy} value={info?.settings.claudeInChrome?.controller ? 'on' : 'off'} onChange={e => void save({ claudeInChromeController: e.target.value === 'on' })}><option value="off">Off</option><option value="on">On</option></select></label>
+          <div className="sub">Off: the controller starts with <code>--no-chrome</code> and has no <code>claude-in-chrome</code> tools. On: the controller can use your own Chrome. A change restarts the controller between turns. Default: Off.</div></SettingItem>
         <SettingItem id="chromePath">
           <label className="opt" htmlFor="chrome-path">Chrome program</label>
           <input id="chrome-path" value={chrome} onChange={e => setChrome(e.target.value)} placeholder={tpl?.chrome || 'The path of the Chrome program'} spellCheck={false} />

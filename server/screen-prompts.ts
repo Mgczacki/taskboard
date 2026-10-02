@@ -29,6 +29,8 @@ const DASHED = /^\s*[╌┄]{20,}\s*$/;
 
 export function riskOf(label: string, question = ''): Risk | undefined {
   if (/always allow|don['’]t ask again|do not ask again|and always|allow all\b|switch to accept edits/i.test(label)) return 'wide-access';
+  // Claude in Chrome: the agent acts in the user's own Chrome with the user's sign-ins
+  if (/^yes, use my browser$/i.test(label.trim())) return 'wide-access';
   if (/\b(update now|install|upgrade)\b|\bcurl\b|\bwget\b|\|\s*(ba|z)?sh\b/i.test(label)) return 'installs';
   if (/request (a limit )?increase|add credits|buy credits/i.test(label) || (/request (a limit )?increase\?/i.test(question) && /^yes\b/i.test(label))) return 'spends';
   if (/^(no, exit|quit|exit)$/i.test(label.trim())) return 'exits';
@@ -136,6 +138,13 @@ export function parsePrompt(agent: PromptAgent, screen: string): ScreenPrompt | 
       const path = rows.slice(Math.max(0, trust - 4), trust).map(r => r.trim()).find(r => r.startsWith('/') || r.startsWith('~'));
       const question = rows[trust].trim().replace(/^Quick safety check:\s*/, '').replace(/\?.*$/, '?');
       if (block) return make('claude-trust', 'dialog', question, block, { cwd: path }, excerptOf(rows, trust - 3, block.end + 1));
+    }
+    // at start, when Claude in Chrome is not turned off (agents.ts claudeNoChrome) and the extension is installed. No
+    // option has a key: the card moves the highlight with the arrow keys and presses Enter.
+    const chrome = find(/Claude in Chrome extension detected/);
+    if (chrome >= 0) {
+      const block = plainBlock(rows, chrome);
+      if (block) return make('claude-chrome', 'dialog', 'Claude in Chrome extension detected. Let Claude use your Chrome browser by default?', block, {}, excerptOf(rows, chrome, block.end + 1));
     }
     if (/Enter to select · ↑\/↓ to navigate/.test(text) && /[☐☒✔]/.test(text)) {
       const q = questionAbove(rows, rows.length);

@@ -285,7 +285,7 @@ ${writingRules('your reports to the user, the messages that you send to tasks, a
 ${credentialGuidance(HOME)}
 ${rules.section('controller') ? `\n${rules.section('controller')}\n` : ''}`;
 // what the controller's command line depends on; when it changes, the running controller is restarted between turns
-export const controllerLaunchKey = (agent: string) => JSON.stringify({ mail: 3, credentialGuidance: 1, agent, model: machine.get().controller.models[agent as 'claude' | 'codex' | 'antigravity'] || '', label: machine.controllerLabel(), remote: agent === 'claude' && machine.get().controller.remoteControl, skipPermissions: agent === 'claude' && machine.get().controller.dangerouslySkipPermissions, approval: machine.get().permissions.controllerNeedsApproval });
+export const controllerLaunchKey = (agent: string) => JSON.stringify({ mail: 3, credentialGuidance: 1, agent, model: machine.get().controller.models[agent as 'claude' | 'codex' | 'antigravity'] || '', label: machine.controllerLabel(), remote: agent === 'claude' && machine.get().controller.remoteControl, skipPermissions: agent === 'claude' && machine.get().controller.dangerouslySkipPermissions, approval: machine.get().permissions.controllerNeedsApproval, ...(agent === 'claude' ? { noChrome: !machine.get().claudeInChrome.controller } : {}) });
 
 export async function startController(): Promise<Task> {
   mkdirSync(join(CONTROLLER_DIR, 'plans'), { recursive: true });
@@ -306,7 +306,7 @@ export async function startController(): Promise<Task> {
     const c = t.agent === 'claude'
       // named after this machine; with Remote Control on it can be reached from claude.ai/code and the Claude mobile app
       ? ['claude', '--settings', CONTROLLER_SETTINGS_FILE, ...(model ? ['--model', model] : []), ...(machine.get().controller.dangerouslySkipPermissions ? ['--dangerously-skip-permissions'] : ['--permission-mode', machine.get().permissions.autoReview ? 'auto' : 'default']), ...(resume && t.sessionId ? ['--resume', t.sessionId] : t.sessionId ? ['--session-id', t.sessionId] : []),
-        '--name', machine.controllerLabel(), ...(machine.get().controller.remoteControl ? ['--remote-control', machine.controllerLabel()] : [])]
+        '--name', machine.controllerLabel(), ...(machine.get().controller.remoteControl ? ['--remote-control', machine.controllerLabel()] : []), ...(claudeNoChrome(t) ? ['--no-chrome'] : [])]
       : command({ ...t, model }, null, !!t.sessionId, await codexHookTrust(t));
     await tmux.newSession(t.session, CONTROLLER_DIR, baseEnv(t), c, async () => { await ensureTmuxConfigured(); });
     await ensureTmuxConfigured();
@@ -334,6 +334,15 @@ function processAndBrowserRules(t: Task): string[] {
     `Open a page for the user with \`tb browser open <url>\`.${mode === 'only' ? ' Do not use another browser.' : ''}`,
   );
   return lines;
+}
+
+// --no-chrome turns off Claude in Chrome for the session. Claude Code then does not show the dialog "Claude in Chrome
+// extension detected" at start, which stops the start until someone answers it. Taskboard adds the flag unless the
+// setting claudeInChrome allows Claude in Chrome. The task browser mode "only" always adds it.
+export function claudeNoChrome(t: Task, taskBrowser = false): boolean {
+  const allowed = machine.get().claudeInChrome;
+  if (t.role === 'controller') return !allowed.controller;
+  return !allowed.tasks || (taskBrowser && browserMode(t) === 'only');
 }
 
 // Claude Code reads the task browser's MCP server from a file (--mcp-config). It holds the task's browser key, so only
@@ -578,7 +587,7 @@ function buildCommand(t: Task, prompt: string | null, resume: boolean, codexTrus
     if (t.model) c.push('--model', t.model);
     const mode = browserMode(t), mcp = mode === 'off' ? null : claudeMcpConfig(t);
     if (mcp) c.push('--mcp-config', mcp);
-    if (mcp && mode === 'only') c.push('--no-chrome');
+    if (claudeNoChrome(t, !!mcp)) c.push('--no-chrome');
     c.push('--permission-mode', machine.get().permissions.autoReview ? 'auto' : 'default');
     if (resume && t.sessionId) c.push('--resume', t.sessionId);
     else if (t.sessionId) c.push('--session-id', t.sessionId);

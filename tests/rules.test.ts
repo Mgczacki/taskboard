@@ -79,8 +79,9 @@ test('task rules at the maximum length fit, and a long prompt moves them into a 
     const short = agents.command(t, 'Do the work.', false);
     assert.ok(Buffer.byteLength(short.join(' ')) <= agents.MAX_COMMAND_BYTES);
     assert.match(short.join(' '), /Rule text\. Rule text\./);
-    // a long prompt: the instructions name the copy, and tmux accepts the command
-    const long = agents.command(t, 'Do the work. '.repeat(250), false);
+    // a long prompt: the instructions name the copy, and tmux accepts the command. The command without the rules is about
+    // 10.7 KB plus the prompt; the prompt keeps about 100 bytes of room below MAX_COMMAND_BYTES (the temp folder path varies).
+    const long = agents.command(t, 'Do the work. '.repeat(240), false);
     assert.doesNotMatch(long.join(' '), /Rule text\. Rule text\./);
     assert.ok(Buffer.byteLength(long.join(' ')) <= agents.MAX_COMMAND_BYTES);
     const copy = join(store.taskDir(t.id), 'rules.md');

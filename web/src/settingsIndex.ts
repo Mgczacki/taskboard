@@ -65,8 +65,10 @@ export const SECTIONS: SectionDef[] = [
   ] },
   { id: 'taskBrowsers', title: 'Task browsers', help: 'The Chrome browser of each task, the template profile that new task browsers copy, and which agents use them.', groups: [
     { id: 'agents', title: 'Agents', settings: [
-      { id: 'browserClaude', label: 'Browser for Claude Code tasks', words: 'chrome mcp devtools claude in chrome extension' },
+      { id: 'browserClaude', label: 'Browser for Claude Code tasks', words: 'chrome mcp devtools task browser' },
       { id: 'browserCodex', label: 'Browser for Codex tasks', words: 'chrome mcp devtools chatgpt extension' },
+      { id: 'claudeInChromeTasks', label: 'Claude in Chrome for Claude Code tasks', words: 'chrome extension no-chrome dialog detected prompt start' },
+      { id: 'claudeInChromeController', label: 'Claude in Chrome for the controller', words: 'chrome extension no-chrome dialog detected prompt controller' },
       { id: 'chromePath', label: 'Chrome program', words: 'path binary chromium executable' },
       { id: 'browserIdleStop', label: 'Stop an unused task browser after', words: 'idle memory minutes timeout close' },
       { id: 'browserSharp', label: 'Sharp view on Retina screens', words: 'retina sharp blurry pixel ratio scale resolution hidpi' },
