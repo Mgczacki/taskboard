@@ -87,7 +87,7 @@ export interface PendingItem {
   questions?: { question: string; header?: string; options: { label: string; description?: string }[]; multiSelect: boolean }[];
   details?: { command?: string; cwd?: string; reason?: string; title?: string; plan?: string };
   screen?: { hash: string; excerpt: string; partial?: boolean };
-  answerable: boolean; createdAt: string; state: 'pending' | 'sending' | 'answered' | 'gone' | 'failed'; result?: string;
+  answerable: boolean; createdAt: string; state: 'pending' | 'sending' | 'answered' | 'gone' | 'failed'; result?: string; needsTerminal?: boolean;
   answer?: { by: 'user' | 'controller'; label: string; sent: string; at: string; rule?: string; tasks?: number[] };
   repeats?: { count: number; lastAnswer: string };
   sameIn?: { id: string; taskId: string; taskNum: number }[];

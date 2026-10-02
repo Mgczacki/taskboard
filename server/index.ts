@@ -797,7 +797,7 @@ pending.setIo({
     const target = '=' + session + ':';
     if ((await tmux.tmux('display-message', '-p', '-t', target, '#{pane_mode}')).trim() === 'copy-mode') await tmux.tmux('send-keys', '-X', '-t', target, 'cancel');
   },
-  sendText: (t, text) => agents.sendTaskText(t, text),
+  sendText: (t, text) => agents.sendTaskText(t, text, { answer: true }),
   getTask: id => store.get(id),
   log: (t, did) => store.appendLog(t.id, { did, next: 'The agent continues.' }),
   answered: (t, note) => { if (store.get(t.id)?.status === 'needs-you') store.update(t.id, { status: 'working', ask: '', statusSource: note }); },

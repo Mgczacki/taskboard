@@ -8,7 +8,8 @@
 //     refuses when the prompt is not the one on the card. It types the key that the dialog shows, or moves the
 //     highlight with the arrow keys, checks the highlight, and presses Enter. It never presses Enter on a row that
 //     the user did not choose.
-//   - prompt: a question at the end of a turn; the answer is typed as the next prompt (agents.sendTaskText).
+//   - prompt: a question at the end of a turn; the answer is typed as the next prompt (typeAnswer, then
+//     agents.sendTaskText). Before it types, Taskboard checks that the task still waits on this question.
 // Only a click on the dashboard answers an item. The controller answers only what controllerRule allows.
 // Items live in memory: a held hook request does not survive a restart, and a screen prompt is read again.
 import { randomUUID } from 'node:crypto';
@@ -33,6 +34,7 @@ export interface PendingItem {
   createdAt: string;
   state: 'pending' | 'sending' | 'answered' | 'gone' | 'failed';
   result?: string;
+  needsTerminal?: boolean;              // the last answer failed, and the user must act in the terminal
   answer?: { by: 'user' | 'controller'; label: string; sent: string; at: string; rule?: string; tasks?: number[] };
   repeats?: { count: number; lastAnswer: string };
   sameIn?: { id: string; taskId: string; taskNum: number }[];
@@ -45,6 +47,8 @@ export interface Io {
   capture: (session: string) => Promise<string>;
   key: (session: string, key: string, literal: boolean) => Promise<void>;
   cancelCopyMode: (session: string) => Promise<void>;
+  // types the answer to a question at the end of a turn (agents.sendTaskText with answer: true). It throws
+  // NotTyped (deliver-text.ts, with a state) when it typed nothing.
   sendText: (t: Task, text: string) => Promise<{ submitted: boolean; warning?: string }>;
   getTask: (id: string) => Task | undefined;
   log: (t: Task, did: string) => void;
@@ -228,7 +232,9 @@ type RiskKey = 'wideAccess' | 'installs' | 'spends' | 'exits';
 const RISK_KEY: Record<Risk, RiskKey> = { 'wide-access': 'wideAccess', installs: 'installs', spends: 'spends', exits: 'exits' };
 // true when a user click on an option with this risk must come with the confirm step
 export const needsConfirm = (risk: Risk, confirmRisk?: AnswerInput['confirmRisk']) => confirmRisk?.[RISK_KEY[risk]] !== false;
-export class AnswerError extends Error { constructor(message: string, public status = 409) { super(message); } }
+export class AnswerError extends Error { constructor(message: string, public status = 409, public terminal = false) { super(message); } }
+// the card no longer shows what the task waits on: answer() removes it
+class OutOfDate extends AnswerError {}
 
 async function typeKeys(t: Task, l: Live, index: number, expect?: string): Promise<string> {
   await io.cancelCopyMode(t.session);
@@ -279,9 +285,59 @@ async function sendOne(l: Live, input: AnswerInput): Promise<string> {
     return opt ? opt.send.replace('your message', text.trim() ? `"${text.trim()}"` : 'the default message') : input.option === 'form' ? `hook: answers ${text}` : `hook: "${text}"`;
   }
   if (action.via === 'keys') return typeKeys(t, l, action.index, action.expect);
-  const r = await io.sendText(t, text);
-  if (!r.submitted) throw new AnswerError(r.warning || 'The text was typed, but Enter was not pressed. Check the terminal.');
-  return `prompt: "${text.length > 80 ? text.slice(0, 77) + '…' : text}" + Enter`;
+  return typeAnswer(l, text);
+}
+
+// ---------- the answer to a question at the end of a turn ----------
+// Why the task no longer waits on the question of this card, or '' when it still does. scan() makes the card only
+// while the status is "needs you" from the end of a turn with this question, so any other status means a change.
+function staleReason(t: Task, question: string): string {
+  if (t.status === 'working') return 'the agent started a new turn.';
+  if (t.status !== 'needs-you') return 'the task no longer waits on this question.';
+  if (!TURN_END.test(t.statusSource || '')) return 'the agent now waits on a dialog or an approval, not on this question.';
+  if ((t.ask || '').trim() !== question) return 'the agent asked a newer question.';
+  return '';
+}
+// True when the screen shows the end of the question. Only letters and digits count: the agent draws Markdown
+// without its marks and wraps long lines.
+const letters = (s: string) => s.normalize('NFKC').replace(/[^\p{L}\p{N}]/gu, '').toLowerCase();
+export const showsQuestion = (screen: string, question: string) => letters(screen.split('\n').slice(-80).join('\n')).includes(letters(question).slice(-60));
+
+// Why nothing was typed, in words for the card, and whether a later try can work. state comes from NotTyped
+// (deliver-text.ts): pending.ts does not import it, so the tests run without tmux.
+function whyNotTyped(e: unknown): { message: string; retry: boolean; terminal: boolean } {
+  const state = (e as { state?: string })?.state;
+  if (state === 'question') return { message: 'The terminal shows a dialog or a different question now. Taskboard typed nothing. Open the terminal and answer it there.', retry: false, terminal: true };
+  if (state === 'draft') return { message: 'The input box in the terminal holds text that a person typed. Taskboard does not type into it. Open the terminal, then send or clear that text.', retry: false, terminal: true };
+  if (state === 'no-box') return { message: `The terminal did not show an empty input box within ${ANSWER_TRIES * ANSWER_GAP_MS / 1000} s. Taskboard typed nothing. Try again, or open the terminal and type the answer there.`, retry: true, terminal: true };
+  if (state === 'busy') return { message: 'Taskboard was typing another message into this task. Taskboard typed nothing. Try again in a few seconds.', retry: true, terminal: false };
+  return { message: e instanceof Error ? e.message : String(e), retry: false, terminal: true };
+}
+// The agent can still draw its screen when the card is answered, so a screen that is not ready is read again for a
+// few seconds. A dialog or a draft is not read again: it stays until a person acts.
+export const ANSWER_TRIES = 8, ANSWER_GAP_MS = 500;
+async function typeAnswer(l: Live, text: string): Promise<string> {
+  for (let n = 1; ; n++) {
+    const t = io.getTask(l.item.taskId);
+    if (!t) throw new AnswerError('The task is gone.', 404);
+    const stale = staleReason(t, l.item.question);
+    if (stale) throw new OutOfDate(`This card is out of date: ${stale} Taskboard typed nothing and removed the card.`);
+    let failed: ReturnType<typeof whyNotTyped>;
+    if (!showsQuestion(await io.capture(t.session), l.item.question))
+      failed = { message: 'Taskboard cannot find this question on the terminal screen. Taskboard typed nothing. Open the terminal and type the answer there.', retry: true, terminal: true };
+    else {
+      try {
+        const r = await io.sendText(t, text);
+        if (!r.submitted) throw new AnswerError(r.warning || 'The text was typed, but Enter was not pressed. Check the terminal.', 409, true);
+        return `prompt: "${text.length > 80 ? text.slice(0, 77) + '…' : text}" + Enter`;
+      } catch (e) {
+        if (e instanceof AnswerError) throw e;
+        failed = whyNotTyped(e);
+      }
+    }
+    if (!failed.retry || n >= ANSWER_TRIES) throw new AnswerError(failed.message, 409, failed.terminal);
+    await io.wait(ANSWER_GAP_MS);
+  }
 }
 
 export async function answer(id: string, input: AnswerInput): Promise<PendingItem> {
@@ -303,7 +359,7 @@ export async function answer(id: string, input: AnswerInput): Promise<PendingIte
   const errors: string[] = [];
   for (const x of targets) {
     if (x.item.state !== 'pending') { errors.push(`#${x.item.taskNum}: already answered.`); continue; }
-    x.item.state = 'sending'; emit();
+    x.item.state = 'sending'; x.item.needsTerminal = undefined; emit();
     try {
       const sent = await sendOne(x, input);
       x.item.answer = { by: input.by, label, sent, at: new Date().toISOString(), rule: input.rule, ...(nums.length > 1 ? { tasks: nums } : {}) };
@@ -312,13 +368,16 @@ export async function answer(id: string, input: AnswerInput): Promise<PendingIte
         const who = input.by === 'user' ? 'The user' : `The controller (${input.rule})`;
         const risk = opt?.risk ? ` The option has the risk ${opt.risk}, sent ${input.confirm ? 'after' : 'without'} the confirm step.` : '';
         io.log(t, `${who} answered "${x.item.question.slice(0, 160)}" with "${label}" on the Waiting page${nums.length > 1 ? ` (one answer for ${nums.map(n => '#' + n).join(', ')})` : ''}. Taskboard sent ${sent}.${risk}`);
-        if (x.item.source !== 'turn-end') io.answered(t, `Answered on the Waiting page at ${clock()}.`);
+        // also after a typed answer: until the agent's prompt hook sets "working", scan() would make the card again
+        io.answered(t, `Answered on the Waiting page at ${clock()}.`);
       }
       close(x, 'answered', `Sent ${sent}.`);
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
-      errors.push(`#${x.item.taskNum}: ${message}`);
-      x.item.state = 'pending'; x.item.result = message; emit();
+      // one target: the card names the task, so the message has no task number
+      errors.push(targets.length > 1 ? `#${x.item.taskNum}: ${message}` : message);
+      if (e instanceof OutOfDate) { close(x, 'gone', message); continue; }
+      x.item.state = 'pending'; x.item.result = message; x.item.needsTerminal = e instanceof AnswerError && e.terminal || undefined; emit();
     }
   }
   if (errors.length === targets.length) throw new AnswerError(errors.join(' '));

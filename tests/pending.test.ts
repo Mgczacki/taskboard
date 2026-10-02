@@ -110,7 +110,8 @@ test('a prompt gone from the screen closes its card; a question at the end of a 
   pending.scan(t, '❯ ');
   assert.equal(pending.get(id)!.state, 'gone');
   const t2 = task('g', 7, 'codex', { ask: 'Did you mean a status update?', statusSource: 'Codex notify (agent-turn-complete) at 09:00.' });
-  pending.scan(t2, '› ');
+  screens.set(t2.session, '• Did you mean a status update?\n\n› ');
+  pending.scan(t2, screens.get(t2.session)!);
   const q = itemFor('g');
   assert.equal(q.kind, 'text');
   await pending.answer(q.id, { text: 'Yes, a status update.', by: 'user' });

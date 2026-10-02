@@ -15,6 +15,7 @@
 //     messages". When busy ends, the queued messages are submitted.
 //   permission: the permission question in place of the box. "1" answers it. Other keys do nothing.
 //   history: rows of earlier output above the box. notice: a background task notice above the box.
+//   drawing: only the history rows and no box, as a screen that the agent has not finished drawing.
 //   An empty box shows its hint dim (SGR 2), as Claude Code and Codex do: Claude Code "Try ..." when hint is set, Codex
 //   "Ask Codex to do anything".
 const fs = require('node:fs'), path = require('node:path');
@@ -63,6 +64,7 @@ function draw() {
   if (dialog === 'trust') lines = ['Do you trust the contents of this project?', '> Yes, I trust this folder', '  No, exit'];
   else if (dialog === 'permission') lines = [...(state.history || []), '', '  Running ./build.sh', '  ⎿  $ ./build.sh', '', RULE, ' Bash command', ' Run shell command', '╌'.repeat(80), ' ./build.sh', '╌'.repeat(80),
     ' This command requires approval', '', ' Do you want to proceed?', ' ❯ 1. Yes', '   2. Yes, and don’t ask again for: ./build.sh *', '   3. No', '', ' Esc to cancel · Tab to amend'];
+  else if (state.drawing) lines = ['Fake agent', ...(state.history || [])];
   else if (dialog === 'update') lines = ['  Update available · 0.158.0 → 0.160.0', '  Release notes: https://github.com/openai/codex/releases/latest', '',
     "› 1. Update now (runs `sh -c 'curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh'`)", '  2. Skip', '  3. Skip until next version', '', '  enter continue · esc skip'];
   else {
