@@ -15,6 +15,7 @@ import { inOrder, moveBy, moveToSlot, slotAt, slotHint } from '../groupOrder';
 import { orderKey, renderOrder, slotNear, tileHint, withSavedOrder } from '../tileOrder';
 import { GroupRuntime } from './GroupRuntime';
 import { RuntimeButton, canRun, type RuntimeTab } from './TaskRuntime';
+import { panelHolds, type PanelTab } from '../panelShare';
 import { BrowserView } from './TaskBrowser';
 import { readSplit, writeSplit, type Split } from '../browserSplit';
 import { countText, sumCounts } from '../runtimeText';
@@ -43,14 +44,15 @@ export function openInWindow(view: string) {
 
 interface Props {
   tasks: Task[]; groups: Group[]; view: string; setView: (v: string) => void; openPanel: (id: string | null, tab?: RuntimeTab) => void;
-  panelTaskId?: string | null; // the task whose panel is open (its tile then does not attach a second terminal)
+  panelTaskId?: string | null; // the task whose panel is open
+  panelTab?: PanelTab; // the tab in front in that panel: its tile yields only the part that tab shows (panelShare.ts)
   selected: Set<string>; toggleSel: (id: string) => void; clearSel: () => void; solo: boolean;
   focusMode: boolean; setFocusMode: (f: boolean) => void; toast: (s: string, action?: { label: string; fn: () => void }) => void;
   newTask: () => void; newTaskToFocus: string | null; onNewTaskFocused: () => void;
   onSpinOff: (exchange: SpinOffExchange, task: Task) => void;
 }
 
-export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTaskId, selected, toggleSel, clearSel, solo, focusMode, setFocusMode, toast, newTask, newTaskToFocus, onNewTaskFocused, onSpinOff }: Props) {
+export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTaskId, panelTab, selected, toggleSel, clearSel, solo, focusMode, setFocusMode, toast, newTask, newTaskToFocus, onNewTaskFocused, onSpinOff }: Props) {
   const lk = (k: string) => `tb-cv-${view}-${k}`;
   const [layout, setLayout] = useState<Layout>(() => (localStorage.getItem(lk('layout')) as Layout) || 'columns');
   const [visible, setVisible] = useState<number | 'auto'>(() => { const v = localStorage.getItem(lk('visible')); return v && v !== 'auto' ? Number(v) : 'auto'; });
@@ -89,6 +91,8 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
   const [splits, setSplits] = useState<Record<string, Split>>({});
   const startHere = useRef(new Set<string>());
   const splitOf = (id: string) => splits[id] ?? readSplit(id);
+  // the parts of a task that its open panel shows: the tile does not show them as well
+  const held = (id: string) => panelHolds(id, panelTaskId, panelTab);
   const setSplit = (id: string, s: Split) => { writeSplit(id, s); setSplits(m => ({ ...m, [id]: s })); };
   const toggleBrowser = (id: string) => { const s = splitOf(id); if (s.open) startHere.current.delete(id); else startHere.current.add(id); setSplit(id, { ...s, open: !s.open }); };
   const toggleAsk = (id: string) => setAsking(s => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
@@ -445,7 +449,7 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
               <span className={`st st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} /><RuntimeButton t={t} small onOpen={tab => openPanel(t.id, tab)} />
               {ending === t.id ? <><span className="sel-warn">End & archive?</span><button className="b" onClick={() => endTask(t)}>Yes, end it</button><button className="b" onClick={() => setEnding(null)}>Cancel</button></> : <>
               {(t.status === 'suspended' || t.openElsewhere) && <button className="b" onClick={() => openPanel(t.id)}>{t.openElsewhere ? 'Options…' : 'Resume…'}</button>}
-              {canRun(t) && !t.openElsewhere && t.status !== 'suspended' && t.id !== panelTaskId && (sp => <>
+              {canRun(t) && !t.openElsewhere && t.status !== 'suspended' && !held(t.id).terminal && !held(t.id).browser && (sp => <>
                 <button className={`b ${sp.open ? 'on' : ''}`} onClick={() => toggleBrowser(t.id)} title={sp.open ? 'Close the browser here and show only the terminal. The browser keeps running.' : 'Open the browser of this task here, above a smaller terminal. A stopped browser starts.'}>🌐</button>
                 {sp.open && <button className="b" onClick={() => setSplit(t.id, { ...sp, side: sp.side === 'bottom' ? 'side' : 'bottom' })} title={sp.side === 'bottom' ? 'Put the terminal at the right side of the browser' : 'Put the terminal in a strip below the browser'}>{sp.side === 'bottom' ? '◨' : '⬓'}</button>}
               </>)(splitOf(t.id))}
@@ -456,12 +460,12 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
               {t.role !== 'controller' && <button className="b" title={t.openElsewhere ? 'End & archive: archives the task; the session in the other terminal keeps running' : 'End & archive: ends the tmux session and archives the task'} onClick={() => confirmEnd() ? setEnding(t.id) : endTask(t)}>⏻</button>}
               <button className="b" title={`${group ? `Remove from ${group.name}` : 'Remove from this view'} (${keysText('removeWindow')}). The agent keeps running.`} onClick={() => removeFromView(t.id)}>✕</button></>}
             </div>
-            <div className={`wb ${(sp => sp.open && canRun(t) ? `split ${sp.side}` : '')(splitOf(t.id))}`}>{asking.has(t.id) && <AskPanel task={t} close={() => toggleAsk(t.id)} onSpinOff={onSpinOff} />}{t.openElsewhere ? <div className="empty" style={{ padding: 16 }}>Running in another terminal ({t.openElsewhere?.tty}). <button className="btn" onClick={() => openPanel(t.id)}>Options…</button></div>
+            <div className={`wb ${(sp => sp.open && canRun(t) && !held(t.id).browser ? `split ${sp.side}` : '')(splitOf(t.id))}`}>{asking.has(t.id) && <AskPanel task={t} close={() => toggleAsk(t.id)} onSpinOff={onSpinOff} />}{t.openElsewhere ? <div className="empty" style={{ padding: 16 }}>Running in another terminal ({t.openElsewhere?.tty}). <button className="btn" onClick={() => openPanel(t.id)}>Options…</button></div>
               : t.status === 'suspended' ? <div className="empty" style={{ padding: 16 }}>Suspended. <button className="btn" onClick={() => openPanel(t.id)}>Resume…</button></div>
-              // a tmux window has one size: while this task's panel is open, the panel shows the terminal and the tile waits
-              : t.id === panelTaskId ? <div className="tile-in-panel"><div>Shown in the task panel.</div><div className="sub">One terminal per task at a time, so neither is cut off. Closing the panel brings it back here.</div><button className="btn" onClick={() => openPanel(null)}>Show it here instead</button></div>
+              // a tmux window has one size: while this task's panel shows its terminal, the tile waits
+              : held(t.id).terminal ? <div className="tile-in-panel"><div>The terminal shows in the Terminal tab of the task panel.</div><div className="sub">One terminal per task at a time, so neither is cut off. Another tab in the panel, or closing the panel, brings it back here.</div><button className="btn" onClick={() => openPanel(null)}>Show it here instead</button></div>
               // the terminal stays the last child, so opening or closing the browser does not mount it again
-              : <>{splitOf(t.id).open && canRun(t) && <div className="wb-browser"><BrowserView id={t.id} title={`#${t.num} ${t.title}`} autostart={startHere.current.has(t.id)} /></div>}
+              : <>{splitOf(t.id).open && canRun(t) && !held(t.id).browser && <div className="wb-browser"><BrowserView id={t.id} title={`#${t.num} ${t.title}`} autostart={startHere.current.has(t.id)} /></div>}
                 <Terminal taskId={t.id} fontSize={font[t.id] || 13} onFocus={() => setFocused(t.id)} /></>}</div>
           </div>
         ))}
