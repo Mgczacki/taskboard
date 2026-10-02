@@ -93,6 +93,10 @@ export const SECTIONS: SectionDef[] = [
     { id: 'canvas', title: 'Canvas', settings: [
       { id: 'confirmEnd', label: 'Ask before ⏻ in a window header ends and archives the task', words: 'end archive confirm power' },
     ] },
+    { id: 'controllerView', title: 'Controller view', settings: [
+      { id: 'controllerGlass', label: 'Transparency of the controller terminal', words: 'transparent see-through glass blur opacity background' },
+      { id: 'taskThinBar', label: 'Fold the header of normal tasks to a thin bar too', words: 'collapse collapsed header compact bar' },
+    ] },
     { id: 'updates', title: 'Updates', settings: [
       { id: 'autoReload', label: 'Reload automatically when Taskboard is updated', words: 'release reload' },
     ] },

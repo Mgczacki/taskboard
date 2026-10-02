@@ -32,8 +32,11 @@ function escapes(d: string) {
 // what the server says about the tmux pane (server/pty.ts): copy mode, its scroll position and whether it hides output
 interface PaneState { copy: boolean; scroll: number; selection: boolean; hidden: boolean }
 
-export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, onFocus }: { taskId: string; session?: string; fontSize?: number; autoFocus?: boolean; onFocus?: () => void }) {
+// glass below 1 is the alpha of a see-through background (the controller view, controllerView.ts)
+export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, onFocus, glass = 1 }: { taskId: string; session?: string; fontSize?: number; autoFocus?: boolean; onFocus?: () => void; glass?: number }) {
   const box = useRef<HTMLDivElement>(null);
+  const glassRef = useRef(glass);
+  glassRef.current = glass;
   const termRef = useRef<XTerm | null>(null);
   const tasks = useStore().tasks;
   const tasksRef = useRef(tasks);
@@ -45,11 +48,13 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
 
   useEffect(() => {
     const el = box.current!;
-    const { theme, minimumContrastRatio } = readTerminalTheme();
+    const { theme, minimumContrastRatio } = readTerminalTheme(glassRef.current);
     const term = new XTerm({
       fontFamily: '"JetBrains Mono", "SF Mono", ui-monospace, Menlo, monospace',
       fontSize, lineHeight: 1.25, cursorBlink: true, allowProposedApi: true, scrollback: 10000,
       macOptionIsMeta: false, macOptionClickForcesSelection: true, theme, minimumContrastRatio,
+      // only the canvas and WebGL renderers read this; the DOM renderer used here takes the alpha in theme.background
+      allowTransparency: true,
     });
     const fit = new FitAddon();
     term.loadAddon(fit); term.loadAddon(new WebLinksAddon());
@@ -280,9 +285,12 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
   useEffect(() => { if (termRef.current) termRef.current.options.fontSize = fontSize; }, [fontSize]);
   useEffect(() => {
     // a new theme object makes xterm.js repaint with the new colours; the buffer and the session stay as they are
-    const on = () => { const t = termRef.current; if (!t) return; const { theme, minimumContrastRatio } = readTerminalTheme(); t.options.theme = theme; t.options.minimumContrastRatio = minimumContrastRatio; };
+    const on = () => { const t = termRef.current; if (!t) return; const { theme, minimumContrastRatio } = readTerminalTheme(glassRef.current); t.options.theme = theme; t.options.minimumContrastRatio = minimumContrastRatio; };
     addEventListener('tb-theme', on); return () => removeEventListener('tb-theme', on);
   }, []);
+  // a new transparency step changes only the colours: the terminal is not opened again (a new renderer for each open
+  // was the cause of the black terminal fixed in task 140)
+  useEffect(() => { const t = termRef.current; if (t) t.options.theme = readTerminalTheme(glass).theme; }, [glass]);
   useEffect(() => { if (autoFocus) termRef.current?.focus(); }, [autoFocus]);
 
   // The bar at the top right says when the terminal does not show the agent's newest output, and why.
