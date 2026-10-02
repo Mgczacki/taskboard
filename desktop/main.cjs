@@ -235,6 +235,7 @@ function trayMenu(unread) {
     ...(groups.length ? [{ label: 'New Window for Group', submenu: groupItems() }] : []),
     { label: 'Triage (everything waiting)', enabled: serverUp, click: () => openInPage({ triage: true }) },
     { label: 'Controller', enabled: serverUp, click: () => openInPage({ controller: true }) },
+    { label: 'Restart Taskboard Server…', enabled: serverUp, click: () => { show(); openInPage({ settings: 'server' }); } },
     { type: 'separator' },
     { label: 'Open at login', type: 'checkbox', checked: app.getLoginItemSettings().openAtLogin, click: m => { app.setLoginItemSettings({ openAtLogin: m.checked, openAsHidden: true }); } },
     { label: `Show/hide shortcut: ${accel()}`, enabled: false },
@@ -252,6 +253,10 @@ function appMenu() {
     { label: 'Taskboard', submenu: [
       { role: 'about' }, { type: 'separator' },
       { label: 'Hide Taskboard', accelerator: 'Command+H', click: () => win && win.hide() }, { role: 'hideOthers' }, { role: 'unhide' }, { type: 'separator' },
+      // the server runs under launchd, not in this app: Settings → Taskboard server restarts it (scripts/restart.mjs)
+      // after a confirmation that lists the running agents, and shows its start history
+      { label: 'Restart Taskboard Server…', click: () => { show(); openInPage({ settings: 'server' }); } },
+      { type: 'separator' },
       { label: 'Quit (the server and agents keep running)', accelerator: 'Command+Q', click: () => app.quit() },
     ] },
     { label: 'File', submenu: [

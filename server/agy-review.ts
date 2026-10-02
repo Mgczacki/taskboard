@@ -21,6 +21,7 @@ function run(bin: string, args: string[], input: string, env: NodeJS.ProcessEnv,
     child.stdout.on('data', chunk => { output += chunk; if (output.length > 50000) child.kill('SIGTERM'); });
     child.on('error', () => { clearTimeout(timer); resolve({ code: null, output: '' }); });
     child.on('close', code => { clearTimeout(timer); resolve({ code, output }); });
+    child.stdin.on('error', () => { /* EPIPE when the child ends first; 'close' reports it */ });
     child.stdin.end(input);
   });
 }

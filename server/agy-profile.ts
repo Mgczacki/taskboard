@@ -8,9 +8,15 @@ import { join } from 'node:path';
 const keychain = (home: string) => join(home, 'Library', 'Keychains', 'antigravity-profile.keychain-db');
 const passwordFile = (home: string) => join(home, '.taskboard-keychain-password');
 
-function security(home: string, args: string[], input = ''): Promise<string> {
+const security = (home: string, args: string[], input = '') => run('/usr/bin/security', home, args, input);
+
+// The child can end before it reads stdin (a missing Keychain makes `security` fail at once). The write of `input` then
+// fails with EPIPE on child.stdin. Without a listener, that error ended the whole server (2026-10-02 10:02:37 UTC).
+// The exit code of the child is the result; the stdin error is ignored.
+export function run(bin: string, home: string, args: string[], input = ''): Promise<string> {
   return new Promise((resolve, reject) => {
-    const child = spawn('/usr/bin/security', args, { env: { ...process.env, HOME: home }, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(bin, args, { env: { ...process.env, HOME: home }, stdio: ['pipe', 'pipe', 'pipe'] });
+    child.stdin.on('error', () => { /* the child closed stdin; its exit code reports the failure */ });
     let stdout = '', stderr = '';
     const timer = setTimeout(() => child.kill('SIGTERM'), 15000);
     child.stdout.on('data', b => { stdout += b; });

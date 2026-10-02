@@ -5,8 +5,12 @@
 // macOS has a fixed number of pseudo-terminals (kern.tty.ptmx_max, 511 on the Mac where this was found). The running
 // server had 302 of them after two hours; at the limit, pty.spawn throws. node-pty 1.2.0 (beta) closes low_fds[0].
 // So after each spawn, the descriptors that the spawn opened, other than the terminal's own, are closed when they are
-// pseudo-terminal masters like it (same device major number). No other descriptor can match.
-import { closeSync, fstatSync, readdirSync } from 'node:fs';
+// pseudo-terminal masters like it (same device major number), or the terminal's own slave side (see below). No other
+// descriptor can match.
+// Not fixed here: node-pty 1.1.0 also leaves one kqueue open for each spawn (src/unix/pty.cc, the thread that waits
+// for the child creates it and never closes it). JavaScript cannot tell that kqueue from others. node-pty 1.2.0 (beta)
+// closes the kqueue, the slave side and low_fds[0].
+import { closeSync, fstatSync, readdirSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import * as pty from 'node-pty';
 
@@ -24,11 +28,15 @@ export function spawnPty(file: string, args: string[], options: pty.IPtyForkOpti
   if (before) {
     const own = (p as unknown as { _fd: number })._fd;
     const kind = major(fstatSync(own).rdev);
+    // pty_posix_spawn also opens the terminal's slave side (/dev/ttysNNN) in this process to pass it to the child, and
+    // never closes it. When the terminal ends, macOS revokes it and lsof shows it as "(revoked)": one more descriptor
+    // per spawn (66 in the real server 10 minutes after a start on 2026-10-02). The child has its own copy.
+    let slave = -1; try { slave = statSync((p as unknown as { _pty: string })._pty).rdev; } catch { /* no name */ }
     for (const fd of openDescriptors()) {
       if (before.has(fd) || fd === own) continue;
       try {
         const s = fstatSync(fd);
-        if (s.isCharacterDevice() && major(s.rdev) === kind) closeSync(fd);
+        if (s.isCharacterDevice() && (major(s.rdev) === kind || s.rdev === slave)) closeSync(fd);
       } catch { /* the descriptor of the /dev/fd listing, closed again */ }
     }
   }

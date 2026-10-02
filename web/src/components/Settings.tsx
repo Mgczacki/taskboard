@@ -2,7 +2,8 @@
 // one section for each entry of SECTIONS in settingsIndex.ts, a side list of those sections and a search box.
 import { useEffect, useRef, useState } from 'react';
 import type { BrowserMode, BrowserStatus, ConfirmRisk, MachineInfo, MessageLevel, PushRecord, RestartImpact, RestartResult, Task } from '../api';
-import { api, autoReload, confirmEnd, DEFAULT_CONFIRM_RISK, setAutoReload, setConfirmEnd } from '../api';
+import { api, autoReload, confirmEnd, DEFAULT_CONFIRM_RISK, setAutoReload, setConfirmEnd, useStore } from '../api';
+import { reasonText, type ServerHealth } from '../serverStatus';
 import { setTaskThinBar, setWindowSee, taskThinBar, windowSee, windowSeeSupported } from '../controllerView';
 import { GlassControls, useGlass, useReadable } from './GlassControls';
 import { ControllerBox, MaxTasksInput, loadAccounts } from './Accounts';
@@ -132,7 +133,7 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
             </SettingSection>
 
             <SettingSection id="server">
-              <SettingGroup section="server" id="restart"><RestartBox /></SettingGroup>
+              <SettingGroup section="server" id="restart"><RestartBox /><ServerStarts /></SettingGroup>
             </SettingSection>
 
             <SettingSection id="accounts">
@@ -275,6 +276,7 @@ function RestartBox() {
       {!impact && <div><button className="btn" disabled={state !== 'idle'} onClick={() => void check()}>{state === 'checking' ? 'Checking…' : 'Restart Taskboard…'}</button></div>}
       {impact && <div className={stops ? 'banner' : ''} role={stops ? 'alert' : undefined}>
         <p>{impact.tmuxStops ? `The tmux server of the agents is in Taskboard's process group. A restart can stop all ${impact.sessions.length} agent sessions.` : `${impact.sessions.length} agent session${impact.sessions.length === 1 ? '' : 's'} keep running in tmux.`}</p>
+        {impact.sessions.length > 0 && <details><summary className="sub">Running agents</summary><ul>{impact.sessions.map(s => <li key={s.num}>#{s.num} {s.title} · {s.status}</li>)}</ul></details>}
         {impact.stops.length > 0 && <><p>A restart stops this work:</p><ul>{impact.stops.map((s, i) => <li key={i}>#{s.num} {s.title}: {s.what}</li>)}</ul></>}
         {impact.notes.map((n, i) => <p key={i} className="sub">{n}</p>)}
         <div className="ap-a">
@@ -283,6 +285,28 @@ function RestartBox() {
         </div>
       </div>}
       {last && <div className="sub">Last restart {new Date(last.at).toLocaleString()}: {last.message.split('\n')[0]}</div>}
+    </div>
+  </SettingItem>;
+}
+
+// When and why the server started, and its last 10 starts (GET /api/server, server/server-life.ts).
+function ServerStarts() {
+  const [h, setH] = useState<ServerHealth | null>(null);
+  const { server } = useStore();
+  useEffect(() => { api.serverHealth().then(setH).catch(() => {}); }, [server?.startedAt]);
+  const when = (at?: string) => at ? new Date(at).toLocaleString() : '';
+  const up = (s: number) => s >= 86400 ? `${Math.floor(s / 86400)} d ${Math.floor(s % 86400 / 3600)} h` : s >= 3600 ? `${Math.floor(s / 3600)} h ${Math.floor(s % 3600 / 60)} min` : `${Math.floor(s / 60)} min`;
+  return <SettingItem id="serverStarts">
+    <div className="ctl-box set-card">
+      <div><b>Server starts</b></div>
+      <div className="sub">The server runs as the login service <code>com.taskboard.server</code> (launchd), not inside the Taskboard app. Quitting the app does not stop the server or the agents. launchd starts the server again about 10 s after it ends. The log is <code>~/.taskboard/server.log</code>.</div>
+      {!h ? <div className="sub">No start data. An older server does not record it.</div> : <>
+        <p>Process {h.pid}, release {h.release}. Started {when(h.startedAt)}, up {up(h.uptimeSec)}. The previous server ended: {reasonText(h.previous?.kind)}{h.previous?.detail ? ` (${h.previous.detail})` : ''}.</p>
+        <p className="sub">In the last {Object.values(h.counts).reduce((a, b) => a + b, 0)} ends: {h.planned} planned (release, rollback or restart), {h.counts.crash} crash{h.counts.crash === 1 ? '' : 'es'}, {h.counts.signal} other stop signal{h.counts.signal === 1 ? '' : 's'}, {h.counts.unknown} without a log entry. Errors this server survived: {h.recovered.count}{h.recovered.last ? ` (last ${when(h.recovered.last.at)}: ${h.recovered.last.line})` : ''}.</p>
+        <table className="starts"><thead><tr><th>Started</th><th>Process</th><th>Release</th><th>Ended</th><th>Reason</th></tr></thead><tbody>
+          {h.starts.map(s => <tr key={s.pid + s.startedAt}><td>{when(s.startedAt)}</td><td>{s.pid}</td><td>{s.release}</td><td>{s.end ? when(s.end.at) : s.pid === h.pid ? 'running' : ''}</td><td>{s.end ? `${reasonText(s.end.kind)}${s.end.detail ? `: ${s.end.detail}` : ''}` : ''}</td></tr>)}
+        </tbody></table>
+      </>}
     </div>
   </SettingItem>;
 }

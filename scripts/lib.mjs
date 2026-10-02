@@ -48,9 +48,17 @@ export function launchdLoaded() {
   try { execFileSync('launchctl', ['print', `gui/${process.getuid()}/${LAUNCHD_LABEL}`], { stdio: 'ignore' }); return true; } catch { return false; }
 }
 
+// Tell the running server why the SIGTERM that follows comes (server/server-life.ts reads the file): its start
+// history then records a release, a rollback or a restart from the dashboard or tb restart, not an unknown signal.
+export function announceStop(tbDir, reason, detail) {
+  try { writeJson(join(tbDir, 'restart-intent.json'), { reason, at: new Date().toISOString(), detail }); } catch { /* no folder */ }
+}
+
 // Restart the real Taskboard on whatever APP points to. With launchd: kickstart. Without: stop the recorded
 // process and start the new one in the background. Returns the /api/info of the new server, or null.
-export async function restartProduction() {
+// reason: 'release' or 'rollback', for the start history.
+export async function restartProduction(reason = 'release', detail) {
+  announceStop(TB_DIR, reason, detail);
   const before = readJson(join(TB_DIR, 'server.pid'), null);
   if (launchdLoaded()) {
     execFileSync('launchctl', ['kickstart', '-k', `gui/${process.getuid()}/${LAUNCHD_LABEL}`]);

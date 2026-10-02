@@ -47,7 +47,8 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
   const tasksRef = useRef(tasks);
   tasksRef.current = tasks;
   const [pane, setPane] = useState<PaneState | null>(null);
-  const [offline, setOffline] = useState(false);
+  // why the terminal is not connected (the close code), or '' while it is connected
+  const [offline, setOffline] = useState<'' | 'away' | 'no-session' | 'no-terminal'>('');
   const [redrawn, setRedrawn] = useState(false);
   const actions = useRef({ live: () => {}, refresh: () => {} });
 
@@ -275,12 +276,12 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
         term.write(typeof e.data === 'string' ? e.data : new Uint8Array(e.data), () => { mark('firstParsed'); afterLive(); });
       },
       // this terminal decides the tmux window size while it is the one you opened or typed in last
-      open: () => { mark('socketOpen'); log('open'); setOffline(false); sendFocus(); sizes.flush(term.cols, term.rows); },
+      open: () => { mark('socketOpen'); log('open'); setOffline(''); sendFocus(); sizes.flush(term.cols, term.rows); },
       close: ev => {
         log('close', { code: ev.code, reason: ev.reason });
         // the session is gone: do not leave its last screen on display
         if (ev.code === 4004 && timing.firstParsed === undefined) { uncover(); term.reset(); }
-        setOffline(ev.code !== 4004);
+        setOffline(ev.code === 4004 ? '' : ev.code === 4001 ? 'no-session' : ev.code === 1013 && ev.reason === 'could not open a terminal' ? 'no-terminal' : 'away');
       },
     });
     // a key you type shows the live screen at once (answers to tmux's questions also arrive in onData, so not there)
@@ -374,7 +375,9 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
   useEffect(() => { if (autoFocus) termRef.current?.focus(); }, [autoFocus]);
 
   // The bar at the top right says when the terminal does not show the agent's newest output, and why.
-  const message = offline ? 'Disconnected · reconnecting'
+  const message = offline === 'no-session' ? 'The tmux session is not running · trying again every 10 s'
+    : offline === 'no-terminal' ? 'The server could not open a terminal · reconnecting'
+    : offline ? 'Disconnected · reconnecting · typing is not sent'
     : pane ? `${pane.selection ? 'Text selected' : pane.scroll ? 'Scrolled back' : 'Copy mode'} · ${pane.hidden ? 'new output below' : 'output paused'}`
     : redrawn ? 'Display was stalled · redrawn' : '';
   return <div className="xterm-box" ref={box}>

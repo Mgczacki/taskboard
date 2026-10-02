@@ -16,5 +16,5 @@ const target = arg ? all.find(r => r.id === arg) : all[i - 1];
 if (!target) { log(arg ? `No release ${arg}.` : 'There is no release before the current one.'); process.exit(1); }
 switchTo(join(RELEASES, target.id));
 log(`~/.taskboard/app → ${target.id}. Restarting…`);
-const info = await restartProduction();
+const info = await restartProduction('rollback', `rollback to ${target.id}`);
 log(info ? `Taskboard is running ${target.id} (process ${info.pid}).` : 'The server did not answer; check ~/.taskboard/server.log.');

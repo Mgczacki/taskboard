@@ -519,6 +519,8 @@ async function codexHookTrust(t: Task): Promise<string[]> {
       done = true; clearTimeout(timer); child.kill('SIGTERM');
       if (error) reject(error); else resolve(flags || []);
     };
+    // EPIPE when codex ends first: the 'close' handler reports that, so the stdin error must not end the server
+    child.stdin.on('error', () => { /* codex closed stdin */ });
     const send = (value: unknown) => child.stdin.write(JSON.stringify(value) + '\n');
     const timer = setTimeout(() => finish(new Error('Codex did not list the Taskboard guard hook.')), 12000);
     child.on('error', error => finish(error));

@@ -32,6 +32,8 @@ import { textError } from './deliver-text.ts';
 import * as trust from './trust.ts';
 import * as agyReview from './agy-review.ts';
 import { acquire } from './lock.ts';
+import * as life from './server-life.ts';
+import { startRotation } from './log-rotate.ts';
 import { ROLE, installRuntimeFiles, refuseReason } from './instance.ts';
 import { hostname } from 'node:os';
 import WebSocket from 'ws';
@@ -76,6 +78,7 @@ await new Promise<void>(resolve => {
 // the lock file only records which process serves this TB_DIR (and refuses a second server on another port)
 const other = acquire();
 if (other) { console.error(`Taskboard is already running here: process ${other.pid}, ${other.url} (started ${other.started}). Not starting a second server.`); process.exit(1); }
+startRotation(join(TB_DIR, 'server.log'));
 store.loadAll();
 links.start();
 permits.load();
@@ -738,6 +741,8 @@ const info = () => {
     tasks: store.all().filter(t => t.role !== 'controller' && t.status !== 'archived').length };
 };
 app.get('/api/info', (_req, res) => res.json(info()));
+// When and why this server started, its earlier starts and how each ended (server-life.ts)
+app.get('/api/server', (_req, res) => res.json(life.health()));
 // Changes to the controller name, model, or Remote Control setting apply at its next restart between turns.
 app.patch('/api/info', async (req, res) => {
   if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Machine settings are changed on the dashboard.' });
@@ -1318,19 +1323,31 @@ setInterval(() => {
   }
 }, 30000).unref();
 
+// A client that leaves during the handshake makes the socket emit ECONNRESET; without a listener that ends the process.
 server.on('upgrade', (req, socket, head) => {
+  socket.on('error', () => { /* the client left; the socket closes */ });
   const url = new URL(req.url || '', URL_BASE);
   // an agent's DevTools connection to its task browser carries the task's key instead of an origin or the token
   if (runtime.upgradeCdp(req, socket, head, url)) return;
   // the dashboard is identified by its origin; anything else (another Taskboard server) must present the token
   if (req.headers.origin ? !originOk(req.headers.origin) : (url.searchParams.get('token') !== TOKEN && req.headers['x-taskboard-token'] !== TOKEN)) return socket.destroy();
   wss.handleUpgrade(req, socket, head, ws => {
+    // ws emits 'error' for a message larger than maxPayload or with invalid UTF-8, and closes the socket itself
+    ws.on('error', e => console.error(`${new Date().toISOString()} websocket ${url.pathname}: ${e.message}`));
+    try { onSocket(ws, url); } catch (e) {
+      console.error(`${new Date().toISOString()} websocket ${url.pathname} failed:`, e);
+      if (ws.readyState === ws.OPEN) ws.close(1011, 'server error; try again');
+    }
+  });
+});
+// one upgraded socket: /ws/events, /ws/term or /ws/browser
+function onSocket(ws: import('ws').WebSocket, url: URL) {
     responsive.add(ws);
     ws.on('pong', () => responsive.add(ws));
     if (url.pathname === '/ws/events') {
       if (eventClients.size >= 64) return ws.close(1013, 'too many dashboard windows');
       eventClients.add(ws);
-      sendEvent(ws, JSON.stringify({ type: 'hello', build: BUILD_ID }));
+      sendEvent(ws, JSON.stringify({ type: 'hello', build: BUILD_ID, server: life.health() }));
       sendEvent(ws, JSON.stringify({ type: 'tasks', tasks: [...store.all().map(view), ...machines.remoteTasks()] }));
       sendEvent(ws, JSON.stringify({ type: 'groups', groups: groups.all() }));
       sendEvent(ws, JSON.stringify({ type: 'canvasOrder', orders: canvasOrder.all() }));
@@ -1364,8 +1381,9 @@ server.on('upgrade', (req, socket, head) => {
       attach(ws, t.session, Number(url.searchParams.get('cols')) || 120, Number(url.searchParams.get('rows')) || 40);
     } else if (url.pathname === '/ws/browser') runtime.viewBrowser(ws, url);
     else ws.close();
-  });
-});
+}
+// tell each dashboard why the server stops, so it can say "Server restarting" instead of "not reachable"
+life.onStopping(end => { for (const c of eventClients) { try { c.send(JSON.stringify({ type: 'stopping', reason: end.kind, detail: end.detail })); } catch { /* closed */ } } });
 
 // outbox / inbox files changed on disk → refresh that task's counts in every window
 const pendingTouch = new Map<string, NodeJS.Timeout>();

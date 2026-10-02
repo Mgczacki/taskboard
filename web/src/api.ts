@@ -1,5 +1,6 @@
 // Client state: the task list, kept current by the server's /ws/events stream.
 import { useSyncExternalStore } from 'react';
+import { restartBanner, retryDelay, type ServerHealth, type ServerLink } from './serverStatus';
 
 export type Agent = 'claude' | 'codex' | 'antigravity';
 export const AGENT_NAME: Record<Agent, string> = { claude: 'Claude Code', codex: 'Codex', antigravity: 'Antigravity' };
@@ -140,20 +141,42 @@ let confirmRisk: ConfirmRisk = DEFAULT_CONFIRM_RISK;
 function keepConfirmRisk(i: MachineInfo) { confirmRisk = { ...DEFAULT_CONFIRM_RISK, ...i.settings.confirmRisk }; publish(); return i; }
 export const loadConfirmRisk = () => api.info().catch(() => {});
 let connected = false;
+// the connection to the server and its start data (serverStatus.ts); banner: the text after a restart, until dismissed
+let link: ServerLink = { state: 'down', since: Date.now() };
+let server: ServerHealth | null = null;
+type Banner = { text: string; at: number } | null;
+let banner: Banner = null;
+let attempt = 0, openedAt = 0, retryTimer: ReturnType<typeof setTimeout> | undefined;
+export const dismissBanner = () => { banner = null; publish(); };
 const subs = new Set<() => void>();
 const emit = () => subs.forEach(f => f());
-let snapshot = { tasks, groups, canvasOrder, approvals, pending, answered, machines, connected, runtime, confirmRisk };
+let snapshot = { tasks, groups, canvasOrder, approvals, pending, answered, machines, connected, runtime, confirmRisk, link, server: server as ServerHealth | null, banner: banner as Banner };
 
 let ws: WebSocket | null = null;
 let viewingIds: string[] = [];
 
 function connect() {
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/events`);
-  ws.onopen = () => { connected = true; sendViewing(); loadMachines(); void loadConfirmRisk(); publish(); };
-  ws.onclose = () => { connected = false; publish(); setTimeout(connect, 1500); };
+  ws.onopen = () => { connected = true; openedAt = Date.now(); link = { state: 'connected', since: Date.now() }; sendViewing(); loadMachines(); void loadConfirmRisk(); publish(); };
+  ws.onclose = () => {
+    connected = false;
+    // a connection that lasted 5 s or more starts the waits again at 250 ms
+    if (openedAt && Date.now() - openedAt >= 5000) attempt = 0;
+    openedAt = 0;
+    const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
+    if (offline) link = { state: 'offline', since: Date.now() };
+    else if (link.state === 'connected' || link.state === 'offline') link = { state: 'down', since: Date.now() };
+    publish();
+    retryTimer = setTimeout(() => { retryTimer = undefined; connect(); }, retryDelay(attempt++));
+  };
   ws.onmessage = e => {
     const m = JSON.parse(e.data);
+    if (m.type === 'stopping') { link = { state: 'restarting', since: Date.now(), stopReason: m.reason, stopDetail: m.detail }; publish(); return; }
     if (m.type === 'hello') {
+      const text = restartBanner(server, m.server || null);
+      if (m.server) server = m.server;
+      if (text) banner = { text, at: Date.now() };
+      publish();
       // the first build seen is the one this page runs; a different one after a reconnect means Taskboard was updated
       if (!loadedBuild) loadedBuild = m.build;
       else if (m.build !== loadedBuild) {
@@ -174,8 +197,13 @@ function connect() {
     publish();
   };
 }
-function publish() { snapshot = { tasks, groups, canvasOrder, approvals, pending, answered, machines, connected, runtime, confirmRisk }; emit(); }
+function publish() { snapshot = { tasks, groups, canvasOrder, approvals, pending, answered, machines, connected, runtime, confirmRisk, link, server, banner }; emit(); }
 connect();
+// the network came back: try at once instead of waiting for the next retry
+if (typeof window !== 'undefined') {
+  window.addEventListener('online', () => { attempt = 0; if (!connected && retryTimer) { clearTimeout(retryTimer); retryTimer = undefined; link = { state: 'down', since: Date.now() }; connect(); } });
+  window.addEventListener('offline', () => { if (!connected) { link = { state: 'offline', since: Date.now() }; publish(); } });
+}
 
 // the groups as they are now, for an Undo that runs after the page has re-rendered
 export const currentGroups = () => groups;
@@ -200,6 +228,7 @@ export interface RestartResult { ok: boolean; message: string; at: string; log: 
 export const api = {
   restartCheck: () => call<RestartImpact>('GET', '/api/restart/check'),
   restartLast: () => call<RestartResult | null>('GET', '/api/restart/last'),
+  serverHealth: () => call<ServerHealth | null>('GET', '/api/server'),
   restartTaskboard: (confirm: boolean) => call<{ pid: number }>('POST', '/api/restart', { confirm }),
   rules: () => call<RulesFile[]>('GET', '/api/rules'),
   saveRules: (kind: RulesKind, text: string) => call<RulesFile>('PUT', `/api/rules/${kind}`, { text }),

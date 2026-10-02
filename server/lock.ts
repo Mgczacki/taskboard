@@ -5,7 +5,8 @@
 import { readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
-import { TB_DIR, URL_BASE } from './config.ts';
+import { ROOT, TB_DIR, URL_BASE } from './config.ts';
+import { installLife } from './server-life.ts';
 
 const FILE = join(TB_DIR, 'server.pid');
 export interface Lock { pid: number; url: string; started: string }
@@ -35,10 +36,8 @@ export function acquire(): Lock | null {
 function installRelease() {
   const release = () => { try { if (JSON.parse(readFileSync(FILE, 'utf8')).pid === process.pid) unlinkSync(FILE); } catch { /* gone */ } };
   process.on('exit', release);
-  // say why the server stops, so an unexpected stop can be traced in the server log
-  for (const sig of ['SIGINT', 'SIGTERM'] as const) process.on(sig, () => { console.log(`${new Date().toISOString()} stopping: received ${sig} (process ${process.pid})`); process.exit(0); });
   // a closed terminal must not stop a server started with nohup
   process.on('SIGHUP', () => console.log(`${new Date().toISOString()} ignored SIGHUP`));
-  process.on('uncaughtException', e => { console.error(`${new Date().toISOString()} crashed:`, e); process.exit(1); });
-  process.on('unhandledRejection', e => console.error(`${new Date().toISOString()} unhandled promise rejection:`, e));
+  // SIGTERM, SIGINT, uncaught errors and the start history (server-life.ts)
+  installLife(TB_DIR, ROOT);
 }

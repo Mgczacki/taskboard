@@ -480,6 +480,8 @@ body.in-app.app-buttons .app:not(:has(.rail)) .top { padding-left: 84px; }
 /* task panel with its details folded: title, status line and tabs only */
 .dr-head.compact > .dr-meta, .dr-head.compact > .dr-scopes, .dr-head.compact > .ctx, .dr-head.compact > .dr-actions, .dr-head.compact > .banner { display: none; }
 /* Taskboard was updated and automatic reload is off */
+.server-bar { position: fixed; left: 50%; top: 10px; transform: translateX(-50%); z-index: 61; display: flex; gap: 10px; align-items: center; max-width: min(760px, calc(100vw - 32px)); padding: 8px 12px; border-radius: 10px; background: var(--bg2); border: 1px solid var(--accent); box-shadow: 0 6px 24px rgba(0,0,0,.4); font-size: 13px; }
+.server-bar.away { border-color: var(--st-needs); }
 .update-bar { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 60; display: flex; gap: 10px; align-items: center; padding: 8px 12px; border-radius: 10px; background: var(--bg2); border: 1px solid var(--accent); box-shadow: 0 6px 24px rgba(0,0,0,.4); font-size: 13px; }
 /* Settings: keyboard shortcuts */
 table.keyset td { vertical-align: middle; }
@@ -878,3 +880,7 @@ table.keyset .keycell { text-align: right; white-space: normal; }
 .drawer.glass.through { pointer-events: none; }
 .drawer.glass.through .dr-head, .drawer.glass.through .drawer-resize { pointer-events: auto; }
 .drawer.glass.through .dr-body { opacity: .45; }
+/* Settings → Taskboard server → Server starts */
+table.starts { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
+table.starts th, table.starts td { text-align: left; padding: 3px 8px 3px 0; border-bottom: 1px solid var(--line, rgba(127,127,127,.2)); vertical-align: top; }
+table.starts td:last-child { word-break: break-word; }

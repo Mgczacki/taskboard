@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import type { Group, SpinOffExchange, Task } from './api';
-import { ATTN, api, fmtWait, setViewing, useStore } from './api';
+import { ATTN, api, dismissBanner, fmtWait, setViewing, useStore } from './api';
+import { awayBanner, linkText } from './serverStatus';
 import { ACTIONS, CTX_NAME, fmtCombo, hit, hitIn, inBrowser, keyLabel, keysOf, keysText, useKeymap } from './keys';
 import { stepGlass, toggleGlass } from './controllerView';
 import { Canvas, openInWindow, viewName } from './components/Canvas';
@@ -85,7 +86,13 @@ function HoldCard({ tasks }: { tasks: Task[] }) {
 }
 
 export function App() {
-  const { tasks: allTasks, groups, approvals, pending, machines, connected } = useStore();
+  const { tasks: allTasks, groups, approvals, pending, machines, connected, link, banner } = useStore();
+  // the "for N s" in the server line and the banner count while the server does not answer
+  const [, setTick] = useState(0);
+  useEffect(() => { if (connected) return; const timer = setInterval(() => setTick(n => n + 1), 1000); return () => clearInterval(timer); }, [connected]);
+  // the banner after a restart goes away after 30 s
+  useEffect(() => { if (!banner) return; const timer = setTimeout(dismissBanner, 30000); return () => clearTimeout(timer); }, [banner]);
+  const away = awayBanner(link);
   useKeymap();
   const [addMachine, setAddMachine] = useState(false);
   const [keysHelp, setKeysHelp] = useState(false);
@@ -176,8 +183,10 @@ export function App() {
   // The Mac app (desktop/main.cjs) opens a task, triage or the controller from its menu-bar item with this event.
   useEffect(() => {
     const on = (e: Event) => {
-      const d = (e as CustomEvent<{ task?: string; triage?: boolean; controller?: boolean; newTask?: boolean }>).detail || {};
+      const d = (e as CustomEvent<{ task?: string; triage?: boolean; controller?: boolean; newTask?: boolean; settings?: string }>).detail || {};
       if (d.newTask) setNewOpen(true);
+      // the app menu item "Restart Taskboard Server…" opens Settings at the server section
+      if (d.settings) { location.hash = `settings:${d.settings}`; setPage('settings'); }
       if (d.task) setOpenId(d.task);
       if (d.triage) setTriage(true);
       if (d.controller && openId !== 'controller') openController();
@@ -265,7 +274,7 @@ export function App() {
           </div>
         </div>
         <div className="rail-foot">
-          <div className="row"><span className={`dot ${connected ? 'ok' : 'stopped'}`} />server {connected ? 'connected' : 'not reachable'}</div>
+          <div className="row" title="The server runs as the login service com.taskboard.server (launchd), not in the app. Quitting the app does not stop it."><span className={`dot ${connected ? 'ok' : link.state === 'restarting' ? 'needs-you' : 'stopped'}`} />{linkText(link)}</div>
           <div className="row" style={{ paddingLeft: 15 }}>{tasks.filter(t => !['archived', 'suspended', 'parked'].includes(t.status) && !t.openElsewhere).length} tmux sessions · vault <code>~/AgentVault</code></div>
           <div className="row" style={{ paddingLeft: 15 }}><button className="btn ghost" onClick={() => setKeysHelp(true)}>Keyboard shortcuts {keyLabel('keysHelp') && <kbd>{keyLabel('keysHelp')}</kbd>}</button></div>
           <div className="row" style={{ paddingLeft: 15 }}><button className="btn ghost" onClick={() => Notification.requestPermission()}>{typeof Notification !== 'undefined' && Notification.permission === 'granted' ? 'Notifications on' : 'Turn on notifications'}</button></div>
@@ -307,6 +316,7 @@ export function App() {
       {importOpen && <Import onClose={() => setImportOpen(false)} onDone={() => { setImportOpen(false); go('list'); }} />}
       {groupPrompt && <GroupPrompt ids={groupPrompt} close={() => setGroupPrompt(null)} done={(g, openWin) => { setGroupPrompt(null); setSelected(new Set()); toast(`Group “${g.name}” created`); if (openWin) openInWindow('g:' + g.id); else { setView('g:' + g.id); go('canvas'); } }} />}
       {role === 'sandbox' && <div className="sandbox-bar" title={`This is a sandbox: a separate test copy of Taskboard (${machineName}). Its agents and tasks are not your real ones.`}>Sandbox · {machineName} · not your real Taskboard</div>}
+      {(away || banner) && <div className={`server-bar ${away ? 'away' : ''}`} role="status">{away || banner?.text}{!away && <button className="btn ghost" onClick={dismissBanner}>Close</button>}</div>}
       {updateReady && <div className="update-bar">A new version of Taskboard is ready. <button className="btn primary" onClick={() => location.reload()}>Reload</button><button className="btn ghost" onClick={() => setUpdateReady(false)}>Later</button></div>}
       {keysHelp && <KeysHelp close={() => setKeysHelp(false)} settings={() => { setKeysHelp(false); go('settings'); location.hash = 'settings:keys'; }} />}
       {addMachine && <AddMachine close={() => setAddMachine(false)} />}
