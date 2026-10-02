@@ -204,7 +204,8 @@ async function stopNow(id: string, opts: { suspended?: boolean; idle?: boolean }
   const listed = running ? await pageList(running.port!, 5000) : null;
   const open = listed ? listed.map(t => t.url).filter(u => /^(https?|file):/.test(u)) : m.tabs;
   if (running) await once(running.ws, 'Browser.close').catch(() => {});
-  for (let i = 0; i < 30 && pidAlive(m.pid); i++) await new Promise(r => setTimeout(r, 100));
+  // Chrome writes cookies to disk when it closes: wait up to 10 s before the kill, so a busy Chrome keeps its sign-ins
+  for (let i = 0; i < 100 && pidAlive(m.pid); i++) await new Promise(r => setTimeout(r, 100));
   if (m.pid && pidAlive(m.pid)) { try { process.kill(-m.pid, 'SIGKILL'); } catch { try { process.kill(m.pid, 'SIGKILL'); } catch { /* ended */ } } }
   writeMeta(id, { ...readMeta(id), pid: undefined, port: undefined, tabs: open, stoppedAt: new Date().toISOString(), suspended: opts.suspended || undefined, idleStopped: opts.idle || undefined });
   changed(id);
