@@ -25,6 +25,10 @@ export function setGlassStep(id: GlassId) {
 }
 export const onGlassChange = (f: () => void) => { addEventListener(GLASS_EVENT, f); return () => removeEventListener(GLASS_EVENT, f); };
 
+// With the see-through terminal on, the page behind can be clicked while Alt (Option) is held alone. Ctrl+Alt and
+// Cmd+Alt are keyboard shortcuts (keys.ts), so they do not count. The panel reads it on each keydown and keyup.
+export const clickThroughHeld = (e: { altKey: boolean; ctrlKey: boolean; metaKey: boolean }) => e.altKey && !e.ctrlKey && !e.metaKey;
+
 // The header of the controller starts folded. The header of a normal task folds only when the setting below is on.
 const HEAD_KEY = { controller: 'tb-ctl-header', task: 'tb-task-header' } as const;
 const THIN_KEY = 'tb-task-thin-bar';

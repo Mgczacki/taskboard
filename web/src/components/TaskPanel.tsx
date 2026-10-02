@@ -19,7 +19,7 @@ import { openBrowserSplit } from '../browserSplit';
 import { ProcList } from './TaskProcs';
 import { RuntimeButton } from './TaskRuntime';
 import type { PanelTab } from '../panelShare';
-import { GLASS_STEPS, glassStep, headerCollapsed, onGlassChange, setGlassStep, setHeaderCollapsed, taskThinBar, type GlassId } from '../controllerView';
+import { GLASS_STEPS, clickThroughHeld, glassStep, headerCollapsed, onGlassChange, setGlassStep, setHeaderCollapsed, taskThinBar, type GlassId } from '../controllerView';
 
 // The drawer's width, set by dragging its left edge and kept across reloads. null means the default width.
 const WIDTH_KEY = 'tb-drawer-width', MIN_W = 420, EDGE = 120;
@@ -84,6 +84,16 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
   const [glass, setGlass] = useState(glassStep);
   useEffect(() => onGlassChange(() => setGlass(glassStep())), []);
   const see = isCtl && glass.alpha < 1 ? glass : null;
+  // Alt held over the see-through terminal: the terminal ignores the pointer and clicks reach the page behind it.
+  // The bar and the resize handle still take clicks. Only window listeners read the key, so the terminal keeps its focus.
+  const [through, setThrough] = useState(false);
+  useEffect(() => {
+    if (!see) { setThrough(false); return; }
+    const key = (e: KeyboardEvent) => setThrough(clickThroughHeld(e));
+    const off = () => setThrough(false);
+    addEventListener('keydown', key, true); addEventListener('keyup', key, true); addEventListener('blur', off);
+    return () => { removeEventListener('keydown', key, true); removeEventListener('keyup', key, true); removeEventListener('blur', off); };
+  }, [!!see]);
   const attention = ['needs-you', 'stopped', 'review'].includes(t.status);
   const [dropping, setDropping] = useState(false);
   const [dropMsg, setDropMsg] = useState('');
@@ -108,7 +118,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
   const resetWidth = () => { setWidth(null); try { localStorage.removeItem(WIDTH_KEY); } catch { /* private mode */ } };
 
   return (
-    <aside className={`drawer open ${dropping ? 'dropping' : ''} ${resizing ? 'resizing' : ''} ${isCtl ? 'ctl-view' : ''} ${see ? 'glass' : ''}`} style={{ width: width ? `clamp(${MIN_W}px, ${width}px, calc(100vw - ${EDGE}px))` : 'min(880px, 55vw)', ...(see ? { '--glass-a': `${see.alpha * 100}%`, backdropFilter: `blur(${see.blur}px)`, WebkitBackdropFilter: `blur(${see.blur}px)` } as React.CSSProperties : {}) }}
+    <aside className={`drawer open ${dropping ? 'dropping' : ''} ${resizing ? 'resizing' : ''} ${isCtl ? 'ctl-view' : ''} ${see ? 'glass' : ''} ${see && through ? 'through' : ''}`} style={{ width: width ? `clamp(${MIN_W}px, ${width}px, calc(100vw - ${EDGE}px))` : 'min(880px, 55vw)', ...(see ? { '--glass-a': `${see.alpha * 100}%`, backdropFilter: `blur(${see.blur}px)`, WebkitBackdropFilter: `blur(${see.blur}px)` } as React.CSSProperties : {}) }}
       onDragOver={e => { if (!hasFiles(e) || t.machine) return; e.preventDefault(); setDropping(true); }}
       onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDropping(false); }}
       onDrop={e => { if (!hasFiles(e) || t.machine) return; e.preventDefault(); setDropping(false); uploadAll(t.id, e.dataTransfer.files, setDropMsg); }}>
@@ -122,6 +132,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
           {collapsed && t.ask && !attention && <button className="dr-bar-attn" onClick={() => setCollapsed(false)} title={t.ask}>question</button>}
           <span className="tabs-sp" />
           {isCtl && <label className="dr-bar-glass" title="Transparency of the controller terminal. The page behind it shows through, blurred.">◐<select aria-label="Terminal transparency" value={glass.id} onChange={e => setGlassStep(e.target.value as GlassId)}>{GLASS_STEPS.map(g => <option key={g.id} value={g.id}>{g.label}</option>)}</select></label>}
+          {see && <span className="dr-bar-hint" title="Hold the Alt (Option) key to click the page behind the terminal. The panel stays open.">hold ⌥ to click behind</span>}
           <button className="btn ghost icon" aria-expanded={!collapsed} onClick={() => setCollapsed(!collapsed)} title={collapsed ? 'Show the header: details, buttons, tabs, log, inbox and outbox' : 'Hide the header so the terminal gets the whole height'}>{collapsed ? '▾' : '▴'}</button>
           <button className="btn ghost icon" onClick={onClose} title="Close">✕</button>
         </div>}

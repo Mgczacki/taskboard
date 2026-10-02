@@ -142,7 +142,7 @@ kbd { font: 11px var(--mono); color: var(--dim); border: 1px solid var(--line2);
 /* ---------- drawer (task panel) ---------- */
 .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: 640px; background: var(--panel); border-left: 1px solid var(--line2); box-shadow: -18px 0 40px rgba(0,0,0,.45); display: flex; flex-direction: column; z-index: 50; transform: translateX(102%); transition: transform .18s ease; }
 .drawer.open { transform: none; }
-.drawer-resize { position: absolute; left: -3px; top: 0; bottom: 0; width: 6px; cursor: ew-resize; z-index: 2; }
+.drawer-resize { position: absolute; left: 0; top: 0; bottom: 0; width: 5px; cursor: ew-resize; z-index: 2; }
 .dr-head { padding: 12px 16px 0; border-bottom: 1px solid var(--line); }
 .dr-row1 { display: flex; align-items: flex-start; gap: 10px; }
 .dr-row1 h2 { font-size: 15px; margin: 0; font-weight: 600; flex: 1; line-height: 1.35; }
