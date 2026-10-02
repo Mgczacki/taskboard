@@ -39,11 +39,15 @@ test('each agent gets --add-dir for an attached worktree, and Claude Code gets a
     assert.ok(!settings.permissions.allow.some((r: string) => r.includes(docs) && !r.startsWith('Read(')), 'no Edit or Write rule for the read folder');
     const text = agents.taskInstructions(store.get('scoped-codex')!);
     assert.match(text, /This task has no Git worktree/);
+    assert.match(text, /tb dep add 2 --on <task> --note/);
+    assert.match(text, /Do not add that link yourself/);
     assert.match(text, /tb scope request worktree --repo <main checkout> --base <remote branch or commit> --branch <new branch>/);
     assert.match(text, /Attached worktree app: branch task\/app-fix/);
     assert.match(text, /Add --worktree app to the tb git commands, or leave it out/);
     assert.match(text, new RegExp(`You may read the folder ${docs}. Do not write there.`));
     assert.match(agents.controllerMd(), /tb scope approve ID --user-request/);
+    assert.match(agents.controllerMd(), /tb dep add <new> --replaces <old> --folded/);
+    assert.match(agents.controllerMd(), /tb deps --group <group>/);
     // a worktree that the user removed by hand is left out, so the agent still starts
     rmSync(wt, { recursive: true });
     assert.ok(!agents.command(store.get('scoped-codex')!, 'go', false).includes(wt));
