@@ -24,8 +24,8 @@ import { credentialGuidance } from './credential-guidance.ts';
 import * as rules from './rules.ts';
 import { readScopes, worktreeScopes } from './scopes.ts';
 import * as taskBrowser from './task-browser.ts';
-import { bottom, deliverText, textError } from './deliver-text.ts';
-import { readyForInput, type PromptAgent } from './type-command.ts';
+import { deliverText, NotTyped, notReadyReason, textError } from './deliver-text.ts';
+import { boxState, readyForInput, type PromptAgent } from './type-command.ts';
 
 const exec = promisify(execFile);
 
@@ -162,7 +162,7 @@ const typingPrompt = new Set<string>();
 // box and no question or dialog (Codex's update dialog has "Update now" as its default answer).
 export async function typePendingPrompt(t: Task, screen: string) {
   const p = pendingPrompt.get(t.id); if (!p || typingPrompt.has(t.id)) return;
-  if (blockingQuestion.test(bottom(screen)) || !readyForInput(screen, t.agent as PromptAgent)) return; // not at the prompt yet
+  if (!readyForInput(screen, t.agent as PromptAgent)) return; // not at the prompt yet
   typingPrompt.add(t.id);
   try {
     pendingPrompt.delete(t.id);
@@ -171,6 +171,8 @@ export async function typePendingPrompt(t: Task, screen: string) {
     const r = await deliverText(t, p);
     if (r.warning) store.update(t.id, { statusSource: `First prompt: ${r.warning}` });
   } catch (e) {
+    // nothing was typed (the screen changed after the check): the prompt waits for the next check
+    if (e instanceof NotTyped) { pendingPrompt.set(t.id, p); return; }
     store.update(t.id, { status: 'needs-you', ask: 'The first prompt was not submitted. Check the terminal.', statusSource: `First prompt not submitted: ${e instanceof Error ? e.message : e}` });
   } finally { typingPrompt.delete(t.id); }
 }
@@ -729,7 +731,7 @@ export const blockingQuestion = /Usage limit reached[\s\S]*Request increase|Appr
 // Resume before typing into a task whose tmux session has ended.
 export async function sendTaskText(t: Task, text: string): Promise<{ resumed: boolean; submitted: boolean; warning?: string }> {
   const empty = textError(text); if (empty) throw new Error(empty);
-  if (delivering.has(t.id)) throw new Error('A message is already being sent to this task.');
+  if (delivering.has(t.id)) throw new NotTyped('Another message is being typed into this task now.', 'busy');
   delivering.add(t.id);
   try {
     if (t.status === 'archived' || t.status === 'parked') throw new Error('This task is archived or set aside. Run tb resume <task>, then send again.');
@@ -748,17 +750,22 @@ export async function sendTaskText(t: Task, text: string): Promise<{ resumed: bo
       for (let i = 0; i < 120; i++) {
         const live = (await tmux.listSessions())?.find(s => s.name === t.session);
         if (!live || live.dead) throw new Error('The agent stopped before it could receive the message.');
-        const screen = await tmux.capture(t.session, 0);
-        if (blockingQuestion.test(bottom(screen))) throw new Error('The agent asks a question in its terminal. Answer it before sending feedback.');
-        if (!readyForInput(screen, t.agent as PromptAgent)) readySince = 0;
+        const screen = await tmux.captureStyled(t.session);
+        const state = boxState(screen, t.agent as PromptAgent);
+        if (state === 'question') throw notReadyReason(screen, t.agent as PromptAgent, agentName(t.agent), t.num)!;
+        if (state !== 'empty') readySince = 0;
         else if (!readySince) readySince = Date.now();
         else if (Date.now() - readySince >= 1000) break;
         await new Promise(r => setTimeout(r, 250));
       }
-      if (!readySince || Date.now() - readySince < 1000) throw new Error('The agent did not reach its input prompt. Open its terminal and try again.');
+      if (!readySince || Date.now() - readySince < 1000) throw new NotTyped(`${agentName(t.agent)} in #${t.num} was resumed, but it did not show an empty input box within 30 s.`, 'no-box');
     }
+    // A hook can know about a question that the screen check does not find, so "needs you" from the terminal types
+    // nothing. Two reasons leave the input box empty: the agent waits in a tb command for an approval card on the
+    // dashboard (the controller often does), or a command was refused. Then deliverText reads the screen.
     const current = store.get(t.id)!;
-    if (current.status === 'needs-you') throw new Error('The agent asks a question in its terminal. Answer it before sending feedback.');
+    if (current.status === 'needs-you' && !/^Waiting for your approval on the dashboard\.| refused a tool call at /.test(current.statusSource || ''))
+      throw new NotTyped(`${agentName(t.agent)} in #${t.num} asks a question in its terminal${current.ask ? ` (${current.ask.slice(0, 120)})` : ''}.`, 'question');
     const r = await deliverText(current, text);
     return { resumed, ...r };
   } finally { delivering.delete(t.id); }

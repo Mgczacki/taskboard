@@ -1,0 +1,40 @@
+
+ ▐▛███▛█   Claude Code v2.1.287
+▝▜██████▀  Haiku 4.5 · Claude Team
+ ▝▝   ▝▝   /tmp/play
+
+
+❯ Run the shell command "sleep 90 && echo done" in the foreground with the Bash tool. Do nothing else.
+
+  Ran 1 shell command
+
+⏺ The Bash tool blocked this command because long leading sleep operations are not allowed in the foreground. The tool
+  suggests either:
+
+  1. Using run_in_background: true to run it in the background
+  2. Using Monitor with an until-loop for polling a condition
+
+  Since you specified "in the foreground," the tool's safety restrictions prevent running a 90-second sleep directly.
+
+✻ Churned for 5s · done 3:27 AM
+
+❯ Run ./build.sh with the Bash tool (timeout 200000 ms). It takes about 100 seconds. Wait for it.
+
+  Running ./build.sh
+  ⎿  $ ./build.sh
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+ Bash command
+ Run shell command
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ ./build.sh
+╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌╌
+ This command requires approval
+
+ Do you want to proceed?
+ ❯ 1. Yes
+   2. Yes, and don’t ask again for: ./build.sh *
+   3. No
+
+ Esc to cancel · Tab to amend
+

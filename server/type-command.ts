@@ -53,15 +53,72 @@ export function inputBox(screen: string, agent: PromptAgent = 'claude'): string 
   return lines.slice(top + 1, bottom).map(l => l.trim()).join('\n');
 }
 export const squash = (s: string) => s.replace(/\s+/g, '');
+const lastIndex = (list: string[], test: (s: string) => boolean) => { for (let i = list.length - 1; i >= 0; i--) if (test(list[i])) return i; return -1; };
 // The agents' own questions. A permission prompt lists numbered answers after a mark ("❯ 1. Yes", "> 1. Yes, run
 // command"). Its text is, for example, "Do you want to proceed?", "Would you like to run" or "Run this command?".
 const QUESTION = /Do you want to|Would you like to|Requesting permission|Run this command\?|^\s*[❯>›]\s*\d+\.\s/m;
-// The box is one row that starts with the prompt mark. (A grey suggestion can follow the mark, and the plain
-// screen text does not show that it is grey, so a draft is found only after typing, by showsCommand.)
-export const readyForInput = (screen: string, agent: PromptAgent = 'claude') => {
-  const box = inputBox(screen, agent);
-  return box !== null && !box.includes('\n') && MARK[agent].test(box) && !blockingQuestion.test(screen) && !QUESTION.test(screen);
-};
+// What the bottom of an agent's screen shows, for typing a message into it:
+// - empty: the input box holds no text, or only the agent's dim hint. The agent may be working: Claude Code and Codex
+//   keep text that is submitted during a turn and give it to the model after the next tool call or at the end of the turn.
+// - draft: the box holds text that a person typed (or the "!" of shell mode). Typed text would join it.
+// - question: a permission question or another dialog waits for an answer. Typed keys would answer it.
+// - no-box: the screen does not end with an input box (the agent starts, or shows a full-screen view).
+// Only the box and the rows below it are searched for question words. Earlier output above the box often contains the
+// same words (Claude Code 2.1.287 showed its own reply "Do you want to approve the merge?" above an empty box), and
+// the agents draw their questions in place of the box or in it: Claude Code and Antigravity replace the box, and Codex
+// shows the numbered answers with its "›" mark, where inputBox finds them.
+export type BoxState = 'empty' | 'draft' | 'question' | 'no-box';
+export function boxState(screen: string, agent: PromptAgent = 'claude'): BoxState {
+  const plain = plainText(screen);
+  const box = inputBox(plain, agent);
+  const asks = (text: string) => blockingQuestion.test(text) || QUESTION.test(text);
+  if (box === null) return asks(plain.split('\n').filter(l => l.trim()).slice(-15).join('\n')) ? 'question' : 'no-box';
+  // the box and the rows below it: from the box row (Codex) or from the upper of the last two rules
+  const lines = plain.replace(/\s+$/, '').split('\n');
+  const rules = lines.flatMap((l, i) => RULE.test(l) ? [i] : []);
+  const from = agent === 'codex' ? lastIndex(lines, l => /^[›!](?:\s|$)/.test(l)) : rules[rules.length - 2];
+  if (asks(lines.slice(from).join('\n'))) return 'question';
+  if (!MARK[agent].test(box) || box.includes('\n')) return 'draft';
+  return typedText(screen, agent) ? 'draft' : 'empty';
+}
+// True when the box is empty: no question, and the box row has no text or only a hint.
+export const readyForInput = (screen: string, agent: PromptAgent = 'claude') => boxState(screen, agent) === 'empty';
+
+// Screens from `tmux capture-pane -e` keep the colors as SGR escape sequences ("ESC [ ... m"). The agents draw their
+// hint text dim (SGR 2): Claude Code 2.1.287 shows "ESC[2mTry "fix lint errors"" and "ESC[2mPress up to edit queued
+// messages", Codex 0.160.0 shows "ESC[2mAsk Codex to do anything". A person's draft is not dim. A plain screen (no
+// escape sequence at all) cannot show this, so the text after the mark then counts as a hint, as before.
+const ESCAPES = /\x1b\[[0-9;:?]*[ -\/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-9A-Za-z]|\x1b[=>78]/g;
+export const plainText = (screen: string) => screen.replace(ESCAPES, '');
+function typedText(screen: string, agent: PromptAgent): boolean {
+  if (!screen.includes('\x1b[')) return false;
+  const rows = screen.replace(/\s+$/, '').split('\n');
+  // the box row: the last row whose plain text starts with the mark
+  const at = lastIndex(rows, r => MARK[agent].test(plainText(r)));
+  if (at < 0) return false;
+  const row = rows[at];
+  let dim = false, seenMark = false;
+  for (const part of row.split(/(\x1b\[[0-9;:]*m)/)) {
+    const sgr = /^\x1b\[([0-9;:]*)m$/.exec(part);
+    if (sgr) { dim = sgrDim(sgr[1], dim); continue; }
+    for (const ch of plainText(part)) {
+      if (!seenMark) { if (ch.trim()) seenMark = true; continue; } // the mark itself
+      if (ch.trim() && !dim) return true;
+    }
+  }
+  return false;
+}
+// The dim attribute after one SGR sequence. 38 and 48 (and 58) take a color as 5;n or 2;r;g;b, which is skipped.
+function sgrDim(params: string, dim: boolean): boolean {
+  const p = params.split(/[;:]/).map(x => x === '' ? 0 : Number(x));
+  for (let i = 0; i < p.length; i++) {
+    const n = p[i];
+    if (n === 38 || n === 48 || n === 58) { i += p[i + 1] === 5 ? 2 : p[i + 1] === 2 ? 4 : 1; continue; }
+    if (n === 0 || n === 22) dim = false;
+    else if (n === 2) dim = true;
+  }
+  return dim;
+}
 // The box shows the shell mode "!" and then exactly this command.
 export const showsCommand = (screen: string, command: string, agent: PromptAgent = 'claude') => {
   const box = inputBox(screen, agent);

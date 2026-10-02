@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSy
 import { execFile } from 'node:child_process';
 import { createServer } from 'node:http';
 import { promisify } from 'node:util';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import { WebSocketServer } from 'ws';
 import * as agents from './agents.ts';
 import { HOME, HOST, machineId, PORT, ROOT, TB_DIR, TOKEN, URL_BASE } from './config.ts';
@@ -27,7 +27,7 @@ import * as machines from './machines.ts';
 import * as machine from './machine.ts';
 import * as rules from './rules.ts';
 import { typeCommand } from './type-command.ts';
-import { deliverText, textError } from './deliver-text.ts';
+import { textError } from './deliver-text.ts';
 import * as trust from './trust.ts';
 import * as agyReview from './agy-review.ts';
 import { acquire } from './lock.ts';
@@ -36,6 +36,7 @@ import { hostname } from 'node:os';
 import WebSocket from 'ws';
 import { mountA2ANotes } from './a2anotes/routes.ts';
 import * as inboxDelivery from './inbox-delivery.ts';
+import * as messageQueue from './message-queue.ts';
 import { mountReview, pendingFor, pendingForPath } from './review.ts';
 import { attach, terminalViewerCount } from './pty.ts';
 import * as store from './store.ts';
@@ -92,8 +93,8 @@ permits.onChange(p => {
   try { docs.uploadSystem(task.id, `permit-${p.id}.md`, lines.join('\n') + '\n'); } catch (e) { console.error('could not send permit result', e); }
   const wasIdle = ['idle', 'unread', 'suspended', 'needs-you'].includes(task.status);
   store.update(task.id, { status: 'unread', ask: '', statusSource: `Permit ${p.id} ${p.state}. The result is in the task inbox.` });
-  if (wasIdle) void agents.sendTaskText(store.get(task.id)!, permits.notice(p))
-    .then(() => store.update(task.id, { status: 'working', ask: '', statusSource: `Permit ${p.id} result sent to the agent.` }))
+  // a notice that cannot be typed now waits in the task's message queue (message-queue.ts)
+  if (wasIdle) void messageQueue.send(store.get(task.id)!, permits.notice(p), { from: 'taskboard', kind: 'permit' })
     .catch(e => console.error('could not wake task for permit result', e));
 });
 setInterval(() => {
@@ -723,7 +724,7 @@ app.post('/api/machines', async (req, res) => {
 });
 app.delete('/api/machines/:id', (req, res) => { machines.remove(req.params.id); res.json({}); });
 
-const view = (t: store.Task) => ({ ...t, docs: docs.counts(t.id), waitMin: Math.round((Date.now() - Date.parse(t.statusAt)) / 60000), attach: `tmux -L taskboard attach -t ${t.session}`, ...(t.agent === 'antigravity' ? { tokenEstimate: stats.taskEstimate(t) } : {}) });
+const view = (t: store.Task) => ({ ...t, docs: docs.counts(t.id), queue: messageQueue.forView(t.id), waitMin: Math.round((Date.now() - Date.parse(t.statusAt)) / 60000), attach: `tmux -L taskboard attach -t ${t.session}`, ...(t.agent === 'antigravity' ? { tokenEstimate: stats.taskEstimate(t) } : {}) });
 const fail = (res: express.Response, e: unknown) => res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
 
 app.get('/api/tasks', (_req, res) => res.json([...store.all().map(view), ...machines.remoteTasks()]));
@@ -830,6 +831,7 @@ mountReview(app);
 // Taskboard inbox, and server/inbox-delivery.ts tells the agent, for every agent and status.
 mountA2ANotes(app, { delivery: inboxDelivery });
 inboxDelivery.start();
+messageQueue.start();
 
 // ---------- accounts ----------
 const acctView = async (a: accounts.Account, fresh = false) => ({ ...a, status: await accounts.status(a, fresh), usageStale: accounts.usageStale(a), usageStaleHours: accounts.USAGE_STALE_MS / 3600000, running: store.all().filter(t => (t.account || accounts.defaultFor(t.agent).id) === a.id && !['archived', 'parked', 'suspended'].includes(t.status)).length });
@@ -965,12 +967,24 @@ app.post('/api/tasks/:id/send', async (req, res) => {
   const t = store.get(req.params.id); if (!t) return res.status(404).end();
   const text = String(req.body.text || '');
   const empty = textError(text); if (empty) return fail(res, empty);
-  if (t.role === 'controller') { try { res.json(await deliverText(t, text)); } catch (e) { fail(res, e); } return; }
-  await guarded(req, res, `type into #${t.num} ${t.title}`, text, 'send', async () => {
-    const delivery = await agents.sendTaskText(t, text);
-    store.update(t.id, { status: 'working', ask: '', statusSource: `Message sent by you${delivery.resumed ? ' after resuming the task' : ''}.` });
-    return delivery;
-  }, (d: { warning?: string }) => `Typed into #${t.num}.${d?.warning ? ` ${d.warning}` : ''}`);
+  // The result is delivered (typed, Enter pressed), queued (nothing typed yet, with the reason; message-queue.ts types
+  // it when the input box is empty) or an error (failed, with the reason).
+  const from = req.get('origin') ? 'you' : req.get('x-tb-actor') || 'you';
+  const sendIt = async () => {
+    const r = await messageQueue.send(store.get(t.id)!, text, { from, kind: 'message' });
+    if (r.state === 'failed') throw new Error(`Not delivered to #${t.num}: ${r.reason}${r.id ? ' The message is kept on the task in the dashboard.' : ''}`);
+    return r;
+  };
+  if (t.role === 'controller') { try { res.json(await sendIt()); } catch (e) { fail(res, e); } return; }
+  await guarded(req, res, `type into #${t.num} ${t.title}`, text, 'send', sendIt, (d: messageQueue.SendResult) => sendText(t, d));
+});
+// Queued and failed messages on a task (message-queue.ts). Only the dashboard types a failed message again or removes one.
+app.post('/api/tasks/:id/queue/:qid/:action', (req, res) => {
+  if (!req.get('origin') || !originOk(req.get('origin')!) || req.get('x-taskboard-token') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Only the dashboard changes the message queue of a task.' });
+  const t = store.get(req.params.id); if (!t) return res.status(404).end();
+  if (req.params.action === 'retry') { const q = messageQueue.retry(t.id, req.params.qid); return q ? res.json(q) : res.status(404).end(); }
+  if (req.params.action === 'remove') return messageQueue.remove(t.id, req.params.qid) ? res.json({}) : res.status(404).end();
+  res.status(404).end();
 });
 // Hold to run: the dashboard types a "! <command>" that the user held the mouse button on (server/type-command.ts).
 // Only the dashboard page may call this. tb and agents send the token or x-tb-actor, so they are refused.
@@ -1037,19 +1051,26 @@ app.post('/api/open-local-file', (req, res) => {
 });
 app.get('/api/docs/edges', (_req, res) => res.json(docs.edges()));
 app.get('/api/docs/all', (_req, res) => res.json(Object.fromEntries(store.all().map(t => [t.id, docs.docsFor(t.id).outbox.map(d => ({ name: d.name, path: d.path, kind: d.kind, mtime: d.mtime }))]))));
+// The file is copied first. The result then says whether the agent was told: delivered (the notice was typed, or a hook
+// or tb inbox wait told it), queued (inbox-delivery.ts tells it later, with the reason) or failed.
 app.post('/api/docs/send', async (req, res) => {
-  let path: string | undefined;
+  let path: string;
   try {
     const { from, name, to } = req.body; if (!store.get(from) || !store.get(to)) throw new Error('unknown task');
     path = docs.send(from, name, to); store.touch(from); store.touch(to);
-    const target = store.get(to)!;
-    const pending = docs.pendingInboxNotice(to)!;
-    const delivery = await agents.sendTaskText(target, pending.notice);
-    docs.acknowledgeInboxNotice(to, pending.names);
-    store.update(to, { status: 'working', ask: '', statusSource: 'An inbox file was sent to the agent.' });
-    res.json({ path, resumed: delivery.resumed });
-  } catch (e) { fail(res, path ? `The file was copied to ${path}, but the agent was not told: ${e instanceof Error ? e.message : e}` : e); }
+  } catch (e) { return fail(res, e); }
+  res.json({ path, ...noticeResult(await inboxDelivery.deliver(req.body.to, basename(path))) });
 });
+function noticeResult(d: inboxDelivery.Delivery): { delivery: 'delivered' | 'queued' | 'failed'; reason?: string; resumed?: boolean } {
+  if (d.deliveredAt) return { delivery: 'delivered', resumed: !!d.resumed };
+  if (!store.get(d.task)) return { delivery: 'failed', reason: d.problem || 'The task no longer exists.' };
+  return { delivery: 'queued', reason: d.problem || 'The notice waits to be typed.' };
+}
+// The text for an approval card and for tb, for each result of messageQueue.send.
+function sendText(t: store.Task, d: messageQueue.SendResult) {
+  if (d.state === 'queued') return `Queued for #${t.num}, not typed yet: ${d.reason} Taskboard types it when the input box is empty, for up to ${messageQueue.QUEUE_MS / 60000} minutes.`;
+  return `Typed into #${t.num}${d.resumed ? ' after resuming it' : ''}, and Enter was pressed.${d.warning ? ` ${d.warning}` : ''}`;
+}
 app.post('/api/tasks/:id/inbox/remove', (req, res) => { docs.removeFromInbox(req.params.id, req.body.name); store.touch(req.params.id); res.json({}); });
 // New inbox files the agent has not been told about (for `tb inbox wait`). Clears the pending list,
 // so the prompt hook does not report the same files again.
@@ -1062,12 +1083,8 @@ app.post('/api/tasks/:id/inbox/take', (req, res) => {
 app.post('/api/tasks/:id/inbox/tell', async (req, res) => {
   const t = store.get(req.params.id); if (!t) return res.status(404).end();
   const pending = docs.pendingInboxNotice(t.id); if (!pending) return res.json({ told: false });
-  try {
-    const delivery = await agents.sendTaskText(t, pending.notice);
-    docs.acknowledgeInboxNotice(t.id, pending.names);
-    store.update(t.id, { status: 'working', ask: '', statusSource: 'Inbox notice sent to the agent.' });
-    res.json({ told: true, resumed: delivery.resumed });
-  } catch (e) { fail(res, e); }
+  const r = noticeResult(await inboxDelivery.deliver(t.id, pending.names[pending.names.length - 1]));
+  res.json({ told: r.delivery === 'delivered', ...r });
 });
 // Files from the vault. Served as a sandboxed document (opaque origin), so an agent-written HTML page
 // cannot call Taskboard's API.

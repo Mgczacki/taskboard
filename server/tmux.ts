@@ -149,6 +149,11 @@ export async function capture(name: string, lines = 40): Promise<string> {
   return (await tmuxQuiet('capture-pane', '-p', '-t', '=' + name + ':', '-S', String(-lines))) || '';
 }
 
+// The visible screen with its colors and text attributes as SGR escape sequences (type-command.ts plainText removes them).
+export async function captureStyled(name: string): Promise<string> {
+  return (await tmuxQuiet('capture-pane', '-e', '-p', '-t', '=' + name + ':', '-S', '0')) || '';
+}
+
 // Everything the agent prints is also appended to a file, so output survives a reboot.
 export async function pipeToFile(name: string, file: string) {
   await tmuxQuiet('pipe-pane', '-o', '-t', '=' + name + ':', `cat >> '${file.replace(/'/g, "'\\''")}'`);

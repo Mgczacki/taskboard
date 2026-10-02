@@ -133,8 +133,8 @@ export function InboxPage({ tasks, open, documentLink }: { tasks: Task[]; open: 
     if (!item || item.dismissedAt || sending) return;
     setSending(true); setMsg('Resuming or contacting the agent…'); setMoveOpen(false);
     try {
-      const result = await send('POST', `/api/review/${item.id}/feedback`) as { resumed: boolean };
-      setMsg(result.resumed ? 'Sent. The task resumed.' : 'Sent. The agent received the comments.');
+      const result = await send('POST', `/api/review/${item.id}/feedback`) as { resumed: boolean; delivery?: string; reason?: string };
+      setMsg(result.delivery === 'queued' ? `Queued, not typed yet: ${result.reason} Taskboard types it when the agent's input box is empty.` : result.resumed ? 'Sent. The task resumed.' : 'Sent. The agent received the comments.');
       load();
     } catch (e) {
       const error = (e as Error).message;

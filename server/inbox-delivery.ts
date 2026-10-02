@@ -5,7 +5,9 @@
 // deliver() types the notice at once with agents.sendTaskText, which resumes a stopped or suspended task first and waits
 // for its input prompt. Codex and Claude Code queue text typed during a turn. When the notice cannot be typed, the file
 // stays in the inbox's .pending.json, the reason is saved in TB_DIR/inbox-deliveries.json, and Taskboard types the notice
-// again when the task's status next changes to idle, unread or review (a turn ended, or the task resumed).
+// again when the task's status next changes to idle, unread or review (a turn ended, or the task resumed), and when the
+// input box is empty again (message-queue.ts). A working Claude Code also gets the notice at its next tool call: the
+// PostToolUse hook returns it as additionalContext (events.ts).
 // A file also counts as delivered when a hook or `tb inbox wait` tells the agent about it (docs.onInboxTold).
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -90,6 +92,12 @@ export async function deliver(task: string, name: string): Promise<Delivery> {
   await attempt(task);
   return d;
 }
+
+// Tasks with files that the agent was not told about, and those files (message-queue.ts tries them again every 2 s
+// when the input box is empty, and the dashboard shows them on the task).
+export const openTasks = () => [...new Set([...items.values()].filter(d => !d.deliveredAt).map(d => d.task))];
+export const openFor = (task: string) => [...items.values()].filter(d => d.task === task && !d.deliveredAt);
+export const retry = (task: string) => attempt(task);
 
 // Tries again when a task's turn ends or the task resumes, and at server start for tasks that wait for input.
 const retryStatuses = new Set(['idle', 'unread', 'review']);

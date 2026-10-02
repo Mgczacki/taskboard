@@ -12,8 +12,13 @@ export interface Task {
   goal?: string; now?: string; ask?: string; stopReason?: string; interrupted?: string; desc: string;
   waitMin: number; attach: string; docs?: { inbox: number; outbox: number }; role?: 'controller'; parent?: string; account?: string; model?: string; machine?: { id: string; name: string }; imported?: string; openElsewhere?: { pid: number; tty: string }; moveWhenDone?: boolean; remoteUrl?: string; restartWhenDone?: boolean; newSessionWhenDone?: boolean; unscrollable?: boolean; tokenEstimate?: number | null;
   scopes?: Scope[];
+  // messages that Taskboard could not type into the agent yet (server/message-queue.ts), and inbox notices not delivered yet
+  queue?: QueuedMessage[];
   transfer?: { id: string; machine: string; task: string; direction: 'source' | 'target'; state: 'staged' | 'starting' | 'started' | 'failed'; worktreeCreated?: boolean; peerIdentity?: string };
 }
+
+export interface QueuedMessage { id: string; kind: 'message' | 'review' | 'permit' | 'inbox'; from: string; text: string; state: 'queued' | 'failed'; reason: string; queued: string; expires?: string }
+export type NoticeResult = { delivery: 'delivered' | 'queued' | 'failed'; reason?: string; resumed?: boolean };
 
 export interface ImportCandidate {
   agent: Agent; sessionId: string; title: string; cwd: string; branch?: string; firstPrompt?: string; lastMessage?: string;
@@ -178,9 +183,10 @@ export const api = {
   foldersOn: (machine: string) => call<{ used: { path: string; uses: number; last: string; pinned?: boolean }[]; found: string[] }>('GET', `/api/folders${machine && machine !== 'local' ? '?machine=' + machine : ''}`),
   folders: () => call<{ used: { path: string; uses: number; last: string; pinned?: boolean }[]; found: string[] }>('GET', '/api/folders'),
   pin: (path: string, pinned: boolean) => call('POST', '/api/folders/pin', { path, pinned }),
-  sendDoc: (from: string, name: string, to: string) => call<{ path: string; resumed: boolean }>('POST', '/api/docs/send', { from, name, to }),
+  sendDoc: (from: string, name: string, to: string) => call<{ path: string } & NoticeResult>('POST', '/api/docs/send', { from, name, to }),
+  queueAction: (id: string, qid: string, action: 'retry' | 'remove') => call('POST', `/api/tasks/${id}/queue/${encodeURIComponent(qid)}/${action}`),
   removeInbox: (id: string, name: string) => call('POST', `/api/tasks/${id}/inbox/remove`, { name }),
-  tellInbox: (id: string) => call<{ told: boolean; resumed?: boolean }>('POST', `/api/tasks/${id}/inbox/tell`, {}),
+  tellInbox: (id: string) => call<{ told: boolean } & Partial<NoticeResult>>('POST', `/api/tasks/${id}/inbox/tell`, {}),
   decide: (id: string, approve: boolean) => call<Approval>('POST', `/api/approvals/${id}/${approve ? 'approve' : 'deny'}`, {}),
   permits: () => call<Permit[]>('GET', '/api/permits'),
   // 409 with ignored: the worktree holds ignored files that a removal deletes; send confirm to remove it anyway
