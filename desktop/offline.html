@@ -2,16 +2,62 @@
 <html><head><meta charset="utf-8"><title>Taskboard</title>
 <style>
   :root { color-scheme: dark; }
-  body { margin: 0; height: 100vh; display: grid; place-items: center; background: #0d1117; color: #c9d1d9; font: 14px -apple-system, BlinkMacSystemFont, sans-serif; }
-  .box { max-width: 520px; text-align: center; line-height: 1.55; }
+  body { margin: 0; min-height: 100vh; display: grid; place-items: center; background: #0d1117; color: #c9d1d9; font: 14px -apple-system, BlinkMacSystemFont, sans-serif; }
+  .box { max-width: 620px; padding: 24px; text-align: center; line-height: 1.55; }
   h1 { font-size: 17px; color: #e6edf3; margin: 0 0 10px; }
   code { background: #161b22; border: 1px solid #30363d; border-radius: 5px; padding: 1px 6px; font: 12.5px ui-monospace, Menlo, monospace; }
   .sub { color: #8b949e; font-size: 12.5px; margin-top: 14px; }
+  #reason { margin-top: 10px; }
+  #next { margin-top: 8px; color: #e6edf3; }
+  button { margin-top: 16px; font: inherit; color: #fff; background: #238636; border: 1px solid #2ea043; border-radius: 6px; padding: 6px 16px; cursor: pointer; }
+  button:disabled { opacity: .55; cursor: default; }
+  #result { margin-top: 10px; }
+  #result.bad { color: #f85149; } #result.good { color: #3fb950; }
+  pre { text-align: left; background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 8px 10px; font: 11.5px ui-monospace, Menlo, monospace; white-space: pre-wrap; word-break: break-all; max-height: 220px; overflow: auto; color: #8b949e; }
+  [hidden] { display: none !important; }
 </style></head>
 <body><div class="box">
-  <h1>Waiting for the Taskboard server…</h1>
+  <h1 id="title">Waiting for the Taskboard server…</h1>
   <div>This window reconnects by itself as soon as <code>http://127.0.0.1:4317</code> answers.
-  Your agents keep running in tmux in the meantime.</div>
-  <div class="sub">If it does not come back: <code>launchctl kickstart -k gui/$(id -u)/com.taskboard.server</code>,
-  or install the login service with <code>sh ~/taskboard/scripts/install-launchd.sh</code>.<br>Log: <code>~/.taskboard/server.log</code></div>
-</div></body></html>
+  Your agents keep running in the meantime.</div>
+  <div id="reason"></div>
+  <div id="next"></div>
+  <button id="start" hidden>Start server</button>
+  <div id="result"></div>
+  <pre id="log" hidden></pre>
+  <div class="sub" id="help">In Terminal, <code>pnpm doctor</code> in the Taskboard checkout shows the same check. Log: <code>~/.taskboard/server.log</code></div>
+</div>
+<script>
+// The app (preload.cjs) gives this page the doctor (desktop/doctor.cjs): why the server does not answer and the repair.
+// In a plain browser there is no doctor, and the page shows only the text above.
+const app = window.taskboardApp;
+const $ = id => document.getElementById(id);
+let busy = false;
+function showResult(r) {
+  if (!r) return;
+  $('result').textContent = r.line || '';
+  $('result').className = r.ok ? 'good' : 'bad';
+}
+async function check() {
+  if (!app || !app.doctor || busy) return;
+  const d = await app.doctor().catch(() => null);
+  if (!d) return;
+  $('title').textContent = d.state === 'starting' ? 'Taskboard server is starting…' : `${d.title}.`;
+  $('reason').textContent = d.reason || '';
+  $('next').textContent = d.next ? `Next step: ${d.next}` : '';
+  const canStart = d.action === 'install' || d.action === 'restart';
+  $('start').hidden = !canStart && !d.repairing;
+  $('start').disabled = !!d.repairing;
+  $('start').textContent = d.repairing ? 'Starting…' : 'Start server';
+  const log = d.logTail || [];
+  $('log').hidden = !log.length;
+  $('log').textContent = log.join('\n');
+  if (d.lastRepair) showResult(d.lastRepair);
+}
+$('start').onclick = async () => {
+  busy = true; $('start').disabled = true; $('start').textContent = 'Starting…'; $('result').textContent = ''; $('result').className = '';
+  try { showResult(await app.startServer()); } finally { busy = false; check(); }
+};
+check(); setInterval(check, 5000);
+</script>
+</body></html>

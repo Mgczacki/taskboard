@@ -941,6 +941,7 @@ table.keyset .keycell { text-align: right; white-space: normal; }
 table.starts { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 6px; }
 table.starts th, table.starts td { text-align: left; padding: 3px 8px 3px 0; border-bottom: 1px solid var(--line, rgba(127,127,127,.2)); vertical-align: top; }
 table.starts td:last-child { word-break: break-word; }
+table.procs tr.proc-group td { padding-top: 10px; }
 
 
 /* The performance monitor (components/PerfMonitor.tsx), off by default. Bottom left, above the page, no animation. */

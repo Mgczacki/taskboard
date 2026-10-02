@@ -4,6 +4,10 @@ import { restartBanner, retryDelay, type ServerHealth, type ServerLink } from '.
 import { countMessage } from './perfStats';
 
 export type Agent = 'claude' | 'codex' | 'antigravity';
+// GET /api/processes (server/processes.ts)
+export interface ProcLine { pid: number; ppid: number; name: string; command: string; kind: string; cpu: number; memMb: number; power: number | null; ageSec: number | null }
+export interface ProcTotals { count: number; cpu: number; memMb: number; power: number | null }
+export interface ProcTable { at: string; power: boolean; totals: ProcTotals; groups: { key: string; label: string; num?: number; title?: string; totals: ProcTotals; procs: ProcLine[] }[] }
 export const AGENT_NAME: Record<Agent, string> = { claude: 'Claude Code', codex: 'Codex', antigravity: 'Antigravity' };
 export const AGENTS = Object.keys(AGENT_NAME) as Agent[];
 export type Status = 'working' | 'needs-you' | 'unread' | 'idle' | 'stopped' | 'review' | 'suspended' | 'parked' | 'archived';
@@ -266,6 +270,7 @@ export const api = {
   restartCheck: () => call<RestartImpact>('GET', '/api/restart/check'),
   restartLast: () => call<RestartResult | null>('GET', '/api/restart/last'),
   serverHealth: () => call<ServerHealth | null>('GET', '/api/server'),
+  processes: (power = false) => call<ProcTable>('GET', `/api/processes${power ? '?power=1' : ''}`),
   restartTaskboard: (confirm: boolean) => call<{ pid: number }>('POST', '/api/restart', { confirm }),
   rules: () => call<RulesFile[]>('GET', '/api/rules'),
   saveRules: (kind: RulesKind, text: string) => call<RulesFile>('PUT', `/api/rules/${kind}`, { text }),

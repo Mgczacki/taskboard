@@ -42,7 +42,10 @@ export const SECTIONS: SectionDef[] = [
   { id: 'server', title: 'Taskboard server', help: 'Restart the installed Taskboard server. Agent sessions keep running in tmux. Quitting the Taskboard app does not stop the server.', groups: [
     { id: 'restart', settings: [
       { id: 'restartServer', label: 'Restart Taskboard', words: 'restart reload server tb restart launchd' },
-      { id: 'serverStarts', label: 'Server starts', words: 'uptime crash crashes history start stop reason release quit app launchd' },
+      { id: 'serverStarts', label: 'Server starts', words: 'uptime crash crashes history start stop reason release quit app launchd login' },
+    ] },
+    { id: 'processes', title: 'Processes', settings: [
+      { id: 'processes', label: 'Processes', words: 'cpu memory energy power top ps htop activity monitor tb# agents chrome tmux' },
     ] },
   ] },
   { id: 'accounts', title: 'Accounts and routing', help: 'The task limit for new accounts, and the rules that the controller uses to choose an agent and an account.', groups: [

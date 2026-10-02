@@ -77,6 +77,8 @@ sh scripts/install-launchd.sh
 `pnpm release` builds the current checkout and starts Taskboard. Run it yourself, outside an agent task.
 
 The login service starts Taskboard when you log in to your Mac. It also restarts the server if it stops.
+Run the install script in Terminal, without sudo. Its last line says "Installed and running" or names the problem and the next step.
+If the server does not answer later, run `pnpm doctor`, or click **Start server** in the Taskboard app.
 
 Open [Taskboard](http://127.0.0.1:4317) in your browser.
 

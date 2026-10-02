@@ -95,7 +95,7 @@ export function writeClaudeSettings() {
   hooks.PreToolUse = [{ matcher: 'Bash', hooks: [{ type: 'command', command: `node ${tmux.quote(GUARD_SCRIPT)}`, timeout: 5 }] }];
   // The log and documents live in the vault, outside the project folder; allow writing there without a prompt each turn.
   const vault = VAULT.replace(HOME, '~');
-  const permissions = { allow: [`Edit(${vault}/**)`, `Read(${vault}/**)`, 'Bash(tb review:*)', 'Bash(tb inbox wait:*)', 'Bash(tb suggest:*)', 'Bash(tb permit request:*)', 'Bash(tb permit result:*)', 'Bash(tb permit list)', `Bash(python3 ${WORDING_SCRIPT}:*)`, 'Bash(tb run:*)', 'Bash(tb ps:*)', 'Bash(tb proc:*)', 'Bash(tb browser:*)', 'mcp__task-browser'] }; // Edit rules cover every file-writing tool
+  const permissions = { allow: [`Edit(${vault}/**)`, `Read(${vault}/**)`, 'Bash(tb review:*)', 'Bash(tb inbox wait:*)', 'Bash(tb suggest:*)', 'Bash(tb permit request:*)', 'Bash(tb permit result:*)', 'Bash(tb permit list)', `Bash(python3 ${WORDING_SCRIPT}:*)`, 'Bash(tb run:*)', 'Bash(tb ps:*)', 'Bash(tb top:*)', 'Bash(tb proc:*)', 'Bash(tb browser:*)', 'mcp__task-browser'] }; // Edit rules cover every file-writing tool
   // status line: shows the model and usage in the terminal and reports the account's usage windows to Taskboard
   const statusLine = { type: 'command', command: `node ${tmux.quote(STATUSLINE_SCRIPT)}` };
   writeFileSync(CLAUDE_SETTINGS_FILE, JSON.stringify({ hooks, permissions, statusLine }, null, 2));
@@ -628,6 +628,18 @@ function buildCommand(t: Task, prompt: string | null, resume: boolean, codexTrus
   return c;
 }
 
+// The agent runs with argv[0] "tb#<task number> <agent>" (the controller: "tb#controller <agent>"), so ps, htop and
+// pgrep -f show which task each agent belongs to (`pgrep -fl 'tb#'`). A shell starts it with `exec -a`; exec keeps the
+// pid, so the pane process is still the agent. The kernel's process name does not change: top and Activity Monitor
+// still show the file name of the program (claude's is its version, for example 2.1.288). The agents find their own
+// program through the system, not argv[0] (tested with claude 2.1.288, codex 0.160.0 and agy 1.2.15).
+// dash, the /bin/sh of some Linux systems, has no exec -a: there bash is used, and without bash the name is unchanged.
+export function processName(t: Pick<Task, 'num' | 'role'>, program: string) { return `tb#${t.role === 'controller' ? 'controller' : t.num} ${basename(program)}`; }
+export function namedCommand(t: Pick<Task, 'num' | 'role'>, cmd: string[], platform = process.platform, hasBash = existsSync('/bin/bash')): string[] {
+  const sh = platform === 'darwin' ? '/bin/sh' : hasBash ? '/bin/bash' : null;
+  return sh && cmd.length ? [sh, '-c', 'exec -a "$0" "$@"', processName(t, cmd[0]), ...cmd] : cmd;
+}
+
 // --add-dir for each attached worktree that exists. All three agents read the flag at start: Claude Code adds the
 // folder to its allowed folders, Codex adds it to the writable roots of its sandbox, and Antigravity to its workspace.
 const scopeDirs = (t: Task) => worktreeScopes(t).flatMap(s => ['--add-dir', realpathSync(s.path)]);
@@ -846,12 +858,12 @@ async function launchInner(t: Task, prompt: string | null, resume: boolean) {
   if (machine.get().permissions.trustWorkspaces) workspaceTrust.trust(t);
   const codexTrust = await codexHookTrust(t);
   const env = baseEnv(t);
-  let cmd = command(t, prompt, resume, codexTrust);
+  let cmd = namedCommand(t, command(t, prompt, resume, codexTrust));
   // A first prompt that makes the command too long for tmux (task 158: about 11.5 KB of instructions and a 5 KB
   // prompt) is typed into the agent's input box once it shows, by typePendingPrompt.
   if (prompt && tmux.commandBytes(tmux.newSessionArgs(t.session, t.cwd, env, cmd)) > tmux.MAX_COMMAND_BYTES) {
     const text = t.agent === 'antigravity' && t.role !== 'controller' ? `${taskInstructions(t, false)}\n\n---\n\n${prompt}` : prompt;
-    cmd = command(t, null, resume, codexTrust);
+    cmd = namedCommand(t, command(t, null, resume, codexTrust));
     pendingPrompt.set(t.id, text);
   }
   await tmux.newSession(t.session, t.cwd, env, cmd, async () => { await ensureTmuxConfigured(); });

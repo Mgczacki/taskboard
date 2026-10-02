@@ -193,6 +193,7 @@ const HELP = `tb — Taskboard command line
                                      Taskboard ends it when the task is archived or suspended
   tb ps [--task <task>]              the processes of your task
   tb ps --group <group>              the browsers and processes of the tasks in a group (a group owns none itself)
+  tb top [--task <n>] [--no-energy]  every process of Taskboard grouped by task: CPU, memory, energy impact, age
   tb proc logs <name> [-n lines] [--task <task>]   the last lines of a process's output
   tb proc stop <name> [--remove] | tb proc restart <name>   [--task <task>]
   tb browser [status|tabs|open <url>|start|stop] [--task <task>]
@@ -255,6 +256,25 @@ switch (cmd) {
     const list = await call('GET', `${o.path}/procs`);
     if (has('--json')) { console.log(JSON.stringify(list, null, 2)); break; }
     console.log(list.length ? list.map(procLine).join('\n') : `No processes for ${o.label}. Start one with tb run <name> -- <command>.`);
+    break;
+  }
+  // tb top: every process of Taskboard, grouped by task, with CPU, memory, energy impact and age (server/processes.ts).
+  // --task <n> shows one task; --no-energy skips the 2 s energy sample; --json prints the table.
+  case 'top': {
+    const only = flag('--task'); const json = has('--json'); const power = !has('--no-energy');
+    const t = await call('GET', `/api/processes${power ? '?power=1' : ''}`);
+    if (json) { console.log(JSON.stringify(t, null, 2)); break; }
+    const want = only ? String(only).replace(/^#/, '') : null;
+    const age = s => s == null ? '' : s >= 86400 ? `${Math.floor(s / 86400)}d` : s >= 3600 ? `${Math.floor(s / 3600)}h` : s >= 60 ? `${Math.floor(s / 60)}m` : `${s}s`;
+    const num = (v, w) => String(v ?? '').padStart(w);
+    const tot = x => `CPU ${x.cpu}%, ${x.memMb} MB${x.power != null ? `, energy ${x.power}` : ''}, ${x.count} process(es)`;
+    console.log(`${'PID'.padStart(7)} ${'CPU%'.padStart(6)} ${'MB'.padStart(6)} ${t.power ? 'ENERGY'.padStart(7) + ' ' : ''}${'AGE'.padStart(5)}  ${'KIND'.padEnd(11)} NAME / COMMAND`);
+    for (const g of t.groups) {
+      if (want && String(g.num) !== want && g.key !== want) continue;
+      console.log(`\n${g.label}: ${tot(g.totals)}`);
+      for (const p of g.procs) console.log(`${num(p.pid, 7)} ${num(p.cpu.toFixed(1), 6)} ${num(p.memMb, 6)} ${t.power ? num(p.power?.toFixed(1), 7) + ' ' : ''}${num(age(p.ageSec), 5)}  ${p.kind.padEnd(11)} ${p.name}: ${p.command.slice(0, 90)}`);
+    }
+    if (!want) console.log(`\nTaskboard in total: ${tot(t.totals)}.${t.power ? ' Energy is the POWER column of top (no unit; Activity Monitor shows the same number as Energy Impact).' : ''}`);
     break;
   }
   // tb proc logs|stop|restart <name>. ("tb restart" alone restarts Taskboard itself, so process commands have their own word.)

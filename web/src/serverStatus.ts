@@ -11,6 +11,8 @@ export interface ServerHealth {
   pid: number; startedAt: string; uptimeSec: number; release: string; previous: StartEnd | null;
   starts: StartRecord[]; counts: Record<EndKind, number>; planned: number;
   recovered: { count: number; last?: { at: string; line: string } };
+  // the login service of this server (server/login-service.ts); null when the server has no login service check
+  loginService?: { label: string; startsAtLogin: boolean; loaded: boolean; runsThisServer: boolean } | null;
 }
 // connected: the events socket is open. restarting: the server said it stops. down: no answer. offline: the browser
 // has no network (navigator.onLine is false).

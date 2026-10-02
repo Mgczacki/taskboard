@@ -32,6 +32,8 @@ import { textError } from './deliver-text.ts';
 import * as trust from './trust.ts';
 import * as agyReview from './agy-review.ts';
 import { acquire } from './lock.ts';
+import { loginService } from './login-service.ts';
+import { readProcesses } from './processes.ts';
 import * as life from './server-life.ts';
 import { startRotation } from './log-rotate.ts';
 import { ROLE, installRuntimeFiles, refuseReason } from './instance.ts';
@@ -885,7 +887,12 @@ const info = () => {
 };
 app.get('/api/info', (_req, res) => res.json(info()));
 // When and why this server started, its earlier starts and how each ended (server-life.ts)
-app.get('/api/server', (_req, res) => res.json(life.health()));
+// every process of Taskboard, grouped by task (server/processes.ts); ?power=1 adds energy impact and takes about 2 s
+app.get('/api/processes', async (req, res) => {
+  try { res.json(await readProcesses({ tmux: tmux.tmux, tasks: store.all().map(t => ({ id: t.id, num: t.num, title: t.title, session: t.session })), power: req.query.power === '1' })); }
+  catch (e) { res.status(500).json({ error: `Could not read the process list: ${(e as Error).message}` }); }
+});
+app.get('/api/server', async (_req, res) => { const h = life.health(); res.json(h && { ...h, loginService: await loginService() }); });
 // Changes to the controller name, model, or Remote Control setting apply at its next restart between turns.
 app.patch('/api/info', async (req, res) => {
   if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Machine settings are changed on the dashboard.' });
