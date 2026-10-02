@@ -105,6 +105,7 @@ export const SECTIONS: SectionDef[] = [
       { id: 'autoReload', label: 'Reload automatically when Taskboard is updated', words: 'release reload' },
     ] },
     { id: 'performance', title: 'Performance', settings: [
+      { id: 'termWebgl', label: 'Draw terminals with WebGL', words: 'gpu webgl renderer terminal slow cpu draw fast' },
       { id: 'perfMonitor', label: 'Show the performance monitor', words: 'slow freeze lag cpu memory swap load event loop long task monitor' },
     ] },
   ] },

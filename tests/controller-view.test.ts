@@ -244,13 +244,15 @@ test('in each theme and each preset the guard keeps the terminal text readable o
 
 // The black terminal of task 140 came from a new WebGL renderer for each mount. Folding the header or changing the
 // step must not mount the terminal again: the ResizeObserver in Terminal.tsx refits it and sends the size to tmux.
-test('folding the header and changing the step keep the same terminal, with the DOM renderer', () => {
+test('folding the header and changing the step keep the same terminal; the renderer follows the WebGL setting', () => {
   const panel = readFileSync('web/src/components/TaskPanel.tsx', 'utf8'), term = readFileSync('web/src/components/Terminal.tsx', 'utf8');
   const tag = panel.match(/<Terminal taskId=\{t\.id\}[^>]*\/>/)?.[0] || '';
   assert.ok(tag.includes('glass='), 'the panel passes the step to the terminal');
   assert.ok(!/key=/.test(tag), 'the terminal has no key that changes with the layout');
-  assert.match(term, /const renderer = 'dom'/);
-  assert.doesNotMatch(term, /addon-webgl|addon-canvas/);
+  // WebGL while the setting is on (terminalRenderer.ts, on by default); a lost context goes back to the DOM renderer
+  assert.match(term, /useWebgl\(webglOn\(\)\);/);
+  assert.match(term, /gl\.onContextLoss\(\(\) => \{[^\n]*renderer = 'dom'/);
+  assert.doesNotMatch(term, /addon-canvas/);
   assert.match(term, /const refit = \(\) => \{ if \(!el\.clientWidth \|\| !el\.clientHeight\) return; try \{ fit\.fit\(\)/);
   assert.match(term, /new ResizeObserver\(refit\)/);
   assert.match(term, /term\.onResize\(\(\{ cols, rows \}\) => \{[^\n]*sizes\.changed\(cols, rows\)/);

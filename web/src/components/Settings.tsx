@@ -7,6 +7,7 @@ import { reasonText, type ServerHealth } from '../serverStatus';
 import { setTaskThinBar, setWindowSee, taskThinBar, windowSee, windowSeeSupported } from '../controllerView';
 import { GlassControls, useGlass, useReadable } from './GlassControls';
 import { onPerfChange, perfOn, setPerfOn } from '../perfStats';
+import { onRendererChange, setWebglOn, webglOn } from '../terminalRenderer';
 import { ControllerBox, MaxTasksInput, loadAccounts } from './Accounts';
 import { MessageLevels } from './MessageLevels';
 import { Integrations } from './Integrations';
@@ -39,6 +40,8 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
   const [winSee, setWinSeeState] = useState(windowSee);
   const [perfShown, setPerfShown] = useState(perfOn());
   useEffect(() => onPerfChange(() => setPerfShown(perfOn())), []);
+  const [webgl, setWebgl] = useState(webglOn());
+  useEffect(() => onRendererChange(() => setWebgl(webglOn())), []);
   const [thinBar, setThinBar] = useState(taskThinBar);
   const [accts, setAccts] = useState<Account[]>([]);
   const [routingRules, setRoutingRules] = useState('');
@@ -237,6 +240,10 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
                 </SettingItem>
               </SettingGroup>
               <SettingGroup section="browser" id="performance" title="Performance">
+                <SettingItem id="termWebgl">
+                  <label className="opt" title="The GPU draws the text of each terminal. Off: the browser draws each row as page elements, which uses more CPU with fast output"><input type="checkbox" checked={webgl} onChange={e => setWebglOn(e.target.checked)} /> Draw terminals with WebGL</label>
+                  <div className="sub">Saved for this app or browser. Open terminals switch at once. If a terminal stays blank, turn this off and tell the controller.</div>
+                </SettingItem>
                 <SettingItem id="perfMonitor">
                   <label className="opt" title="A small box at the bottom left: long tasks of this page, socket messages, the server's event loop delay, and the load and swap of the machine"><input type="checkbox" checked={perfShown} onChange={e => setPerfOn(e.target.checked)} /> Show the performance monitor</label>
                   <div className="sub">Saved for this app or browser. When the machine is overloaded, it names the three processes with the most CPU and the most memory. It never stops a process.</div>
