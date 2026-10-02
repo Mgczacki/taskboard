@@ -15,6 +15,7 @@ import { commandAt, commandsFrom, type CellRow } from '../bangCommand';
 import { beginHold } from '../holdRun';
 import { readTerminalTheme } from '../terminalTheme';
 import { sizeSender } from '../terminalSize';
+import { drawText, liveScreen, paneText, saveScreen, savedScreen, serialize, type PaneScreen } from '../terminalSnapshot';
 
 // Debug record: each terminal keeps its last 300 events (WebSocket messages with their size and first escape
 // sequences, input lengths, connection changes, stalls, messages from the server). It holds no text the agent printed
@@ -49,6 +50,9 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
   const actions = useRef({ live: () => {}, refresh: () => {} });
 
   useEffect(() => {
+    // the times (performance.now(), ms) of the steps from mount to the first drawn output, for the debug record
+    const timing: Record<string, number> = { mount: performance.now() };
+    const mark = (k: string) => { if (timing[k] === undefined) timing[k] = performance.now(); };
     const el = box.current!;
     const { theme, minimumContrastRatio } = readTerminalTheme(glassRef.current);
     const term = new XTerm({
@@ -61,6 +65,7 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
     const fit = new FitAddon();
     term.loadAddon(fit); term.loadAddon(new WebLinksAddon());
     term.open(el);
+    mark('opened');
     termRef.current = term;
     const mac = /Mac|iPhone|iPad/.test(navigator.platform);
     const modified = (e: MouseEvent) => mac ? e.metaKey : e.ctrlKey;
@@ -193,6 +198,19 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
     const refit = () => { if (!el.clientWidth || !el.clientHeight) return; try { fit.fit(); } catch { /* layout is not ready */ } };
     fitRef.current = refit;
     refit();
+    mark('fitted');
+    const id = taskId || session || '';
+    // the last screen of this terminal, drawn before the socket opens (terminalSnapshot.ts)
+    const saved = savedScreen(id);
+    if (saved) term.write(drawText(saved, term.cols, term.rows), () => mark('snapshotParsed'));
+    // none yet (a first visit, a new browser tab): ask the server for the pane's screen; an HTTP request answers in a
+    // few ms, while sockets to one host open one after the other
+    let gone = false;
+    if (!saved && taskId && !session && !taskId.includes('~')) {
+      void fetch(`/api/tasks/${encodeURIComponent(taskId)}/screen`, { cache: 'no-store' }).then(r => r.ok ? r.json() as Promise<PaneScreen> : null).then(p => {
+        if (p && !gone && timing.firstOutput === undefined) term.write(paneText(p, term.rows), () => mark('snapshotParsed'));
+      }).catch(() => { /* the live screen comes with the socket */ });
+    }
 
     const proto = location.protocol === 'https:' ? 'wss' : 'ws';
     let ws: ReturnType<typeof terminalSocket> | null = null, lastState: unknown = null;
@@ -208,6 +226,35 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
     });
     let redrawnTimer: ReturnType<typeof setTimeout> | undefined;
     const showRedrawn = () => { setRedrawn(true); clearTimeout(redrawnTimer); redrawnTimer = setTimeout(() => setRedrawn(false), 6000); };
+    // The live start from tmux comes in several messages: the first switches to the alternate screen and clears it,
+    // then tmux asks the terminal what it supports and draws the screen once xterm.js answered (20-60 ms later). So the
+    // live output is written at once, but a copy of the rows of the saved screen covers it until the live screen has
+    // text and 30 ms passed without output (at most 300 ms after the first output, or at the first key you type).
+    let cover: HTMLElement | null = null, liveReady = false, coverQuiet: ReturnType<typeof setTimeout> | undefined, coverMax: ReturnType<typeof setTimeout> | undefined;
+    const rowsEl = () => el.querySelector<HTMLElement>('.xterm-rows');
+    const putCover = () => {
+      const rows = rowsEl();
+      if (!rows || cover) return;
+      cover = rows.cloneNode(true) as HTMLElement;
+      cover.classList.add('term-saved-screen');
+      cover.removeAttribute('aria-live');
+      rows.after(cover);
+      rows.style.visibility = 'hidden';
+    };
+    const uncover = () => {
+      clearTimeout(coverQuiet); clearTimeout(coverMax);
+      if (!cover) return;
+      cover.remove(); cover = null;
+      const rows = rowsEl(); if (rows) rows.style.visibility = '';
+      mark('liveShown');
+    };
+    const liveHasText = () => { const b = term.buffer.active; for (let y = 0; y < term.rows; y++) if (b.getLine(b.baseY + y)?.translateToString(true).trim()) return true; return false; };
+    const afterLive = () => {
+      if (!cover) return;
+      if (!coverMax) coverMax = setTimeout(uncover, 300);
+      // the copy goes in the frame that draws the live rows (onRender below), so no blank frame shows between them
+      clearTimeout(coverQuiet); coverQuiet = setTimeout(() => { if (liveHasText()) { liveReady = true; term.refresh(0, term.rows - 1); } }, 30);
+    };
     ws = terminalSocket(() => (sizes.known(term.cols, term.rows), `${proto}://${location.host}/ws/term?${session ? 'session=' + encodeURIComponent(session) : 'task=' + encodeURIComponent(taskId)}&cols=${term.cols}&rows=${term.rows}`), {
       message: e => {
         const d = typeof e.data === 'string' ? e.data : '';
@@ -221,23 +268,35 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
           } catch { /* ignore a malformed message */ }
           return;
         }
+        mark('firstOutput');
         log('output', { bytes: typeof e.data === 'string' ? d.length : (e.data as ArrayBuffer).byteLength, ...escapes(d) });
-        term.write(typeof e.data === 'string' ? e.data : new Uint8Array(e.data));
+        term.write(typeof e.data === 'string' ? e.data : new Uint8Array(e.data), () => { mark('firstParsed'); afterLive(); });
       },
       // this terminal decides the tmux window size while it is the one you opened or typed in last
-      open: () => { log('open'); setOffline(false); sendFocus(); sizes.flush(term.cols, term.rows); },
+      open: () => { mark('socketOpen'); log('open'); setOffline(false); sendFocus(); sizes.flush(term.cols, term.rows); },
       close: ev => {
         log('close', { code: ev.code, reason: ev.reason });
+        // the session is gone: do not leave its last screen on display
+        if (ev.code === 4004 && timing.firstParsed === undefined) { uncover(); term.reset(); }
         setOffline(ev.code !== 4004);
       },
     });
+    // a key you type shows the live screen at once (answers to tmux's questions also arrive in onData, so not there)
+    const keyed = term.onKey(() => uncover());
     const input = term.onData(d => { log('input', { bytes: d.length }); if (ws && ws.readyState === 1) ws.send(d); });
     // A terminal that got output but did not draw it for 2 s while it is visible is drawn again. This has not been
     // seen; it covers causes that could not be tested (a stalled renderer). xterm.js itself stops drawing while the
     // terminal is off the screen and draws everything when it comes back, so an invisible terminal is not a stall.
     let parsedSince = 0, lastRender = 0, renders = 0, onScreen = true;
     const parsed = term.onWriteParsed(() => { if (!parsedSince) parsedSince = Date.now(); });
-    const rendered = term.onRender(() => { parsedSince = 0; lastRender = Date.now(); renders++; });
+    const rendered = term.onRender(() => {
+      // the saved screen is in the rows now: copy them before live output can change them
+      if (timing.snapshotParsed !== undefined && timing.snapshotDrawn === undefined && timing.firstParsed === undefined) putCover();
+      if (timing.snapshotParsed !== undefined) mark('snapshotDrawn');
+      if (timing.firstParsed !== undefined) mark('firstDrawn');
+      if (liveReady) { liveReady = false; uncover(); }
+      parsedSince = 0; lastRender = Date.now(); renders++;
+    });
     const restoreDisplay = () => {
       if (document.visibilityState !== 'visible' || !el.clientWidth || !el.clientHeight) return;
       log('visible-refresh');
@@ -264,12 +323,12 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
       live: () => { log('back-to-live'); send({ t: 'live' }); },
       refresh: () => { log('refresh'); refit(); term.refresh(0, term.rows - 1); send({ t: 'refresh' }); },
     };
-    const id = taskId || session || '';
+    const unlist = liveScreen(id, () => serialize(term));
     const record = () => {
       const b = term.buffer.active;
       return { terminal: id, at: new Date().toISOString(), page: { visibility: document.visibilityState, onScreen, width: el.clientWidth, height: el.clientHeight, userAgent: navigator.userAgent },
         socket: ws?.readyState, renderer, cols: term.cols, rows: term.rows, buffer: { type: b.type, cursorX: b.cursorX, cursorY: b.cursorY, baseY: b.baseY, viewportY: b.viewportY, length: b.length },
-        modes: term.modes, renders, lastRender, waitingToDrawSince: parsedSince, paneState: lastState, events: [...events] };
+        modes: term.modes, timing: { ...timing }, renders, lastRender, waitingToDrawSince: parsedSince, paneState: lastState, events: [...events] };
     };
     records.set(id, record);
     // A paste event arrives before xterm.js sends its text. Tell tmux to leave copy mode first.
@@ -292,7 +351,12 @@ export function Terminal({ taskId, session, fontSize = 13, autoFocus = false, on
     term.textarea?.addEventListener('focus', onF);
     if (autoFocus) setTimeout(() => term.focus(), 50);
 
-    return () => { document.removeEventListener('visibilitychange', restoreDisplay); window.removeEventListener('focus', restoreDisplay); sizes.dispose(); resized.dispose(); clearTimeout(redrawnTimer); clearInterval(stallCheck); io.disconnect(); parsed.dispose(); rendered.dispose(); if (records.get(id) === record) records.delete(id); ro.disconnect(); input.dispose(); provider?.dispose(); underline.remove(); for (const type of ['mousedown', 'mouseup', 'click'] as const) el.removeEventListener(type, onModifiedMouse, true); el.removeEventListener('paste', onPaste, true); el.removeEventListener('mousedown', onHoldStart, true); term.textarea?.removeEventListener('focus', onF); ws?.dispose(); termRef.current = null; fitRef.current = () => {}; term.dispose(); };
+    return () => { document.removeEventListener('visibilitychange', restoreDisplay); window.removeEventListener('focus', restoreDisplay); sizes.dispose(); resized.dispose(); clearTimeout(redrawnTimer); clearTimeout(coverQuiet); clearTimeout(coverMax); clearInterval(stallCheck); io.disconnect(); parsed.dispose(); rendered.dispose(); if (records.get(id) === record) records.delete(id); ro.disconnect(); input.dispose(); keyed.dispose(); provider?.dispose(); underline.remove(); for (const type of ['mousedown', 'mouseup', 'click'] as const) el.removeEventListener(type, onModifiedMouse, true); el.removeEventListener('paste', onPaste, true); el.removeEventListener('mousedown', onHoldStart, true); term.textarea?.removeEventListener('focus', onF); ws?.dispose(); termRef.current = null; fitRef.current = () => {};
+      unlist(); gone = true;
+      // keep the screen only once tmux drew it: before that, the terminal shows the saved one (or nothing)
+      if (timing.firstParsed !== undefined) { try { saveScreen(id, serialize(term)); } catch { /* not readable */ } }
+      term.dispose();
+    };
   }, [taskId, session]);
 
   // a new font size changes the cell size but not the box, so the ResizeObserver does not see it: fit here

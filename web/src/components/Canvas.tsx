@@ -1,7 +1,7 @@
 // Canvas: live terminals for one view at a time. A view is a group (tab), a status-based set, or a hand-picked
 // list of tasks (a separate window). Layouts: Columns (full-height terminals in one row that scrolls sideways),
 // Grid, Rows. The keys are in keys.ts (⌃⌥ + key by default, so typing into agents is not affected).
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Group, SpinOffExchange, Task } from '../api';
 import { ATTN, STATUS_LABEL, api, confirmEnd, useStore } from '../api';
 import { AgentChip, Dot, MachineChip, WhereChip } from './ui';
@@ -107,11 +107,16 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
   const toggleBrowser = (id: string) => { const s = splitOf(id); if (s.open) startHere.current.delete(id); else startHere.current.add(id); setSplit(id, { ...s, open: !s.open }); };
   const toggleAsk = (id: string) => setAsking(s => { const n = new Set(s); if (n.has(id)) n.delete(id); else n.add(id); return n; });
   const stage = useRef<HTMLDivElement>(null);
-  const [W, setW] = useState(1200);
+  // The stage width decides how many windows fit. It is measured before the first paint, and the windows (and their
+  // terminals) mount only then: with a guessed width each terminal attached at the wrong size, and the agent drew its
+  // screen twice (one window per screen at 1200 px, then two at the real width).
+  const [measuredW, setW] = useState<number | null>(null);
+  const W = measuredW ?? 1200;
   useKeymap();
 
   useEffect(() => { setOrder(localStorage.getItem(lk('order')) === 'links' ? 'links' : 'saved'); setLayout((localStorage.getItem(lk('layout')) as Layout) || 'columns'); const v = localStorage.getItem(lk('visible')); setVisible(v && v !== 'auto' ? Number(v) : 'auto'); const pp = localStorage.getItem(lk('perpage')); setPerPage(pp && pp !== 'off' ? Number(pp) : 'off'); setPage(Number(localStorage.getItem(lk('page'))) || 0); setFrozen(null); setExtra([]); setHidden([]); setMaxId(null); setFocused(null); }, [view]);
   useEffect(() => { localStorage.setItem(lk('order'), order); localStorage.setItem(lk('layout'), layout); localStorage.setItem(lk('visible'), String(visible)); localStorage.setItem(lk('perpage'), String(perPage)); localStorage.setItem(lk('page'), String(page)); }, [order, layout, visible, perPage, page, view]);
+  useLayoutEffect(() => { setW(stage.current?.clientWidth || 1200); }, []);
   useEffect(() => { const ro = new ResizeObserver(() => setW(stage.current?.clientWidth || 1200)); if (stage.current) ro.observe(stage.current); return () => ro.disconnect(); }, []);
 
   // windows are for running agents: archived and suspended tasks are left out (suspended ones: see the Resume button)
@@ -458,7 +463,7 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
       <div className="stage-grid" ref={stage} style={style}>
         {!wins.length && <div className="emptyview"><h2>{group ? `“${group.name}” is empty` : view === 'ungrouped' && !hidden.length ? 'Every live task is in a group' : 'No windows'}</h2><p>Use <b>＋ New task</b> to start an agent here. Use <b>＋ Add window</b> to show a task that already exists.</p></div>}
         {/* renderOrder: the page keeps the windows in one fixed order and CSS order puts them in place, so a move does not remount a terminal */}
-        {renderOrder(shown).map(({ item: t, at: i }) => (
+        {measuredW !== null && renderOrder(shown).map(({ item: t, at: i }) => (
           <div key={t.id} data-win={t.id} className={`win ${t.status} ${t.link?.state === 'superseded' ? 'superseded' : ''} ${focused === t.id ? 'focus' : ''} ${selected.has(t.id) ? 'selected' : ''} ${tileDrag?.id === t.id ? 'dragging' : ''} ${tileSlotClass(i)} ${layout === 'rows' ? 'vslot' : ''}`} style={{ order: i, ...(layout === 'grid' && !maxId ? { gridColumn: `span ${i < tileCount - lastRow ? lastRow : gridCols}` } : {}) }} onMouseDown={() => { setFocused(t.id); if (t.status === 'unread') api.seen(t.id); }}>
             <div className="wh" onPointerDown={e => startDrag(e, t.id)} onDoubleClick={() => setMaxId(m => m ? null : t.id)}>
               <span className="grip" title={`Drag to move this window between two others, or onto a group tab. Move it one place: ${keysText('windowEarlier')} / ${keysText('windowLater')}`}>⠿</span><span className="ix">{i + 1}</span><LinkPorts t={t} tasks={tasks} onGo={goTask} side="left" /><Dot s={t.status} /><span className="n">#{t.num}</span><span className="ti">{t.title}</span><LinkPorts t={t} tasks={tasks} onGo={goTask} side="right" />

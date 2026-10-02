@@ -14,6 +14,8 @@
    .xterm-box. With the padding on .xterm-box it counted those 6 pixels as room for rows, and the last row could be cut off. */
 .xterm-box .xterm { height: 100%; padding: 6px 0 0 8px; }
 .xterm-box .xterm-viewport { background: var(--term-bg) !important; }
+/* the saved screen over the live rows while tmux draws (Terminal.tsx, terminalSnapshot.ts) */
+.xterm-box .term-saved-screen { position: absolute; top: 0; left: 0; right: 0; pointer-events: none; }
 .xterm-box .taskboard-link-underline { position: absolute; inset: 0; pointer-events: none; z-index: 5; }
 .xterm-box .taskboard-link-underline span { position: absolute; border-bottom: 1px solid var(--accent); }
 .term-wrap { height: 100%; display: flex; flex-direction: column; }
