@@ -1,4 +1,4 @@
-// Dropping a task on a group or on Ungrouped (canvas tabs, Board columns), the ✕ and × buttons that take a task out
+// Dropping a task on a group or on Ungrouped (canvas tabs, Board columns), the × and remove buttons that take a task out
 // of a group, and the Undo of each. Kept apart from Canvas.tsx and Views.tsx (and from api.ts, which opens a
 // WebSocket on import) so tests/group-move.test.ts can run it.
 //
