@@ -9,6 +9,14 @@
 //   "[Pasted Content N chars]". Claude Code mode shows "[Pasted text #n]" for a paste over 800 characters.
 // - TEST_QUESTION=1 shows a trust question. FAKE_UPDATE=1 shows the box, then after 600 ms Codex's update dialog,
 //   where Enter chooses "Update now" (recorded as UPDATE_CHOSEN) and Esc or 2 skips.
+// - TASK_DIR/fake-state.json (read every 100 ms) changes the screen as Claude Code 2.1.287 drew it (observed):
+//   busy: a spinner above the box and "esc to interrupt" below it. Enter keeps the text as a queued message, shown
+//     above the spinner with "ctrl+x ctrl+s to send now", and the empty box shows the dim hint "Press up to edit queued
+//     messages". When busy ends, the queued messages are submitted.
+//   permission: the permission question in place of the box. "1" answers it. Other keys do nothing.
+//   history: rows of earlier output above the box. notice: a background task notice above the box.
+//   An empty box shows its hint dim (SGR 2), as Claude Code and Codex do: Claude Code "Try ..." when hint is set, Codex
+//   "Ask Codex to do anything".
 const fs = require('node:fs'), path = require('node:path');
 const agent = process.env.FAKE_AGENT || path.basename(process.argv[1]).replace(/^agy$/, 'antigravity');
 const dir = process.env.TASK_DIR || process.cwd();
@@ -33,6 +41,17 @@ const RULE = '─'.repeat(80), WIDTH = 150;
 const parts = []; // the box: { text, shown }
 let burst = null, burstTimer = null, pasting = null, pastes = 0, history = [];
 let dialog = process.env.TEST_QUESTION === '1' ? 'trust' : null;
+let state = {}, queued = [];
+const stateFile = path.join(dir, 'fake-state.json');
+setInterval(() => {
+  let next = {}; try { next = JSON.parse(fs.readFileSync(stateFile, 'utf8')); } catch { /* none */ }
+  if (JSON.stringify(next) === JSON.stringify(state)) return;
+  const wasBusy = state.busy; state = next;
+  if (state.permission) dialog = 'permission'; else if (dialog === 'permission') dialog = null;
+  if (wasBusy && !state.busy) { for (const text of queued) { record({ text }); history.push(text); } queued = []; }
+  draw();
+}, 100);
+const DIM = '\x1b[2m', RESET = '\x1b[0m';
 const boxText = () => parts.map(p => p.shown).join('');
 const fullText = () => parts.map(p => p.text).join('');
 const add = (text, paste) => {
@@ -42,6 +61,8 @@ const add = (text, paste) => {
 function draw() {
   let lines;
   if (dialog === 'trust') lines = ['Do you trust the contents of this project?', '> Yes, I trust this folder', '  No, exit'];
+  else if (dialog === 'permission') lines = [...(state.history || []), '', '  Running ./build.sh', '  ⎿  $ ./build.sh', '', RULE, ' Bash command', ' Run shell command', '╌'.repeat(80), ' ./build.sh', '╌'.repeat(80),
+    ' This command requires approval', '', ' Do you want to proceed?', ' ❯ 1. Yes', '   2. Yes, and don’t ask again for: ./build.sh *', '   3. No', '', ' Esc to cancel · Tab to amend'];
   else if (dialog === 'update') lines = ['  Update available · 0.158.0 → 0.160.0', '  Release notes: https://github.com/openai/codex/releases/latest', '',
     "› 1. Update now (runs `sh -c 'curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh'`)", '  2. Skip', '  3. Skip until next version', '', '  enter continue · esc skip'];
   else {
@@ -51,14 +72,22 @@ function draw() {
     for (const w of text.split(/(?<= )/)) { if (row && (row + w).length > WIDTH) { rows.push(row.trimEnd()); row = w.trimStart(); } else row += w; }
     rows.push(row);
     const mark = agent === 'codex' ? '›' : agent === 'claude' ? '❯' : '>';
-    const box = text ? rows.map((r, i) => (i ? '  ' : mark + ' ') + r) : [mark + (agent === 'codex' ? ' Ask Codex to do anything' : ' ')];
+    // the box row starts with a color code, as Claude Code ("ESC[39m❯") and Codex ("ESC[1m›ESC[0m") draw it
+    const styled = agent === 'codex' ? '\x1b[1m›\x1b[0m' : '\x1b[39m' + mark;
+    const hint = agent === 'codex' ? 'Ask Codex to do anything' : queued.length ? 'Press up to edit queued messages' : state.hint || '';
+    const box = text ? rows.map((r, i) => (i ? '  ' : styled + ' ') + r) : [styled + ' ' + (hint ? DIM + hint + RESET : '')];
     const past = history.slice(-3).map(h => `${mark} ${h.slice(0, 60)}`);
-    lines = agent === 'codex' ? ['OpenAI Codex (fake)', '', ...past, '', ...box, '', '  ? for shortcuts'] : ['Fake agent', ...past, '', RULE, ...box, RULE, '  ? for shortcuts'];
+    const above = [...(state.history || []), ...(state.notice ? ['⏺ Background command "./build.sh" completed (exit code 0)'] : []),
+      ...queued.flatMap(q => [`${mark} ${q.slice(0, 60)}`, '  ctrl+x ctrl+s to send now']), ...(state.busy ? ['✻ Beaming… (8s · ↓ 231 tokens)'] : [])];
+    // Claude Code draws its rules grey ("ESC[38;5;244m"), so a screen with colors always has escape codes
+    const rule = '\x1b[38;5;244m' + RULE + '\x1b[39m';
+    lines = agent === 'codex' ? ['OpenAI Codex (fake)', '', ...past, ...above, '', ...box, '', '  ? for shortcuts'] : ['Fake agent', ...past, ...above, '', rule, ...box, rule, state.busy ? '  ⏸ manual mode on · esc to interrupt' : '  ? for shortcuts'];
   }
   process.stdout.write('\x1b[2J\x1b[H' + lines.join('\r\n'));
 }
 function submit() {
   const text = fullText(); parts.length = 0;
+  if (state.busy && text) { queued.push(text); return draw(); }
   if (text) { record({ text }); history.push(text); }
   draw();
 }
@@ -67,6 +96,7 @@ function key(ch) {
   if (dialog) {
     if (dialog === 'update' && ch === '\r') { record({ text: 'UPDATE_CHOSEN' }); process.exit(0); }
     if (dialog === 'update' && (ch === '\x1b' || ch === '2')) { dialog = null; draw(); }
+    if (dialog === 'permission' && ch === '1') { record({ text: 'PERMISSION_ANSWERED' }); dialog = null; state = { ...state, permission: false }; fs.writeFileSync(stateFile, JSON.stringify(state)); draw(); }
     return;
   }
   if (burst !== null) { burst += ch; clearTimeout(burstTimer); burstTimer = setTimeout(endBurst, BURST_MS); return; }

@@ -110,9 +110,14 @@ export function claudeEvent(taskId: string, input: any): { output?: unknown } {
         store.update(t.id, { status: 'needs-you', ask: input.message || 'Claude is waiting for you', statusSource: `Claude Code Notification (${type}) at ${clock()}.` });
       break;
     }
-    case 'PostToolUse':
+    case 'PostToolUse': {
       if (t.status === 'needs-you') store.update(t.id, { status: 'working', ask: '', statusSource: `Approved; tool ran at ${clock()}.` });
+      // New inbox files reach a working agent at its next tool call, not only at its next prompt. Claude Code 2.1.287
+      // gives the model the additionalContext of a PostToolUse hook with the tool result (observed in a test session).
+      const notice = docs.takeInboxNotice(t.id);
+      if (notice) return { output: { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: notice } } };
       break;
+    }
     case 'Stop': {
       // Ask for a log entry once per turn if the agent did not write one. stop_hook_active prevents loops.
       const started = turnStart.get(t.id) || 0;

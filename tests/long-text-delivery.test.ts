@@ -84,7 +84,7 @@ test('an empty text and a draft in the box are refused, and Enter is not pressed
     // a lone "T" left in the box, as in task 51: the paste would join it, so nothing is typed
     await tmux.tmux('send-keys', '-t', `=${t.session}:`, '-l', 'T');
     await pause(300);
-    await assert.rejects(deliverText(t, textOf(6000)), /(empty input box|did not arrive whole)/);
+    await assert.rejects(deliverText(t, textOf(6000)), /holds a draft that a person typed\. Taskboard does not type into a draft\. Nothing was typed\./);
     await pause(800);
     assert.deepEqual(submitted(t), []);
   } finally { await tmux.killSession(t.session); }

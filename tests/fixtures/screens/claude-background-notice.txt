@@ -1,0 +1,40 @@
+  2. Using Monitor with an until-loop for polling a condition
+
+  Since you specified "in the foreground," the tool's safety restrictions prevent running a 90-second sleep directly.
+
+✻ Churned for 5s · done 3:27 AM
+
+❯ Run ./build.sh with the Bash tool (timeout 200000 ms). It takes about 100 seconds. Wait for it.
+
+  Ran 1 shell command
+
+❯ a draft typed by a person
+
+⏺ The build script completed successfully.
+
+✻ Baked for 1m 46s · done 3:29 AM
+
+❯ Reply with exactly this text and nothing else: "Do you want to approve the merge of task 12? Would you like to see
+  the approval requested by task 9 first?" Then run ./build.sh with the Bash tool with run_in_background true, and then
+  end your turn.
+
+⏺ Do you want to approve the merge of task 12? Would you like to see the approval requested by task 9 first?
+
+  Ran 1 shell command
+
+⏺ Do you want to approve the merge of task 12? Would you like to see the approval requested by task 9 first?
+
+  The build script is now running in the background (ID: becdi6t16).
+
+✻ Crunched for 6s · done 3:30 AM
+
+⏺ Background command "./build.sh" completed (exit code 0)
+
+⏺ The background build script has completed successfully (exit code 0).
+
+✻ Cogitated for 1s · done 3:32 AM
+
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  ⏸ manual mode on · ? for shortcuts · ← 1 agent

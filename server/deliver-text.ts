@@ -10,8 +10,8 @@
 //   Shorter pastes show the text itself.
 // So text longer than TYPE_MAX is pasted, and Enter is pressed only after the box shows the text or that placeholder.
 import * as tmux from './tmux.ts';
-import { inputBox, MARK, readyForInput, squash, type PromptAgent } from './type-command.ts';
-import { agentName, blockingQuestion } from './agents.ts';
+import { boxState, inputBox, MARK, plainText, squash, type BoxState, type PromptAgent } from './type-command.ts';
+import { agentName } from './agents.ts';
 import type { Agent } from './store.ts';
 
 export const TYPE_MAX = 100; // longer text is pasted
@@ -24,7 +24,7 @@ export const bottom = (screen: string, lines = 15) => screen.split('\n').filter(
 // True when the agent's input box holds this text and nothing else: the text itself (rows joined, spaces ignored),
 // or one paste placeholder. A Codex placeholder must name the length of the text.
 export function holdsText(screen: string, text: string, agent: PromptAgent, pasted: boolean): boolean {
-  const box = inputBox(screen, agent);
+  const box = inputBox(plainText(screen), agent);
   if (box === null || !MARK[agent].test(box)) return false;
   const content = squash(box).slice(1);
   if (content === squash(text)) return true;
@@ -40,7 +40,8 @@ export interface DeliverIO {
   paste: (session: string, text: string) => Promise<void>;
   wait: (ms: number) => Promise<void>;
 }
-const realIO: DeliverIO = { tmux: tmux.tmux, capture: s => tmux.capture(s, 0), paste: (s, text) => tmux.paste(s, text, false), wait };
+// the screen with its colors (tmux capture-pane -e): type-command.ts boxState tells a draft from a dim hint by them
+const realIO: DeliverIO = { tmux: tmux.tmux, capture: s => tmux.captureStyled(s), paste: (s, text) => tmux.paste(s, text, false), wait };
 
 export interface Delivered { submitted: boolean; warning?: string }
 export interface Target { session: string; agent: Agent; num: number }
@@ -51,6 +52,21 @@ export function textError(text: unknown): string | null {
   return null;
 }
 
+// Thrown when nothing was typed and Enter was not pressed, so the message can be typed later without harm.
+// reason says why, for the sender and the dashboard.
+export class NotTyped extends Error {
+  constructor(readonly reason: string, readonly state: BoxState | 'busy') { super(`${reason} Nothing was typed.`); }
+}
+// Why a screen does not take a message now, or null when its input box is empty.
+export function notReadyReason(screen: string, agent: PromptAgent, name: string, num: number): NotTyped | null {
+  const state = boxState(screen, agent);
+  if (state === 'empty') return null;
+  return new NotTyped(
+    state === 'question' ? `${name} in #${num} asks a question or shows a dialog in its terminal.`
+      : state === 'draft' ? `The input box of ${name} in #${num} holds a draft that a person typed. Taskboard does not type into a draft.`
+      : `${name} in #${num} does not show its input box.`, state);
+}
+
 export async function deliverText(t: Target, raw: string, io: DeliverIO = realIO): Promise<Delivered> {
   const error = textError(raw);
   if (error) throw new Error(error);
@@ -59,14 +75,13 @@ export async function deliverText(t: Target, raw: string, io: DeliverIO = realIO
   const agent = t.agent as PromptAgent;
   if (!(agent in MARK)) throw new Error('Taskboard does not know the input box of this agent.');
   const name = agentName(t.agent), target = '=' + t.session + ':';
-  const dialog = (screen: string) => blockingQuestion.test(bottom(screen));
-  const asks = `${name} in #${t.num} asks a question or shows a dialog in its terminal. Answer it there, then send again.`;
+  const asks = (screen: string) => boxState(screen, agent) === 'question';
+  const question = `${name} in #${t.num} asks a question or shows a dialog in its terminal. Answer it there, then send again.`;
   // a pane in copy mode would take the keys as copy-mode commands
   if ((await io.tmux('display-message', '-p', '-t', target, '#{pane_mode}')).trim() === 'copy-mode') await io.tmux('send-keys', '-X', '-t', target, 'cancel');
   let screen = await io.capture(t.session);
-  if (dialog(screen)) throw new Error(`${asks} Nothing was typed.`);
-  if (!readyForInput(screen, agent))
-    throw new Error(`${name} in #${t.num} does not show an empty input box. It may ask a question, or its box may hold a draft. Nothing was typed.`);
+  const notReady = notReadyReason(screen, agent, name, t.num);
+  if (notReady) throw notReady;
   const pasted = text.length > TYPE_MAX;
   if (pasted) await io.paste(t.session, text);
   else await io.tmux('send-keys', '-t', target, '-l', text);
@@ -75,14 +90,14 @@ export async function deliverText(t: Target, raw: string, io: DeliverIO = realIO
   for (let i = 0; i < 60 && !arrived; i++) {
     await io.wait(i ? 250 : 300);
     screen = await io.capture(t.session);
-    if (dialog(screen)) throw new Error(`${asks} ${partly}`);
+    if (asks(screen)) throw new Error(`${question} ${partly}`);
     arrived = holdsText(screen, text, agent, pasted);
   }
   if (!arrived) throw new Error(`The text did not arrive whole in the input box of ${name} in #${t.num} within 15 s. ${partly}`);
   // Codex takes an Enter that comes right after fast input as a part of that input
   await io.wait(400);
   screen = await io.capture(t.session);
-  if (dialog(screen) || !holdsText(screen, text, agent, pasted)) throw new Error(`The input box of ${name} in #${t.num} changed before Enter. ${partly}`);
+  if (asks(screen) || !holdsText(screen, text, agent, pasted)) throw new Error(`The input box of ${name} in #${t.num} changed before Enter. ${partly}`);
   await io.tmux('send-keys', '-t', target, 'Enter');
   for (let i = 0; i < 12; i++) {
     await io.wait(250);

@@ -333,7 +333,9 @@ switch (cmd) {
     if (!text.trim()) { console.error('tb send: the text is empty. Nothing was sent, and Enter was not pressed.'); process.exit(1); }
     const t = await task(rest[0]); const r = await call('POST', `/api/tasks/${t.id}/send`, { text });
     if (r?.approved) break;
-    console.log(`Sent to #${t.num}.${r?.warning ? ` ${r.warning}` : ''}`);
+    // delivered: typed and Enter pressed. queued: nothing typed yet, the reason says why (failed exits in call)
+    if (r?.state === 'queued') console.log(`Queued for #${t.num}, not typed yet: ${r.reason} Taskboard types it when the input box is empty, for up to 60 minutes. The dashboard shows it on the task.`);
+    else console.log(`Delivered to #${t.num}: typed into its input box, and Enter was pressed.${r?.warning ? ` ${r.warning}` : ''}`);
     break;
   }
   case 'new': {
@@ -379,7 +381,10 @@ switch (cmd) {
     if (rest[0] !== 'send') { console.log(HELP); break; }
     const [src, dst] = rest.slice(1); const [fromRef, name] = src.split(':');
     const from = await task(fromRef), to = await task(dst);
-    const r = await call('POST', '/api/docs/send', { from: from.id, name, to: to.id }); console.log(`Copied to ${r.path}`);
+    const r = await call('POST', '/api/docs/send', { from: from.id, name, to: to.id });
+    if (r.delivery === 'delivered') console.log(`Copied to ${r.path}. Delivered: #${to.num} was told about the file.`);
+    else if (r.delivery === 'queued') console.log(`Copied to ${r.path}. Queued: #${to.num} was not told yet. ${r.reason} Taskboard tells it when its input box is empty${to.agent === 'claude' ? ', at its next tool call or at its next prompt' : ''}.`);
+    else { console.error(`tb: copied to ${r.path}, but #${to.num} was not told. Failed: ${r.reason}`); process.exit(1); }
     break;
   }
   case 'inbox': {
