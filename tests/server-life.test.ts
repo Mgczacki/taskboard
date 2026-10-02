@@ -14,6 +14,8 @@ const err = (code: string, message = `write ${code}`) => Object.assign(new Error
 test('write and spawn errors on one socket, pipe or terminal are recoverable', () => {
   for (const code of ['EPIPE', 'EIO', 'EBADF', 'ECONNRESET']) assert.equal(classify(err(code)), 'recoverable', code);
   assert.equal(classify(new Error('posix_spawnp failed.')), 'recoverable');
+  assert.equal(classify(new Error('open slave pty failed: Too many open files')), 'recoverable');
+  assert.equal(classify(new Error('posix_spawn failed: Resource temporarily unavailable')), 'recoverable');
   assert.equal(classify(new RangeError('Invalid string length')), 'fatal');
   assert.equal(classify(new TypeError('x is undefined')), 'unknown');
 });

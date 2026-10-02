@@ -85,8 +85,9 @@ test('terminals: a missing session, a too large message, and 30 terminals that o
   console.log(`descriptors of the test server: before ${JSON.stringify(before)}, after 90 attaches ${JSON.stringify(afterSoak)}`);
   assert.equal(afterSoak.ptmx, before.ptmx, 'no pseudo-terminal stays open');
   assert.equal(afterSoak.revoked, before.revoked, 'no slave side stays open');
-  // node-pty 1.1.0 leaves one kqueue per spawn (server/pty-spawn.ts); nothing else may grow
-  assert.ok(afterSoak.all - before.all <= 90 + 5, `${afterSoak.all - before.all} more descriptors after 90 attaches`);
+  // node-pty 1.2.0 closes every descriptor of a spawn (1.1.0 left one kqueue for each; see server/pty-spawn.ts)
+  assert.equal(afterSoak.kqueue, before.kqueue, 'no kqueue stays open');
+  assert.ok(afterSoak.all - before.all <= 5, `${afterSoak.all - before.all} more descriptors after 90 attaches`);
   const text = readFileSync(s.log, 'utf8');
   assert.doesNotMatch(text, /Unhandled pty write error/);
   assert.doesNotMatch(text, /crashed:/);
@@ -110,7 +111,7 @@ test('no free descriptor: the terminal gets code 1013 and the server keeps runni
   }
   assert.ok(failure, 'no terminal hit the descriptor limit');
   assert.equal(failure.reason, 'could not open a terminal');
-  assert.match(readFileSync(s.log, 'utf8'), /could not attach a terminal to util-limit: posix_spawnp failed/);
+  assert.match(readFileSync(s.log, 'utf8'), /could not attach a terminal to util-limit: (posix_spawnp failed|open slave pty failed|posix_openpt failed)/);
   for (const ws of list) ws.close();
   await new Promise(r => setTimeout(r, 1500));
   assert.ok(alive(s.pid), 'the server still runs');

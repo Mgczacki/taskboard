@@ -35,8 +35,9 @@ export function classify(e: unknown): 'recoverable' | 'fatal' | 'unknown' {
   const message = String(err?.message ?? e ?? '');
   if (OUT_OF_MEMORY.test(message) || err?.code === 'ERR_OUT_OF_MEMORY') return 'fatal';
   if (typeof err?.code === 'string' && RECOVERABLE.has(err.code)) return 'recoverable';
-  // node-pty throws this without a code when posix_openpt or posix_spawn fails (see server/pty.ts)
-  if (/posix_spawnp failed|openpty\(3\) failed|forkpty\(3\) failed/.test(message)) return 'recoverable';
+  // node-pty throws these without a code when it cannot open a pseudo-terminal or start the child (see server/pty.ts):
+  // 1.1.0 says "posix_spawnp failed.", 1.2.0 names the step, for example "open slave pty failed: Too many open files"
+  if (/posix_spawnp? failed|(posix_openpt|grantpt|unlockpt|open slave pty|tcsetattr|posix_spawnattr_\w+) failed|(openpty|forkpty)\(3\) failed/.test(message)) return 'recoverable';
   return 'unknown';
 }
 

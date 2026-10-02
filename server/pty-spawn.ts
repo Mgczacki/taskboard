@@ -10,6 +10,7 @@
 // Not fixed here: node-pty 1.1.0 also leaves one kqueue open for each spawn (src/unix/pty.cc, the thread that waits
 // for the child creates it and never closes it). JavaScript cannot tell that kqueue from others. node-pty 1.2.0 (beta)
 // closes the kqueue, the slave side and low_fds[0].
+// package.json pins node-pty 1.2.0-beta.15 since 2026-10-02, so this code runs only if node-pty goes back to 1.1.0.
 import { closeSync, fstatSync, readdirSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import * as pty from 'node-pty';

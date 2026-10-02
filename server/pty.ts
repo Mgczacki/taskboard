@@ -138,9 +138,9 @@ export function attach(ws: WebSocket, session: string, cols: number, rows: numbe
       env: { ...process.env, TERM: 'xterm-256color', COLORTERM: 'truecolor' } as Record<string, string>,
     });
   } catch (e) {
-    // node-pty throws "posix_spawnp failed." when it cannot open a pseudo-terminal (all kern.tty.ptmx_max are in use,
-    // or no free file descriptor) or cannot start its spawn-helper (no process slot or memory). This terminal tries
-    // again (code 1013, terminalSocket.ts); the server keeps running.
+    // node-pty throws when it cannot open a pseudo-terminal (all kern.tty.ptmx_max are in use, or no free file
+    // descriptor) or cannot start its spawn-helper (no process slot or memory). 1.1.0 said "posix_spawnp failed." for
+    // each of these; 1.2.0 names the step. This terminal tries again (code 1013, terminalSocket.ts); the server keeps running.
     console.error(`${new Date().toISOString()} could not attach a terminal to ${session}: ${(e as Error).message}`);
     control({ ws } as Viewer, { t: 'error', message: `The server could not open a terminal: ${(e as Error).message}`, retry: true });
     ws.close(1013, 'could not open a terminal');
