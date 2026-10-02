@@ -28,7 +28,7 @@ export interface PendingItem {
   text?: { mode: 'answer' | 'deny' | 'change'; placeholder: string; send: string };
   questions?: PendingQuestion[];        // AskUserQuestion with several questions or a multiple choice: a form
   details?: { command?: string; cwd?: string; reason?: string; title?: string; plan?: string };
-  screen?: { hash: string; excerpt: string };
+  screen?: { hash: string; excerpt: string; partial?: boolean };
   answerable: boolean;
   createdAt: string;
   state: 'pending' | 'sending' | 'answered' | 'gone' | 'failed';
@@ -174,7 +174,7 @@ function screenItem(t: Task, p: ScreenPrompt) {
   });
   const kind: PendingKind = p.kind === 'command' ? 'command' : p.kind === 'plan' ? 'plan' : p.kind === 'signin' ? 'signin' : p.kind === 'unknown' ? 'unknown' : 'dialog';
   add(t, { kind, source: 'screen', name: p.name, question: p.question, options: p.answerable ? options : [], answerable: p.answerable,
-    details: Object.keys(p.details).length ? p.details : undefined, screen: { hash: p.hash, excerpt: p.excerpt } }, actions);
+    details: Object.keys(p.details).length ? p.details : undefined, screen: { hash: p.hash, excerpt: p.excerpt, ...(p.partial ? { partial: true } : {}) } }, actions);
 }
 
 const TURN_END = /Stop hook|agent-turn-complete|Antigravity Stop hook/;

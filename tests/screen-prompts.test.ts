@@ -162,3 +162,13 @@ test('riskOf', () => {
   assert.equal(riskOf('Yes, and don’t ask again for: touch *'), 'wide-access');
   assert.equal(riskOf('Skip'), undefined);
 });
+
+test('a list that scrolls in a short terminal: ↓ is not the highlight, and the prompt is partial', () => {
+  const screen = [' ' + '╌'.repeat(80), ' Do you want to make this edit to log.md?', ' ❯ 1. Yes', ' ↓ 2. Yes, and switch to accept edits (auto-approve file edits and common file commands) for this session (shift+tab)'].join('\n');
+  const p = parsePrompt('claude', screen + '\n Esc to cancel · Tab to amend')!;
+  assert.equal(p.name, 'claude-permission');
+  assert.equal(p.selected, 0);
+  assert.equal(p.options.length, 2);
+  assert.equal(p.options[1].risk, 'wide-access');
+  assert.equal(p.partial, true);
+});

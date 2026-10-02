@@ -18,10 +18,12 @@ export interface ScreenPrompt {
   details: { command?: string; reason?: string; title?: string; plan?: string; cwd?: string };
   hash: string;              // name, question, options and command; the highlight is not part of it
   excerpt: string;           // the rows that the card shows
+  partial?: boolean;         // the list scrolls: some options are not on the screen
 }
 
 const MARKS = '❯›>';
-const NUMBERED = new RegExp(`^(\\s*)([${MARKS}])?\\s*(\\d{1,2})\\.\\s+(.*\\S)\\s*$`);
+// ↑ and ↓ before a row: a list that scrolls because the terminal is short (Claude Code); they are not the highlight
+const NUMBERED = new RegExp(`^(\\s*)([${MARKS}]|[↑↓])?\\s*(\\d{1,2})\\.\\s+(.*\\S)\\s*$`);
 const SOLID = /^\s*[─━]{20,}\s*$/;
 const DASHED = /^\s*[╌┄]{20,}\s*$/;
 
@@ -35,7 +37,7 @@ export function riskOf(label: string, question = ''): Risk | undefined {
 
 const hashOf = (...parts: string[]) => createHash('sha256').update(parts.join('\u0000')).digest('hex').slice(0, 16);
 
-interface Block { start: number; end: number; options: ScreenOption[]; selected: number }
+interface Block { start: number; end: number; options: ScreenOption[]; selected: number; partial?: boolean }
 // The last numbered list on the screen ("❯ 1. Yes" … "3. No"). Rows between numbered rows belong to the row above:
 // a long label wraps onto the next row. A wrapped row that filled the screen width joins without a space.
 function numberedBlock(rows: string[]): Block | null {
@@ -51,10 +53,10 @@ function numberedBlock(rows: string[]): Block | null {
     if (m || !rows[i].trim() || SOLID.test(rows[i])) break;
   }
   if (want >= 1) return null; // the list does not start at 1
-  const options: ScreenOption[] = []; let selected = -1; let end = last;
+  const options: ScreenOption[] = []; let selected = -1; let end = last; let partial = false;
   for (let i = first; i <= last; i++) {
     const m = rows[i].match(NUMBERED);
-    if (m) { if (m[2]) selected = options.length; options.push({ label: m[4] }); nums.push(i); continue; }
+    if (m) { if (m[2] && !/[↑↓]/.test(m[2])) selected = options.length; if (m[2] && /[↑↓]/.test(m[2])) partial = true; options.push({ label: m[4] }); nums.push(i); continue; }
     const prev = options[options.length - 1];
     const sep = rows[i - 1].length >= width - 1 ? '' : ' ';
     prev.label = (prev.label + sep + rows[i].trim()).trim();
@@ -67,7 +69,7 @@ function numberedBlock(rows: string[]): Block | null {
     prev.label = (prev.label + (rows[i - 1].length >= width - 1 ? '' : ' ') + rows[i].trim()).trim(); end = i;
   }
   options.forEach(o => { o.label = o.label.replace(/\s+/g, ' ').trim(); });
-  return { start: first, end, options, selected };
+  return { start: first, end, options, selected, partial };
 }
 
 // A list without numbers ("❯ No, exit" / "  Yes, I trust this folder") below its question row. The options are the
@@ -109,7 +111,7 @@ function make(name: string, kind: ScreenPrompt['kind'], question: string, block:
     const key = keys === 'digits' ? String(i + 1) : keys === 'shortcuts' && shortcut ? (shortcut.toLowerCase() === 'esc' ? 'Escape' : shortcut) : undefined;
     return { label: o.label, ...(key ? { key } : {}), ...(riskOf(o.label, question) ? { risk: riskOf(o.label, question) } : {}) };
   });
-  return { name, kind, question, options, selected: block?.selected ?? -1, answerable: answerable && options.length > 0, details, excerpt,
+  return { name, kind, question, options, selected: block?.selected ?? -1, answerable: answerable && options.length > 0, details, excerpt, ...(block?.partial ? { partial: true } : {}),
     hash: hashOf(name, question, details.command || '', ...options.map(o => o.label)) };
 }
 

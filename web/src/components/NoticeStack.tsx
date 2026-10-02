@@ -1,6 +1,7 @@
 // The notification stack at the top right of the dashboard: approval cards and question cards, one at a time, oldest
 // first (first in, first out). A new card joins the back, so the front card never changes under the pointer. When the
 // front card changes, its buttons stay off for 0.6 s, so a second click meant for the old card cannot answer the new one.
+// App.tsx leaves out the question cards of the task whose panel is open: the panel shows them.
 import { useEffect, useRef, useState } from 'react';
 import type { Approval, PendingItem, Task } from '../api';
 import { ApprovalCard } from './ApprovalCard';

@@ -84,6 +84,7 @@ export function PendingCard({ item, compact, openTask, toast }: { item: PendingI
     {item.repeats && <div className="pc-note">Asked again ({item.repeats.count === 2 ? '2nd' : item.repeats.count === 3 ? '3rd' : `${item.repeats.count}th`} time in this task). Your last answer: {item.repeats.lastAnswer}. Taskboard does not answer it again by itself.</div>}
     {selectedRisky && !compact && <div className="pc-note">The selected row on the screen is "{selectedRisky.label}". Enter in the terminal would choose it. Taskboard never presses Enter for a row that you did not choose.</div>}
     {item.screen && (!item.answerable || (!compact && item.source === 'screen')) && <details className="pc-screen" open={!item.answerable}><summary>Screen rows that Taskboard read</summary><pre>{item.screen.excerpt}</pre></details>}
+    {item.screen?.partial && <div className="pc-note info">The terminal is too short to show the whole list. The card shows the rows on the screen. Open the terminal for the other rows.</div>}
     {item.kind === 'signin' && <div className="pc-note info">Taskboard does not sign in for you. Open the terminal and sign in there. This card closes when the dialog is gone.</div>}
     {!item.answerable && item.kind !== 'signin' && <div className="pc-note info">Taskboard does not answer this prompt. Open the terminal to answer it.</div>}
     {item.answerable && item.options.length > 0 && <div className="pc-opts">{item.options.map(o =>
