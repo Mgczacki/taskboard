@@ -34,7 +34,7 @@ async function swap(): Promise<Swap | null> {
   try {
     if (platform() === 'darwin') {
       // "total = 13312.00M  used = 11900.25M  free = 1411.75M  (encrypted)"
-      const out = (await run('sysctl', ['-n', 'vm.swapusage'], { timeout: 3000 })).stdout;
+      const out = (await run('/usr/sbin/sysctl', ['-n', 'vm.swapusage'], { timeout: 3000 })).stdout;
       const num = (k: string) => { const m = out.match(new RegExp(`${k} = ([\\d.]+)([KMG])`)); return m ? Number(m[1]) * ({ K: 1 / 1024, M: 1, G: 1024 } as Record<string, number>)[m[2]] : 0; };
       return { usedMb: Math.round(num('used')), totalMb: Math.round(num('total')) };
     }
@@ -47,7 +47,7 @@ async function swap(): Promise<Swap | null> {
 export interface Proc { pid: number; name: string; cpu: number; memMb: number }
 async function processes(): Promise<Proc[]> {
   try {
-    const out = (await run('ps', ['-Ao', 'pid=,pcpu=,rss=,comm='], { timeout: 5000, maxBuffer: 8 << 20 })).stdout;
+    const out = (await run('/bin/ps', ['-Ao', 'pid=,pcpu=,rss=,comm='], { timeout: 5000, maxBuffer: 8 << 20 })).stdout;
     return out.split('\n').map(l => l.trim().match(/^(\d+)\s+([\d.]+)\s+(\d+)\s+(.+)$/)).filter((m): m is RegExpMatchArray => !!m)
       .map(m => ({ pid: Number(m[1]), cpu: Number(m[2]), memMb: Math.round(Number(m[3]) / 1024), name: basename(m[4]) }));
   } catch { return []; }
