@@ -147,6 +147,8 @@ function urlParts(url: string): { scheme: string; host: string; rest: string; se
 // ---------- the view ----------
 const MOD = (e: { altKey: boolean; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) => (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0);
 const BUTTON = ['left', 'middle', 'right'] as const;
+// the CSS cursor keywords that the page can report ('cursor' from the server); other values show the arrow
+const CURSORS = new Set(['default', 'pointer', 'text', 'vertical-text', 'move', 'grab', 'grabbing', 'crosshair', 'help', 'wait', 'progress', 'not-allowed', 'no-drop', 'copy', 'alias', 'cell', 'context-menu', 'zoom-in', 'zoom-out', 'none', 'all-scroll', 'col-resize', 'row-resize', 'n-resize', 'e-resize', 's-resize', 'w-resize', 'ne-resize', 'nw-resize', 'se-resize', 'sw-resize', 'ew-resize', 'ns-resize', 'nesw-resize', 'nwse-resize']);
 
 // onCanvas: the task panel passes it, so the More menu can show the browser in the task's Canvas window
 export function BrowserView({ id, title = '', autostart = false, floating = false, archived = false, isTemplate = false, onCanvas }: { id: string; title?: string; autostart?: boolean; floating?: boolean; archived?: boolean; isTemplate?: boolean; onCanvas?: () => void }) {
@@ -176,6 +178,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
   const [framed, setFramed] = useState(false);
   const [pop, setPop] = useState<'tabs' | 'menu' | null>(null);
   const [promptText, setPromptText] = useState('');
+  const [cursor, setCursor] = useState('default');
   const [signin, setSignin] = useState<SigninMode | null>(null);
   const [told, setTold] = useState('');
   const [sharing, reloadSharing] = useSharing(id, isTemplate || archived, running);
@@ -258,6 +261,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
         // the server sends the tabs every second: an unchanged list keeps the old array, so the view does not draw again
         else if (m.type === 'tabs') { setTabs(prev => JSON.stringify(prev) === JSON.stringify(m.tabs) ? prev : m.tabs); setRunning(true); setAgents(m.agents || 0); setMuted(m.muted ?? null); setErr(''); }
         else if (m.type === 'active') setActive(m.id);
+        else if (m.type === 'cursor') setCursor(CURSORS.has(m.cursor) ? m.cursor : 'default');
         else if (m.type === 'nav') setNav({ loading: !!m.loading, canBack: !!m.canBack, canForward: !!m.canForward });
         else if (m.type === 'copied') {
           const text = typeof m.text === 'string' ? m.text : '';
@@ -552,7 +556,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
         onMouseDown={e => { screen.current?.focus(); mouse('mousePressed', e, e.detail || 1); }}
         onMouseUp={e => { mouse('mouseReleased', e, e.detail || 1); peek(); }}
         onMouseMove={e => mouse('mouseMoved', e)}
-        onContextMenu={e => e.preventDefault()}
+        onContextMenu={e => e.preventDefault()} style={{ cursor }}
         onKeyDown={e => key(e, true)} onKeyUp={e => key(e, false)}
         onPaste={e => { const text = e.clipboardData.getData('text'); if (text) send({ type: 'text', text }); e.preventDefault(); }}
         onCopy={e => copy(e, false)} onCut={e => copy(e, true)}>

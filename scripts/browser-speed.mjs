@@ -19,6 +19,7 @@
 // - hidden: the dashboard page is hidden (Page.setWebLifecycleState frozen is too strong, so the test uses
 //   Emulation.setFocusEmulationEnabled and a visibilitychange event) for 3 s while the bar moves. Frames received.
 // - panel hidden: the same with the view's element at display: none.
+// - cursor: the time from a mouse move to a stripe without text (default), over the box (pointer) and over the large text at the top right (text) to that cursor on the view.
 // - busy and freeze: the dashboard's main thread runs 25 ms of other work every 40 ms (busy) or 150 ms every 200 ms
 //   (freeze). Animation numbers and the click latency.
 // --load on runs one CPU burner for each core and a memory hog of 2 GB (touched every second) during the widths.
@@ -47,9 +48,10 @@ if (!args.includes('--no-build')) execFileSync(join(ROOT, 'node_modules', '.bin'
 
 // ---------- the test page ----------
 const PAGE = `<!doctype html><meta charset="utf-8"><title>speed test</title>
-<style>body{margin:0;font:16px sans-serif} .s{height:40px;line-height:40px;padding-left:40%} #box{position:fixed;left:0;top:0;width:30%;height:25%;background:#c00}
+<style>body{margin:0;font:16px sans-serif} .s{height:40px;line-height:40px;padding-left:40%} #box{position:fixed;left:0;top:0;width:30%;height:25%;background:#c00;cursor:pointer}
+#txt{position:fixed;right:0;top:0;width:30%;height:25%;font:bold 60px/1 sans-serif;background:#fff}
 #bar{position:fixed;left:0;bottom:0;height:30%;background:#06c;width:0}</style>
-<div id="box"></div><div id="bar"></div><div id="list"></div>
+<div id="box"></div><div id="txt">Text Text Text Text</div><div id="bar"></div><div id="list"></div>
 <script>
 const list = document.getElementById('list'), html = [];
 for (let i = 0; i < 4000; i++) html.push('<div class="s" style="background:hsl(' + (i * 47 % 360) + ',70%,' + (40 + i * 13 % 30) + '%)">Line ' + i + ': the quick brown fox jumps over the lazy dog</div>');
@@ -218,6 +220,15 @@ try {
       const [mx, my] = at(0.6, 0.6);
       res.scroll = await latency('wheel', async () => { await mouse('mouseWheel', mx, my, { deltaX: 0, deltaY: 100 }); }, 'content');
 
+      // the cursor of the view over the box (pointer) and over the text of a stripe (text): the time from the move to
+      // the cursor on the view element
+      const cursorAfterMove = async (x, y, want) => {
+        const t0 = performance.now();
+        await mouse('mouseMoved', x, y);
+        for (let i = 0; i < 40; i++) { if (await evaluate(`getComputedStyle(document.querySelector('.bw-screen')).cursor`) === want) return r1(performance.now() - t0); await sleep(25); }
+        return null;
+      };
+      res.cursor = { defaultMs: await cursorAfterMove(...at(0.2, 0.6), 'default'), pointerMs: await cursorAfterMove(...at(0.1, 0.1), 'pointer'), textMs: await cursorAfterMove(...at(0.75, 0.04), 'text') };
       // a stream of frames: numbers for scroll and animation
       const stream = async (seconds, during) => {
         await reset();

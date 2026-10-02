@@ -835,7 +835,7 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     const list = await (await fetch(`http://127.0.0.1:${m.port}/json/list`)).json() as { id: string; type: string; webSocketDebuggerUrl: string }[];
     const t = list.find(x => x.id === target && x.type === 'page'); if (!t) return;
     closePage();
-    waiting = null;
+    waiting = null; cursorBusy = false;
     active = target;
     // tell the view now: a page with an open dialog answers the calls below only after the dialog closes, and the
     // view must show that tab to show its question
@@ -923,7 +923,7 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
   }
   const timer = setInterval(() => { void poll(); }, 1000);
   let chosenTimer: NodeJS.Timeout | undefined;
-  client.on('close', () => { if (closed) return; closed = true; count(viewers, id, -1); clearInterval(timer); clearTimeout(chosenTimer); closePage(); dialogWatch.get(id)?.listeners.delete(dialogChanged); });
+  client.on('close', () => { if (closed) return; closed = true; count(viewers, id, -1); clearInterval(timer); clearTimeout(chosenTimer); clearTimeout(cursorTimer); closePage(); dialogWatch.get(id)?.listeners.delete(dialogChanged); });
   client.on('message', async d => {
     let m: any; try { m = JSON.parse(d.toString()); } catch { return; }
     try {
@@ -936,7 +936,10 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
       else if (m.type === 'stop') { await stop(id); await poll(); }
       else if (m.type === 'select' && typeof m.id === 'string') { chosen = true; clearTimeout(chosenTimer); chosenTimer = setTimeout(() => { chosen = false; }, 60000); await open(m.id); }
       else if (m.type === 'size' && m.w > 100 && m.h > 100) { size = { w: Math.min(3840, Math.round(m.w)), h: Math.min(2160, Math.round(m.h)) }; await viewport(); }
-      else if (m.type === 'mouse') await call('Input.dispatchMouseEvent', { type: m.event, x: m.x, y: m.y, button: m.button || 'none', buttons: m.buttons || 0, clickCount: m.clickCount || 0, modifiers: m.modifiers || 0, ...(m.event === 'mouseWheel' ? { deltaX: m.dx || 0, deltaY: m.dy || 0 } : {}) });
+      else if (m.type === 'mouse') {
+        await call('Input.dispatchMouseEvent', { type: m.event, x: m.x, y: m.y, button: m.button || 'none', buttons: m.buttons || 0, clickCount: m.clickCount || 0, modifiers: m.modifiers || 0, ...(m.event === 'mouseWheel' ? { deltaX: m.dx || 0, deltaY: m.dy || 0 } : {}) });
+        if (m.event === 'mouseMoved' || m.event === 'mouseReleased') cursorAt(m.x, m.y);
+      }
       else if (m.type === 'key') await key(m);
       else if (m.type === 'text' && typeof m.text === 'string') await call('Input.insertText', { text: m.text.slice(0, 100000) });
       else if (m.type === 'copy') {
@@ -963,6 +966,26 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
       }
     } catch (e) { send({ type: 'error', message: (e as Error).message }); }
   });
+  // The mouse cursor of the page. Headless Chrome reports no cursor over DevTools, so the server asks the page for the
+  // cursor at the mouse position (CURSOR) at once and then at most every CURSOR_MS while the mouse moves, one question
+  // at a time, and sends the view a 'cursor' message when it changes.
+  let cursor = '', cursorPos: { x: number; y: number } | null = null, cursorTimer: NodeJS.Timeout | undefined, cursorBusy = false, cursorAsked = 0;
+  function cursorAt(x: number, y: number) {
+    cursorPos = { x, y };
+    if (!cursorTimer && !cursorBusy) cursorTimer = setTimeout(askCursor, Math.max(0, cursorAsked + CURSOR_MS - Date.now()));
+  }
+  async function askCursor() {
+    cursorTimer = undefined; cursorAsked = Date.now();
+    const p = cursorPos; cursorPos = null;
+    if (!p || closed) return;
+    cursorBusy = true;
+    try {
+      const r = await call('Runtime.evaluate', { returnByValue: true, expression: `(${CURSOR})(${Number(p.x) || 0}, ${Number(p.y) || 0})` });
+      const c = r?.result?.value;
+      if (typeof c === 'string' && c !== cursor) { cursor = c; send({ type: 'cursor', cursor: c }); }
+    } finally { cursorBusy = false; }
+    if (cursorPos) cursorTimer = setTimeout(askCursor, Math.max(0, cursorAsked + CURSOR_MS - Date.now()));
+  }
   async function key(m: KeyMessage) {
     const e = keyEvent(m);
     if (e) await call('Input.dispatchKeyEvent', e);
@@ -975,6 +998,17 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
 }
 
 // The text that a copy takes: the selection in a focused text field, else the selection of the page.
+// The cursor that Chrome would show at a point of the page: the CSS cursor of the element there, and for "auto" the
+// text cursor over text and in a text field, else the arrow. Only the keyword is used (a cursor image is not sent).
+const CURSOR_MS = 100;
+const CURSOR = `(x, y) => { const e = document.elementFromPoint(x, y); if (!e) return 'default';
+  const css = getComputedStyle(e).cursor.split(',').pop().trim();
+  if (css !== 'auto') return css;
+  if (e.isContentEditable || e.tagName === 'TEXTAREA' || (e.tagName === 'INPUT' && !/^(button|submit|reset|checkbox|radio|range|color|file|image)$/.test(e.type))) return 'text';
+  const r = document.caretRangeFromPoint?.(x, y), n = r?.startContainer;
+  if (n?.nodeType === 3 && n.textContent.trim()) { const t = document.createRange(); t.selectNodeContents(n);
+    for (const b of t.getClientRects()) if (x >= b.left && x <= b.right && y >= b.top && y <= b.bottom) return 'text'; }
+  return 'default'; }`;
 const COPY = `(() => { const a = document.activeElement;
   if (a && (a.tagName === 'TEXTAREA' || (a.tagName === 'INPUT' && a.type !== 'password')) && typeof a.selectionStart === 'number') return a.value.slice(a.selectionStart, a.selectionEnd);
   return String(getSelection() || ''); })()`;
