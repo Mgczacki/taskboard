@@ -196,7 +196,7 @@ export function App() {
   const queue = useMemo(() => tasks.filter(t => ATTN.includes(t.status) && !quiet.has(t.id)).sort((a, b) => b.waitMin - a.waitMin), [tasks, quiet]);
   const needs = tasks.filter(t => t.status === 'needs-you' && !quiet.has(t.id)), unread = tasks.filter(t => t.status === 'unread');
   // everything on the Waiting page: question cards, approval cards, and tasks that wait with no card
-  const waitingCount = useMemo(() => waitingRows(tasks, approvals, pending, quiet).length, [tasks, approvals, pending, quiet]);
+  const waitingCount = useMemo(() => waitingRows(tasks, approvals, pending, quiet, allTasks).length, [tasks, allTasks, approvals, pending, quiet]);
   const canvasIds = useMemo(() => {
     if (page !== 'canvas') return [];
     if (view.startsWith('g:')) return groups.find(g => g.id === view.slice(2))?.tasks || [];

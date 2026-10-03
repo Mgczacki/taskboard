@@ -902,6 +902,7 @@ table.keyset .keycell { text-align: right; white-space: normal; }
 .pc-note.bad { border-color: var(--st-stopped); background: color-mix(in srgb, var(--st-stopped) 10%, transparent); }
 .pc-note.ok { border-color: var(--st-unread); background: color-mix(in srgb, var(--st-unread) 10%, transparent); }
 .pc-note.info { border-color: var(--accent); background: var(--accent-bg); }
+.pc-note.warn { border-color: var(--st-needs); background: color-mix(in srgb, var(--st-needs) 10%, transparent); }
 .pc-f { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; border-top: 1px solid var(--line); padding-top: 6px; }
 .pcard.compact { gap: 6px; padding: 8px 10px; }
 .pcard.compact .pc-opt { padding: 4px 8px; grid-template-columns: minmax(0, 1fr); gap: 2px; }

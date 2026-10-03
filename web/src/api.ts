@@ -23,7 +23,12 @@ export interface Task {
   transfer?: { id: string; machine: string; task: string; direction: 'source' | 'target'; state: 'staged' | 'starting' | 'started' | 'failed'; worktreeCreated?: boolean; peerIdentity?: string };
 }
 
-export interface QueuedMessage { id: string; kind: 'message' | 'review' | 'permit' | 'inbox'; from: string; text: string; state: 'queued' | 'failed'; reason: string; queued: string; expires?: string }
+export interface QueuedMessage {
+  id: string; kind: 'message' | 'review' | 'permit' | 'inbox'; from: string; text: string; state: 'queued' | 'failed'; reason: string; queued: string;
+  // messages only: screen checks of the typing loop and what the last one saw, typing tries, older than 5 minutes,
+  // the user chose Deliver by hook, and the hook events of this agent that deliver it (none for Codex)
+  checks?: number; seen?: string; checkedAt?: string; tries?: number; late?: boolean; via?: 'hook'; hook?: string;
+}
 export type NoticeResult = { delivery: 'delivered' | 'queued' | 'failed'; reason?: string; resumed?: boolean };
 
 export interface ImportCandidate {
@@ -311,7 +316,7 @@ export const api = {
   folders: () => call<{ used: { path: string; uses: number; last: string; pinned?: boolean }[]; found: string[] }>('GET', '/api/folders'),
   pin: (path: string, pinned: boolean) => call('POST', '/api/folders/pin', { path, pinned }),
   sendDoc: (from: string, name: string, to: string) => call<{ path: string } & NoticeResult>('POST', '/api/docs/send', { from, name, to }),
-  queueAction: (id: string, qid: string, action: 'retry' | 'remove') => call('POST', `/api/tasks/${id}/queue/${encodeURIComponent(qid)}/${action}`),
+  queueAction: (id: string, qid: string, action: 'retry' | 'remove' | 'hook' | 'type') => call<{ state?: 'delivered' | 'queued' | 'failed'; reason?: string }>('POST', `/api/tasks/${id}/queue/${encodeURIComponent(qid)}/${action}`),
   removeInbox: (id: string, name: string) => call('POST', `/api/tasks/${id}/inbox/remove`, { name }),
   tellInbox: (id: string) => call<{ told: boolean } & Partial<NoticeResult>>('POST', `/api/tasks/${id}/inbox/tell`, {}),
   decide: (id: string, approve: boolean) => call<Approval>('POST', `/api/approvals/${id}/${approve ? 'approve' : 'deny'}`, {}),

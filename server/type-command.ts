@@ -13,7 +13,9 @@ import { agentName, blockingQuestion } from './agents.ts';
 
 export const MAX_LENGTH = 1000;
 const HIDDEN = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/;
-const RULE = /^─{10,}\s*$/;
+// A rule row. Claude Code draws the session name (claude --name, which the controller uses) in the upper rule, at the
+// right end: "──────── Taskboard controller · Marios-MacBook-Pro ─" (observed in Claude Code 2.1.288 on 2026-10-03).
+const RULE = /^─{10,}(?: [^─\n]*[^─\s] ─+)?\s*$/;
 
 export function commandError(command: unknown): string | null {
   if (typeof command !== 'string' || !command.trim()) return 'The command is empty.';

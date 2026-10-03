@@ -1219,17 +1219,19 @@ app.post('/api/tasks/:id/send', async (req, res) => {
   const sendIt = async () => {
     const r = await messageQueue.send(store.get(t.id)!, text, { from, kind: 'message' });
     if (r.state === 'failed') throw new Error(`Not delivered to #${t.num}: ${r.reason}${r.id ? ' The message is kept on the task in the dashboard.' : ''}`);
-    return r;
+    return r.state === 'queued' ? { ...r, next: queuedNext(t) } : r;
   };
   if (t.role === 'controller') { try { res.json(await sendIt()); } catch (e) { fail(res, e); } return; }
   await guarded(req, res, `type into #${t.num} ${t.title}`, text, 'send', sendIt, (d: messageQueue.SendResult) => sendText(t, d));
 });
 // Queued and failed messages on a task (message-queue.ts). Only the dashboard types a failed message again or removes one.
-app.post('/api/tasks/:id/queue/:qid/:action', (req, res) => {
+app.post('/api/tasks/:id/queue/:qid/:action', async (req, res) => {
   if (!req.get('origin') || !originOk(req.get('origin')!) || req.get('x-taskboard-token') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Only the dashboard changes the message queue of a task.' });
   const t = store.get(req.params.id); if (!t) return res.status(404).end();
   if (req.params.action === 'retry') { const q = messageQueue.retry(t.id, req.params.qid); return q ? res.json(q) : res.status(404).end(); }
   if (req.params.action === 'remove') return messageQueue.remove(t.id, req.params.qid) ? res.json({}) : res.status(404).end();
+  if (req.params.action === 'hook') { const q = messageQueue.viaHook(t.id, req.params.qid); return q ? res.json(q) : res.status(404).json({ error: 'This message is gone, or the agent has no hook that can deliver it.' }); }
+  if (req.params.action === 'type') { try { return res.json(await messageQueue.typeFirst(t.id, req.params.qid)); } catch (e) { return fail(res, e); } }
   res.status(404).end();
 });
 // Hold to run: the dashboard types a "! <command>" that the user held the mouse button on (server/type-command.ts).
@@ -1342,9 +1344,14 @@ function noticeResult(d: inboxDelivery.Delivery): { delivery: 'delivered' | 'que
   if (!store.get(d.task)) return { delivery: 'failed', reason: d.problem || 'The task no longer exists.' };
   return { delivery: 'queued', reason: d.problem || 'The notice waits to be typed.' };
 }
+// How a queued message still reaches the agent (message-queue.ts).
+function queuedNext(t: store.Task) {
+  const hook = messageQueue.hookEvents(t);
+  return `${hook ? `A hook gives it to the agent when ${hook}. ` : ''}Taskboard types it when the input box is empty. It stays queued until it is delivered or the user removes it. You get a notice in your inbox if it still waits after ${messageQueue.WARN_MS / 60000} minutes. Do not send it again.`;
+}
 // The text for an approval card and for tb, for each result of messageQueue.send.
 function sendText(t: store.Task, d: messageQueue.SendResult) {
-  if (d.state === 'queued') return `Queued for #${t.num}, not typed yet: ${d.reason} Taskboard types it when the input box is empty, for up to ${messageQueue.QUEUE_MS / 60000} minutes.`;
+  if (d.state === 'queued') return `Queued for #${t.num}, not typed yet: ${d.reason} ${queuedNext(t)}`;
   return `Typed into #${t.num}${d.resumed ? ' after resuming it' : ''}, and Enter was pressed.${d.warning ? ` ${d.warning}` : ''}`;
 }
 app.post('/api/tasks/:id/inbox/remove', (req, res) => { docs.removeFromInbox(req.params.id, req.body.name); store.touch(req.params.id); res.json({}); });

@@ -13,6 +13,7 @@ import * as machine from './machine.ts';
 import * as external from './external.ts';
 import * as store from './store.ts';
 import type { Task } from './store.ts';
+import * as messageQueue from './message-queue.ts';
 
 const turnStart = new Map<string, number>();   // task id -> when the current turn began
 const blockedOnce = new Set<string>();          // Stop hook already asked for a log entry this turn
@@ -101,7 +102,9 @@ export function claudeEvent(taskId: string, input: any): { output?: unknown } {
         const usage = t.role === 'controller'
           ? `${accounts.usageSummary(id => store.all().filter(x => (x.account || accounts.defaultFor(x.agent).id) === id && ['working', 'needs-you', 'unread', 'idle', 'review', 'stopped'].includes(x.status)).length)}\nMachine routing rules: ${machine.get().routingRules || '(none)'}\n${accounts.all().filter(a => a.routingRules).map(a => `${a.id} rule: ${a.routingRules}`).join('\n')}`
           : '';
-        const context = [notice, usage].filter(Boolean).join('\n\n');
+        // messages that waited in the queue (message-queue.ts); they are marked delivered when they are in this text
+        const messages = messageQueue.takeForHook(t.id, 'UserPromptSubmit', messageQueue.HOOK_ROOM - (notice?.length || 0) - usage.length);
+        const context = [notice, messages, usage].filter(Boolean).join('\n\n');
         if (context) return { output: { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: context } } };
       }
       break;
@@ -118,8 +121,11 @@ export function claudeEvent(taskId: string, input: any): { output?: unknown } {
       if (t.status === 'needs-you') store.update(t.id, { status: 'working', ask: '', statusSource: `Approved; tool ran at ${clock()}.` });
       // New inbox files reach a working agent at its next tool call, not only at its next prompt. Claude Code 2.1.287
       // gives the model the additionalContext of a PostToolUse hook with the tool result (observed in a test session).
+      // Queued messages (message-queue.ts) reach a busy agent the same way, with the text of each message.
       const notice = docs.takeInboxNotice(t.id);
-      if (notice) return { output: { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: notice } } };
+      const messages = messageQueue.takeForHook(t.id, 'PostToolUse', messageQueue.HOOK_ROOM - (notice?.length || 0));
+      const context = [notice, messages].filter(Boolean).join('\n\n');
+      if (context) return { output: { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: context } } };
       break;
     }
     case 'Stop': {
@@ -127,10 +133,14 @@ export function claudeEvent(taskId: string, input: any): { output?: unknown } {
       const started = turnStart.get(t.id) || 0;
       let logged = true;
       try { logged = statSync(store.logFile(t.id)).mtimeMs >= started; } catch { logged = false; }
-      if (!logged && started && t.role !== 'controller' && !input.stop_hook_active && !blockedOnce.has(t.id)) {
-        blockedOnce.add(t.id);
-        answerBeforeLog.set(t.id, input.last_assistant_message || '');
-        return { output: { decision: 'block', reason: `Append your Did / Waiting / Next entry to ${store.logFile(t.id)} as described in your instructions, then stop. Do not mention the log in your reply.` } };
+      const askLog = !logged && started && t.role !== 'controller' && !input.stop_hook_active && !blockedOnce.has(t.id);
+      // Queued messages (message-queue.ts) keep the turn going: "block" gives the reason to the model, and Claude Code
+      // continues. Each message is given once, so this ends when the queue is empty.
+      const messages = messageQueue.takeForHook(t.id, 'Stop');
+      if (askLog || messages) {
+        if (askLog) { blockedOnce.add(t.id); answerBeforeLog.set(t.id, input.last_assistant_message || ''); }
+        const log = askLog ? `Append your Did / Waiting / Next entry to ${store.logFile(t.id)} as described in your instructions, then stop. Do not mention the log in your reply.` : '';
+        return { output: { decision: 'block', reason: [messages ? `${messages}\n\nRead the messages and act on them as needed.` : '', log].filter(Boolean).join('\n\n') } };
       }
       // after a log request, the agent's last message is about the log; show its real answer instead
       accounts.clearLimited(t.account);
@@ -244,7 +254,9 @@ export function antigravityEvent(taskId: string, ev: string, input: any): { outp
       }
       // agy has no event that adds context to a prompt: files that arrived in the inbox are passed on here instead
       const notice = t.role === 'controller' ? null : docs.takeInboxNotice(t.id);
-      if (notice) return { output: { decision: 'continue', reason: notice } };
+      // and so are queued messages (message-queue.ts hookEvents)
+      const messages = t.role === 'controller' ? null : messageQueue.takeForHook(t.id, 'Stop', messageQueue.HOOK_ROOM - (notice?.length || 0));
+      if (notice || messages) return { output: { decision: 'continue', reason: [notice, messages].filter(Boolean).join('\n\n') } };
       accounts.clearLimited(t.account);
       const msg = (t.transcript ? external.readState('antigravity', t.transcript)?.text : undefined) || '';
       store.update(t.id, { ...finishedStatus(t, msg), now: firstPara(msg) || t.now, statusSource: `Antigravity Stop hook at ${clock()}.` });
