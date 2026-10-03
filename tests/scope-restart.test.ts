@@ -81,7 +81,7 @@ test('an approved worktree restarts the session once the agent waits, for every 
   const base = `http://127.0.0.1:${port}`;
   const env = { ...clean, PATH: `${bin}:${process.env.PATH}`, TASKBOARD_PORT: String(port), TASKBOARD_DIR: tbdir, TASKBOARD_VAULT: vault, TASKBOARD_TMUX_SOCKET: socket,
     TASKBOARD_MACHINE_NAME: 'scope-restart-test', TASKBOARD_RESTART_WAIT_MS: '20000' };
-  const child = spawn(join(process.cwd(), 'node_modules/.bin/tsx'), ['server/index.ts'], { cwd: process.cwd(), env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { cwd: process.cwd(), env, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = ''; child.stdout.on('data', b => { output += b.toString(); }); child.stderr.on('data', b => { output += b.toString(); });
   try {
     for (let i = 0; i < 150; i++) {

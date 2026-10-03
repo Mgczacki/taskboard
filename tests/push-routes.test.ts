@@ -22,7 +22,7 @@ writeFileSync(join(vault, 'tasks', 'push-task.md'), `---\nid: push-task\nnum: 1\
 test('a sandbox server shows and decides a push to a local bare remote', async () => {
   const port = await new Promise<number>(resolve => { const s = createServer(); s.listen(0, '127.0.0.1', () => { const address = s.address(); const port = typeof address === 'object' && address ? address.port : 0; s.close(() => resolve(port)); }); });
   const base = `http://127.0.0.1:${port}`;
-  const child = spawn(join(process.cwd(), 'node_modules/.bin/tsx'), ['server/index.ts'], { cwd: process.cwd(),
+  const child = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { cwd: process.cwd(),
     env: { ...process.env, TASKBOARD_PORT: String(port), TASKBOARD_DIR: tbdir, TASKBOARD_VAULT: vault,
       TASKBOARD_TMUX_SOCKET: `tb-push-route-${port}`, TASKBOARD_MACHINE_NAME: 'push-test' }, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = ''; child.stdout.on('data', b => { output += b.toString(); }); child.stderr.on('data', b => { output += b.toString(); });
@@ -83,7 +83,7 @@ test('a sandbox server shows and decides a push to a local bare remote', async (
     assert.equal(expiring.status, 202);
     child.kill('SIGTERM');
     await new Promise(resolve => child.once('exit', resolve));
-    restarted = spawn(join(process.cwd(), 'node_modules/.bin/tsx'), ['server/index.ts'], { cwd: process.cwd(),
+    restarted = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { cwd: process.cwd(),
       env: { ...process.env, TASKBOARD_PORT: String(port), TASKBOARD_DIR: tbdir, TASKBOARD_VAULT: vault,
         TASKBOARD_TMUX_SOCKET: `tb-push-route-${port}`, TASKBOARD_MACHINE_NAME: 'push-test' }, stdio: 'ignore' });
     for (let i = 0; i < 100; i++) {

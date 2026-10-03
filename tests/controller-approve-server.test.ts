@@ -53,7 +53,7 @@ test('the controller approves dashboard cards only on the user\'s request in its
   const env = { ...clean, TASKBOARD_PORT: String(port), TASKBOARD_DIR: tbdir, TASKBOARD_VAULT: vault, TASKBOARD_TMUX_SOCKET: socket, TASKBOARD_MACHINE_NAME: 'ctl-test' };
   let output = '';
   const startServer = async () => {
-    const child = spawn(join(process.cwd(), 'node_modules/.bin/tsx'), ['server/index.ts'], { cwd: process.cwd(), env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { cwd: process.cwd(), env, stdio: ['ignore', 'pipe', 'pipe'] });
     child.stdout!.on('data', b => { output += b.toString(); }); child.stderr!.on('data', b => { output += b.toString(); });
     for (let i = 0; i < 150; i++) {
       if (child.exitCode !== null) throw new Error(output);

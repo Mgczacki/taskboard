@@ -37,8 +37,7 @@ async function start(name: string, port: number, shell = ''): Promise<Server> {
   writeFileSync(join(dir, 'tbdir', 'machine.json'), JSON.stringify({ name: 'crash-test', controller: { autostart: false, remoteControl: false } }));
   const log = join(dir, 'server.log');
   const sbEnv = { ...env, TASKBOARD_DIR: join(dir, 'tbdir'), TASKBOARD_VAULT: join(dir, 'vault'), TASKBOARD_PORT: String(port), TASKBOARD_TMUX_SOCKET: socket, TASKBOARD_MACHINE_NAME: 'crash-test' };
-  const tsx = join(checkout, 'node_modules', '.bin', 'tsx');
-  const child = spawn('/bin/sh', ['-c', `${shell} exec "${tsx}" server/index.ts >> "${log}" 2>&1`], { cwd: checkout, env: sbEnv, detached: true, stdio: 'ignore' });
+  const child = spawn('/bin/sh', ['-c', `${shell} exec "${process.execPath}" --import tsx server/index.ts >> "${log}" 2>&1`], { cwd: checkout, env: sbEnv, detached: true, stdio: 'ignore' });
   child.unref();
   const url = `http://127.0.0.1:${port}`;
   const info = await waitFor(async () => { try { const r = await fetch(url + '/api/info', { signal: AbortSignal.timeout(2000) }); return r.ok ? r.json() as Promise<{ pid: number }> : null; } catch { return null; } });

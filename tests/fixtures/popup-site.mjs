@@ -8,7 +8,7 @@
 // - y 240: two popups from one click (Chrome's popup blocker lets only the first one open)
 // - y 290: a link with target=_blank
 // - y 340: a plain link, for a middle click or a Cmd click (a background tab)
-// - y 390: a blank popup that closes itself 20 ms after window.open('')
+// - y 390: a blank popup that closes before its click handler returns
 // /?autotimer=1 calls window.open 500 ms after the load, without a click (Chrome blocks it).
 // Run alone: node tests/fixtures/popup-site.mjs [port]. It prints the port.
 import http from 'node:http';
@@ -23,7 +23,7 @@ ${btn(3, 'oauth', 'OAuth popup', "window.open('/oauth/start','oauth','popup,widt
 ${btn(4, 'two', 'two popups', "window.open('/popup?one','one','width=400,height=400'); window.open('/popup?two','two','width=400,height=400')")}
 ${link(270, 'blank', 'target=_blank link', 'target="_blank" href="/target"')}
 ${link(320, 'bg', 'background link (middle or Cmd click)', 'href="/bgtarget"')}
-${btn(7, 'quick', 'blank popup that closes at once', "const w = window.open(''); setTimeout(() => w.close(), 20)")}
+${btn(7, 'quick', 'blank popup that closes at once', "const w = window.open(''); w.close()")}
 <script>addEventListener('message', e => { document.title = 'got ' + e.data; });
 if (location.search.includes('autotimer')) setTimeout(() => window.open('/popup?nogesture'), 500);</script>`;
 const pages = {

@@ -9,6 +9,7 @@ import { after, test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { describeImpact, restartTaskboard } from '../scripts/restart.mjs';
+import { waitFor } from './helpers/wait-for.ts';
 
 const checkout = fileURLToPath(new URL('..', import.meta.url));
 const script = join(checkout, 'scripts', 'restart.mjs');
@@ -27,7 +28,6 @@ const env = { ...process.env }; delete env.TASK_ID; delete env.TB_URL; delete en
 const freePort = () => new Promise(resolve => { const s = createServer(); s.listen(0, '127.0.0.1', () => { const p = s.address().port; s.close(() => resolve(p)); }); });
 const alive = pid => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const info = async url => { try { const r = await fetch(url + '/api/info', { signal: AbortSignal.timeout(2000) }); return r.ok ? r.json() : null; } catch { return null; } };
-async function waitFor(fn, ms = 30000) { const end = Date.now() + ms; while (Date.now() < end) { const v = await fn(); if (v) return v; await new Promise(r => setTimeout(r, 300)); } return null; }
 
 // a sandbox server of this checkout, with one task whose agent session is a `sleep` in the sandbox's tmux socket
 async function sandbox(name) {
@@ -40,10 +40,13 @@ async function sandbox(name) {
   const sbEnv = { ...env, TASKBOARD_DIR: join(dir, 'tbdir'), TASKBOARD_VAULT: join(dir, 'vault'), TASKBOARD_PORT: String(port), TASKBOARD_TMUX_SOCKET: socket, TASKBOARD_MACHINE_NAME: 'restart-test' };
   const out = join(dir, 'tbdir', 'server.log');
   const child = spawn(join(checkout, 'node_modules', '.bin', 'tsx'), ['server/index.ts'], { cwd: checkout, env: sbEnv, detached: true, stdio: ['ignore', 'ignore', 'ignore'] });
+  if (child.pid) pids.push(child.pid);
   child.unref();
   const url = `http://127.0.0.1:${port}`;
-  const first = await waitFor(() => info(url));
-  assert.ok(first, `the sandbox did not start; log ${out}`);
+  const first = await waitFor(() => info(url), {
+    description: `sandbox ${name} to answer /api/info`, timeoutMs: 60_000,
+    state: () => `expected HTTP 200 at ${url}; log:\n${existsSync(out) ? readFileSync(out, 'utf8').slice(-3000) : '(no log yet)'}`,
+  });
   pids.push(first.pid);
   const token = readFileSync(join(dir, 'tbdir', 'token'), 'utf8').trim();
   const sessionPane = () => execFileSync('tmux', ['-L', socket, 'list-panes', '-t', '=tb-agent-task', '-F', '#{pane_pid}'], { encoding: 'utf8' }).trim();
@@ -116,10 +119,15 @@ test('the dashboard restart runs the script as its own process', { timeout: 1200
   const s = await sandbox('dashboard');
   const r = await fetch(s.url + '/api/restart', { method: 'POST', headers: { 'content-type': 'application/json', origin: s.url }, body: JSON.stringify({ confirm: true }) });
   assert.equal(r.status, 202);
-  const now = await waitFor(async () => { const i = await info(s.url); return i && i.pid !== s.first.pid ? i : null; }, 90000);
-  assert.ok(now, `no new server; ${readFileSync(join(s.tbDir, 'restart.log'), 'utf8')}`);
+  const now = await waitFor(async () => { const i = await info(s.url); return i && i.pid !== s.first.pid ? i : null; }, {
+    description: 'the dashboard restart to serve a new process', timeoutMs: 90_000,
+    state: () => `expected a PID other than ${s.first.pid}; restart log:\n${readFileSync(join(s.tbDir, 'restart.log'), 'utf8').slice(-3000)}`,
+  });
   pids.push(now.pid);
-  const last = await waitFor(async () => { const x = await fetch(s.url + '/api/restart/last', { headers: { 'x-taskboard-token': s.token } }).then(r => r.json()); return x?.ok ? x : null; });
+  const last = await waitFor(async () => { const x = await fetch(s.url + '/api/restart/last', { headers: { 'x-taskboard-token': s.token } }).then(r => r.json()); return x?.ok ? x : null; }, {
+    description: 'the restart result to report success', timeoutMs: 60_000,
+    state: () => `expected ok=true and PID ${now.pid}; restart log:\n${readFileSync(join(s.tbDir, 'restart.log'), 'utf8').slice(-3000)}`,
+  });
   assert.equal(last.newPid, now.pid);
   assert.ok(s.sessionPane());
 });

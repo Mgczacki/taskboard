@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import express from 'express';
+import { waitFor } from './helpers/wait-for.ts';
 
 const root = mkdtempSync(join(tmpdir(), 'tb-delivery-'));
 process.env.TASKBOARD_DIR = join(root, 'state');
@@ -25,7 +26,6 @@ const tmux = await import('../server/tmux.ts');
 const accounts = await import('../server/accounts.ts');
 const docs = await import('../server/docs.ts');
 const { mountReview } = await import('../server/review.ts');
-const pause = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
 const task = (agent: 'claude' | 'codex' | 'antigravity', num: number, sessionId?: string) => store.create({
   id: `delivery-${num}`, num, title: 'Delivery fixture', agent, status: 'stopped',
   cwd: root, folder: root, session: `task-${num}`, sessionId, account: agent === 'codex' ? 'codex-fixture' : undefined, desc: ''
@@ -59,16 +59,25 @@ test('review feedback keeps comments open when a stopped task cannot resume', as
 
 test('stopped Claude Code, Codex, and Antigravity tasks resume before delivery', async () => {
   try {
+    await waitFor(async () => {
+      if (await tmux.hasSession('fixture-keepalive')) return true;
+      await tmux.newSession('fixture-keepalive', root, {}, ['sleep', '600'], async () => {});
+      return true;
+    }, { description: 'the fixture tmux server to answer', timeoutMs: 60_000 });
     for (const [i, agent] of (['claude', 'codex', 'antigravity'] as const).entries()) {
       const t = task(agent, i + 2, `fixture-${agent}`);
       const delivery = await agents.sendTaskText(t, `Feedback for ${agent}`);
       assert.equal(delivery.resumed, true);
-      await pause(100);
-      assert.match(readFileSync(join(store.taskDir(t.id), 'input.txt'), 'utf8'), new RegExp(`Feedback for ${agent}`));
+      const input = join(store.taskDir(t.id), 'input.txt');
+      await waitFor(() => existsSync(input) && readFileSync(input, 'utf8').includes(`Feedback for ${agent}`), {
+        description: `${agent} to receive its feedback`,
+        state: async () => `expected Feedback for ${agent}; screen:\n${await tmux.capture(t.session, 30)}; task: ${JSON.stringify(store.get(t.id))}`,
+      });
       await tmux.killSession(t.session);
     }
   } finally {
     for (const num of [2, 3, 4]) await tmux.killSession(`task-${num}`);
+    await tmux.killSession('fixture-keepalive');
   }
 });
 
@@ -107,11 +116,15 @@ test('Codex receives text while running and questions block terminal input', asy
   const t = task('codex', 8, 'fixture-running');
   await tmux.newSession(t.session, root, { TASK_DIR: store.taskDir(t.id) }, [join(bin, 'codex')], async () => {});
   try {
-    for (let i = 0; i < 20 && !(await tmux.capture(t.session, 10)).includes('>'); i++) await pause(50);
+    await waitFor(async () => (await tmux.capture(t.session, 10)).includes('for shortcuts'), {
+      description: 'the Codex input box', state: async () => `expected an empty input box; screen:\n${await tmux.capture(t.session, 30)}`,
+    });
     store.update(t.id, { status: 'working' });
     assert.equal((await agents.sendTaskText(t, 'Queued Codex message')).resumed, false);
     const input = join(store.taskDir(t.id), 'input.txt');
-    for (let i = 0; i < 60 && (!existsSync(input) || !readFileSync(input, 'utf8').includes('Queued Codex message')); i++) await pause(50);
+    await waitFor(() => existsSync(input) && readFileSync(input, 'utf8').includes('Queued Codex message'), {
+      description: 'the queued Codex input', state: async () => `expected Queued Codex message; screen:\n${await tmux.capture(t.session, 30)}`,
+    });
     assert.match(readFileSync(input, 'utf8'), /Queued Codex message/);
     store.update(t.id, { status: 'needs-you', ask: 'Approve a tool call' });
     await assert.rejects(agents.sendTaskText(t, 'Do not type this'), /asks a question/);
@@ -123,7 +136,9 @@ test('a trust question blocks text sent to a live session', async () => {
   const t = task('antigravity', 9, 'fixture-trust');
   await tmux.newSession(t.session, root, { TASK_DIR: store.taskDir(t.id), TEST_QUESTION: '1' }, [join(bin, 'agy')], async () => {});
   try {
-    for (let i = 0; i < 20 && !(await tmux.capture(t.session, 10)).includes('Do you trust'); i++) await pause(50);
+    await waitFor(async () => (await tmux.capture(t.session, 10)).includes('Do you trust'), {
+      description: 'the Antigravity trust question', state: async () => `expected Do you trust; screen:\n${await tmux.capture(t.session, 30)}`,
+    });
     await assert.rejects(agents.sendTaskText(t, 'Do not type this'), /asks a question/);
   } finally { await tmux.killSession(t.session); }
 });

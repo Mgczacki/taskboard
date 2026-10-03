@@ -4,6 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSy
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import test from 'node:test';
+import { waitFor } from './helpers/wait-for.ts';
 
 // A test Taskboard (own port, TASKBOARD_DIR, TASKBOARD_VAULT and tmux socket) with a fake codex. On the account
 // folder codex-nocredit the fake prints what Codex 0.160.0 printed for tasks 163 and 164 and writes the same rollout lines.
@@ -102,6 +103,10 @@ test('a task without credit stops with its reason; an automatic choice moves onc
     const moved = await until('task 1 moved', async () => { const t = await task(1); return t?.account === 'codex-default' && /started it again/.test(t.statusSource) && t; });
     assert.match(moved.statusSource, /^Codex no credit has no credit or has a billing problem: Your workspace is out of credits\. Ask your workspace owner to refill in order to continue\. No account was chosen for this task, so Taskboard started it again on Codex \(default\) at \d\d:\d\d\.$/);
     assert.equal(moved.status, 'working');
+    await waitFor(() => launches(moved.id).length === 2, {
+      description: 'the fake Codex agent to record both starts', timeoutMs: 60_000,
+      state: () => `expected starts on codex-nocredit and codex-ok; launches: ${JSON.stringify(launches(moved.id))}; task: ${JSON.stringify(moved)}; server: ${output.slice(-3000)}`,
+    });
     assert.deepEqual(launches(moved.id), [acctDir('codex-nocredit'), acctDir('codex-ok')], 'one retry, on the other account');
     const limited = (await account('codex-nocredit')).limited;
     assert.match(limited.note, /Your workspace is out of credits\. .*\(on #1\)$|Codex: Your workspace is out of credits/);

@@ -16,7 +16,7 @@ const push = await import('../server/push.ts');
 const taskGit = await import('../server/task-git.ts');
 const { checkTask, dropCommit, squashTask } = await import('../server/task-repair.ts');
 type Task = import('../server/store.ts').Task;
-after(() => rmSync(top, { recursive: true, force: true }));
+after(() => rmSync(top, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 }));
 
 const git = (cwd: string, ...args: string[]) => {
   const r = spawnSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
@@ -118,7 +118,7 @@ test('a repository that uses master keeps its behavior', async () => {
 });
 
 test('a large branch with a long history produces a normal card with limited lists', async () => {
-  const { seed, task, commit } = setup('master');
+  const { seed, task } = setup('master');
   // The base history holds more than 16 MB of patches. The old code read all of it for a new remote branch.
   for (let i = 0; i < 20; i++) {
     writeFileSync(join(seed, 'blob.txt'), `${i}\n`.repeat(200000) + 'x'.repeat(1024 * 1024));
@@ -127,12 +127,23 @@ test('a large branch with a long history produces a normal card with limited lis
   git(seed, 'push', '-q', 'origin', 'master');
   git(task.cwd, 'fetch', '-q', 'origin');
   git(task.cwd, 'reset', '-q', '--hard', 'origin/master');
-  // The branch itself changes 3000 files in 120 commits.
+  // Fast import writes the same 3000 files and 120 commits without 120 index updates.
+  const stream: string[] = [];
+  const base = git(task.cwd, 'rev-parse', 'HEAD');
   for (let c = 0; c < 120; c++) {
-    const files: Record<string, string> = {};
-    for (let f = 0; f < 25; f++) files[`many/${c}/${f}.txt`] = `${c} ${f}\n`;
-    commit(files, `Change ${c}`);
+    const message = `Change ${c}`;
+    stream.push(`commit refs/heads/fixture-large\ncommitter Base Test <base-test@example.invalid> ${1700000000 + c} +0000\ndata ${Buffer.byteLength(message)}\n${message}\n`);
+    if (c === 0) stream.push(`from ${base}\n`);
+    for (let f = 0; f < 25; f++) {
+      const body = `${c} ${f}\n`;
+      stream.push(`M 100644 inline many/${c}/${f}.txt\ndata ${Buffer.byteLength(body)}\n${body}`);
+    }
+    stream.push('\n');
   }
+  stream.push('done\n');
+  const imported = spawnSync('git', ['fast-import', '--quiet'], { cwd: task.cwd, input: stream.join(''), encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+  assert.equal(imported.status, 0, imported.stderr);
+  git(task.cwd, 'reset', '--hard', 'fixture-large');
   const state = await push.inspectPush(task, 'Publish the large branch');
   assert.equal(state.commitCount, 120);
   assert.equal(state.commits.length, push.CARD_COMMITS);

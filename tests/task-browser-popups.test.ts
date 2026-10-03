@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import test, { after, before } from 'node:test';
 import WebSocket from 'ws';
 import { startPopupSite } from './fixtures/popup-site.mjs';
+import { waitFor } from './helpers/wait-for.ts';
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-popups-')));
 process.env.TASKBOARD_DIR = join(root, 'state');
@@ -42,13 +43,17 @@ const click = (y: number, button = 'left', modifiers = 0) => {
 };
 const pages = async () => (await (await fetch(`http://127.0.0.1:${port}/json/list`)).json() as { id: string; type: string; url: string; title: string }[]).filter(t => t.type === 'page');
 const shown = () => lastActive;
-const until = async (ok: () => boolean | Promise<boolean>, what: string, ms = 5000) => { const end = Date.now() + ms; let good = false; while (!(good = await ok()) && Date.now() < end) await wait(25); assert.ok(good, what); };
+const until = async (ok: () => boolean | Promise<boolean>, what: string, ms = 30_000) => waitFor(ok, {
+  description: what, timeoutMs: ms, intervalMs: 50,
+  state: async () => `expected ${what}; shown: ${shown()}; pages: ${JSON.stringify(await pages())}; messages: ${JSON.stringify(sent.slice(-12))}`,
+});
 
 before(async () => {
   if (skip) return;
   site = await startPopupSite();
   port = (await browser.ensure(ID)).port!;
   mainId = (await browser.openTab(ID, site.url + '/')).id;
+  await until(async () => (await pages()).find(t => t.id === mainId)?.title === 'main', 'the main page to finish loading');
   for (const t of await pages()) if (t.id !== mainId) await fetch(`http://127.0.0.1:${port}/json/close/${t.id}`);
   emit({ type: 'hello', acks: false });
   browser.attachViewer(client as unknown as WebSocket, ID, false);
@@ -60,9 +65,10 @@ after(async () => { client.emit('close'); await browser.stop(ID).catch(() => {})
 async function reset() {
   for (const t of await pages()) if (t.id !== mainId) await fetch(`http://127.0.0.1:${port}/json/close/${t.id}`);
   await until(async () => (await pages()).length === 1, 'only the main page is open');
+  lastActive = '';
   emit({ type: 'select', id: mainId });
   await until(() => shown() === mainId, 'the view shows the main page');
-  await wait(300);
+  await until(async () => !!(await pages()).find(t => t.id === mainId)?.title, 'the main page to be ready for clicks');
   sent.length = 0; frames = [];
 }
 // The first switch by the view to a tab other than the main page, after `from`.
