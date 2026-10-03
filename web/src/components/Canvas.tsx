@@ -15,7 +15,7 @@ import { runGroupChange } from '../groupActions';
 import { inOrder, moveBy, moveToSlot, slotAt, slotHint } from '../groupOrder';
 import { orderKey, renderOrder, slotNear, tileHint, withSavedOrder } from '../tileOrder';
 import { GroupRuntime } from './GroupRuntime';
-import { RuntimeButton, canRun, type RuntimeTab } from './TaskRuntime';
+import { RuntimeButton, canBrowse, canRun, type RuntimeTab } from './TaskRuntime';
 import { panelHolds, type PanelTab } from '../panelShare';
 import { BrowserView } from './TaskBrowser';
 import { readSplit, writeSplit, type Split } from '../browserSplit';
@@ -588,7 +588,7 @@ const CanvasWin = memo(function CanvasWin({ t, i, act, linkTasks, cls, span, end
   // The buttons of the header. A window too narrow for all of them shows ⋯ in their place, and they show in its menu
   // with the agent and runtime chips. narrow starts when the header's content is wider than the header (scrollWidth),
   // and ends when the header is again as wide as that content was.
-  const showBrowser = canRun(t) && !t.openElsewhere && t.status !== 'suspended' && !heldTerminal && !heldBrowser;
+  const showBrowser = canBrowse(t) && !t.openElsewhere && t.status !== 'suspended' && !heldTerminal && !heldBrowser;
   const acts: { k: string; icon: React.ReactNode; text: string; title: string; on?: boolean; aria?: string; fn: () => void }[] = [];
   if (showBrowser) {
     acts.push({ k: 'browser', icon: '🌐', text: sp.open ? 'Close the browser here' : 'Show the browser here', on: sp.open, title: sp.open ? 'Close the browser here and show only the terminal. The browser keeps running.' : 'Open the browser of this task here, above a smaller terminal. A stopped browser starts.', fn: () => a().toggleBrowser(t.id) });
@@ -629,12 +629,12 @@ const CanvasWin = memo(function CanvasWin({ t, i, act, linkTasks, cls, span, end
       </div>
       {t.restartWhenDone && t.restartFor && <div className="win-note" title={t.restartWait}>{t.restartOverdue ? t.restartWait : `Waiting for the end of the turn ${t.restartFor}.`}{t.restartOverdue && <button className="b" onClick={() => api.restart(t.id, 'now').catch(e => a().toast(String(e.message || e)))}>Restart now</button>}</div>}
       {t.restartFailed && <div className="win-note bad">The restart failed: {t.restartFailed}<button className="b" onClick={() => api.resume(t.id).catch(e => a().toast(String(e.message || e)))}>Try again</button></div>}
-      <div className={`wb ${sp.open && canRun(t) && !heldBrowser ? `split ${sp.side}` : ''}`}>{asking && <AskPanel task={t} close={() => a().toggleAsk(t.id)} onSpinOff={(x, y) => a().onSpinOff(x, y)} />}{t.openElsewhere ? <div className="empty" style={{ padding: 16 }}>Running in another terminal ({t.openElsewhere?.tty}). <button className="btn" onClick={() => a().openPanel(t.id)}>Options…</button></div>
+      <div className={`wb ${sp.open && canBrowse(t) && !heldBrowser ? `split ${sp.side}` : ''}`}>{asking && <AskPanel task={t} close={() => a().toggleAsk(t.id)} onSpinOff={(x, y) => a().onSpinOff(x, y)} />}{t.openElsewhere ? <div className="empty" style={{ padding: 16 }}>Running in another terminal ({t.openElsewhere?.tty}). <button className="btn" onClick={() => a().openPanel(t.id)}>Options…</button></div>
         : t.status === 'suspended' ? <div className="empty" style={{ padding: 16 }}>Suspended. <button className="btn" onClick={() => a().openPanel(t.id)}>Resume…</button></div>
         // a tmux window has one size: while this task's panel shows its terminal, the tile waits
         : heldTerminal ? <div className="tile-in-panel"><div>The terminal shows in the Terminal tab of the task panel.</div><div className="sub">One terminal per task at a time, so neither is cut off. Another tab in the panel, or closing the panel, brings it back here.</div><button className="btn" onClick={() => a().openPanel(null)}>Show it here instead</button></div>
         // the terminal stays the last child, so opening or closing the browser does not mount it again
-        : <>{sp.open && canRun(t) && !heldBrowser && <div className="wb-browser"><BrowserView id={t.id} title={`#${t.num} ${t.title}`} autostart={a().startsHere(t.id)} /></div>}
+        : <>{sp.open && canBrowse(t) && !heldBrowser && <div className="wb-browser"><BrowserView id={t.id} title={`#${t.num} ${t.title}`} autostart={a().startsHere(t.id)} remote={t.machine?.name} /></div>}
           <Terminal taskId={t.id} fontSize={font} onFocus={() => a().focus(t.id)} /></>}</div>
     </div>
   );

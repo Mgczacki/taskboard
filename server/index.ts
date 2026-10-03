@@ -25,6 +25,7 @@ import * as accounts from './accounts.ts';
 import * as load from './load.ts';
 import * as external from './external.ts';
 import * as machines from './machines.ts';
+import * as browserForward from './browser-forward.ts';
 import * as machine from './machine.ts';
 import * as rules from './rules.ts';
 import { typeCommand } from './type-command.ts';
@@ -136,6 +137,7 @@ await agents.configureIfRunning();
 // A new task can carry pasted images (agents.MAX_IMAGES of at most agents.MAX_IMAGE_BYTES each, as base64).
 app.use('/api/tasks', express.json({ limit: '150mb' }));
 app.use('/api/transfer/stage', express.json({ limit: '40mb' }));
+app.use('/api/browser-signins/import', express.json({ limit: '50mb' })); // at most 5000 cookies (browser-signins.ts)
 app.use(express.json({ limit: '2mb' }));
 
 const ALLOWED_ORIGINS = new Set([URL_BASE, `http://localhost:${PORT}`, 'http://localhost:5173', 'http://127.0.0.1:5173']);
@@ -873,7 +875,11 @@ app.use('/api', async (req, res, next) => {
   const path = target.path + (qs.toString() ? '?' + qs : '');
   const body = req.method === 'GET' ? undefined : { ...req.body, ...(target.path === '/api/tasks' ? { machine: undefined } : {}) };
   const transferAction = /\/transfer\/(move|recover)$/.test(target.path);
-  const relay = transferAction && body ? transfer.signedRequest(path, body) : null;
+  // A browser action that only the dashboard may take (sound, reset, a file upload, sign-ins) goes signed, like a transfer: the other
+  // machine accepts it only from a machine that it is paired with (runtime-routes.ts dashboardOnly).
+  const fromDashboard = !!req.get('origin') && !req.get('x-tb-actor') && !req.get('x-taskboard-token');
+  const browserAction = fromDashboard && /^\/api\/tasks\/[^/]+\/browser\/(sound|reset|upload|signins\/[a-z-]+)$/.test(target.path);
+  const relay = (transferAction || browserAction) && body ? transfer.signedRequest(path, body) : null;
   const forward = async () => { const r = await machines.call(mc, req.method, path, relay?.payload || body, relay?.headers); if (r.status >= 400) throw new Error(typeof r.data === 'object' ? r.data.error : String(r.data)); return r; };
   try {
     if (req.method !== 'GET' && req.get('x-tb-actor') === 'controller' && GUARDED.test(target.path.replace(/\/api\/tasks\/[^/]+/, '/api/tasks/x'))) {
@@ -1569,8 +1575,17 @@ function onSocket(ws: import('ws').WebSocket, url: URL) {
       const t = store.get(url.searchParams.get('task') || '');
       if (!t) return ws.close(4004, 'no such task');
       attach(ws, t.session, Number(url.searchParams.get('cols')) || 120, Number(url.searchParams.get('rows')) || 40);
-    } else if (url.pathname === '/ws/browser') runtime.viewBrowser(ws, url);
-    else ws.close();
+    } else if (url.pathname === '/ws/browser') {
+      const remote = machines.split(url.searchParams.get('id') || '');
+      if (remote) {
+        // the browser view of a task on another machine: pipe it to that machine's Taskboard server (browser-forward.ts)
+        const mc = machines.get(remote.machine); if (!mc) return ws.close(4004, 'unknown machine');
+        const up = new WebSocket(`${mc.url.replace(/^http/, 'ws')}/ws/browser?id=${encodeURIComponent(remote.id)}${url.searchParams.get('start') === '1' ? '&start=1' : ''}&token=${encodeURIComponent(mc.token)}`, { perMessageDeflate: false, maxPayload: 64 * 1024 * 1024 });
+        browserForward.pipe(ws, up);
+        return;
+      }
+      runtime.viewBrowser(ws, url);
+    } else ws.close();
 }
 // tell each dashboard why the server stops, so it can say "Server restarting" instead of "not reachable"
 life.onStopping(end => { for (const c of eventClients) { try { c.send(JSON.stringify({ type: 'stopping', reason: end.kind, detail: end.detail })); } catch { /* closed */ } } });

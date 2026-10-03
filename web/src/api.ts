@@ -385,6 +385,7 @@ export const api = {
   signinRemove: (site: string) => call<SigninOverview>('POST', '/api/browser-signins/remove', { site }),
   signinSignOutAll: () => call<{ sites: string[]; now: string[]; later: string[] }>('POST', '/api/browser-signins/sign-out-all', {}),
   signinLive: (patch: { live?: boolean; liveSites?: string[] }) => call<{ live: boolean; liveSites: string[] }>('POST', '/api/browser-signins/live', patch),
+  signinSend: (machine: string, sites: string[]) => call<{ machine: string; sites: string[]; cookies: number }>('POST', '/api/browser-signins/send', { machine, sites }),
   templateWindow: () => call<BrowserStatus>('POST', '/api/browser-template/window', {}),
   browserTemplateAction: (action: 'start' | 'stop') => call<BrowserStatus>('POST', `/api/browser-template/${action}`, {}),
   getUi: () => call<Record<string, unknown>>('GET', '/api/ui'),

@@ -161,7 +161,8 @@ const clipKey = (e: React.KeyboardEvent) => (IS_MAC ? e.metaKey && !e.ctrlKey : 
 const CURSORS = new Set(['default', 'pointer', 'text', 'vertical-text', 'move', 'grab', 'grabbing', 'crosshair', 'help', 'wait', 'progress', 'not-allowed', 'no-drop', 'copy', 'alias', 'cell', 'context-menu', 'zoom-in', 'zoom-out', 'none', 'all-scroll', 'col-resize', 'row-resize', 'n-resize', 'e-resize', 's-resize', 'w-resize', 'ne-resize', 'nw-resize', 'se-resize', 'sw-resize', 'ew-resize', 'ns-resize', 'nesw-resize', 'nwse-resize']);
 
 // onCanvas: the task panel passes it, so the More menu can show the browser in the task's Canvas window
-export function BrowserView({ id, title = '', autostart = false, floating = false, archived = false, isTemplate = false, onCanvas }: { id: string; title?: string; autostart?: boolean; floating?: boolean; archived?: boolean; isTemplate?: boolean; onCanvas?: () => void }) {
+// remote: the name of the machine that runs the task, for the browser of a task on another machine (browser-forward.ts)
+export function BrowserView({ id, title = '', autostart = false, floating = false, archived = false, isTemplate = false, onCanvas, remote }: { id: string; title?: string; autostart?: boolean; floating?: boolean; archived?: boolean; isTemplate?: boolean; onCanvas?: () => void; remote?: string }) {
   const isPopped = usePopped(id);
   if (isPopped && !floating) return (
     <div className="bw-empty"><div className="bw-card">
@@ -170,10 +171,10 @@ export function BrowserView({ id, title = '', autostart = false, floating = fals
       <div className="bw-actions"><button className="btn primary" onClick={() => popped.get(id)?.()}>Put it back here</button></div>
     </div></div>
   );
-  return <Live id={id} title={title} autostart={autostart} floating={floating} archived={archived} isTemplate={isTemplate} onCanvas={onCanvas} />;
+  return <Live id={id} title={title} autostart={autostart} floating={floating} archived={archived} isTemplate={isTemplate} onCanvas={onCanvas} remote={remote} />;
 }
 
-function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }: { id: string; title: string; autostart: boolean; floating: boolean; archived: boolean; isTemplate: boolean; onCanvas?: () => void }) {
+function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, remote }: { id: string; title: string; autostart: boolean; floating: boolean; archived: boolean; isTemplate: boolean; onCanvas?: () => void; remote?: string }) {
   const [tabs, setTabs] = useState<BrowserTab[]>([]);
   const [active, setActive] = useState('');
   const [state, setState] = useState<BrowserStatus | null>(null);
@@ -617,7 +618,8 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
               <button className="bw-mi danger" role="menuitem" onClick={() => { setPop(null); setSignin('reset'); }}><Icon d={I.stop} size={15} /><span>{sharing?.noShared ? 'Reset to an empty profile' : 'Reset from template'}<small>Deletes this browser's own sign-ins</small></span></button>
               <div className="bw-msep" />
             </>}
-            {!isTemplate && <BrowserMemory id={id} row />}
+            {!isTemplate && !remote && <BrowserMemory id={id} row />}
+            {remote && <div className="bw-minfo" title="The Chrome of this task runs on the other machine. Its picture and your input go through this Taskboard.">This browser runs on {remote}</div>}
             {agents > 0 && <div className="bw-minfo"><i className="bw-agent in" />An agent is connected to this browser</div>}
             {keyLabel('browserLeave') && <div className="bw-minfo" title="While the focus is in this browser, every key goes to the page, also ⌘ and ⌃ keys."><kbd>{keyLabel('browserLeave')}</kbd> gives the keys back to Taskboard</div>}
           </div>}
@@ -643,8 +645,9 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
           <div className="bw-side">
             {flash && <span className="bw-chip flash">{flash}</span>}
             {keyLabel('browserLeave') && <span className="bw-chip bw-leave" title={`While the focus is in this browser, every key goes to the page, also ⌘ and ⌃ keys. Press ${keysText('browserLeave')} to give the keys back to Taskboard.`}><kbd>{keyLabel('browserLeave')}</kbd> leaves</span>}
+            {remote && <span className="bw-chip" title="The Chrome of this task runs on the other machine. Its picture and your input go through this Taskboard.">On {remote}</span>}
             {agents > 0 && <span className="bw-chip agent" title="An agent is connected to this browser through its task-browser tools"><i />Agent</span>}
-            {!isTemplate && <BrowserMemory id={id} />}
+            {!isTemplate && !remote && <BrowserMemory id={id} />}
             {sound}
             {!floating && <button className="bw-ib" onClick={popOut} aria-label="Pop out" title="Show the browser in its own window"><Icon d={I.popout} /></button>}
             {stopButton}

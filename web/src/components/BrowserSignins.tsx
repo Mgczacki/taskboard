@@ -1,12 +1,12 @@
 // Shared sign-ins of task browsers (server/browser-signins.ts) on the dashboard:
 // - SigninNote: one line on the task browser panel when the template has no sign-ins, or when this browser opted out
 // - SigninDialog: save this browser as the template, sync sign-ins from the template, and reset from the template
-// - SigninSettings: the Settings list of the template's sites, live sharing, sign out of all, and the task browsers
-//   that hold shared sign-ins
+// - SigninSettings: the Settings list of the template's sites, live sharing, sign out of all, the task browsers
+//   that hold shared sign-ins, and SendSignins (send the template's sign-ins to another machine)
 // The server sends site names, counts and dates. No cookie value reaches the dashboard.
 import { useEffect, useState } from 'react';
 import type { BrowserStatus, SigninOverview, SigninSite } from '../api';
-import { api } from '../api';
+import { api, useStoreValue } from '../api';
 
 const openSettings = () => dispatchEvent(new CustomEvent('taskboard:open', { detail: { settings: 'taskBrowsers' } }));
 const when = (iso?: string) => iso ? new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
@@ -134,10 +134,42 @@ export function SigninSettings() {
     </div>
     {note && <div className="sub">{note}</div>}
     {err && <div className="banner">{err}</div>}
+    <SendSignins sites={(o.sites || []).map(x => x.site)} />
     <div className="opt">Task browsers with shared sign-ins</div>
     {shared.length ? <ul className="si-list">{shared.map(b => <li key={b.id}>{name(b)}
       <span className="sub"> {[b.copiedFromTemplate && `copied ${when(b.copiedFromTemplate)}`, b.syncedAt && `synced ${when(b.syncedAt)}`, b.liveSyncAt && o.settings.live && `live ${when(b.liveSyncAt)}`, b.running && 'running', b.agents && `${b.agents} agent connection(s)`].filter(Boolean).join(' · ')}</span></li>)}</ul>
       : <div className="sub">None.</div>}
     {!!out.length && <div className="sub">Opted out (no shared sign-ins): {out.map(name).join(', ')}.</div>}
+  </>;
+}
+
+// Send the template's sign-ins of the chosen sites to another machine (POST /api/browser-signins/send). That machine
+// writes them into its own template, so its new task browsers get them, and Sync gives them to its other task browsers.
+function SendSignins({ sites }: { sites: string[] }) {
+  const others = useStoreValue(s => s.machines).filter(m => !m.local);
+  const [to, setTo] = useState('');
+  const [pick, setPick] = useState<Set<string> | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState('');
+  const [err, setErr] = useState('');
+  if (!others.length || !sites.length) return null;
+  const chosen = pick || new Set(sites);
+  const target = others.find(m => m.id === to) || others[0];
+  const toggle = (site: string) => { const n = new Set(chosen); if (n.has(site)) n.delete(site); else n.add(site); setPick(n); };
+  const send = async () => {
+    setBusy(true); setErr(''); setNote('');
+    try { const r = await api.signinSend(target.id, [...chosen]); setNote(`Sent ${r.cookies} cookie(s) of ${r.sites.length} site(s) to ${r.machine}. Its new task browsers get them, and Sync gives them to its other task browsers.`); }
+    catch (e) { setErr(msg(e)); } finally { setBusy(false); }
+  };
+  return <>
+    <div className="opt">Send sign-ins to another machine</div>
+    <div className="sub">The template's cookies of the chosen sites go to the template of the other machine, over its paired link. Local storage and IndexedDB stay here. Some sites end a sign-in that they see on a second machine.</div>
+    <ul className="si-list">{sites.map(site => <li key={site}><label><input type="checkbox" checked={chosen.has(site)} onChange={() => toggle(site)} /> {site}</label></li>)}</ul>
+    <div className="si-row">
+      <select value={target.id} onChange={e => setTo(e.target.value)} aria-label="Machine">{others.map(m => <option key={m.id} value={m.id} disabled={!m.online}>{m.name}{m.online ? '' : ' (offline)'}</option>)}</select>
+      <button className="btn" disabled={busy || !chosen.size || !target.online} onClick={() => void send()}>{busy ? 'Sending…' : `Send ${chosen.size} site(s)`}</button>
+    </div>
+    {note && <div className="sub">{note}</div>}
+    {err && <div className="banner">{err}</div>}
   </>;
 }

@@ -252,7 +252,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
         </div>
         <div className="tabs">
           <button className={tab === 'terminal' ? 'on' : ''} onClick={() => setTab('terminal')}>Terminal</button>
-          {!t.machine && t.role !== 'controller' && <button className={tab === 'browser' ? 'on' : ''} onClick={() => setTab('browser')} title="This task's own Chrome, which its agent uses">Browser</button>}
+          {t.role !== 'controller' && <button className={tab === 'browser' ? 'on' : ''} onClick={() => setTab('browser')} title={t.machine ? `This task's own Chrome, on ${t.machine.name}` : "This task's own Chrome, which its agent uses"}>Browser</button>}
           {!t.machine && t.role !== 'controller' && <button className={tab === 'procs' ? 'on' : ''} onClick={() => setTab('procs')} title="Dev servers, databases and other processes of this task">Processes</button>}
           <button className={tab === 'log' ? 'on' : ''} onClick={() => setTab('log')}>Log</button>
           <button className={tab === 'docs' ? 'on' : ''} onClick={() => setTab('docs')}>Inbox / Outbox<span className="n">{(t.docs?.inbox || 0) + (t.docs?.outbox || 0)}</span></button>
@@ -266,7 +266,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
           ? <div className="empty" style={{ padding: 20 }}>Resuming with {t.agent === 'claude' ? 'claude --resume' : t.agent === 'codex' ? 'codex resume' : 'agy --conversation'} {t.sessionId}…</div>
           : <div className="term-wrap">{!collapsed && <div className={`term-brief ${briefOpen ? 'open' : ''}`} onClick={() => setBriefOpen(o => !o)} title={briefOpen ? 'Click to show only the first lines' : 'Click to show the whole task description'}><b>Task</b><span>{t.desc}</span><i className="more">{briefOpen ? 'less' : 'more'}</i></div>}<Terminal taskId={t.id} autoFocus glass={see ? glassAlpha(see) : 1} tint={see ? see.tint : 'panel'} /></div>)}
         {tab === 'log' && <pre className="logtext">{log || 'No log entries yet.'}</pre>}
-        {tab === 'browser' && <BrowserView key={t.id} id={t.id} title={`#${t.num} ${t.title}`} archived={t.status === 'archived'} onCanvas={() => { openBrowserSplit(t.id); onCanvas(t.id); }} />}
+        {tab === 'browser' && <BrowserView key={t.id} id={t.id} title={`#${t.num} ${t.title}`} archived={t.status === 'archived'} remote={t.machine?.name} onCanvas={() => { openBrowserSplit(t.id); onCanvas(t.id); }} />}
         {tab === 'procs' && <ProcList key={t.id} scope="tasks" id={t.id} cwd={t.cwd} />}
       </div>
     </aside>

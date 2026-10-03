@@ -159,6 +159,43 @@ export async function syncFromTemplate(id: string, chosen: string[]): Promise<{ 
   return { sites: [...want], cookies: list.length };
 }
 
+// ---------- send sign-ins to another machine ----------
+// The template's cookies of the chosen sites (exportSites) go to another machine's Taskboard over the paired machine
+// link (runtime-routes.ts), which writes them into its template (importCookies). New task browsers there copy them,
+// and Sync gives them to a task browser that exists. Only cookies move: local storage and IndexedDB stay here.
+// importCookies takes only the known fields of a cookie, at most MAX_COOKIES of them, each of at most MAX_VALUE
+// characters, for valid site names.
+export const MAX_COOKIES = 5000, MAX_VALUE = 8192;
+export async function exportSites(chosen: string[]): Promise<Cookie[]> {
+  if (!existsSync(browser.profileDir(TEMPLATE))) throw new Error('There is no template profile yet. Sign in in the template browser on the Settings page first.');
+  const want = new Set(chosen.filter(validSite));
+  if (!want.size) throw new Error('Choose at least one site.');
+  const list = (await withTemplate(getCookies)).filter(c => want.has(siteOf(c.domain)));
+  if (!list.length) throw new Error('The template has no cookies for these sites.');
+  if (list.length > MAX_COOKIES) throw new Error(`These sites have ${list.length} cookies. Taskboard sends at most ${MAX_COOKIES}. Choose fewer sites.`);
+  return list;
+}
+const str = (v: unknown, max: number) => typeof v === 'string' && v.length <= max;
+export function checkCookies(input: unknown): Cookie[] {
+  if (!Array.isArray(input) || !input.length) throw new Error('No cookies.');
+  if (input.length > MAX_COOKIES) throw new Error(`At most ${MAX_COOKIES} cookies.`);
+  return input.map((c: any) => {
+    if (!c || !str(c.name, 256) || !str(c.value, MAX_VALUE) || !str(c.domain, 253) || !str(c.path, 1024) || !String(c.path).startsWith('/')) throw new Error('A cookie has a wrong field.');
+    if (!validSite(siteOf(c.domain))) throw new Error('A cookie has a wrong domain.');
+    const out: Cookie = { name: c.name, value: c.value, domain: c.domain, path: c.path, expires: Number(c.expires) || -1, httpOnly: !!c.httpOnly, secure: !!c.secure, session: !!c.session };
+    if (['Strict', 'Lax', 'None'].includes(c.sameSite)) out.sameSite = c.sameSite;
+    if (['Low', 'Medium', 'High'].includes(c.priority)) out.priority = c.priority;
+    return out;
+  });
+}
+export async function importCookies(input: unknown): Promise<{ sites: string[]; cookies: number }> {
+  const list = checkCookies(input);
+  await withTemplate(ws => setCookies(ws, list));
+  const got = [...new Set(list.map(c => siteOf(c.domain)))].sort();
+  console.log(`${new Date().toISOString()} sign-ins: ${list.length} cookie(s) of ${got.length} site(s) from another machine went into the template`);
+  return { sites: got, cookies: list.length };
+}
+
 // ---------- remove sign-ins ----------
 // Delete the cookies of these sites in one running browser, and its local storage, IndexedDB, service workers and cache
 // storage for the site and its www name (other subdomains keep their site data).
