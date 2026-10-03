@@ -18,7 +18,7 @@ writeFileSync(join(root, 'state', 'machine.json'), JSON.stringify({ name: 'brows
 const browser = await import('../server/task-browser.ts');
 const machine = await import('../server/machine.ts');
 const skip = browser.chromePath() ? false : 'Chrome is not installed';
-after(async () => { for (const id of ['template', 'b1', 'b2', 'b3', 'b4', 'b5']) await browser.stop(id).catch(() => {}); });
+after(async () => { for (const id of ['template', 'b1', 'b2', 'b3', 'b4', 'b5', 'b6']) await browser.stop(id).catch(() => {}); });
 
 function cdp(wsUrl: string, method: string, params: object = {}): Promise<any> {
   return new Promise((resolve, reject) => {
@@ -172,4 +172,43 @@ test('the sharp view streams frames twice the size of the page', { skip, timeout
     assert.ok(jpegs.includes('1600x1200'), `a frame has two pixels for each CSS pixel (frames: ${jpegs.join(', ')})`);
   } finally { machine.update({ browserSharp: false }); await browser.stop('b4'); }
   assert.equal((await browser.status('b4')).sharp, false);
+});
+
+// A view that sends 'hello' with acks (the dashboard): the server sends at most two frames that the view did not
+// report as drawn, and about one each second after that (HELD_MS). Reports let the frames flow again. A hidden view
+// ('visible' false) gets no frames, and gets a frame soon after it shows again. A mouse move over a link gives the
+// view the pointer cursor.
+test('the view gets frames only as fast as it draws them, none while hidden, and the page cursor', { skip, timeout: 60000 }, async () => {
+  await browser.ensure('b6');
+  const tab = await browser.openTab('b6', 'data:text/html,' + encodeURIComponent(`<style>body{margin:0}a{display:block;height:200px;font-size:40px}</style><a href="#x">link</a><div id=d style="height:200px"></div><script>let n=0;(function f(){d.style.background='hsl('+(n++%360)+',70%,50%)';requestAnimationFrame(f)})()</script>`));
+  const sent: any[] = [];
+  let frames = 0, report = false;
+  const client = Object.assign(new EventEmitter(), { readyState: WebSocket.OPEN, bufferedAmount: 0, send: (d: string | Buffer) => {
+    if (typeof d === 'string') { sent.push(JSON.parse(d)); return; }
+    frames++;
+    if (report) setTimeout(() => client.emit('message', JSON.stringify({ type: 'drawn' })), 5);
+  } });
+  const until = async (ok: () => boolean, what: string) => { for (let i = 0; i < 100 && !ok(); i++) await new Promise(r => setTimeout(r, 100)); assert.ok(ok(), what); };
+  const wait = (ms: number) => new Promise(r => setTimeout(r, ms));
+  browser.attachViewer(client as unknown as WebSocket, 'b6', false);
+  client.emit('message', JSON.stringify({ type: 'hello', acks: true }));
+  client.emit('message', JSON.stringify({ type: 'select', id: tab.id }));
+  await until(() => frames >= 2, `the first two frames arrive (got ${frames})`);
+  await wait(300); const held = frames; await wait(1500);
+  assert.ok(held <= 3, `at most two frames (and one in the start) without a report (got ${held})`);
+  assert.ok(frames - held <= 4, `about one frame each second without a report (got ${frames - held} in 1.5 s)`);
+  // hidden while frames wait for a report: after the stop and the new start of the screencast, frames flow again
+  client.emit('message', JSON.stringify({ type: 'visible', on: false }));
+  await wait(500); const hidden = frames; await wait(1000);
+  assert.equal(frames - hidden, 0, 'no frames while the view is hidden');
+  report = true;
+  client.emit('message', JSON.stringify({ type: 'visible', on: true }));
+  client.emit('message', JSON.stringify({ type: 'drawn' })); client.emit('message', JSON.stringify({ type: 'drawn' }));
+  await until(() => frames > hidden, 'a frame arrives when the view shows again');
+  const flowing = frames; await wait(1000);
+  assert.ok(frames - flowing >= 10, `frames flow again when the view reports them (got ${frames - flowing} in 1 s)`);
+  client.emit('message', JSON.stringify({ type: 'mouse', event: 'mouseMoved', x: 20, y: 300, button: 'none' }));
+  client.emit('message', JSON.stringify({ type: 'mouse', event: 'mouseMoved', x: 20, y: 20, button: 'none' }));
+  await until(() => [...sent].reverse().find(m => m.type === 'cursor')?.cursor === 'pointer', 'the view gets the pointer cursor over the link');
+  client.emit('close');
 });

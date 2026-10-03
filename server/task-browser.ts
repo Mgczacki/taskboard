@@ -779,10 +779,38 @@ function answerDialog(id: string, target: string, accept: boolean, promptText?: 
 
 // ---------- the dashboard: screencast of one tab, with mouse and key input ----------
 const FRAME_BACKLOG = 512 * 1024;
-interface PageConn { ws: WebSocket; target: string; next: number; pending: Map<number, (r: any) => void>; casting?: boolean }
+// JPEG quality of the screencast: QUALITY_FAST while frames come less than FAST_GAP_MS apart (scroll, video,
+// animation), QUALITY_STILL when no frame came for STILL_MS, so text is sharp while the page does not move. At 1000 x
+// 684 px a scroll frame of the test page of scripts/browser-speed.mjs is 53 KB at quality 50 and 69 KB at quality 70.
+// The quality does not change the CPU time of Chrome. Chrome refuses a second Page.startScreencast, so a change of
+// quality stops the screencast and starts it again, and Chrome sends a frame within about 10 ms of the start.
+// Back pressure: a view that sent 'hello' with acks reports each frame that it drew or dropped ('drawn'). The server
+// sends a frame only while fewer than MAX_UNDRAWN frames wait in the view. It keeps the newest other frame (waiting)
+// and holds the Page.screencastFrameAck of each frame until the view has room, so Chrome stops capturing (it sends
+// a few frames without an ack, then waits). HELD_MS limits the wait: a view that stops reporting gets about one frame
+// each second. A view without acks (an older dashboard) gets every frame and Chrome gets the ack at once.
+const MAX_UNDRAWN = 2, HELD_MS = 1000;
+const QUALITY_FAST = 50, QUALITY_STILL = 80, FAST_GAP_MS = 150, STILL_MS = 300;
+// quality: the quality of the screencast that runs or that the last queued start asks for. chain: the starts and stops
+// of this page's screencast, one at a time.
+interface PageConn { ws: WebSocket; target: string; next: number; pending: Map<number, (r: any) => void>; casting?: boolean; quality: number; chain: Promise<void>; lastFrame: number; stillTimer?: NodeJS.Timeout }
 export function attachViewer(client: WebSocket, id: string, autostart: boolean) {
   let page: PageConn | null = null, active = '', known = new Set<string>(), chosen = false, closed = false;
   let frameW = 0, frameH = 0, lastFrame = 0;
+  // acks: the view reports drawn frames. undrawn: frames sent to the view that it did not report yet. waiting: the
+  // newest frame that the view had no room for. held: the acks that Chrome waits for.
+  let acks = false, undrawn = 0, waiting: Buffer | null = null, held: (() => void)[] = [], heldTimer: NodeJS.Timeout | undefined;
+  // visible: the view is on the screen ('visible' from the view). A hidden view gets no screencast, so Chrome captures
+  // and encodes no frames for it. The view stays a viewer (viewers), so the idle stop does not stop the browser.
+  let visible = true;
+  const sendFrame = (jpeg: Buffer) => { lastFrame = jpeg.length; undrawn++; client.send(jpeg); };
+  // the view has room: send the waiting frame, then let Chrome capture again
+  const drain = () => {
+    if (waiting && undrawn < MAX_UNDRAWN && client.readyState === WebSocket.OPEN) { sendFrame(waiting); waiting = null; }
+    while (held.length && undrawn < MAX_UNDRAWN) held.shift()!();
+    if (!held.length) { clearTimeout(heldTimer); heldTimer = undefined; }
+  };
+  const resetFrames = () => { undrawn = 0; waiting = null; drain(); };
   count(viewers, id, 1);
   let size = { w: 1280, h: 800 };
   const send = (m: object) => { if (client.readyState === WebSocket.OPEN && client.bufferedAmount < 4 * 1024 * 1024) client.send(JSON.stringify(m)); };
@@ -807,12 +835,13 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     const list = await (await fetch(`http://127.0.0.1:${m.port}/json/list`)).json() as { id: string; type: string; webSocketDebuggerUrl: string }[];
     const t = list.find(x => x.id === target && x.type === 'page'); if (!t) return;
     closePage();
+    waiting = null; cursorBusy = false;
     active = target;
     // tell the view now: a page with an open dialog answers the calls below only after the dialog closes, and the
     // view must show that tab to show its question
     send({ type: 'active', id: target });
     const ws = new WebSocket(t.webSocketDebuggerUrl, { perMessageDeflate: false, maxPayload: 64 * 1024 * 1024 });
-    const conn: PageConn = { ws, target, next: 0, pending: new Map() };
+    const conn: PageConn = { ws, target, next: 0, pending: new Map(), quality: QUALITY_STILL, chain: Promise.resolve(), lastFrame: 0 };
     page = conn;
     ws.on('message', d => {
       const msg = JSON.parse(d.toString());
@@ -824,19 +853,28 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
       else if (msg.method === 'Page.frameNavigated' && !msg.params.frame.parentId) { mainFrame = msg.params.frame.id; void navState(); }
       else if (msg.method === 'Page.navigatedWithinDocument' && frame === mainFrame) void navState();
       if (msg.method === 'Page.screencastFrame') {
-        ws.send(JSON.stringify({ id: ++conn.next, method: 'Page.screencastFrameAck', params: { sessionId: msg.params.sessionId } }));
+        const ack = () => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ id: ++conn.next, method: 'Page.screencastFrameAck', params: { sessionId: msg.params.sessionId } })); };
+        if (!acks) ack();
+        const now = Date.now();
+        if (now - conn.lastFrame < FAST_GAP_MS && conn.quality !== QUALITY_FAST) cast(conn, QUALITY_FAST);
+        conn.lastFrame = now;
+        clearTimeout(conn.stillTimer);
+        if (conn.quality === QUALITY_FAST) conn.stillTimer = setTimeout(() => cast(conn, QUALITY_STILL), STILL_MS);
         // A frame goes as one binary message (the JPEG bytes), after a 'frameSize' message when the size changes.
         // A frame is dropped while the view still has 512 KB to receive, so a slow connection shows the newest frame
         // a little later instead of every old frame in a queue.
         // the limit grows with the frames: three frames of a sharp view are about 1.3 MB
-        if (client.readyState !== WebSocket.OPEN || client.bufferedAmount > Math.max(FRAME_BACKLOG, 3 * lastFrame)) return;
+        if (client.readyState !== WebSocket.OPEN || client.bufferedAmount > Math.max(FRAME_BACKLOG, 3 * lastFrame)) { if (acks) ack(); return; }
         const w = msg.params.metadata.deviceWidth, h = msg.params.metadata.deviceHeight;
         if (w !== frameW || h !== frameH) { frameW = w; frameH = h; send({ type: 'frameSize', w, h }); }
-        const jpeg = Buffer.from(msg.params.data, 'base64'); lastFrame = jpeg.length;
-        client.send(jpeg);
+        const jpeg = Buffer.from(msg.params.data, 'base64');
+        if (!acks) { lastFrame = jpeg.length; client.send(jpeg); return; }
+        if (undrawn < MAX_UNDRAWN) sendFrame(jpeg); else waiting = jpeg;
+        if (undrawn < MAX_UNDRAWN) ack();
+        else { held.push(ack); heldTimer ??= setTimeout(() => { heldTimer = undefined; resetFrames(); }, HELD_MS); }
       }
     });
-    ws.on('close', () => { if (page === conn) page = null; if (conn.casting) { conn.casting = false; count(screencasts, id, -1); } });
+    ws.on('close', () => { clearTimeout(conn.stillTimer); if (page === conn) page = null; if (conn.casting) { conn.casting = false; count(screencasts, id, -1); } });
     ws.on('error', () => {});
     await new Promise(r => ws.once('open', r));
     await fetch(`http://127.0.0.1:${m.port}/json/activate/${target}`).catch(() => {});
@@ -845,9 +883,24 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     mainFrame = tree?.frameTree?.frame?.id || ''; loading = false;
     await navState();
     await viewport();
-    await call('Page.startScreencast', { format: 'jpeg', quality: 70, maxWidth: 1920, maxHeight: 1920, everyNthFrame: 1 });
-    if (ws.readyState === WebSocket.OPEN && !conn.casting) { conn.casting = true; count(screencasts, id, 1); }
+    cast(conn, QUALITY_STILL);
+    await conn.chain;
     send({ type: 'active', id: target });
+  }
+  // Start the screencast of this page at this quality, or stop it (null, and always while the view is hidden). A
+  // screencast that runs stops first.
+  function cast(conn: PageConn, quality: number | null) {
+    if (quality !== null) conn.quality = quality;
+    if (!visible) { quality = null; clearTimeout(conn.stillTimer); }
+    conn.chain = conn.chain.then(async () => {
+      if (page !== conn) return;
+      // every frame gets its ack, also a frame of the screencast that stops now
+      for (const ack of held.splice(0)) ack();
+      if (conn.casting) await call('Page.stopScreencast');
+      if (quality !== null && page === conn) await call('Page.startScreencast', { format: 'jpeg', quality, maxWidth: 1920, maxHeight: 1920, everyNthFrame: 1 });
+      const on = quality !== null && page === conn && conn.ws.readyState === WebSocket.OPEN;
+      if (on !== !!conn.casting) { conn.casting = on; count(screencasts, id, on ? 1 : -1); }
+    });
   }
   const dialogChanged = () => { void poll(); };
   // Polls can overlap (the timer, the view's messages and dialog changes start them). A poll can wait in open() for a
@@ -871,16 +924,23 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
   }
   const timer = setInterval(() => { void poll(); }, 1000);
   let chosenTimer: NodeJS.Timeout | undefined;
-  client.on('close', () => { if (closed) return; closed = true; count(viewers, id, -1); clearInterval(timer); clearTimeout(chosenTimer); closePage(); dialogWatch.get(id)?.listeners.delete(dialogChanged); });
+  client.on('close', () => { if (closed) return; closed = true; count(viewers, id, -1); clearInterval(timer); clearTimeout(chosenTimer); clearTimeout(cursorTimer); closePage(); dialogWatch.get(id)?.listeners.delete(dialogChanged); });
   client.on('message', async d => {
     let m: any; try { m = JSON.parse(d.toString()); } catch { return; }
     try {
       // a failed start shows in the state that poll() sends (status().error), not as a second message
-      if (m.type === 'start') { void ensure(id).then(() => poll(), () => poll()); await poll(); }
+      if (m.type === 'hello') acks = !!m.acks;
+      // a view that shows again gets a frame at once: Chrome sends one at each start of a screencast
+      else if (m.type === 'visible') { const on = !!m.on; if (on !== visible) { visible = on; if (page) cast(page, on ? QUALITY_STILL : null); } }
+      else if (m.type === 'drawn') { undrawn = Math.max(0, undrawn - 1); drain(); }
+      else if (m.type === 'start') { void ensure(id).then(() => poll(), () => poll()); await poll(); }
       else if (m.type === 'stop') { await stop(id); await poll(); }
       else if (m.type === 'select' && typeof m.id === 'string') { chosen = true; clearTimeout(chosenTimer); chosenTimer = setTimeout(() => { chosen = false; }, 60000); await open(m.id); }
       else if (m.type === 'size' && m.w > 100 && m.h > 100) { size = { w: Math.min(3840, Math.round(m.w)), h: Math.min(2160, Math.round(m.h)) }; await viewport(); }
-      else if (m.type === 'mouse') await call('Input.dispatchMouseEvent', { type: m.event, x: m.x, y: m.y, button: m.button || 'none', buttons: m.buttons || 0, clickCount: m.clickCount || 0, modifiers: m.modifiers || 0, ...(m.event === 'mouseWheel' ? { deltaX: m.dx || 0, deltaY: m.dy || 0 } : {}) });
+      else if (m.type === 'mouse') {
+        await call('Input.dispatchMouseEvent', { type: m.event, x: m.x, y: m.y, button: m.button || 'none', buttons: m.buttons || 0, clickCount: m.clickCount || 0, modifiers: m.modifiers || 0, ...(m.event === 'mouseWheel' ? { deltaX: m.dx || 0, deltaY: m.dy || 0 } : {}) });
+        if (m.event === 'mouseMoved' || m.event === 'mouseReleased') cursorAt(m.x, m.y);
+      }
       else if (m.type === 'key') await key(m);
       else if (m.type === 'text' && typeof m.text === 'string') await call('Input.insertText', { text: m.text.slice(0, 100000) });
       else if (m.type === 'copy') {
@@ -907,6 +967,26 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
       }
     } catch (e) { send({ type: 'error', message: (e as Error).message }); }
   });
+  // The mouse cursor of the page. Headless Chrome reports no cursor over DevTools, so the server asks the page for the
+  // cursor at the mouse position (CURSOR) at once and then at most every CURSOR_MS while the mouse moves, one question
+  // at a time, and sends the view a 'cursor' message when it changes.
+  let cursor = '', cursorPos: { x: number; y: number } | null = null, cursorTimer: NodeJS.Timeout | undefined, cursorBusy = false, cursorAsked = 0;
+  function cursorAt(x: number, y: number) {
+    cursorPos = { x, y };
+    if (!cursorTimer && !cursorBusy) cursorTimer = setTimeout(askCursor, Math.max(0, cursorAsked + CURSOR_MS - Date.now()));
+  }
+  async function askCursor() {
+    cursorTimer = undefined; cursorAsked = Date.now();
+    const p = cursorPos; cursorPos = null;
+    if (!p || closed) return;
+    cursorBusy = true;
+    try {
+      const r = await call('Runtime.evaluate', { returnByValue: true, expression: `(${CURSOR})(${Number(p.x) || 0}, ${Number(p.y) || 0})` });
+      const c = r?.result?.value;
+      if (typeof c === 'string' && c !== cursor) { cursor = c; send({ type: 'cursor', cursor: c }); }
+    } finally { cursorBusy = false; }
+    if (cursorPos) cursorTimer = setTimeout(askCursor, Math.max(0, cursorAsked + CURSOR_MS - Date.now()));
+  }
   async function key(m: KeyMessage) {
     const e = keyEvent(m);
     if (e) await call('Input.dispatchKeyEvent', e);
@@ -918,6 +998,17 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
   })();
 }
 
+// The cursor that Chrome would show at a point of the page: the CSS cursor of the element there, and for "auto" the
+// text cursor over text and in a text field, else the arrow. Only the keyword is used (a cursor image is not sent).
+const CURSOR_MS = 100;
+const CURSOR = `(x, y) => { const e = document.elementFromPoint(x, y); if (!e) return 'default';
+  const css = getComputedStyle(e).cursor.split(',').pop().trim();
+  if (css !== 'auto') return css;
+  if (e.isContentEditable || e.tagName === 'TEXTAREA' || (e.tagName === 'INPUT' && !/^(button|submit|reset|checkbox|radio|range|color|file|image)$/.test(e.type))) return 'text';
+  const r = document.caretRangeFromPoint?.(x, y), n = r?.startContainer;
+  if (n?.nodeType === 3 && n.textContent.trim()) { const t = document.createRange(); t.selectNodeContents(n);
+    for (const b of t.getClientRects()) if (x >= b.left && x <= b.right && y >= b.top && y <= b.bottom) return 'text'; }
+  return 'default'; }`;
 // The text that a copy takes: the selection in a focused text field, else the selection of the page.
 const COPY = `(() => { const a = document.activeElement;
   if (a && (a.tagName === 'TEXTAREA' || (a.tagName === 'INPUT' && a.type !== 'password')) && typeof a.selectionStart === 'number') return a.value.slice(a.selectionStart, a.selectionEnd);

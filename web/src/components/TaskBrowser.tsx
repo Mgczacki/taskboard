@@ -147,6 +147,8 @@ function urlParts(url: string): { scheme: string; host: string; rest: string; se
 // ---------- the view ----------
 const MOD = (e: { altKey: boolean; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) => (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0);
 const BUTTON = ['left', 'middle', 'right'] as const;
+// the CSS cursor keywords that the page can report ('cursor' from the server); other values show the arrow
+const CURSORS = new Set(['default', 'pointer', 'text', 'vertical-text', 'move', 'grab', 'grabbing', 'crosshair', 'help', 'wait', 'progress', 'not-allowed', 'no-drop', 'copy', 'alias', 'cell', 'context-menu', 'zoom-in', 'zoom-out', 'none', 'all-scroll', 'col-resize', 'row-resize', 'n-resize', 'e-resize', 's-resize', 'w-resize', 'ne-resize', 'nw-resize', 'se-resize', 'sw-resize', 'ew-resize', 'ns-resize', 'nesw-resize', 'nwse-resize']);
 
 // onCanvas: the task panel passes it, so the More menu can show the browser in the task's Canvas window
 export function BrowserView({ id, title = '', autostart = false, floating = false, archived = false, isTemplate = false, onCanvas }: { id: string; title?: string; autostart?: boolean; floating?: boolean; archived?: boolean; isTemplate?: boolean; onCanvas?: () => void }) {
@@ -176,6 +178,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
   const [framed, setFramed] = useState(false);
   const [pop, setPop] = useState<'tabs' | 'menu' | null>(null);
   const [promptText, setPromptText] = useState('');
+  const [cursor, setCursor] = useState('default');
   const [signin, setSignin] = useState<SigninMode | null>(null);
   const [told, setTold] = useState('');
   const [sharing, reloadSharing] = useSharing(id, isTemplate || archived, running);
@@ -193,22 +196,53 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
   const flashTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const selection = useRef(''), peekTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const peek = () => { clearTimeout(peekTimer.current); peekTimer.current = setTimeout(() => send({ type: 'copy', peek: true }), 120); };
-  // Frames: createImageBitmap decodes each JPEG off the main thread, and the canvas draws it. Decodes can finish out
-  // of order, so a frame older than the one on the canvas is dropped.
-  const frames = useRef({ received: 0, drawn: 0, shown: false });
-  const showFrame = (b: Blob) => {
-    const n = ++frames.current.received;
-    createImageBitmap(b).then(bm => {
-      const c = canvas.current, f = frames.current;
-      if (!c || n < f.drawn) { bm.close(); return; }
-      f.drawn = n;
+  // Frames: createImageBitmap decodes one JPEG at a time off the main thread. A frame that comes during a decode waits
+  // (next), and a newer frame replaces it. The canvas draws the newest decoded frame once in each animation frame.
+  // Each frame is reported ('drawn') when its decode ends or when a newer frame replaces it: the server sends at most
+  // two frames that the view did not report, so frames never queue up here while the main thread is busy (back
+  // pressure in server/task-browser.ts). gen: clearFrames() makes the frames that are still in a decode old.
+  const frames = useRef({ shown: false, decoding: false, next: null as Blob | null, bitmap: null as ImageBitmap | null, raf: 0, gen: 0 });
+  const drawn = () => send({ type: 'drawn' });
+  const decode = (b: Blob) => {
+    const f = frames.current, gen = f.gen;
+    f.decoding = true;
+    const done = (bm: ImageBitmap | null) => {
+      f.decoding = false;
+      drawn();
+      if (bm && gen === f.gen) {
+        f.bitmap?.close();
+        f.bitmap = bm;
+        if (!f.raf) f.raf = requestAnimationFrame(paint);
+      } else bm?.close(); // a frame that does not decode: the next one replaces it
+      const n = f.next; f.next = null;
+      if (n) decode(n);
+    };
+    createImageBitmap(b).then(done, () => done(null));
+  };
+  const paint = () => {
+    const f = frames.current, c = canvas.current, bm = f.bitmap;
+    f.raf = 0; f.bitmap = null;
+    if (!bm) return;
+    if (c) {
       if (c.width !== bm.width || c.height !== bm.height) { c.width = bm.width; c.height = bm.height; }
       c.getContext('2d')?.drawImage(bm, 0, 0);
-      bm.close();
-      if (!f.shown) { f.shown = true; setFramed(true); setRunning(true); }
-    }, () => { /* a frame that does not decode: the next one replaces it */ });
+    }
+    bm.close();
+    if (c && !f.shown) { f.shown = true; setFramed(true); setRunning(true); }
   };
-  const clearFrames = () => { frames.current.shown = false; frames.current.drawn = frames.current.received; const c = canvas.current; c?.getContext('2d')?.clearRect(0, 0, c.width, c.height); };
+  const showFrame = (b: Blob) => {
+    const f = frames.current;
+    if (!f.decoding) decode(b);
+    else { if (f.next) drawn(); f.next = b; }
+  };
+  const clearFrames = () => {
+    const f = frames.current;
+    f.shown = false; f.gen++;
+    if (f.next) { f.next = null; drawn(); }
+    f.bitmap?.close(); f.bitmap = null;
+    const c = canvas.current; c?.getContext('2d')?.clearRect(0, 0, c.width, c.height);
+  };
+  useEffect(() => () => { const f = frames.current; cancelAnimationFrame(f.raf); f.bitmap?.close(); }, []);
   const send = (m: object) => { if (ws.current?.readyState === WebSocket.OPEN) ws.current.send(JSON.stringify(m)); };
   const note = (text: string) => { setFlash(text); clearTimeout(flashTimer.current); flashTimer.current = setTimeout(() => setFlash(''), 1600); };
 
@@ -227,6 +261,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
         // the server sends the tabs every second: an unchanged list keeps the old array, so the view does not draw again
         else if (m.type === 'tabs') { setTabs(prev => JSON.stringify(prev) === JSON.stringify(m.tabs) ? prev : m.tabs); setRunning(true); setAgents(m.agents || 0); setMuted(m.muted ?? null); setErr(''); }
         else if (m.type === 'active') setActive(m.id);
+        else if (m.type === 'cursor') setCursor(CURSORS.has(m.cursor) ? m.cursor : 'default');
         else if (m.type === 'nav') setNav({ loading: !!m.loading, canBack: !!m.canBack, canForward: !!m.canForward });
         else if (m.type === 'copied') {
           const text = typeof m.text === 'string' ? m.text : '';
@@ -237,12 +272,25 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
         else if (m.type === 'state') { setRunning(m.running); setState(m); setMuted(m.muted ?? null); if (!m.running) { setTabs([]); setActive(''); setFramed(false); clearFrames(); } }
         else if (m.type === 'error') setErr(m.message);
       };
-      s.onopen = () => sendSize();
+      s.onopen = () => { send({ type: 'hello', acks: true }); send({ type: 'visible', on: shown.current }); sendSize(); };
       s.onclose = () => { if (!closed) retry = setTimeout(connect, 2000); };
     };
     connect();
     return () => { closed = true; clearTimeout(retry); clearTimeout(flashTimer.current); clearTimeout(peekTimer.current); ws.current?.close(); };
   }, [id]);
+
+  // The server streams frames only while the view is on the screen: the page is visible (not a background tab, not a
+  // minimized window) and the view intersects the viewport (not display: none, not scrolled out of a Canvas).
+  const shown = useRef(true);
+  useEffect(() => {
+    const el = screen.current; if (!el) return;
+    let inView = true;
+    const report = () => { const on = inView && document.visibilityState === 'visible'; if (on !== shown.current) { shown.current = on; send({ type: 'visible', on }); } };
+    const io = new IntersectionObserver(es => { inView = es[es.length - 1].isIntersecting; report(); });
+    io.observe(el);
+    document.addEventListener('visibilitychange', report);
+    return () => { io.disconnect(); document.removeEventListener('visibilitychange', report); };
+  }, [running]);
 
   // the page's viewport is the size of this view, so a frame fills it without bars
   const sendSize = () => { const r = screen.current?.getBoundingClientRect(); if (r && r.width > 100 && r.height > 100) send({ type: 'size', w: r.width, h: r.height }); };
@@ -508,7 +556,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
         onMouseDown={e => { screen.current?.focus(); mouse('mousePressed', e, e.detail || 1); }}
         onMouseUp={e => { mouse('mouseReleased', e, e.detail || 1); peek(); }}
         onMouseMove={e => mouse('mouseMoved', e)}
-        onContextMenu={e => e.preventDefault()}
+        onContextMenu={e => e.preventDefault()} style={{ cursor }}
         onKeyDown={e => key(e, true)} onKeyUp={e => key(e, false)}
         onPaste={e => { const text = e.clipboardData.getData('text'); if (text) send({ type: 'text', text }); e.preventDefault(); }}
         onCopy={e => copy(e, false)} onCut={e => copy(e, true)}>
