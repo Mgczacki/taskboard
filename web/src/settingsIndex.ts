@@ -78,6 +78,7 @@ export const SECTIONS: SectionDef[] = [
       { id: 'chromePath', label: 'Chrome program', words: 'path binary chromium executable' },
       { id: 'browserIdleStop', label: 'Stop an unused task browser after', words: 'idle memory minutes timeout close' },
       { id: 'browserSharp', label: 'Sharp view on Retina screens', words: 'retina sharp blurry pixel ratio scale resolution hidpi' },
+      { id: 'browserAutoSwitch', label: 'Switch to new tabs and popups automatically', words: 'popup window open login oauth tab focus follow agent new tab' },
     ] },
     { id: 'template', title: 'Template profile', settings: [
       { id: 'templateBrowser', label: 'Template browser for sign-ins', words: 'profile cookies login copy accounts' },
