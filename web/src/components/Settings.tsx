@@ -1,7 +1,7 @@
 // Settings: what the controller and other agents may do without asking, and this machine's controller. The page has
 // one section for each entry of SECTIONS in settingsIndex.ts, a side list of those sections and a search box.
 import { useEffect, useRef, useState } from 'react';
-import type { BrowserMode, BrowserStatus, ConfirmRisk, ControllerApprovals, MachineInfo, MessageLevel, PushRecord, RestartImpact, RestartResult, Task } from '../api';
+import type { AllowRule, BrowserMode, BrowserStatus, ConfirmRisk, ControllerApprovals, MachineInfo, MessageLevel, PushRecord, RestartImpact, RestartResult, Task } from '../api';
 import { api, autoReload, confirmEnd, DEFAULT_CONFIRM_RISK, DEFAULT_CONTROLLER_APPROVALS, setAutoReload, setConfirmEnd, useStore } from '../api';
 import { reasonText, type ServerHealth } from '../serverStatus';
 import { setTaskThinBar, setWindowSee, taskThinBar, windowSee, windowSeeSupported } from '../controllerView';
@@ -106,6 +106,9 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
                   {CONTROLLER_APPROVAL_ROWS.map(([key, text, note]) => <label key={key} className="opt"><input type="checkbox" disabled={busy} checked={{ ...DEFAULT_CONTROLLER_APPROVALS, ...info.settings.controllerApprovals }[key]} onChange={e => void save({ controllerApprovals: { [key]: e.target.checked } })} /> {text}{note && <span className="sub"> {note}</span>}</label>)}
                   <div className="sub">Trust dialogs, sign-ins, wide access rules, refused tool calls and the controller's own actions stay with you.</div>
                 </SettingItem>}
+              </SettingGroup>
+              <SettingGroup section="approvals" id="allowRules" title="Allow always rules" help={<>You add a rule with Allow always on a card where one task asks to type into another task. Only you add or revoke rules, on this dashboard. <code>tb allow list</code> shows them to tasks and the controller.</>}>
+                <SettingItem id="allowRulesList"><AllowRules setErr={setErr} /></SettingItem>
               </SettingGroup>
               <SettingGroup section="approvals" id="permits" title="Permit requests">
                 {p && <SettingItem id="controllerApprovesPermits">
@@ -477,4 +480,33 @@ function KeySettings({ query }: { query: string }) {
       <div><button className="btn" disabled={!ACTIONS.some(a => isCustom(a.id))} onClick={() => resetKeys()}>Reset all keys</button></div>
     </SettingItem>
   </SettingGroup>;
+}
+
+// Settings > Approvals > Allow always rules (server/allow-rules.ts): each rule in plain words, its deliveries, Revoke
+// and Revoke all. The list reloads every 15 seconds, so new rules and delivery counts show without a page reload.
+function AllowRules({ setErr }: { setErr: (s: string) => void }) {
+  const [data, setData] = useState<{ rules: AllowRule[]; limitPerHour: number; limitText: string } | null>(null);
+  const [confirmAll, setConfirmAll] = useState(false);
+  const load = () => api.allowRules().then(setData).catch(e => setErr(String((e as Error).message || e)));
+  useEffect(() => { void load(); const timer = setInterval(() => void load(), 15000); return () => clearInterval(timer); }, []);
+  const act = (p: Promise<unknown>) => void p.then(load).catch(e => setErr(String((e as Error).message || e)));
+  if (!data) return <div className="sub">Loading the rules…</div>;
+  return (
+    <div className="allow-rules">
+      <div className="opt">Tasks that may type into other tasks without a card</div>
+      {data.rules.length ? data.rules.map(r => (
+        <div key={r.id} className="allow-rule">
+          <div>
+            <div>{r.text}</div>
+            <div className="sub">Rule {r.id} · added {new Date(r.created).toLocaleString()} by you on card {r.card} · {r.count} message{r.count === 1 ? '' : 's'} delivered · {r.lastHour} of {data.limitPerHour} in the last hour{r.lastAt ? ` · last ${new Date(r.lastAt).toLocaleString()}` : ''}</div>
+          </div>
+          <button className="btn" onClick={() => act(api.revokeAllowRule(r.id))}>Revoke</button>
+        </div>
+      )) : <div className="sub">No rule. Every message from one task to another waits for your card.</div>}
+      <div className="sub">{data.limitText} Taskboard removes a rule when one of its tasks is archived or removed.</div>
+      {data.rules.length > 0 && (!confirmAll
+        ? <div><button className="btn" onClick={() => setConfirmAll(true)}>Revoke all…</button></div>
+        : <div className="banner"><b>{data.rules.length === 1 ? 'Revoke the rule?' : `Revoke all ${data.rules.length} rules?`}</b> <span className="sub">Every message between tasks then waits for your card again.</span> <button className="btn primary" onClick={() => { setConfirmAll(false); act(api.revokeAllAllowRules()); }}>Revoke all</button><button className="btn" onClick={() => setConfirmAll(false)}>Cancel</button></div>)}
+    </div>
+  );
 }

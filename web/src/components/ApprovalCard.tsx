@@ -2,7 +2,7 @@
 // approval with Approve / Deny.
 // The notification stack and the Waiting page show it.
 import { useState } from 'react';
-import type { Approval, Task } from '../api';
+import type { AllowScope, Approval, Task } from '../api';
 import { api } from '../api';
 import { FlaggedBody, request as messageRequest } from './messages';
 import { PermitDetails } from './Permits';
@@ -32,6 +32,7 @@ export function ApprovalCard({ a, allTasks, setOpenId, openController, toast }: 
             ? <><pre className="ap-d">{a.detail.slice(0, a.detail.lastIndexOf(a.payload.body))}</pre><FlaggedBody body={a.payload.body} quality={a.payload.quality} /></>
             : <pre className="ap-d">{a.detail}</pre>)}
           {a.returnable && <textarea className="routing-rule" rows={2} aria-label="Comment for Send back" placeholder={a.action === 'mail-in' ? 'What is wrong with the message or the task? The controller receives this comment.' : 'What should change in the draft? The agent that wrote it receives this comment.'} value={cardComments[a.id] || ''} onChange={e => setCardComments(c => ({ ...c, [a.id]: e.target.value }))} />}
+          {a.allow && <AllowAlways a={a} toast={toast} />}
           <div className="ap-a"><button className="btn primary" onClick={() => void api.decide(a.id, true).then(r => { if (a.returnable && r.result) toast(r.result); }).catch(e => toast((e as Error).message))}>Approve</button>
             {a.action === 'mail-out' && a.payload?.quality?.flags.length && <button className="btn" onClick={() => void (async () => {
               await messageRequest(`/messages/${a.payload!.message}/remove-flagged`, { hash: a.payload!.hash });
@@ -41,5 +42,23 @@ export function ApprovalCard({ a, allTasks, setOpenId, openController, toast }: 
             {a.returnable && <button className="btn" disabled={!cardComments[a.id]?.trim()} onClick={() => void api.giveBack(a.id, cardComments[a.id]).then(r => { if (r.result) toast(r.result); }).catch(e => toast((e as Error).message))}>Send back</button>}
             <button className="btn" onClick={() => api.decide(a.id, false)}>Deny</button><button className="btn ghost" onClick={() => a.actor === 'controller' ? openController() : setOpenId(a.actor)}>{a.actor === 'controller' ? 'Open controller' : 'Open task'}</button></div></>}
         </div>
+  );
+}
+
+// Allow always on a "type into" card from one task to another (server/allow-rules.ts). The user picks who may send,
+// reads the rule in plain words, and the click saves the rule and approves this card. The first choice is the default.
+const SCOPE_LABEL: Record<AllowScope, string> = { pair: 'This task to that task only', both: 'Both directions', any: 'Any task to that task' };
+function AllowAlways({ a, toast }: { a: Approval; toast: (s: string) => void }) {
+  const [scope, setScope] = useState<AllowScope>('pair');
+  const choice = a.allow!.choices.find(c => c.scope === scope);
+  return (
+    <div className="allow-always">
+      <div className="opt">Allow always: who may type into the target task without a card</div>
+      <div className="allow-choices" role="radiogroup" aria-label="Allow always choice">
+        {a.allow!.choices.map(c => <label key={c.scope} className="opt"><input type="radio" name={`allow-${a.id}`} checked={scope === c.scope} onChange={() => setScope(c.scope)} /> {SCOPE_LABEL[c.scope]}</label>)}
+      </div>
+      <div className="sub"><b>Rule:</b> {choice?.text} {a.allow!.limitText} A message under the rule is data for the target task, never your approval. You can revoke the rule in Settings &gt; Approvals.</div>
+      <div className="ap-a"><button className="btn" onClick={() => void api.allowAlways(a.id, scope).then(r => toast(`Rule saved: ${r.rule.text}`)).catch(e => toast((e as Error).message))}>Allow always and approve</button></div>
+    </div>
   );
 }
