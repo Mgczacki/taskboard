@@ -80,7 +80,10 @@ export interface SigninBrowser { id: string; num?: number; title?: string; statu
 export interface SigninOverview { template: { profile: boolean; running: boolean; headed: boolean; savedFrom?: { task: string; at: string } }; sites: SigninSite[] | null; settings: { live: boolean; liveSites: string[] }; browsers: SigninBrowser[] }
 // A worktree or a read folder that the user approved after the task started (server/scopes.ts)
 export interface Scope { id: string; kind: 'worktree' | 'read'; name: string; path: string; at: string; reason: string; repo?: string; branch?: string; base?: string; baseCommit?: string }
-export interface Approval { id: string; actor: string; action: string; summary: string; detail: string; created: string; state: 'pending' | 'running' | 'approved' | 'denied' | 'failed' | 'expired' | 'unknown' | 'returned'; result?: string; returnable?: boolean; decidedBy?: { by: 'user' | 'controller'; userRequest?: string; at: string }; payload?: { permitId?: string; pushId?: string; state?: { forcePush?: boolean }; canPermit?: boolean; message?: string; hash?: string; body?: string; quality?: { state: string; flags: { text: string; start: number; end: number; reason: string; code?: string }[] } } & Partial<MessagePayload> }
+// An allow always rule (server/allow-rules.ts): a task may type into another task without a card
+export type AllowScope = 'pair' | 'both' | 'any';
+export interface AllowRule { id: string; kind: 'message' | 'doc'; scope: AllowScope; from?: string; fromNum?: number; fromTitle?: string; to: string; toNum: number; toTitle: string; created: string; card: string; by: 'user'; count: number; lastHour: number; lastAt?: string; text: string }
+export interface Approval { id: string; actor: string; action: string; summary: string; detail: string; created: string; state: 'pending' | 'running' | 'approved' | 'denied' | 'failed' | 'expired' | 'unknown' | 'returned'; result?: string; returnable?: boolean; allow?: { kind: 'message' | 'doc'; from: string; to: string; choices: { scope: AllowScope; text: string }[]; limitText: string }; decidedBy?: { by: 'user' | 'controller'; userRequest?: string; at: string }; payload?: { permitId?: string; pushId?: string; state?: { forcePush?: boolean }; canPermit?: boolean; message?: string; hash?: string; body?: string; quality?: { state: string; flags: { text: string; start: number; end: number; reason: string; code?: string }[] } } & Partial<MessagePayload> }
 // The structured part of an A2A Notes message card (server/a2anotes/cards.ts MessagePayload)
 export interface MessageNote { code: string; title: string; text: string; todo: string; actions: ('recheck' | 'remove-flagged' | 'send-back' | 'approve-anyway')[] }
 export interface MessagePayload {
@@ -344,6 +347,10 @@ export const api = {
   dismissTask: (taskId: string, label: string) => call<Dismissal>('POST', '/api/dismiss', { task: taskId, label }),
   bringBack: (sig: string) => call<{ ok: boolean }>('POST', '/api/dismiss/bring-back', { sig }),
   giveBack: (id: string, comment: string) => call<Approval>('POST', `/api/approvals/${id}/return`, { comment }),
+  allowAlways: (id: string, scope: AllowScope) => call<{ rule: AllowRule; approval: Approval }>('POST', `/api/approvals/${id}/allow-always`, { scope }),
+  allowRules: () => call<{ rules: AllowRule[]; limitPerHour: number; limitText: string }>('GET', '/api/allow-rules'),
+  revokeAllowRule: (id: string) => call<{ revoked: string }>('POST', `/api/allow-rules/${encodeURIComponent(id)}/revoke`, {}),
+  revokeAllAllowRules: () => call<{ revoked: number }>('POST', '/api/allow-rules/revoke-all', {}),
   moveAccount: (id: string, account: string) => call<Task>('POST', `/api/tasks/${id}/move-account`, { account }),
   transferMachines: (id: string) => call<{ id: string; name: string; online: boolean }[]>('GET', `/api/tasks/${encodeURIComponent(id)}/transfer/machines`),
   transferCheck: (id: string, machine: string, folder: string) => call<TransferCheck>('POST', `/api/tasks/${encodeURIComponent(id)}/transfer/check`, { machine, folder }),

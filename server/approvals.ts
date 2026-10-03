@@ -9,12 +9,15 @@ import { randomUUID } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { TB_DIR } from './config.ts';
+import type { AllowOffer } from './allow-rules.ts';
 
 export interface Approval {
   id: string; actor: string; action: 'new' | 'send' | 'status' | 'kill' | 'move' | 'release' | 'restart' | 'git-merge' | 'git-push' | 'tool-refusal' | 'permit' | 'scope' | 'mail-in' | 'mail-out'; summary: string; detail: string;
   created: string; state: 'pending' | 'running' | 'approved' | 'denied' | 'failed' | 'expired' | 'unknown' | 'returned'; result?: string; payload: unknown;
   // the card has a comment box and Send back
   returnable?: boolean;
+  // a "type into" card from one task to another: the card offers Allow always with these choices (allow-rules.ts)
+  allow?: AllowOffer;
   // who approved or denied the card. The controller approves only on the user's request in its chat
   // (server/controller-approve.ts); userRequest holds the user's exact message.
   decidedBy?: Decider & { at: string };
