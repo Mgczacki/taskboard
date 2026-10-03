@@ -998,3 +998,22 @@ table.procs tr.proc-group td { padding-top: 10px; }
 .si-add input { width: 16em; }
 /* the hidden text field of the browser view that gets the keys, the IME and dead keys (TaskBrowser.tsx) */
 .bw-kb { position: absolute; width: 2px; height: 1.2em; padding: 0; border: 0; margin: 0; opacity: 0; resize: none; overflow: hidden; pointer-events: none; font-size: 14px; color: transparent; background: transparent; caret-color: transparent; }
+/* what the agent does in the browser view (TaskBrowser.tsx AgentStrip and AgentPointer) */
+.bw { --bw-agent: #7a4ff0; --bw-ask: #c76a00; }
+.bw-agentline { display: flex; align-items: center; gap: 10px; min-height: 30px; padding: 3px 8px 3px 10px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--bw-agent) 10%, var(--panel)); font-size: 12px; flex-wrap: wrap; }
+.bw-agentline.both { background: color-mix(in srgb, var(--accent) 12%, var(--panel)); }
+.bw-agentline.ask { background: color-mix(in srgb, var(--bw-ask) 16%, var(--panel)); }
+.bw-agentline .bw-who { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; white-space: nowrap; }
+.bw-agentline .bw-who i { width: 8px; height: 8px; border-radius: 50%; background: var(--bw-agent); }
+.bw-agentline.both .bw-who i { background: var(--accent); }
+.bw-agentline.ask .bw-who i { background: var(--bw-ask); }
+.bw-agentline .bw-what { color: var(--muted); min-width: 0; flex: 1 1 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bw-agentline .bw-note { flex: 1 1 200px; min-width: 0; height: 24px; border: 1px solid var(--line2); border-radius: 6px; background: var(--bg); color: var(--text); padding: 0 8px; font: inherit; }
+.bw-apointer { position: absolute; width: 0; height: 0; pointer-events: none; z-index: 2; }
+.bw-apointer svg { position: absolute; left: -2px; top: -2px; filter: drop-shadow(0 1px 1px rgba(0,0,0,.4)); }
+.bw-apointer .bw-atag { position: absolute; left: 14px; top: 12px; background: var(--bw-agent); color: #fff; font: 600 10px var(--sans); padding: 1px 5px; border-radius: 4px; white-space: nowrap; }
+.bw-apointer .bw-aring { position: absolute; left: -16px; top: -16px; width: 32px; height: 32px; border-radius: 50%; border: 2px solid var(--bw-agent); animation: bw-ring 1s ease-out forwards; }
+@keyframes bw-ring { from { transform: scale(.4); opacity: .9; } to { transform: scale(1.3); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .bw-apointer .bw-aring { animation: none; opacity: .6; } }
+.chip.bw-askchip { background: color-mix(in srgb, #c76a00 16%, transparent); color: #c76a00; font-weight: 600; }
+.chip.bw-askchip i { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #c76a00; margin-right: 5px; }

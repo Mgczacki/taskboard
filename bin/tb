@@ -204,7 +204,7 @@ const HELP = `tb — Taskboard command line
   tb top [--task <n>] [--no-energy]  every process of Taskboard grouped by task: CPU, memory, energy impact, age
   tb proc logs <name> [-n lines] [--task <task>]   the last lines of a process's output
   tb proc stop <name> [--remove] | tb proc restart <name>   [--task <task>]
-  tb browser [status|tabs|open <url>|start|stop] [--task <task>]
+  tb browser [status|tabs|open <url>|ask "<what the user must do>"|ask --clear|start|stop] [--task <task>]
                                      your task's own Chrome, shown in Taskboard (agents use the task-browser MCP tools)
 <task> is a number (12 or #12) or a task id.`;
 
@@ -305,6 +305,14 @@ switch (cmd) {
     const { opts, pos } = runtimeArgs(rest, ['--task']);
     const o = await runtimeOwner(opts);
     const sub = pos[0] || 'status';
+    if (sub === 'ask') {
+      // the agent asks the user for help in the browser; --clear takes the request back
+      const clear = rest.includes('--clear'), reason = pos.slice(1).join(' ').trim();
+      if (!clear && !reason) { console.error('Usage: tb browser ask "<what the user must do>"   (or tb browser ask --clear)'); process.exit(1); }
+      await call('POST', `${o.path}/browser/ask`, { reason: clear ? '' : reason });
+      console.log(clear ? `The request in the browser of ${o.label} is gone.` : `The user sees your request in the browser panel of ${o.label}. Their answer arrives as a message when they press Done.`);
+      break;
+    }
     if (sub === 'open') {
       if (!pos[1]) { console.error('Usage: tb browser open <url>'); process.exit(1); }
       const t = await call('POST', `${o.path}/browser/open`, { url: pos[1] });

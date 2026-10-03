@@ -194,6 +194,12 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
   // autoNote: the last switch that the server made by itself. offers: new tabs that did not take the view.
   const [autoNote, setAutoNote] = useState<{ id: string; from: string; reason: string } | null>(null);
   const [offers, setOffers] = useState<string[]>([]);
+  // What the agent did last ('agent' from the server, AgentEvent in server/task-browser.ts), and its request for help.
+  // userAt: the time of the user's last input in this view, so the strip can say that both act on the page.
+  const [agentEvt, setAgentEvt] = useState<AgentEvt | null>(null);
+  const [ask, setAsk] = useState<{ reason: string; at: string } | null>(null);
+  const [askNote, setAskNote] = useState('');
+  const userAt = useRef(0);
   const [autoSwitch, setAutoSwitch] = useState({ on: true, own: false });
   const [sharing, reloadSharing] = useSharing(id, isTemplate || archived, running);
   const setShared = (on: boolean) => api.signinShared(id, on).then(() => { reloadSharing(); setTold(on ? 'This browser gets shared sign-ins again.' : 'This browser gets no shared sign-ins now. It keeps the sign-ins it has: Reset gives an empty profile.'); }).catch(e => setErr(String(e.message || e)));
@@ -286,7 +292,9 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
         const m = JSON.parse(ev.data);
         if (m.type === 'frameSize') frameSize.current = { w: m.w, h: m.h };
         // the server sends the tabs every second: an unchanged list keeps the old array, so the view does not draw again
-        else if (m.type === 'tabs') { setTabs(prev => JSON.stringify(prev) === JSON.stringify(m.tabs) ? prev : m.tabs); setRunning(true); setAgents(m.agents || 0); setMuted(m.muted ?? null); setErr(''); setAutoSwitch(prev => prev.on === (m.autoSwitch !== false) && prev.own === !!m.autoSwitchOwn ? prev : { on: m.autoSwitch !== false, own: !!m.autoSwitchOwn }); }
+        else if (m.type === 'agent') setAgentEvt({ ...m, seen: Date.now() });
+        else if (m.type === 'ask') setAsk(m.ask || null);
+        else if (m.type === 'tabs') { setAsk(prev => JSON.stringify(prev) === JSON.stringify(m.ask || null) ? prev : m.ask || null); setTabs(prev => JSON.stringify(prev) === JSON.stringify(m.tabs) ? prev : m.tabs); setRunning(true); setAgents(m.agents || 0); setMuted(m.muted ?? null); setErr(''); setAutoSwitch(prev => prev.on === (m.autoSwitch !== false) && prev.own === !!m.autoSwitchOwn ? prev : { on: m.autoSwitch !== false, own: !!m.autoSwitchOwn }); }
         else if (m.type === 'active') onActive.current(m.id, m.auto);
         else if (m.type === 'offer') setOffers(prev => [...prev.filter(x => x !== m.id), m.id]);
         else if (m.type === 'cursor') setCursor(CURSORS.has(m.cursor) ? m.cursor : 'default');
@@ -381,6 +389,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
   const flushMove = () => { const p = pendingMove.current; if (!p) return; cancelAnimationFrame(p.raf); pendingMove.current = null; send(p.msg); };
   const mouse = (event: string, e: React.MouseEvent, clickCount = 0) => {
     if (!canvas.current) return;
+    if (event !== 'mouseMoved') userAt.current = Date.now();
     const msg = { type: 'mouse', event, ...point(e), button: event === 'mouseMoved' ? (e.buttons ? 'left' : 'none') : BUTTON[e.button] || 'left', buttons: e.buttons, clickCount, modifiers: MOD(e) };
     if (event === 'mouseMoved') {
       if (pendingMove.current) pendingMove.current.msg = msg;
@@ -429,6 +438,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
     // server/task-browser.ts). The Cmd shortcuts that go to the page carry the Meta bit in their modifiers.
     if (e.key === 'Meta') return;
     e.preventDefault();
+    userAt.current = Date.now();
     send({ type: 'key', down, key: e.key, code: e.code, keyCode: e.keyCode, modifiers: MOD(e), ...(e.getModifierState('AltGraph') ? { altGraph: true } : {}) });
     if (!down && (e.shiftKey || e.metaKey || e.altKey)) peek(); // Shift+Arrow, Cmd+A and the like change the selection
   };
@@ -562,6 +572,8 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
   </button>;
   const noteTab = autoNote && tabs.find(t => t.id === autoNote.id);
   const fromTab = autoNote && tabs.find(t => t.id === autoNote.from);
+  const agentLine = <AgentStrip evt={agentEvt} ask={ask} note={askNote} setNote={setAskNote} userAt={userAt}
+    onDone={() => { send({ type: 'askDone', note: askNote.trim() }); setAsk(null); setAskNote(''); note('The agent got your answer'); }} />;
   const switchedLine = autoNote && autoNote.id === active && <div className="bw-switched" role="status">
     <span className="bw-switched-t">{autoNote.reason === 'back' ? <>The tab closed. Back to <b>{noteTab ? tabName(noteTab) : 'the earlier tab'}</b>.</> : <>Switched to the new tab: <b>{noteTab ? tabName(noteTab) : 'loading…'}</b></>}</span>
     {autoNote.reason !== 'back' && fromTab && <button className="btn ghost" onClick={goBack} title={`Show ${tabName(fromTab)} again`}>Go back</button>}
@@ -641,6 +653,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
         </div>
       </>}
       {switchedLine}
+      {agentLine}
       {dialog && <div className="bw-dialog" role="alertdialog" aria-label="The page waits for an answer">
         <i className="bw-ask in" />
         <span className="bw-dialog-t"><b>{dialog.type === 'beforeunload' ? 'Leave this page?' : dialog.type === 'alert' ? 'The page says:' : 'The page asks:'}</b> {dialog.message}</span>
@@ -660,6 +673,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
         onPaste={e => { e.preventDefault(); void pasteFrom(e.clipboardData); }}
         onCopy={e => copy(e, false)} onCut={e => copy(e, true)}>
         <canvas ref={canvas} />
+        {agentEvt && <AgentPointer evt={agentEvt} frame={frameSize.current} active={active} />}
         <textarea ref={kb} className="bw-kb" style={{ left: kbAt.x, top: kbAt.y }} aria-label="Keyboard input for the page" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} tabIndex={-1}
           onCompositionStart={() => { composing.current = true; }}
           onCompositionUpdate={e => send({ type: 'ime', text: e.data || '' })}
@@ -745,5 +759,66 @@ function SoundSwitch({ id, muted, labeled = false, onChange, onDone, onError }: 
     <button className={`${labeled ? 'btn' : 'bw-ib'} bw-sound ${muted ? '' : 'on'}`} onClick={toggle} disabled={busy} aria-pressed={!muted} aria-label={label} title={title}>
       <Icon d={muted ? I.muted : I.sound} />{labeled && <span>{label}</span>}
     </button>
+  );
+}
+
+// ---------- what the agent does ----------
+// AgentEvt: one action of the agent (server/task-browser.ts agentWatch), with the label of the element it hit and the
+// time this view got it (seen).
+interface AgentEvt { kind: 'click' | 'type' | 'key' | 'scroll' | 'navigate' | 'newTab' | 'upload' | 'look' | 'drag'; target?: string; x?: number; y?: number; url?: string; chars?: number; label?: string; shown?: boolean; seen: number }
+const STRIP_MS = 30000, BOTH_MS = 4000, POINTER_MS = 3000;
+function agentText(e: AgentEvt): string {
+  const on = e.label ? ` “${e.label}”` : '';
+  const where = e.shown === false ? ' in another tab' : '';
+  switch (e.kind) {
+    case 'click': return (on ? `Clicked${on}` : 'Clicked the page') + where;
+    case 'type': return `Typed ${e.chars || 0} ${e.chars === 1 ? 'character' : 'characters'}${on ? ` into${on}` : ''}${where}`;
+    case 'key': return `Pressed ${e.url || 'a key'}${where}`;
+    case 'scroll': return 'Scrolled the page' + where;
+    case 'navigate': { if (!e.url) return 'Reloaded the page' + where; try { return `Opened ${new URL(e.url).host || e.url}${where}`; } catch { return `Opened ${e.url}${where}`; } }
+    case 'newTab': return 'Opened a new tab';
+    case 'upload': return `Chose ${e.chars || 0} ${e.chars === 1 ? 'file' : 'files'} for an upload${where}`;
+    case 'drag': return 'Dragged on the page' + where;
+    default: return 'Looked at the page' + where;
+  }
+}
+const ago = (ms: number) => ms < 1500 ? 'now' : ms < 60000 ? `${Math.round(ms / 1000)} s ago` : `${Math.round(ms / 60000)} min ago`;
+// The strip under the address row: the agent's request for help (orange, with a note field and Done), or else the
+// agent's last action for STRIP_MS after it. When the user also acted within BOTH_MS, it says that both use the page.
+// It blocks nothing: the user and the agent can act at any time.
+function AgentStrip({ evt, ask, note, setNote, userAt, onDone }: { evt: AgentEvt | null; ask: { reason: string; at: string } | null; note: string; setNote: (v: string) => void; userAt: React.MutableRefObject<number>; onDone: () => void }) {
+  const [, tick] = useState(0);
+  const live = !!evt && Date.now() - evt.seen < STRIP_MS;
+  useEffect(() => { if (!live && !ask) return; const t = setInterval(() => tick(n => n + 1), 1000); return () => clearInterval(t); }, [live, !!ask, evt?.seen]);
+  if (ask) return (
+    <div className="bw-agentline ask" role="status">
+      <span className="bw-who"><i />The agent asks you</span>
+      <span className="bw-what" title={ask.reason}>“{ask.reason}”</span>
+      <input className="bw-note" value={note} onChange={e => setNote(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') onDone(); }} placeholder="Note for the agent (optional)" aria-label="Note for the agent" />
+      <button className="btn primary" onClick={onDone} title="Tell the agent that you are done. Your note goes with it.">Done</button>
+    </div>
+  );
+  if (!live) return null;
+  const both = Math.abs(userAt.current - evt!.seen) < BOTH_MS && Date.now() - userAt.current < STRIP_MS;
+  return (
+    <div className={`bw-agentline ${both ? 'both' : ''}`} role="status">
+      <span className="bw-who"><i />{both ? 'You and the agent both use this page' : 'Agent'}</span>
+      <span className="bw-what">{both ? 'Agent: ' : ''}{agentText(evt!)} · {ago(Date.now() - evt!.seen)}</span>
+    </div>
+  );
+}
+// The agent's pointer over the page: where it clicked, scrolled or dropped last, for POINTER_MS, with a ring at a click.
+// The point is in CSS pixels of the page, like the frame size (frameSize), so it maps to the canvas in percent.
+function AgentPointer({ evt, frame, active }: { evt: AgentEvt; frame: { w: number; h: number }; active: string }) {
+  const [, tick] = useState(0);
+  useEffect(() => { const t = setTimeout(() => tick(n => n + 1), POINTER_MS + 50); return () => clearTimeout(t); }, [evt.seen]);
+  if (evt.x === undefined || evt.y === undefined || Date.now() - evt.seen > POINTER_MS || (evt.target && evt.target !== active) || !frame.w || !frame.h) return null;
+  const style = { left: `${(evt.x / frame.w) * 100}%`, top: `${(evt.y / frame.h) * 100}%` };
+  return (
+    <div className="bw-apointer" style={style} aria-hidden="true">
+      {evt.kind === 'click' && <span key={evt.seen} className="bw-aring" />}
+      <svg viewBox="0 0 24 24" width="18" height="18"><path d="M4 2l16 9-7 2-3 7z" fill="var(--bw-agent)" stroke="#fff" strokeWidth="1.5" /></svg>
+      <span className="bw-atag">Agent</span>
+    </div>
   );
 }

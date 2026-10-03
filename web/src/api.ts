@@ -17,6 +17,8 @@ export interface Task {
   created: string; updated: string; statusAt: string; statusSource?: string;
   goal?: string; now?: string; ask?: string; stopReason?: string; interrupted?: string; desc: string;
   waitMin: number; waitSig?: string; attach: string; docs?: { inbox: number; outbox: number }; role?: 'controller'; parent?: string; links?: TaskLink[]; link?: LinkInfo; account?: string; model?: string; machine?: { id: string; name: string }; imported?: string; openElsewhere?: { pid: number; tty: string }; moveWhenDone?: boolean; remoteUrl?: string; restartWhenDone?: boolean; restartFor?: string; restartWait?: string; restartOverdue?: boolean; restartFailed?: string; newSessionWhenDone?: boolean; unscrollable?: boolean; tokenEstimate?: number | null;
+  // the agent's open request for help in the task browser (tb browser ask)
+  browserAsk?: string;
   scopes?: Scope[];
   // messages that Taskboard could not type into the agent yet (server/message-queue.ts), and inbox notices not delivered yet
   queue?: QueuedMessage[];

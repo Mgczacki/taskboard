@@ -34,8 +34,11 @@ export interface Meta { pid?: number; port?: number; started?: string; startMs?:
   // template, clearSites the sites whose cookies the next start deletes (sign out of all), liveSyncAt the last live sync.
   // headed: the template runs in a normal Chrome window (openTemplateWindow). savedFrom: the task whose profile became the template.
   noShared?: boolean; syncedAt?: string; clearSites?: string[]; liveSyncAt?: string; headed?: boolean; savedFrom?: { task: string; at: string };
+  // ask: the agent asked the user for help in this browser (tb browser ask), until the user answers with Done
+  ask?: Ask;
   // autoSwitch: the dashboard view switches to a new tab or popup (tab-switch.ts); unset follows the Settings choice
   autoSwitch?: boolean }
+export interface Ask { reason: string; at: string }
 export interface Tab { id: string; title: string; url: string; faviconUrl?: string; dialog?: Dialog }
 // A box that a page opened with alert(), confirm(), prompt() or onbeforeunload. Headless Chrome draws no box, and the
 // page waits until a DevTools client answers it (Page.handleJavaScriptDialog).
@@ -714,8 +717,10 @@ export function proxyAgent(client: WebSocket, id: string, waitMs = AGENT_WAIT_MS
     // a short time for the commands that the client sends after its first one failed
     setTimeout(done, 1000).unref();
   };
+  const watch = agentWatch(id);
   client.on('message', (d, binary) => {
     conn.last = Date.now(); const msg = binary ? d as Buffer : d.toString();
+    if (typeof msg === 'string') watch.command(msg);
     if (refusal) refuse(msg);
     else if (up?.readyState === WebSocket.OPEN) up.send(msg); else if (queue.length < 1000) queue.push(msg); else done();
   });
@@ -727,9 +732,102 @@ export function proxyAgent(client: WebSocket, id: string, waitMs = AGENT_WAIT_MS
     clearTimeout(timer);
     up = new WebSocket(m.ws, { perMessageDeflate: false, maxPayload: 512 * 1024 * 1024 });
     up.on('open', () => { for (const q of queue) up!.send(q); queue.length = 0; });
-    up.on('message', (d, binary) => { if (client.readyState === WebSocket.OPEN) client.send(binary ? d : d.toString()); });
+    up.on('message', (d, binary) => { if (!binary) watch.answer(d.toString()); if (client.readyState === WebSocket.OPEN) client.send(binary ? d : d.toString()); });
     up.on('close', done); up.on('error', done);
   }).catch(e => giveUp(agentRefusal(id, e as Error)));
+}
+
+// ---------- what the agent does, for the dashboard ----------
+// The proxy reads each DevTools command of the agent before it forwards it (agentWatch), and turns the commands that
+// act on a page into short events: a click (with its point in CSS pixels of the page), typed text (only its length),
+// a scroll, a navigation, a new tab, a file upload, and a look at the page (a screenshot or a snapshot). The dashboard
+// views of the browser show the last event and draw the agent's pointer (attachViewer). Nothing is held or refused:
+// the user and the agent both act at any time. The commands carry a session id; the target of each session comes from
+// Target.attachedToTarget events and from the answers to Target.attachToTarget.
+export interface AgentEvent { kind: 'click' | 'type' | 'key' | 'scroll' | 'navigate' | 'newTab' | 'upload' | 'look' | 'drag'; target?: string; x?: number; y?: number; url?: string; chars?: number; at: number }
+const activity = new Map<string, Set<(e: AgentEvent) => void>>();
+export function onAgentEvent(id: string, fn: (e: AgentEvent) => void) {
+  let set = activity.get(id); if (!set) activity.set(id, set = new Set());
+  set.add(fn);
+  return () => { set.delete(fn); };
+}
+const lastAgent = new Map<string, AgentEvent>();
+export const lastAgentEvent = (id: string) => lastAgent.get(id);
+const LOOK = new Set(['Page.captureScreenshot', 'Accessibility.getFullAXTree', 'Accessibility.queryAXTree', 'DOMSnapshot.captureSnapshot']);
+export function agentWatch(id: string) {
+  const sessions = new Map<string, string>(), attaching = new Map<number, string>();
+  // typed characters wait up to TYPE_MS, so a burst of keys is one event
+  let typed: AgentEvent | null = null, typeTimer: NodeJS.Timeout | undefined;
+  const TYPE_MS = 300;
+  const emit = (e: AgentEvent) => { lastAgent.set(id, e); for (const fn of activity.get(id) || []) { try { fn(e); } catch { /* listener failed */ } } };
+  const flushTyped = () => { clearTimeout(typeTimer); typeTimer = undefined; if (typed) { const e = typed; typed = null; emit(e); } };
+  const type = (target: string | undefined, chars: number) => {
+    if (typed && typed.target !== target) flushTyped();
+    typed = typed ? { ...typed, chars: (typed.chars || 0) + chars, at: Date.now() } : { kind: 'type', target, chars, at: Date.now() };
+    typeTimer ??= setTimeout(flushTyped, TYPE_MS);
+  };
+  return {
+    command(text: string) {
+      if (text.length > 200000) return; // a large command (a script, a file) is not an action to show
+      let m: { id?: number; method?: string; params?: any; sessionId?: string };
+      try { m = JSON.parse(text); } catch { return; }
+      const method = m.method || '', p = m.params || {}, target = m.sessionId ? sessions.get(m.sessionId) : undefined, at = Date.now();
+      if (method === 'Target.attachToTarget' && typeof m.id === 'number' && typeof p.targetId === 'string') attaching.set(m.id, p.targetId);
+      else if (method === 'Input.dispatchMouseEvent') {
+        if (p.type === 'mousePressed') { flushTyped(); emit({ kind: 'click', target, x: Number(p.x) || 0, y: Number(p.y) || 0, at }); }
+        else if (p.type === 'mouseWheel') emit({ kind: 'scroll', target, x: Number(p.x) || 0, y: Number(p.y) || 0, at });
+      }
+      else if (method === 'Input.insertText' && typeof p.text === 'string') type(target, p.text.length);
+      else if (method === 'Input.dispatchKeyEvent' && (p.type === 'keyDown' || p.type === 'char' || p.type === 'rawKeyDown')) {
+        if (typeof p.text === 'string' && p.text && p.type !== 'char' && p.text !== '\r') type(target, p.text.length);
+        else if (p.type !== 'char') { flushTyped(); if (/^(Enter|Tab|Escape|Backspace|Delete|Arrow\w+|Page\w+|Home|End)$/.test(String(p.key || ''))) emit({ kind: 'key', target, url: String(p.key), at }); }
+      }
+      else if (method === 'Input.dispatchDragEvent' && p.type === 'drop') emit({ kind: 'drag', target, x: Number(p.x) || 0, y: Number(p.y) || 0, at });
+      else if (method === 'Page.navigate' && typeof p.url === 'string') { flushTyped(); emit({ kind: 'navigate', target, url: p.url.slice(0, 300), at }); }
+      else if (method === 'Page.reload') emit({ kind: 'navigate', target, url: '', at });
+      else if (method === 'Target.createTarget') emit({ kind: 'newTab', url: String(p.url || '').slice(0, 300), at });
+      else if (method === 'DOM.setFileInputFiles') emit({ kind: 'upload', target, chars: Array.isArray(p.files) ? p.files.length : 0, at });
+      else if (LOOK.has(method)) emit({ kind: 'look', target, at });
+    },
+    answer(text: string) {
+      // only the attach events, and the answers to an attach command that waits, are read (the answer has no method)
+      if (!text.includes('attach') && !(attaching.size && text.includes('sessionId'))) return;
+      let m: { id?: number; method?: string; params?: any; result?: any };
+      try { m = JSON.parse(text); } catch { return; }
+      if (m.method === 'Target.attachedToTarget' && m.params?.sessionId && m.params?.targetInfo?.targetId) sessions.set(m.params.sessionId, m.params.targetInfo.targetId);
+      else if (m.method === 'Target.detachedFromTarget' && m.params?.sessionId) sessions.delete(m.params.sessionId);
+      else if (typeof m.id === 'number' && attaching.has(m.id)) { if (m.result?.sessionId) sessions.set(m.result.sessionId, attaching.get(m.id)!); attaching.delete(m.id); }
+    },
+  };
+}
+
+// ---------- the agent asks the user for help (tb browser ask) ----------
+// The agent names what it needs, for example a sign-in or a captcha. The browser view shows the reason with a Done
+// button and a note field, and the task list shows a chip. Done clears the request and types the note into the
+// agent's session (onAskDone, runtime-routes.ts). Nothing waits on the request: the agent decides itself whether it
+// waits. askOf() keeps the request in memory, so the task list does not read browser.json for each task.
+const asks = new Map<string, Ask | null>();
+export function askOf(id: string): Ask | null {
+  if (!asks.has(id)) { let a: Ask | null = null; try { a = readMeta(id).ask ?? null; } catch { /* invalid id */ } asks.set(id, a); }
+  return asks.get(id) ?? null;
+}
+const askDone = new Set<(id: string, ask: Ask, note: string) => void>();
+export const onAskDone = (fn: (id: string, ask: Ask, note: string) => void) => { askDone.add(fn); };
+const askListeners = new Set<(id: string) => void>();
+export const onAsk = (fn: (id: string) => void) => { askListeners.add(fn); };
+export function setAsk(id: string, reason: string | null) {
+  const ask = reason ? { reason: reason.replace(/\s+/g, ' ').trim().slice(0, 300), at: new Date().toISOString() } : null;
+  updateMeta(id, { ask: ask ?? undefined });
+  asks.set(id, ask);
+  for (const fn of askListeners) { try { fn(id); } catch { /* listener failed */ } }
+  return ask;
+}
+export function answerAsk(id: string, note: string) {
+  const ask = askOf(id);
+  if (!ask) return false;
+  setAsk(id, null);
+  for (const fn of askDone) { try { fn(id, ask, note.replace(/\s+$/, '').slice(0, 2000)); } catch (e) { console.error(`task browser ${id}: the answer to the agent failed: ${(e as Error).message}`); } }
+  return true;
 }
 
 // ---------- dialogs ----------
@@ -984,13 +1082,26 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     // the first list after the view or the browser started: these tabs are not new
     if (!seeded) { sw.seed(list.map(t => t.id)); seeded = true; } else sw.listed(list, asked);
     const meta = readMeta(id);
-    send({ type: 'tabs', tabs: list, active, agents: agentCount(id), muted: mutedNow(meta, true), autoSwitch: autoSwitchOn(id), autoSwitchOwn: meta.autoSwitch !== undefined });
+    send({ type: 'tabs', tabs: list, active, agents: agentCount(id), muted: mutedNow(meta, true), autoSwitch: autoSwitchOn(id), autoSwitchOwn: meta.autoSwitch !== undefined, ask: askOf(id) });
     // the first tab when the view shows none; a shown tab that closed is handled by the switch (sw.destroyed)
     const target = active && list.some(t => t.id === active) ? active : sw.back() || list[0]?.id || '';
     if (target && target !== opening && (target !== active || !page)) await open(target);
   }
   const timer = setInterval(() => { void poll(); }, 1000);
-  client.on('close', () => { if (closed) return; closed = true; count(viewers, id, -1); clearInterval(timer); clearTimeout(soonTimer); clearTimeout(cursorTimer); closePage(); sw.seed([]); const dw = dialogWatch.get(id); dw?.listeners.delete(dialogChanged); dw?.targetListeners.delete(targetEvent); });
+  // What the agent does: each event goes to the view, with the name of the element that a click or typing hit, when
+  // the event is on the shown tab (LABEL). A label question waits at most 300 ms, so the strip is not late.
+  const stopAgent = onAgentEvent(id, async e => {
+    let label: string | undefined;
+    if ((e.kind === 'click' || e.kind === 'type') && (!e.target || e.target === active) && page) {
+      const expr = `(${LABEL})(${e.kind === 'click' ? `${Number(e.x) || 0}, ${Number(e.y) || 0}` : 'null, null'})`;
+      const r = await Promise.race([call('Runtime.evaluate', { returnByValue: true, expression: expr }), new Promise(r => setTimeout(() => r(null), 300))]) as any;
+      if (typeof r?.result?.value === 'string') label = r.result.value;
+    }
+    send({ type: 'agent', ...e, ...(label ? { label } : {}), shown: !e.target || e.target === active });
+  });
+  const askChanged = (b: string) => { if (b === id) send({ type: 'ask', ask: askOf(id) }); };
+  onAsk(askChanged);
+  client.on('close', () => { if (closed) return; closed = true; stopAgent(); askListeners.delete(askChanged); count(viewers, id, -1); clearInterval(timer); clearTimeout(soonTimer); clearTimeout(cursorTimer); closePage(); sw.seed([]); const dw = dialogWatch.get(id); dw?.listeners.delete(dialogChanged); dw?.targetListeners.delete(targetEvent); });
   client.on('message', async d => {
     let m: any; try { m = JSON.parse(d.toString()); } catch { return; }
     try {
@@ -1016,6 +1127,8 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
       // an IME or a dead key composes text in the view: the page shows the same composition, and 'text' commits it
       else if (m.type === 'ime' && typeof m.text === 'string') { const text = m.text.slice(0, 1000); await call('Input.imeSetComposition', { text, selectionStart: text.length, selectionEnd: text.length }); }
       else if (m.type === 'paste') await paste(m);
+      // Done on the agent's request for help, with the user's note
+      else if (m.type === 'askDone') answerAsk(id, typeof m.note === 'string' ? m.note : '');
       else if (m.type === 'copy') {
         // the selected text of the page, or of the focused text field; the dashboard puts it on the clipboard
         const r = await call('Runtime.evaluate', { returnByValue: true, expression: COPY });
@@ -1103,6 +1216,14 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
   })();
 }
 
+// A short name for the element at a point of the page, or for the focused element (x null): its label, its text or its
+// placeholder, for the line that says what the agent did ("Clicked Next", "Typed into Email"). A password field gives
+// its label only, never its value.
+const LABEL = `(x, y) => { let e = x === null ? document.activeElement : document.elementFromPoint(x, y);
+  if (!e || e === document.body) return '';
+  const pick = n => { const t = (n.getAttribute?.('aria-label') || (n.labels && n.labels[0] && n.labels[0].innerText) || n.getAttribute?.('placeholder') || n.getAttribute?.('title') || (n.tagName === 'INPUT' || n.tagName === 'TEXTAREA' ? n.getAttribute('name') : n.innerText) || '').replace(/\\s+/g, ' ').trim(); return t.length > 40 ? t.slice(0, 39) + '…' : t; };
+  for (let i = 0; e && i < 4; i++, e = e.parentElement) { const t = pick(e); if (t) return t; }
+  return ''; }`;
 // The modifier of the paste key in the task's Chrome: Cmd on macOS, Ctrl elsewhere (bits: 2 Ctrl, 4 Meta).
 const PASTE_MOD = process.platform === 'darwin' ? 4 : 2;
 // The cursor that Chrome would show at a point of the page: the CSS cursor of the element there, and for "auto" the

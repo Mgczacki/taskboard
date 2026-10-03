@@ -9,6 +9,7 @@ import * as agents from './agents.ts';
 import * as store from './store.ts';
 import * as procs from './task-procs.ts';
 import * as browser from './task-browser.ts';
+import * as messageQueue from './message-queue.ts';
 import * as signins from './browser-signins.ts';
 import * as memory from './memory.ts';
 import * as summary from './runtime-summary.ts';
@@ -75,7 +76,16 @@ export const watchBrowserIdle = () => {
     if (!store.get(id)) return; // the template browser has no task
     try { store.appendLog(id, { did: `Task browser: ${message}${lines.length ? ` Chrome log: ${lines.slice(-3).join(' | ')}` : ''}`, next: 'The browser starts again at the next tool call, or with Start the browser (Retry) in the Browser tab.' }); } catch { /* the task folder is gone */ }
   });
+  // the agent's request for help in its browser: the task list shows it, and Done types the user's note to the agent
+  browser.onAsk(id => { if (store.get(id)) store.touch(id); });
+  browser.onAskDone((id, ask, note) => {
+    const t = store.get(id); if (!t) return;
+    const text = `The user finished in the browser what you asked for ("${ask.reason}").${note ? ` Their note: ${note}` : ''} Look at the page again before you go on.`;
+    void messageQueue.send(t, text, { from: 'you', kind: 'message' }).catch(e => console.error(`task ${id}: the browser answer was not delivered: ${(e as Error).message}`));
+  });
 };
+// the agent's open request for help in the browser of a task (for the task list), or undefined
+export const browserAsk = (id: string) => browser.askOf(id)?.reason;
 
 type Fail = (res: express.Response, e: unknown) => void;
 // Who may change the processes or the browser of a task: the dashboard, tb from the user's own shell (token, no task),
@@ -154,6 +164,14 @@ export function mount(app: express.Express, fail: Fail) {
     catch (e) { fail(res, e); }
   };
   app.post('/api/tasks/:id/browser/sound', async (req, res) => { const t = task(req, res); if (t) await sound(req, res, t.id); });
+  // The agent asks the user for help in its browser (tb browser ask "<reason>"), or takes the request back (reason
+  // empty). An agent can ask only in its own task's browser.
+  app.post('/api/tasks/:id/browser/ask', (req, res) => {
+    const t = task(req, res); if (!t) return;
+    if (!mayChange(req, [t.id])) return res.status(403).json({ error: 'An agent can ask for help only in its own task browser.' });
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+    res.json({ ask: browser.setAsk(t.id, reason || null) });
+  });
   // A file for the browser view: an image of a paste, a file for a page's file chooser, or a file dropped on the view
   // (task-browser.ts addUpload). Only the dashboard posts files. The body is { name, type, data } with data in base64.
   app.post('/api/tasks/:id/browser/upload', (req, res) => {

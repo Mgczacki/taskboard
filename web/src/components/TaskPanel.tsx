@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import type { Group, Task } from '../api';
 import { AGENT_NAME, STATUS_LABEL, api, fmtWait, linkedTaskId, shortPath } from '../api';
 import { QueueActions, queueLabel, queueReason } from './QueuedMessage';
-import { AgentChip, ByController, Dot, MachineChip, ThreeLines, WhereChip } from './ui';
+import { AgentChip, ByController, Dot, MachineChip, ThreeLines, WhereChip, BrowserAskChip } from './ui';
 import { Terminal } from './Terminal';
 import { PendingMarker } from './PendingCard';
 import { DocsTab } from './Docs';
@@ -163,7 +163,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
         {isCtl && thin && glassOpen && <div className="glass-pop"><GlassControls g={glass} r={readable} /></div>}
         {!thin && <div className="dr-row1"><span className="num">#{t.num}</span><h2>{t.title}</h2><button className="btn ghost icon" onClick={() => setCompact(c => !c)} title={compact ? 'Show the details (chips, goal, now, since you last looked, buttons)' : 'Fold the details so the terminal gets the room'}>{compact ? '▾' : '▴'}</button><button className="btn ghost icon" onClick={onClose} title="Close">✕</button></div>}
         {t.role === 'controller' && <div className="banner intro">The controller is {t.agent === 'antigravity' ? 'an' : 'a'} {AGENT_NAME[t.agent]} session in <code>~/AgentVault/controller</code> (choose its account and agent on the Accounts page).{t.remoteUrl && <> Remote Control is on: <a href={t.remoteUrl} target="_blank" rel="noreferrer">open it on claude.ai or the Claude app</a>.</>} It manages agents with the <code>tb</code> command: reading and organising run without asking; starting agents, typing into them and archiving wait for your approval here. Try: “what needs me?” or “split X into three parallel tasks”.</div>}
-        <div className="dr-meta"><ByController t={t} /><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} />{acct && <span className="chip" title={acct.dir}>{acct.name}</span>}<span className="chip mono">{shortPath(t.cwd)}</span>{t.branch && <span className="chip mono">{t.worktree ? 'worktree · ' : ''}{t.branch}</span>}{t.agent === 'antigravity' && <span className="chip mono" title="Estimate from visible transcript text. Repeated model context is not included.">{tokenEstimate === null ? 'Estimate unavailable' : `~${formatTokens(tokenEstimate)} tokens`}</span>}</div>
+        <div className="dr-meta"><ByController t={t} /><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} /><BrowserAskChip t={t} />{acct && <span className="chip" title={acct.dir}>{acct.name}</span>}<span className="chip mono">{shortPath(t.cwd)}</span>{t.branch && <span className="chip mono">{t.worktree ? 'worktree · ' : ''}{t.branch}</span>}{t.agent === 'antigravity' && <span className="chip mono" title="Estimate from visible transcript text. Repeated model context is not included.">{tokenEstimate === null ? 'Estimate unavailable' : `~${formatTokens(tokenEstimate)} tokens`}</span>}</div>
         {!!t.scopes?.length && <ScopeList t={t} toast={toast} />}
         {!!t.queue?.length && <QueueList t={t} act={act} />}
         <div className="dr-meta">
