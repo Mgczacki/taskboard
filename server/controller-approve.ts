@@ -38,7 +38,7 @@ export function kindOf(a: Approval): { kind: ControllerKind } | { userOnly: stri
     case 'permit': return { kind: 'permit' };
     case 'mail-in': case 'mail-out': return { kind: 'mail' };
     case 'tool-refusal': return { userOnly: 'A refused tool call is decided by the user on the dashboard.' };
-    case 'send': if (a.actor !== 'controller') return { userOnly: `A message from one task to another is decided by the user on the dashboard.${a.allow ? ' The user can also choose Allow always there. Only the user adds or revokes an allow always rule.' : ''}` }; break;
+    case 'send': if (a.actor !== 'controller') return { userOnly: `A message or a document from one task to another is decided by the user on the dashboard.${a.allow ? ' The user can also choose Allow always there. Only the user adds or revokes an allow always rule.' : ''}` }; break;
   }
   return { userOnly: 'This card holds an action of the controller. Only the user approves the actions of the controller.' };
 }

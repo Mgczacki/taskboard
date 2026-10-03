@@ -16,7 +16,7 @@ export const SECTIONS: SectionDef[] = [
       { id: 'controllerApprovalKinds', label: 'Let the controller approve this kind when I ask in the chat', words: 'tb approve merge push force push release restart scope permit message draft chat' },
     ] },
     { id: 'allowRules', title: 'Allow always rules', settings: [
-      { id: 'allowRulesList', label: 'Tasks that may type into other tasks without a card', words: 'allow always rule revoke tb send message between tasks pair both directions any task rate limit' },
+      { id: 'allowRulesList', label: 'Tasks that may type into other tasks, or send documents to them, without a card', words: 'allow always rule revoke tb send tb doc send document message between tasks pair both directions any task rate limit' },
     ] },
     { id: 'permits', title: 'Permit requests', settings: [
       { id: 'controllerApprovesPermits', label: 'The controller may approve low risk suggestions', words: 'permit approval risk' },

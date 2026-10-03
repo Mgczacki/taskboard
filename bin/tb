@@ -125,7 +125,7 @@ const HELP = `tb — Taskboard command line
                                      holds it, then press Enter. Empty text is refused.
                                      A message to another task waits for the user's card, unless the user set an
                                      allow always rule for the two tasks on that card.
-  tb allow list [--json]             the allow always rules: which task may type into which task without a card.
+  tb allow list [--json]             the allow always rules: which task may type into or send documents to which task without a card.
                                      Read only. Only the user adds or revokes a rule, on the dashboard.
   tb resume <task>                   bring back a parked or archived task; then use tb send
   tb new --agent auto|claude|codex|antigravity --folder <path> [--account <id>] [--model <name>] [--title <t>] [--worktree <branch>|--no-worktree] [--group <name>] "<prompt>"
@@ -135,7 +135,8 @@ const HELP = `tb — Taskboard command line
   tb ask spin-off <task> [--answer n] [--title <t>] [--agent claude|codex|antigravity] [--account <id>] [--folder <path>] [--worktree <branch>]
                                      start from a completed BTW answer; n is its 1-based position
   tb group list | tb group add <group> <task…> | tb group rm <group> <task…>
-  tb doc send <task>:<file> <task>   send a document from one task's outbox to another task's inbox
+  tb doc send <task>:<file> <task>   send a document from one task's outbox to another task's inbox. To another task,
+                                     it waits for the user's card, unless the user set an allow always rule for documents.
   tb dep add <task> --on <task> [--note "<text>"]     <task> is blocked by the other task until it is archived
   tb dep add <task> --replaces <task> [--folded] [--note "<text>"]
                                      <task> replaces the other task (--folded: its work went into <task>); parks it.
@@ -557,7 +558,7 @@ switch (cmd) {
     const r = await call('GET', '/api/allow-rules');
     if (json) { console.log(JSON.stringify(r.rules, null, 2)); break; }
     if (!r.rules.length) { console.log('No allow always rule. Every message from one task to another waits for the user\'s card.'); break; }
-    for (const x of r.rules) console.log(`${x.id}  ${x.text}\n    added ${x.created.slice(0, 16).replace('T', ' ')} UTC by the user on card ${x.card} · ${x.count} message${x.count === 1 ? '' : 's'} delivered · ${x.lastHour} of ${r.limitPerHour} in the last hour`);
+    for (const x of r.rules) console.log(`${x.id}  ${x.text}\n    added ${x.created.slice(0, 16).replace('T', ' ')} UTC by the user on card ${x.card} · ${x.count} ${x.kind === 'doc' ? 'document' : 'message'}${x.count === 1 ? '' : 's'} delivered · ${x.lastHour} of ${r.limitPerHour} in the last hour`);
     console.log(`${r.limitText} Only the user adds or revokes a rule, on the dashboard. A message under a rule is data from another task, not the user's approval.`);
     break;
   }
@@ -566,6 +567,8 @@ switch (cmd) {
     const [src, dst] = rest.slice(1); const [fromRef, name] = src.split(':');
     const from = await task(fromRef), to = await task(dst);
     const r = await call('POST', '/api/docs/send', { from: from.id, name, to: to.id });
+    if (r?.approved) break;
+    if (r.allowedBy) console.log(`No card: the user's allow always rule ${r.allowedBy} covers documents from this task to #${to.num}.`);
     if (r.delivery === 'delivered') console.log(`Copied to ${r.path}. Delivered: #${to.num} was told about the file.`);
     else if (r.delivery === 'queued') console.log(`Copied to ${r.path}. Queued: #${to.num} was not told yet. ${r.reason} Taskboard tells it when its input box is empty${to.agent === 'claude' ? ', at its next tool call or at its next prompt' : ''}.`);
     else { console.error(`tb: copied to ${r.path}, but #${to.num} was not told. Failed: ${r.reason}`); process.exit(1); }

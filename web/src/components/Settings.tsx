@@ -107,7 +107,7 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
                   <div className="sub">Trust dialogs, sign-ins, wide access rules, refused tool calls and the controller's own actions stay with you.</div>
                 </SettingItem>}
               </SettingGroup>
-              <SettingGroup section="approvals" id="allowRules" title="Allow always rules" help={<>You add a rule with Allow always on a card where one task asks to type into another task. Only you add or revoke rules, on this dashboard. <code>tb allow list</code> shows them to tasks and the controller.</>}>
+              <SettingGroup section="approvals" id="allowRules" title="Allow always rules" help={<>You add a rule with Allow always on a card where one task asks to type into another task or to send it a document. Only you add or revoke rules, on this dashboard. <code>tb allow list</code> shows them to tasks and the controller.</>}>
                 <SettingItem id="allowRulesList"><AllowRules setErr={setErr} /></SettingItem>
               </SettingGroup>
               <SettingGroup section="approvals" id="permits" title="Permit requests">
@@ -493,12 +493,12 @@ function AllowRules({ setErr }: { setErr: (s: string) => void }) {
   if (!data) return <div className="sub">Loading the rules…</div>;
   return (
     <div className="allow-rules">
-      <div className="opt">Tasks that may type into other tasks without a card</div>
+      <div className="opt">Tasks that may type into other tasks, or send documents to them, without a card</div>
       {data.rules.length ? data.rules.map(r => (
         <div key={r.id} className="allow-rule">
           <div>
             <div>{r.text}</div>
-            <div className="sub">Rule {r.id} · added {new Date(r.created).toLocaleString()} by you on card {r.card} · {r.count} message{r.count === 1 ? '' : 's'} delivered · {r.lastHour} of {data.limitPerHour} in the last hour{r.lastAt ? ` · last ${new Date(r.lastAt).toLocaleString()}` : ''}</div>
+            <div className="sub">Rule {r.id} · added {new Date(r.created).toLocaleString()} by you on card {r.card} · {r.count} {r.kind === 'doc' ? 'document' : 'message'}{r.count === 1 ? '' : 's'} delivered · {r.lastHour} of {data.limitPerHour} in the last hour{r.lastAt ? ` · last ${new Date(r.lastAt).toLocaleString()}` : ''}</div>
           </div>
           <button className="btn" onClick={() => act(api.revokeAllowRule(r.id))}>Revoke</button>
         </div>

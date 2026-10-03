@@ -1,4 +1,5 @@
-// Allow always rules: the user lets one task type messages into another task (tb send) without an approval card.
+// Allow always rules: the user lets one task type messages into another task (tb send), or send documents to it
+// (tb doc send), without an approval card. A rule covers one of these two kinds.
 // The user adds a rule with the Allow always button on a "type into" card (web ApprovalCard), and revokes rules on the
 // Settings page. Tasks and the controller only read the rules (tb allow list). index.ts holds the routes and checks
 // that a request to add or revoke a rule comes from the dashboard; this file holds the rules and the match logic.
@@ -16,9 +17,15 @@ import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { TB_DIR } from './config.ts';
 
-// The only action kind that a rule can cover: text that one task types into another task with tb send.
-// Starting, archiving, parking, resuming, moving, releasing and settings never get a rule.
-export type AllowKind = 'message';
+// The action kinds that a rule can cover: text that one task types into another task (tb send), and a document from one
+// task's outbox to another task's inbox (tb doc send). Starting, archiving, parking, resuming, moving, releasing and
+// settings never get a rule.
+export type AllowKind = 'message' | 'doc';
+export const KINDS: AllowKind[] = ['message', 'doc'];
+const VERB: Record<AllowKind, [string, string, string]> = {
+  message: ['type messages into', 'type messages into each other', 'Messages'],
+  doc: ['send documents to', 'send documents to each other', 'Documents'],
+};
 // pair: from the sender to the target only. both: the two tasks in both directions. any: from any task to the target.
 export type AllowScope = 'pair' | 'both' | 'any';
 export const SCOPES: AllowScope[] = ['pair', 'both', 'any'];
@@ -41,22 +48,24 @@ export interface AllowOffer { kind: AllowKind; from: string; to: string; choices
 
 const name = (t: Pick<TaskRef, 'num' | 'title'>) => `#${t.num} "${t.title}"`;
 // The rule in plain words, for the card, the Settings page and tb allow list.
-export function ruleText(scope: AllowScope, from: Pick<TaskRef, 'num' | 'title'> | undefined, to: Pick<TaskRef, 'num' | 'title'>): string {
-  if (scope === 'any') return `Any task may type messages into task ${name(to)} without a card.`;
+export function ruleText(scope: AllowScope, from: Pick<TaskRef, 'num' | 'title'> | undefined, to: Pick<TaskRef, 'num' | 'title'>, kind: AllowKind = 'message'): string {
+  const [one, both, plural] = VERB[kind];
+  if (scope === 'any') return `Any task may ${one} task ${name(to)} without a card.`;
   if (!from) throw new Error('This rule needs a sender task.');
-  if (scope === 'both') return `Tasks ${name(from)} and ${name(to)} may type messages into each other without a card.`;
-  return `Task ${name(from)} may type messages into task ${name(to)} without a card. Messages in the other direction still need a card.`;
+  if (scope === 'both') return `Tasks ${name(from)} and ${name(to)} may ${both} without a card.`;
+  return `Task ${name(from)} may ${one} task ${name(to)} without a card. ${plural} in the other direction still need a card.`;
 }
-export const describe = (r: AllowRule) => ruleText(r.scope, r.from ? { num: r.fromNum ?? 0, title: r.fromTitle ?? '' } : undefined, { num: r.toNum, title: r.toTitle });
-export const LIMIT_TEXT = `Each rule allows at most ${LIMIT_PER_HOUR} messages in one hour. After that, a card asks you again.`;
+export const describe = (r: AllowRule) => ruleText(r.scope, r.from ? { num: r.fromNum ?? 0, title: r.fromTitle ?? '' } : undefined, { num: r.toNum, title: r.toTitle }, r.kind);
+export const LIMIT_TEXT = `Each rule allows at most ${LIMIT_PER_HOUR} deliveries in one hour. After that, a card asks you again.`;
 
 // A task that may be the sender or the target of a rule: a task that exists, is not the controller and is not archived.
 const usable = (t: TaskRef | undefined): t is TaskRef => !!t && t.role !== 'controller' && t.status !== 'archived';
 
-// The offer for a "type into" card, or undefined when the card cannot get a rule (the controller, or the same task).
-export function offer(from: TaskRef | undefined, to: TaskRef | undefined): AllowOffer | undefined {
+// The offer for a "type into" or "send a document" card, or undefined when the card cannot get a rule (the controller,
+// or the same task).
+export function offer(from: TaskRef | undefined, to: TaskRef | undefined, kind: AllowKind = 'message'): AllowOffer | undefined {
   if (!usable(from) || !usable(to) || from.id === to.id) return undefined;
-  return { kind: 'message', from: from.id, to: to.id, choices: SCOPES.map(scope => ({ scope, text: ruleText(scope, from, to) })), limitText: LIMIT_TEXT };
+  return { kind, from: from.id, to: to.id, choices: SCOPES.map(scope => ({ scope, text: ruleText(scope, from, to, kind) })), limitText: LIMIT_TEXT };
 }
 
 // True when the rule covers a message from `from` to `to`. Only task ids count.
@@ -79,7 +88,7 @@ export const recentOf = (r: AllowRule, now = Date.now()) => r.recent.filter(at =
 export function limited(r: AllowRule, now = Date.now()): string | undefined {
   const n = recentOf(r, now).length;
   if (n < LIMIT_PER_HOUR) return undefined;
-  return `The allow always rule ${r.id} already delivered ${n} messages in the last hour (the limit is ${LIMIT_PER_HOUR}). This card asks you again. Two tasks may answer each other in a loop.`;
+  return `The allow always rule ${r.id} already delivered ${n} ${r.kind === 'doc' ? 'documents' : 'messages'} in the last hour (the limit is ${LIMIT_PER_HOUR}). This card asks you again. Two tasks may answer each other in a loop.`;
 }
 
 // ---------- the saved rules ----------
@@ -107,15 +116,16 @@ export const all = () => rules.map(r => ({ ...r, text: describe(r), lastHour: re
 export const get = (id: string) => rules.find(r => r.id === id);
 
 // Adds a rule for the card. index.ts calls this only for a click on the dashboard. An equal rule is not added twice.
-export function add(scope: AllowScope, from: TaskRef, to: TaskRef, card: string): AllowRule {
+export function add(scope: AllowScope, from: TaskRef, to: TaskRef, card: string, kind: AllowKind = 'message'): AllowRule {
   if (!SCOPES.includes(scope)) throw new Error('Choose this task only, both directions or any task.');
+  if (!KINDS.includes(kind)) throw new Error('A rule covers only messages or documents.');
   if (!offer(from, to)) throw new Error('A rule needs two different tasks that are not archived. The controller cannot be part of a rule.');
-  const same = rules.find(r => r.kind === 'message' && r.scope === scope && r.to === to.id && (scope === 'any' || r.from === from.id));
+  const same = rules.find(r => r.kind === kind && r.scope === scope && r.to === to.id && (scope === 'any' || r.from === from.id));
   if (same) return same;
-  const r: AllowRule = { id: randomUUID().slice(0, 8), kind: 'message', scope, ...(scope === 'any' ? {} : { from: from.id, fromNum: from.num, fromTitle: from.title }),
+  const r: AllowRule = { id: randomUUID().slice(0, 8), kind, scope, ...(scope === 'any' ? {} : { from: from.id, fromNum: from.num, fromTitle: from.title }),
     to: to.id, toNum: to.num, toTitle: to.title, created: new Date().toISOString(), card, by: 'user', count: 0, recent: [] };
   rules.push(r); save();
-  audit({ event: 'added', rule: r.id, scope, from: r.from, to: r.to, card, by: 'user', text: describe(r) });
+  audit({ event: 'added', rule: r.id, kind, scope, from: r.from, to: r.to, card, by: 'user', text: describe(r) });
   return r;
 }
 // Counts one delivery under the rule: the total, the time for the rate limit and a line in the audit file.

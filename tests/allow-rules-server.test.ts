@@ -3,7 +3,8 @@
 // Covers: the first "type into" card works as before and offers Allow always; a task, the controller and a request
 // with the token cannot add or revoke a rule; the user's click saves the rule and types the message; later messages
 // that match run without a card, with the data line, the task log line and the audit line; the other direction still
-// gets a card; tb allow list; the rate limit; the removal on archive; Revoke and Revoke all.
+// gets a card; tb allow list; the rate limit; the removal on archive; tb doc send with a card and a rule; Revoke and
+// Revoke all.
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
@@ -155,14 +156,40 @@ test('allow always: the user adds a rule on the card, later messages skip the ca
     assert.ok(await until(async () => (await rules()).length === 1));
     assert.match(readFileSync(join(tbdir, 'allow-rules.jsonl'), 'utf8'), /"why":"#20 was archived"/);
 
-    // 9. the user revokes on the dashboard: one rule, then all
+    // 9. tb doc send: a document to another task waits for a card; Allow always for documents; the next one has no card
+    mkdirSync(join(vault, 'tasks', 'task-a', 'outbox'), { recursive: true });
+    writeFileSync(join(vault, 'tasks', 'task-a', 'outbox', 'notes.md'), '# Notes\n');
+    const docFirst = tb(['doc', 'send', '12:notes.md', '15'], 'task-a');
+    let docCard: { id: string; summary: string; allow: { kind: string; choices: { text: string }[] } } | undefined;
+    assert.ok(await until(async () => !!(docCard = await openCard())), 'a document card waits');
+    assert.equal(docCard!.allow.kind, 'doc');
+    assert.match(docCard!.summary, /^send the document notes\.md to #15 Reader task$/);
+    assert.match(docCard!.allow.choices[0].text, /may send documents to task #15/);
+    assert.equal(existsSync(join(vault, 'tasks', 'task-b', 'inbox', 'notes.md')), false, 'nothing is copied before a decision');
+    assert.equal((await post(`/api/approvals/${docCard!.id}/allow-always`, { scope: 'pair' }, as('task-a'))).status, 403);
+    assert.equal((await post(`/api/approvals/${docCard!.id}/allow-always`, { scope: 'pair' }, user)).status, 200);
+    const d1 = await docFirst;
+    assert.equal(d1.code, 0, d1.out);
+    assert.ok(existsSync(join(vault, 'tasks', 'task-b', 'inbox', 'notes.md')));
+    const d2 = await tb(['doc', 'send', '12:notes.md', '15'], 'task-a');
+    assert.equal(d2.code, 0, d2.out);
+    assert.match(d2.out, /No card: the user's allow always rule \w+ covers documents/);
+    assert.ok(existsSync(join(vault, 'tasks', 'task-b', 'inbox', 'notes-2.md')));
+    assert.match(readFileSync(join(vault, 'tasks', 'task-b', 'log.md'), 'utf8'), /Document notes-2\.md from #12 put in the inbox under the allow always rule/);
+    // the document rule does not cover messages: the message rule (pair, #12 to #15) still counts its own limit
+    assert.equal((await rules()).filter(r => r.text.includes('send documents')).length, 1);
+    // a document to the controller and a document to the sender itself have no card
+    assert.equal((await post('/api/docs/send', { from: 'task-a', name: 'notes.md', to: 'controller' }, as('task-a'))).status, 200);
+    assert.equal((await post('/api/docs/send', { from: 'task-a', name: 'notes.md', to: 'task-a' }, as('task-a'))).status, 200);
+
+    // 10. the user revokes on the dashboard: one rule, then all
     const anyCard = await post('/api/tasks/task-a/send', { text: 'Reverse direction' }, as('task-b'));
     assert.equal((await post(`/api/approvals/${anyCard.data.approval.id}/allow-always`, { scope: 'any' }, user)).status, 200);
     list = await rules();
-    assert.equal(list.length, 2);
+    assert.equal(list.length, 3);
     assert.equal((await post(`/api/allow-rules/${list[0].id}/revoke`, {}, user)).status, 200);
-    assert.equal((await rules()).length, 1);
-    assert.equal((await post('/api/allow-rules/revoke-all', {}, user)).data.revoked, 1);
+    assert.equal((await rules()).length, 2);
+    assert.equal((await post('/api/allow-rules/revoke-all', {}, user)).data.revoked, 2);
     assert.deepEqual(await rules(), []);
     // without a rule, the pair gets a card again
     const again = await post('/api/tasks/task-b/send', { text: 'After revoke' }, as('task-a'));

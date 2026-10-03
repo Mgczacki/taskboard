@@ -75,7 +75,7 @@ test('the offer shows each choice in plain words, with the pair choice first', (
   assert.equal(o.choices[0].text, 'Task #12 "Task 12" may type messages into task #15 "Task 15" without a card. Messages in the other direction still need a card.');
   assert.equal(o.choices[1].text, 'Tasks #12 "Task 12" and #15 "Task 15" may type messages into each other without a card.');
   assert.equal(o.choices[2].text, 'Any task may type messages into task #15 "Task 15" without a card.');
-  assert.match(o.limitText, /at most 30 messages in one hour/);
+  assert.match(o.limitText, /at most 30 deliveries in one hour/);
 });
 
 test('the rate limit stops a rule after 30 deliveries in one hour, and frees it an hour later', () => {
@@ -133,4 +133,17 @@ test('the controller cannot approve a "type into" card between two tasks, and th
   assert.ok('userOnly' in k);
   assert.match((k as { userOnly: string }).userOnly, /decided by the user on the dashboard\. The user can also choose Allow always there\. Only the user adds or revokes/);
   assert.ok('userOnly' in kindOf({ ...card, actor: 'controller', allow: undefined }));
+});
+
+test('a rule covers one kind: a message rule does not cover documents, and a document rule does not cover messages', () => {
+  fresh();
+  const msg = allow.add('pair', a, b, 'c1');
+  assert.equal(allow.match(allow.all(), 'doc', a, b), undefined);
+  const doc = allow.add('pair', a, b, 'c2', 'doc');
+  assert.notEqual(doc.id, msg.id);
+  assert.equal(allow.match(allow.all(), 'doc', a, b)?.id, doc.id);
+  assert.equal(allow.match(allow.all(), 'message', a, b)?.id, msg.id);
+  assert.equal(allow.offer(a, b, 'doc')!.choices[0].text, 'Task #12 "Task 12" may send documents to task #15 "Task 15" without a card. Documents in the other direction still need a card.');
+  assert.equal(allow.all().find(r => r.id === doc.id)!.text, 'Task #12 "Task 12" may send documents to task #15 "Task 15" without a card. Documents in the other direction still need a card.');
+  assert.throws(() => allow.add('pair', a, b, 'c3', 'status' as never), /only messages or documents/);
 });

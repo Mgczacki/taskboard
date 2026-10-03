@@ -45,7 +45,7 @@ export function ApprovalCard({ a, allTasks, setOpenId, openController, toast }: 
   );
 }
 
-// Allow always on a "type into" card from one task to another (server/allow-rules.ts). The user picks who may send,
+// Allow always on a "type into" or "send the document" card from one task to another (server/allow-rules.ts). The user picks who may send,
 // reads the rule in plain words, and the click saves the rule and approves this card. The first choice is the default.
 const SCOPE_LABEL: Record<AllowScope, string> = { pair: 'This task to that task only', both: 'Both directions', any: 'Any task to that task' };
 function AllowAlways({ a, toast }: { a: Approval; toast: (s: string) => void }) {
@@ -53,7 +53,7 @@ function AllowAlways({ a, toast }: { a: Approval; toast: (s: string) => void }) 
   const choice = a.allow!.choices.find(c => c.scope === scope);
   return (
     <div className="allow-always">
-      <div className="opt">Allow always: who may type into the target task without a card</div>
+      <div className="opt">Allow always: who may {a.allow!.kind === 'doc' ? 'send documents to' : 'type into'} the target task without a card</div>
       <div className="allow-choices" role="radiogroup" aria-label="Allow always choice">
         {a.allow!.choices.map(c => <label key={c.scope} className="opt"><input type="radio" name={`allow-${a.id}`} checked={scope === c.scope} onChange={() => setScope(c.scope)} /> {SCOPE_LABEL[c.scope]}</label>)}
       </div>
