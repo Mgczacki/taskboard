@@ -29,8 +29,10 @@ const section = (body: string, path: string) => {
 // Codex does not read hooks.state from -c overrides. Its hook review reads this value from the account config.
 // Trust only the hash that Codex reports for Taskboard's guard command.
 export function trustCodexHook(t: Task, key: string, hash: string) {
-  if (t.agent !== 'codex' || key !== '/<session-flags>/config.toml:pre_tool_use:0:0' || !/^sha256:[a-f0-9]{64}$/.test(hash))
-    throw new Error('Codex reported an unexpected Taskboard guard hook.');
+  // the guard (every Codex task) and the controller's hooks (agents.ts CODEX_CONTROLLER_HOOKS)
+  const allowed = t.role === 'controller' ? /^\/<session-flags>\/config\.toml:(pre_tool_use|user_prompt_submit|post_tool_use|stop):0:0$/ : /^\/<session-flags>\/config\.toml:pre_tool_use:0:0$/;
+  if (t.agent !== 'codex' || !allowed.test(key) || !/^sha256:[a-f0-9]{64}$/.test(hash))
+    throw new Error('Codex reported an unexpected Taskboard hook.');
   const acct = accounts.get(t.account) || accounts.defaultFor('codex');
   const file = join(acct.isDefault ? join(HOME, '.codex') : acct.dir, 'config.toml');
   const body = existsSync(file) ? readFileSync(file, 'utf8') : '';

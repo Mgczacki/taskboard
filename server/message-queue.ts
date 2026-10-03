@@ -3,11 +3,11 @@
 // When nothing can be typed now (the box holds text, a question or dialog shows, no box shows, or another message is
 // being typed), the message goes to TASK_DIR/message-queue.json and the sender gets "queued" and the reason.
 // A queued message reaches the agent by one of two paths, in the order the messages were sent:
-// - a hook (Claude Code: PostToolUse, UserPromptSubmit and Stop; Antigravity tasks: Stop). events.ts calls takeForHook,
+// - a hook (Claude Code and the controller on Codex: PostToolUse, UserPromptSubmit and Stop; Antigravity: Stop). events.ts calls takeForHook,
 //   which returns the text of every queued message and marks each one delivered. A busy agent runs hooks all the time,
 //   so this path does not depend on the screen.
 // - typing: the loop in start() reads the screen of each task with queued messages every 2 s and types the first
-//   message when the box is empty. Codex tasks have only this path. Each screen check is counted in `checks`, and
+//   message when the box is empty. Codex tasks (not the controller) have only this path. Each screen check is counted in `checks`, and
 //   `seen` says in plain words what the last check saw.
 // A queued message stays until it is delivered or the user removes it. Its sender (a task) is told through its inbox
 // when the message still waits after WARN_MS, when it fails, when the user removes it, and when it arrives after that
@@ -70,11 +70,11 @@ const sender = (from: string) => from === 'you' ? 'you' : from === 'taskboard' ?
 const minutes = (since: string) => Math.max(0, Math.round((Date.now() - Date.parse(since)) / 60000));
 
 // The hook path for this task, or null when only typing can deliver: Claude Code has hooks with context for the model;
-// Antigravity tasks get text from the Stop hook (events.ts; the controller does not, as for inbox notices); Codex has
-// no Taskboard hook that gives text to the model.
+// Antigravity gets text from the Stop hook (events.ts antigravityEvent); the controller on Codex has the Taskboard Codex
+// hooks (events.ts codexHookEvent). Codex tasks have no Taskboard hook that gives text to the model.
 export function hookEvents(t: Pick<Task, 'agent' | 'role'>): string | null {
-  if (t.agent === 'claude') return 'a tool call ends, a prompt is sent or its turn ends';
-  if (t.agent === 'antigravity' && t.role !== 'controller') return 'its turn ends';
+  if (t.agent === 'claude' || (t.agent === 'codex' && t.role === 'controller')) return 'a tool call ends, a prompt is sent or its turn ends';
+  if (t.agent === 'antigravity') return 'its turn ends';
   return null;
 }
 

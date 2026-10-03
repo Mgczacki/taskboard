@@ -14,6 +14,7 @@ import * as external from './external.ts';
 import * as store from './store.ts';
 import type { Task } from './store.ts';
 import * as messageQueue from './message-queue.ts';
+import { transcriptFor } from './importer.ts';
 
 const turnStart = new Map<string, number>();   // task id -> when the current turn began
 const blockedOnce = new Set<string>();          // Stop hook already asked for a log entry this turn
@@ -99,9 +100,7 @@ export function claudeEvent(taskId: string, input: any): { output?: unknown } {
       store.update(t.id, { status: 'working', ask: '', stopReason: undefined, interrupted: undefined, statusSource: `Claude Code UserPromptSubmit hook at ${clock()}.` });
       {
         const notice = docs.takeInboxNotice(t.id);
-        const usage = t.role === 'controller'
-          ? `${accounts.usageSummary(id => store.all().filter(x => (x.account || accounts.defaultFor(x.agent).id) === id && ['working', 'needs-you', 'unread', 'idle', 'review', 'stopped'].includes(x.status)).length)}\nMachine routing rules: ${machine.get().routingRules || '(none)'}\n${accounts.all().filter(a => a.routingRules).map(a => `${a.id} rule: ${a.routingRules}`).join('\n')}`
-          : '';
+        const usage = t.role === 'controller' ? controllerUsage() : '';
         // messages that waited in the queue (message-queue.ts); they are marked delivered when they are in this text
         const messages = messageQueue.takeForHook(t.id, 'UserPromptSubmit', messageQueue.HOOK_ROOM - (notice?.length || 0) - usage.length);
         const context = [notice, messages, usage].filter(Boolean).join('\n\n');
@@ -164,6 +163,51 @@ export function claudeEvent(taskId: string, input: any): { output?: unknown } {
   return {};
 }
 
+// The account usage and routing rules that the controller gets with each prompt (Claude Code and Codex
+// UserPromptSubmit hooks). Antigravity has no hook that adds text to a prompt; its controller runs `tb accounts`.
+function controllerUsage() {
+  return `${accounts.usageSummary(id => store.all().filter(x => (x.account || accounts.defaultFor(x.agent).id) === id && ['working', 'needs-you', 'unread', 'idle', 'review', 'stopped'].includes(x.status)).length)}\nMachine routing rules: ${machine.get().routingRules || '(none)'}\n${accounts.all().filter(a => a.routingRules).map(a => `${a.id} rule: ${a.routingRules}`).join('\n')}`;
+}
+
+// Codex hooks of the controller (server/hooks/codex-hook.mjs; agents.ts CODEX_CONTROLLER_HOOKS). Codex sends the same
+// fields as Claude Code (hook_event_name, session_id, transcript_path, last_assistant_message). The end of a turn and
+// the log entry still come from the notify program (codexEvent). These hooks give text to the model:
+// - UserPromptSubmit: new inbox files, queued messages and the account usage, as additionalContext
+// - PostToolUse: new inbox files and queued messages, as additionalContext
+// - Stop: queued messages, with {decision: "block", reason}; Codex then runs one more turn with the reason
+export function codexHookEvent(taskId: string, input: any): { output?: unknown } {
+  const t = store.get(taskId); if (!t || t.status === 'archived' || !acceptsEvent(t, 'codex', input.session_id)) return {};
+  const ids: Partial<Task> = {};
+  if (input.session_id && input.session_id !== t.sessionId) ids.sessionId = input.session_id;
+  if (input.transcript_path && input.transcript_path !== t.transcript) ids.transcript = input.transcript_path;
+  switch (input.hook_event_name) {
+    case 'UserPromptSubmit': {
+      store.update(t.id, { ...ids, status: 'working', ask: '', stopReason: undefined, interrupted: undefined, statusSource: `Codex UserPromptSubmit hook at ${clock()}.` });
+      const notice = docs.takeInboxNotice(t.id);
+      const usage = t.role === 'controller' ? controllerUsage() : '';
+      const messages = messageQueue.takeForHook(t.id, 'UserPromptSubmit', messageQueue.HOOK_ROOM - (notice?.length || 0) - usage.length);
+      const context = [notice, messages, usage].filter(Boolean).join('\n\n');
+      if (context) return { output: { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: context } } };
+      break;
+    }
+    case 'PostToolUse': {
+      if (Object.keys(ids).length) store.update(t.id, ids);
+      const notice = docs.takeInboxNotice(t.id);
+      const messages = messageQueue.takeForHook(t.id, 'PostToolUse', messageQueue.HOOK_ROOM - (notice?.length || 0));
+      const context = [notice, messages].filter(Boolean).join('\n\n');
+      if (context) return { output: { hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: context } } };
+      break;
+    }
+    case 'Stop': {
+      if (Object.keys(ids).length) store.update(t.id, ids);
+      const messages = messageQueue.takeForHook(t.id, 'Stop');
+      if (messages) return { output: { decision: 'block', reason: `${messages}\n\nRead the messages and act on them as needed.` } };
+      break;
+    }
+  }
+  return {};
+}
+
 export function codexEvent(taskId: string, p: any) {
   const t = store.get(taskId); if (!t || t.status === 'archived' || !acceptsEvent(t, 'codex', p['thread-id'])) return;
   if (p.type !== 'agent-turn-complete') return;
@@ -176,7 +220,13 @@ export function codexEvent(taskId: string, p: any) {
   // Codex sends no event for /new. A turn that ends in another thread shows it, one turn late. The transcript is the old
   // thread's rollout file, so it is cleared and the watcher (index.ts reconcile) looks up the new thread's file.
   const thread: string | undefined = p['thread-id'];
-  if (t.sessionId && thread && thread !== t.sessionId) store.update(t.id, { ...clearedPatch(t, thread, '/new'), transcript: undefined });
+  if (t.sessionId && thread && thread !== t.sessionId) {
+    // Codex also ends turns in background threads that have no session file. One answered about the handoff file of
+    // the controller (codex-cli 0.160.0); taking it as /new hid every later event of the real conversation. Only a
+    // thread with its own session file is a new conversation.
+    if (!transcriptFor('codex', thread, (accounts.get(t.account) || accounts.defaultFor('codex')).dir)) return;
+    store.update(t.id, { ...clearedPatch(t, thread, '/new'), transcript: undefined });
+  }
   // questions Codex asked during the turn can still be open on screen; codexQuestionCheck sets the status when they close
   const status = codexQuestionsOpen(store.get(t.id)!) ? {} : { ...finishedStatus(t, msg), statusSource: `Codex notify (agent-turn-complete) at ${clock()}.` };
   store.update(t.id, { sessionId: p['thread-id'] || t.sessionId, ...status, now: firstPara(msg) || t.now });
@@ -253,9 +303,10 @@ export function antigravityEvent(taskId: string, ev: string, input: any): { outp
         break;
       }
       // agy has no event that adds context to a prompt: files that arrived in the inbox are passed on here instead
-      const notice = t.role === 'controller' ? null : docs.takeInboxNotice(t.id);
+      // (also for the controller on Antigravity, which gets no other hook text)
+      const notice = docs.takeInboxNotice(t.id);
       // and so are queued messages (message-queue.ts hookEvents)
-      const messages = t.role === 'controller' ? null : messageQueue.takeForHook(t.id, 'Stop', messageQueue.HOOK_ROOM - (notice?.length || 0));
+      const messages = messageQueue.takeForHook(t.id, 'Stop', messageQueue.HOOK_ROOM - (notice?.length || 0));
       if (notice || messages) return { output: { decision: 'continue', reason: [notice, messages].filter(Boolean).join('\n\n') } };
       accounts.clearLimited(t.account);
       const msg = (t.transcript ? external.readState('antigravity', t.transcript)?.text : undefined) || '';

@@ -178,7 +178,8 @@ app.post('/api/hooks/antigravity', async (req, res) => {
   const event = String(req.body.event || '');
   const input = req.body.input || {};
   const result = events.antigravityEvent(taskId, event, input);
-  if (event === 'PreToolUse' && machine.get().permissions.autoReview) {
+  // the controller with Settings > Controller: skip permission prompts gets no auto review, as on Claude Code and Codex
+  if (event === 'PreToolUse' && machine.get().permissions.autoReview && !(store.get(taskId)?.role === 'controller' && machine.get().controller.skipPermissions.antigravity)) {
     const t = store.get(taskId);
     if (t?.agent === 'antigravity') {
       const verdict = await agyReview.review(t, input);
@@ -203,6 +204,11 @@ app.post('/api/hooks/agy-usage', (req, res) => {
     if (windows.length) accounts.setUsage(t.account || accounts.defaultFor(t.agent).id, { windows, at: new Date().toISOString(), source: 'Antigravity status line', plan: req.body.plan || undefined });
   }
   res.json({});
+});
+// The controller on Codex: UserPromptSubmit, PostToolUse and Stop hooks (server/hooks/codex-hook.mjs)
+app.post('/api/hooks/codex-hook', (req, res) => {
+  if (!tokenOk(req)) return res.status(401).end();
+  res.json(events.codexHookEvent(String(req.body.taskId || ''), req.body.input || {}));
 });
 app.post('/api/hooks/codex', (req, res) => {
   if (!tokenOk(req)) return res.status(401).end();
@@ -365,6 +371,11 @@ const cardView = (o: { a: approvals.Approval; kind?: controllerApprove.Controlle
     ...expiryOf(o.a), controllerMayApprove: !!o.kind && allowed,
     ...(o.userOnly ? { userOnly: o.userOnly } : !allowed ? { userOnly: `Settings > Controller approvals does not let the controller approve ${controllerApprove.KIND_NAME[o.kind!]} cards.` } : {}) };
 };
+// The details of the controller guidance that the controller reads on demand (agents.ts controllerGuide)
+app.get('/api/controller/guide/:topic', (req, res) => {
+  const text = agents.controllerGuide(req.params.topic);
+  text ? res.type('text/plain').send(text) : res.status(404).json({ error: 'There is no such guide. Topics: approvals, mail.' });
+});
 app.get('/api/controller/approvals', (req, res) => {
   const actor = req.get('x-tb-actor');
   if (actor && !isController(req)) return res.status(403).json({ error: 'Only the user and the controller list the approval cards.' });
@@ -882,7 +893,7 @@ app.use('/api', async (req, res, next) => {
 const info = () => {
   const c = store.get('controller');
   return { role: ROLE, root: ROOT, machine: machine.get().name, machineId: MACHINE_ID, host: hostname(), url: URL_BASE, pid: process.pid, settings: machine.get(),
-    controller: c ? { agent: c.agent, account: c.account, status: c.status, remoteUrl: c.agent === 'claude' && machine.get().controller.remoteControl ? c.remoteUrl : undefined, label: machine.controllerLabel() } : null,
+    controller: c ? { agent: c.agent, agentName: agents.agentName(c.agent), account: c.account || accounts.defaultFor(c.agent).id, skipPermissions: !!machine.get().controller.skipPermissions[c.agent], status: c.status, remoteUrl: c.agent === 'claude' && machine.get().controller.remoteControl ? c.remoteUrl : undefined, label: machine.controllerLabel() } : null,
     tasks: store.all().filter(t => t.role !== 'controller' && t.status !== 'archived').length };
 };
 app.get('/api/info', (_req, res) => res.json(info()));
@@ -897,7 +908,7 @@ app.get('/api/server', async (_req, res) => { const h = life.health(); res.json(
 app.patch('/api/info', async (req, res) => {
   if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Machine settings are changed on the dashboard.' });
   try {
-    const { name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, holdPermissionHook, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, confirmLowerControl, defaultMaxParallel, newTaskDefaultAgent, applyMaxParallelToAll, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp, browserAutoSwitch, claudeInChromeTasks, claudeInChromeController, confirmRisk, a2aSlackClientId, a2aSlackTeamId, controllerApprovals } = req.body;
+    const { name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerSkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, holdPermissionHook, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, confirmLowerControl, defaultMaxParallel, newTaskDefaultAgent, applyMaxParallelToAll, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp, browserAutoSwitch, claudeInChromeTasks, claudeInChromeController, confirmRisk, a2aSlackClientId, a2aSlackTeamId, controllerApprovals } = req.body;
     // Letting the controller approve permits gives the user less control. The page asks first and then sends confirmLowerControl.
     if (confirmLowerControl !== true && controllerCanApprovePermits === true && !machine.get().permissions.controllerCanApprovePermits)
       return res.status(400).json({ error: 'Confirm on the Settings page before you give the controller more control.' });
@@ -908,7 +919,7 @@ app.patch('/api/info', async (req, res) => {
       return res.status(400).json({ error: 'Pick a valid model for questions.' });
     if (reviewAccount && accounts.get(reviewAccount)?.agent !== 'claude') return res.status(400).json({ error: 'Pick a Claude Code account for auto review.' });
     if (defaultMaxParallel !== undefined) machine.checkMaxParallel(defaultMaxParallel); // refuse before anything is saved
-    machine.update({ name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, holdPermissionHook, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, defaultMaxParallel, newTaskDefaultAgent, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp, browserAutoSwitch, claudeInChromeTasks, claudeInChromeController, confirmRisk, a2aSlackClientId, a2aSlackTeamId, controllerApprovals });
+    machine.update({ name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerSkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, holdPermissionHook, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, defaultMaxParallel, newTaskDefaultAgent, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp, browserAutoSwitch, claudeInChromeTasks, claudeInChromeController, confirmRisk, a2aSlackClientId, a2aSlackTeamId, controllerApprovals });
     // the Settings page confirms first; running tasks keep running, only new starts check the new maximum
     if (applyMaxParallelToAll === true) accounts.setAllMaxParallel(machine.get().accounts.defaultMaxParallel);
     if (trustWorkspaces === false) trust.restore();
@@ -983,6 +994,14 @@ app.post('/api/controller/new-session', async (req, res) => {
   if (t && req.body.when === 'after-turn' && !['suspended', 'stopped', 'archived'].includes(t.status) && !betweenTurns(t))
     return res.json(view(store.update(t.id, { newSessionWhenDone: true })!));
   try { controllerStartedAt = Date.now(); res.json(view(await agents.newControllerSession())); } catch (e) { fail(res, e); }
+});
+// Settings > Controller agent: chosen by you on the dashboard only (not by the controller or tb). The controller stops
+// and starts on the new agent with a handoff at once; the page asks first (agents.setControllerAgent).
+app.post('/api/controller/agent', async (req, res) => {
+  if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'The controller agent is chosen on the dashboard.' });
+  const agent = String(req.body.agent || '');
+  if (!machine.CONTROLLER_AGENTS.includes(agent as machine.ControllerAgent)) return res.status(400).json({ error: 'Choose Claude Code, Codex or Antigravity for the controller.' });
+  try { controllerStartedAt = Date.now(); res.json(view(await agents.setControllerAgent(agent as machine.ControllerAgent))); } catch (e) { fail(res, e); }
 });
 // Which account the controller runs on: chosen by you on the dashboard only (not by the controller or tb).
 app.post('/api/controller/account', async (req, res) => {
@@ -1682,6 +1701,15 @@ function waitingForApproval(t: store.Task, pid: number, r: external.TranscriptSt
 let controllerStartedAt = 0;
 async function keepController(t: store.Task, s?: { dead: boolean }) {
   if (agents.launching.has(t.id) || t.status === 'archived') return;
+  agents.writeControllerGuidance();
+  // Settings > Controller agent names another agent than the one that runs (machine.json was changed by hand, or a
+  // switch failed after its setting was saved): switch between turns, with the handoff
+  const wanted = machine.get().controller.agent;
+  if (wanted !== t.agent && (s && !s.dead ? betweenTurns(t) : machine.get().controller.autostart) && Date.now() - controllerStartedAt > 60000) {
+    controllerStartedAt = Date.now();
+    try { await agents.setControllerAgent(wanted); console.log(`controller switched to ${wanted}`); } catch (e) { console.error('controller agent switch failed', e); }
+    return;
+  }
   if ((!s || s.dead) && machine.get().controller.autostart) {
     if (Date.now() - controllerStartedAt < 60000) return;
     controllerStartedAt = Date.now();
@@ -1710,6 +1738,11 @@ async function keepController(t: store.Task, s?: { dead: boolean }) {
     if (t.agent === 'codex' && /Trust this folder\?/.test(screen) && /Trust and continue/.test(screen)) { await tmux.tmux('send-keys', '-t', '=' + t.session + ':', 'Enter'); return; }
     if (t.agent === 'antigravity' && /Do you trust the contents of this project\?/.test(screen) && /Yes, I trust this folder/.test(screen)) { await tmux.tmux('send-keys', '-t', '=' + t.session + ':', 'Enter'); return; }
   }
+  // a first prompt that waits to be typed in (the handoff after an agent switch, when the command was too long or agy
+  // did not trust the folder yet)
+  if (s && !s.dead && agents.pendingPrompt.has(t.id)) void agents.typePendingPrompt(t, await tmux.capture(t.session, 0)).catch(e => console.error('controller first prompt:', e));
+  // Antigravity asks before each tool call unless its permission prompts are skipped; agy has no event for that question
+  if (s && !s.dead && t.agent === 'antigravity' && t.status === 'working') events.agyApprovalCheck(t, (await tmux.capture(t.session, 40)).split('\n').filter(l => l.trim()).slice(-20).join('\n'));
   if (s && !s.dead && t.agent === 'claude' && machine.get().controller.remoteControl) {
     const m = (await tmux.capture(t.session, 60)).match(/https:\/\/claude\.ai\/code\/session_[A-Za-z0-9]+/);
     if (m && m[0] !== t.remoteUrl) store.update(t.id, { remoteUrl: m[0] });
@@ -1883,6 +1916,8 @@ for (const t of store.all()) {
   else if ((r.state === 'busy' || r.state === 'tool') && ['idle', 'unread', 'review'].includes(t.status) && newer)
     store.update(t.id, { status: 'working', statusSource: 'Started working while Taskboard was restarting (read from the transcript).' });
 }
+// machine.json from a release without Settings > Controller agent: keep the agent that the controller runs now
+{ const c = store.get('controller'); if (c && !machine.controllerAgentKnown()) machine.adoptControllerAgent(c.agent, c.account || accounts.defaultFor(c.agent).id); }
 // start the controller together with Taskboard
 if (machine.get().controller.autostart && store.get('controller')?.status !== 'archived') {
   controllerStartedAt = Date.now();

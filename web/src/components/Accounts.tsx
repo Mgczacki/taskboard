@@ -63,28 +63,70 @@ const short = (p: string) => p.replace(/^\/Users\/[^/]+/, '~');
 
 // This machine's controller: its name (shown in the Claude app as "Taskboard controller · <name>"), whether it starts
 // with Taskboard, its model, and Remote Control (Claude Code only).
+// What Settings > Controller: skip permission prompts does for each agent: the flag (server/agents.ts
+// CONTROLLER_SKIP_FLAGS) and its effect, in plain words
+const SKIP_TEXT: Record<Agent, { flag: string; what: string }> = {
+  claude: { flag: '--dangerously-skip-permissions', what: 'Claude Code runs every tool and command without a permission prompt, and auto mode does not review them.' },
+  codex: { flag: '--dangerously-bypass-approvals-and-sandbox', what: 'Codex runs commands without approval prompts and without its sandbox. Commands can write to any folder and use the network.' },
+  antigravity: { flag: '--dangerously-skip-permissions', what: 'Antigravity approves each tool call without a prompt, and Taskboard does not review its tool calls.' },
+};
+
 export function ControllerBox({ ctl, setErr }: { ctl?: Task; setErr: (s: string) => void }) {
   const [info, setInfo] = useState<MachineInfo | null>(null);
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
+  const [switchTo, setSwitchTo] = useState<Agent | null>(null);
+  const [switching, setSwitching] = useState(false);
   useEffect(() => { api.info().then(i => { setInfo(i); setName(i.machine); }); }, [ctl?.remoteUrl, ctl?.agent]);
   if (!info) return null;
-  const save = async (p: { name?: string; autostart?: boolean; remoteControl?: boolean; dangerouslySkipPermissions?: boolean; controllerModels?: Partial<Record<Agent, string>> }) => {
+  const save = async (p: { name?: string; autostart?: boolean; remoteControl?: boolean; controllerSkipPermissions?: Partial<Record<Agent, boolean>>; controllerModels?: Partial<Record<Agent, string>> }) => {
     setBusy(true); try { const i = await api.updateInfo(p); setInfo(i); setName(i.machine); } catch (e) { setErr(String((e as Error).message || e)); } setBusy(false);
   };
-  const s = info.settings.controller, agent = ctl?.agent || 'claude', isClaude = agent === 'claude';
+  const s = info.settings.controller, agent = (ctl?.agent || s.agent || 'claude') as Agent, isClaude = agent === 'claude';
+  const skip = s.skipPermissions ? !!s.skipPermissions[agent] : isClaude && s.dangerouslySkipPermissions;
+  const doSwitch = async (to: Agent) => {
+    setSwitching(true);
+    try { await api.setControllerAgent(to); setInfo(await api.info()); } catch (e) { setErr(String((e as Error).message || e)); }
+    setSwitching(false); setSwitchTo(null);
+  };
+  const setSkip = (on: boolean) => {
+    if (on && !window.confirm(`Skip the permission prompts of the ${AGENT_NAME[agent]} controller?\n\nThe controller can then run commands without asking you. The Taskboard guard hook, the approval cards and the server checks of tb approve stay on.`)) return;
+    void save({ controllerSkipPermissions: { [agent]: on } });
+  };
   return (
     <div className="ctl-box">
       <SettingItem id="machineName"><div className="ctl-row"><b>This machine</b>
         <input type="text" value={name} onChange={e => setName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }} onBlur={() => { if (name.trim() && name.trim() !== info.machine) save({ name }); }} title="The name the controller uses for itself, and its session name in the Claude app" />
         <span className="sub">host {info.host} · one Taskboard server per machine</span></div></SettingItem>
+      <SettingItem id="controllerAgent"><div className="ctl-row"><label htmlFor="controller-agent"><b>Controller agent</b></label>
+        <select id="controller-agent" value={switchTo || agent} disabled={busy || switching} onChange={e => { const to = e.target.value as Agent; setSwitchTo(to === agent ? null : to); }}>
+          {AGENTS.map(a => <option key={a} value={a}>{AGENT_NAME[a]}{a === 'claude' ? ' (default)' : ''}</option>)}
+        </select>
+        <span className="sub">{switching ? `Starting the controller on ${AGENT_NAME[switchTo || agent]}…` : `Runs ${AGENT_NAME[agent]} on the account ${info.controller?.account || ctl?.account || 'default'}. The account for each agent is on the Accounts page.`}</span></div>
+        {switchTo && !switching && <div className="ctl-confirm" role="alertdialog" aria-label="Switch the controller agent">
+          <b>Switch the controller from {AGENT_NAME[agent]} to {AGENT_NAME[switchTo]}?</b>
+          <ul>
+            <li>The {AGENT_NAME[agent]} session ends now. A turn that runs now is cut off.</li>
+            <li>The old conversation is not lost. It stays in the history of {AGENT_NAME[agent]}, and the controller log names its session id.</li>
+            <li>{AGENT_NAME[switchTo]} starts a new conversation on the account that the controller used last for it, or on the least busy signed-in account that is not at its limit.</li>
+            <li>It first reads a handoff note with the open tasks and the rules, and its rules file ({switchTo === 'claude' ? 'CLAUDE.md' : 'AGENTS.md'} in the controller folder).</li>
+          </ul>
+          <div className="ctl-row"><button className="btn primary" onClick={() => void doSwitch(switchTo)}>Switch to {AGENT_NAME[switchTo]}</button><button className="btn ghost" onClick={() => setSwitchTo(null)}>Cancel</button></div>
+        </div>}</SettingItem>
       <SettingItem id="controllerAutostart"><label className="opt" title="When the Taskboard server starts, it starts the controller; if the controller exits, Taskboard starts it again within a minute"><input type="checkbox" checked={s.autostart} disabled={busy} onChange={e => save({ autostart: e.target.checked })} /> Start the controller with Taskboard and keep it running</label></SettingItem>
-      <SettingItem id="controllerSkipPermissions"><label className="opt"><input type="checkbox" checked={s.dangerouslySkipPermissions} disabled={busy || !isClaude} onChange={e => save({ dangerouslySkipPermissions: e.target.checked })} /> Run the Claude controller with <code>--dangerously-skip-permissions</code>{!isClaude && ' (Claude Code only)'}</label>
-      {isClaude && <div className="sub">Claude skips its permission prompts when this is on. Taskboard still checks <code>tb</code> commands and permit requests. A change restarts the controller between turns.</div>}</SettingItem>
+      <SettingItem id="controllerSkipPermissions"><label className="opt"><input type="checkbox" checked={skip} disabled={busy || switching} onChange={e => setSkip(e.target.checked)} /> Controller: skip permission prompts ({AGENT_NAME[agent]}: <code>{SKIP_TEXT[agent].flag}</code>)</label>
+        <div className="sub">Off by default. Each agent keeps its own value. {SKIP_TEXT[agent].what} A change restarts the controller between turns.</div>
+        {skip && <div className="sub ctl-warn">Warning: the controller can now run commands without asking you.</div>}
+        <div className="sub">These stay on when the prompts are skipped:
+          <ul>
+            <li>The Taskboard guard hook runs before each shell command. It blocks commands that stop the real Taskboard server, its agents or its login service. It was tested with this flag for each agent.</li>
+            <li>Only you release, roll back and restart Taskboard, and approve merges and pushes, unless you ask the controller in its chat.</li>
+            <li>The server checks <code>tb approve</code>, <code>tb pending answer</code>, <code>tb scope approve</code> and <code>tb permit approve</code>: each needs your exact words in the controller chat.</li>
+          </ul></div></SettingItem>
       <SettingItem id="controllerModel"><div className="ctl-row"><label htmlFor="controller-model">Controller model for {AGENT_NAME[agent]}</label>
         <input id="controller-model" type="text" maxLength={80} key={`${agent}:${s.models[agent]}`} defaultValue={s.models[agent]} disabled={busy} placeholder="Use the agent default" onBlur={e => { const model = e.target.value.trim(); if (model !== s.models[agent]) save({ controllerModels: { [agent]: model } }); }} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} />
         <span className="sub">A change restarts the controller between turns.</span></div></SettingItem>
-      <SettingItem id="remoteControl"><label className="opt" title={isClaude ? 'Lets you continue the controller from claude.ai/code or the Claude mobile app' : 'Remote Control is a Claude Code feature; it is off while the controller runs Codex'}><input type="checkbox" checked={s.remoteControl} disabled={busy || !isClaude} onChange={e => save({ remoteControl: e.target.checked })} /> Remote Control: reach the controller from the Claude app as “{info.controller?.label || 'Taskboard controller · ' + info.machine}”{!isClaude && ' (Claude Code only)'}</label>
+      <SettingItem id="remoteControl"><label className="opt" title={isClaude ? 'Lets you continue the controller from claude.ai/code or the Claude mobile app' : `Remote Control is a Claude Code feature; it is off while the controller runs ${AGENT_NAME[agent]}`}><input type="checkbox" checked={s.remoteControl} disabled={busy || !isClaude} onChange={e => save({ remoteControl: e.target.checked })} /> Remote Control: reach the controller from the Claude app as “{info.controller?.label || 'Taskboard controller · ' + info.machine}”{!isClaude && ' (Claude Code only)'}</label>
       {isClaude && s.remoteControl && <div className="sub">{ctl?.remoteUrl ? <>Open it on any device: <a href={ctl.remoteUrl} target="_blank" rel="noreferrer">{ctl.remoteUrl}</a> — in the Claude mobile app it is listed under Code.</> : 'The link appears here once the controller runs with Remote Control. After a change, the controller restarts by itself as soon as it is between turns (its conversation continues).'}</div>}</SettingItem>
     </div>
   );
@@ -146,7 +188,7 @@ export function AccountsPage({ tasks }: { tasks: Task[] }) {
             {list.filter(a => a.agent === ag).map(a => <option key={a.id} value={a.id} disabled={!a.status.signedIn}>{a.name}{a.status.signedIn ? '' : ' (not signed in)'}{a.limited ? ' · at its limit' : ''}{usageText(a) ? ' · ' + usageText(a) : ''}</option>)}
           </optgroup>)}
         </select>
-        <span className="sub">{movingCtl ? 'Restarting the controller on that account…' : 'Changing it restarts the controller on that account. Between two Claude Code accounts the conversation continues; switching to another agent or between Codex accounts starts a new conversation with the same instructions. Tasks the controller starts pick their own account.'}</span>
+        <span className="sub">{movingCtl ? 'Restarting the controller on that account…' : 'Changing it restarts the controller on that account. Between two Claude Code accounts the conversation continues. An account of another agent switches the controller agent, as in Settings > Controller agent: a new conversation that starts with a handoff note. Between Codex accounts a new conversation starts with the same instructions. Tasks the controller starts pick their own account.'}</span>
       </div>
       <div className="tb"><table><colgroup><col style={{ width: '20%' }} /><col style={{ width: '16%' }} /><col style={{ width: '30%' }} /><col style={{ width: 190 }} /><col /></colgroup><tbody>
         {list.map(a => (

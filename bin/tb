@@ -13,6 +13,12 @@ const args = process.argv.slice(2);
 const flag = (name, def) => { const i = args.indexOf(name); if (i < 0) return def; const v = args[i + 1]; args.splice(i, 2); return v; };
 const has = name => { const i = args.indexOf(name); if (i < 0) return false; args.splice(i, 1); return true; };
 
+// a part of the controller guidance that the controller reads on demand (server/agents.ts controllerGuide)
+async function guide(topic) {
+  const r = await fetch(`${URL_BASE}/api/controller/guide/${topic}`, { headers: { 'x-taskboard-token': token } });
+  if (!r.ok) { console.error(`tb: could not read the ${topic} guide (${r.status}).`); process.exit(1); }
+  return r.text();
+}
 async function call(method, path, body) {
   const r = await fetch(URL_BASE + path, { method, headers: { 'content-type': 'application/json', 'x-taskboard-token': token, 'x-tb-actor': process.env.TASK_ID || '', 'x-tb-mail-controller': process.env.TB_MAIL_CONTROLLER_TOKEN || '' }, body: body ? JSON.stringify(body) : undefined });
   const text = await r.text(); let data; try { data = JSON.parse(text); } catch { data = text; }
@@ -138,6 +144,7 @@ const HELP = `tb — Taskboard command line
   tb deps <task> --all [--json]      the linked set of a task: counts, longest chain, what waits for you, all links
   tb deps --group <group> [--json]   the same for each linked set that holds a task of the group
   tb mail                            messages with other people (A2A Notes over Slack) and notes to you: run for command help
+  tb mail help                       the rules for reading, routing, approving and drafting messages, then the commands
   tb review <file>                   ask the user to review a document from your outbox
   tb release-request                 ask the user to allow one Taskboard release on the dashboard
   tb restart [--yes]                 the user: restart the installed Taskboard (no release); the controller: ask on the dashboard
@@ -151,6 +158,7 @@ const HELP = `tb — Taskboard command line
                                      permit, message) with the id, version, head and range that tb approve needs
   tb approve <card> --version <v> [--head <commit>] --user-request "the user's chat message"
                                      controller only: approve one card that the user named in this chat
+  tb approve --help                  controller only: the rules for cards, Waiting page answers, scope requests and permits
   tb pending list [--json [--messages | --dismissed]]  controller only: the questions, dialogs and message drafts that wait on the user (the Waiting page)
   tb pending answer ID --option KEY | --text "answer" [--user-request "the user's chat message"]
                                      controller only. The words must be one user message in your chat that names
@@ -330,6 +338,8 @@ switch (cmd) {
     // flag() removed the options from args, so the rest is positional
     const [action, a, b, c] = args.slice(1);
     const id = encodeURIComponent(a || '');
+    // the rules for handling and writing messages (server/agents.ts controllerGuide), then the commands
+    if (action === 'help') { console.log(await guide('mail')); console.log(help); break; }
     let result;
     if (action === 'list') result = await call('GET', `/api/a2anotes/messages?direction=${direction || 'all'}${state ? `&state=${encodeURIComponent(state)}` : ''}`);
     else if (action === 'get') result = await call('GET', `/api/a2anotes/messages/${id}`);
@@ -362,7 +372,7 @@ switch (cmd) {
     const i = await call('GET', '/api/info');
     console.log(`Machine:     ${i.machine} (host ${i.host})`);
     console.log(`Taskboard:   ${i.url} · process ${i.pid} · ${i.tasks} tasks`);
-    if (i.controller) console.log(`Controller:  “${i.controller.label}” · ${i.controller.agent} · ${i.controller.status}${i.controller.remoteUrl ? `\nRemote:      ${i.controller.remoteUrl}` : ''}`);
+    if (i.controller) console.log(`Controller:  “${i.controller.label}” · ${i.controller.agentName || i.controller.agent} · account ${i.controller.account || 'default'} · ${i.controller.status}${i.controller.skipPermissions ? ' · permission prompts skipped' : ''}${i.controller.remoteUrl ? `\nRemote:      ${i.controller.remoteUrl}` : ''}`);
     else console.log('Controller:  not started');
     break;
   }
@@ -606,6 +616,8 @@ switch (cmd) {
   }
   case 'approve': {
     if (process.env.TASK_ID !== 'controller') { console.error('tb approve: controller only. A task can never approve a card.'); process.exit(1); }
+    // the full approval rules: cards, Waiting page questions, scope requests and permits (server/agents.ts controllerGuide)
+    if (has('--help') || args[1] === 'help') { console.log(await guide('approvals')); break; }
     const userRequest = flag('--user-request'), version = flag('--version'), head = flag('--head');
     const id = args[1];
     if (!id || !userRequest || !version) { console.error('tb approve <card> --version <v from tb approvals list> [--head <commit>] --user-request "<the user\'s exact chat message>"'); process.exit(1); }
