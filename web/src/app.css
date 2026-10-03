@@ -1022,3 +1022,18 @@ table.procs tr.proc-group td { padding-top: 10px; }
 .bw-wincover { position: absolute; inset: 0; display: grid; place-items: center; z-index: 3; cursor: default; }
 .bw-wincover .bw-card { max-width: 440px; background: var(--panel); border: 1px solid var(--line2); border-radius: 10px; padding: 18px 20px; box-shadow: 0 8px 30px rgba(0,0,0,.18); text-align: center; }
 .bw-wincover .bw-card p { color: var(--muted); }
+/* the parts of the page that the browser view draws (TaskBrowser.tsx): a select list, a picker, a context menu,
+   downloads, and a drop target */
+.bw-list-pop { position: absolute; z-index: 4; max-height: 300px; overflow: auto; background: var(--panel); border: 1px solid var(--line2); border-radius: 6px; box-shadow: 0 6px 24px rgba(0,0,0,.2); padding: 3px 0; font-size: 13px; }
+.bw-opt { padding: 4px 12px; cursor: default; white-space: nowrap; }
+.bw-opt.sel { background: var(--accent); color: #fff; }
+.bw-opt.on:not(.sel) { font-weight: 600; }
+.bw-opt.off { color: var(--dim); }
+.bw-optgroup { font-weight: 600; color: var(--muted); padding: 4px 0 2px; margin-left: -6px; }
+.bw-picker { position: absolute; z-index: 4; min-width: 140px; font: inherit; }
+.bw-pop.bw-pagemenu { position: absolute; z-index: 5; right: auto; }
+.bw-downloads { display: flex; gap: 8px; flex-wrap: wrap; padding: 3px 8px; border-bottom: 1px solid var(--line); background: var(--panel2); font-size: 12px; }
+.bw-dl { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; }
+.bw-dl-n { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 260px; }
+.bw-screen.dropping { box-shadow: inset 0 0 0 3px var(--accent); }
+.bw-tip { position: absolute; z-index: 4; max-width: 320px; padding: 3px 7px; background: var(--panel); color: var(--text); border: 1px solid var(--line2); border-radius: 4px; box-shadow: 0 2px 8px rgba(0,0,0,.18); font-size: 12px; pointer-events: none; white-space: pre-wrap; }

@@ -218,6 +218,7 @@ async function start(id: string, t0: number): Promise<Meta & { ws: string }> {
     if (copyTemplate(id)) meta.copiedFromTemplate = new Date().toISOString();
   }
   mkdirSync(profileDir(id), { recursive: true });
+  cleanFiles(id);
   const portFile = join(profileDir(id), 'DevToolsActivePort');
   const urls = (meta.tabs || []).filter(u => /^(https?|file):/.test(u)).slice(0, 20);
   // a task browser in a window draws at the screen's own pixel density, so it gets no scale flag
@@ -924,6 +925,43 @@ export function answerAsk(id: string, note: string) {
   return true;
 }
 
+// ---------- downloads ----------
+// Headless Chrome saves a download on the server computer, where the user does not see it. Each running browser saves
+// its downloads in its downloads folder (Browser.setDownloadBehavior on the watch connection, watchDialogs), named by
+// the download id. The dashboard view lists them and offers each finished file with a link
+// (GET /api/tasks/<id>/browser/downloads/<guid>). Files older than DOWNLOAD_KEEP_MS go at the next start.
+export interface Download { guid: string; name: string; url: string; state: 'inProgress' | 'completed' | 'canceled'; bytes: number; total: number; at: number }
+const DOWNLOAD_KEEP_MS = 24 * 3600000;
+const downloads = new Map<string, Map<string, Download>>();
+const downloadListeners = new Set<(id: string, d: Download) => void>();
+export const downloadDir = (id: string) => join(folder(id), 'downloads');
+function downloadEvent(id: string, method: string, p: any) {
+  let list = downloads.get(id); if (!list) downloads.set(id, list = new Map());
+  const guid = String(p.guid || ''); if (!/^[\w-]{1,80}$/.test(guid)) return;
+  const had = list.get(guid);
+  const d: Download = method === 'Browser.downloadWillBegin'
+    ? { guid, name: basename(String(p.suggestedFilename || 'download')).slice(0, 200) || 'download', url: String(p.url || '').slice(0, 500), state: 'inProgress', bytes: 0, total: 0, at: Date.now() }
+    : { ...(had || { guid, name: 'download', url: '', at: Date.now() }), state: p.state === 'completed' || p.state === 'canceled' ? p.state : 'inProgress', bytes: Number(p.receivedBytes) || 0, total: Number(p.totalBytes) || 0 };
+  list.set(guid, d);
+  // progress events come many times a second: only a new download and a change of state go to the views
+  if (had && had.state === d.state) return;
+  for (const fn of downloadListeners) { try { fn(id, d); } catch { /* listener failed */ } }
+}
+export const recentDownloads = (id: string) => [...(downloads.get(id)?.values() || [])].filter(d => Date.now() - d.at < DOWNLOAD_KEEP_MS);
+export function downloadFile(id: string, guid: string): { path: string; name: string } | null {
+  const d = downloads.get(id)?.get(guid);
+  if (!d || d.state !== 'completed' || !/^[\w-]{1,80}$/.test(guid)) return null;
+  const path = join(downloadDir(id), guid);
+  return existsSync(path) ? { path, name: d.name } : null;
+}
+// files of earlier downloads and uploads that are older than DOWNLOAD_KEEP_MS (at each start)
+function cleanFiles(id: string) {
+  for (const dir of [downloadDir(id), join(folder(id), 'uploads')]) {
+    let names: string[] = []; try { names = readdirSync(dir); } catch { continue; }
+    for (const n of names) { try { const f = join(dir, n); if (Date.now() - statSync(f).mtimeMs > DOWNLOAD_KEEP_MS) rmSync(f, { force: true }); } catch { /* gone */ } }
+  }
+}
+
 // ---------- dialogs ----------
 // The dialogs of every tab of a running browser. A dialog that a page opened before any DevTools client had the Page
 // domain on is not reported later, so one browser connection for each running browser watches all pages from the
@@ -947,12 +985,17 @@ function watchDialogs(id: string, browserWs: string): DialogWatch {
   const cmd = (method: string, params: object = {}, sessionId?: string) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ id: ++w.next, method, params, ...(sessionId ? { sessionId } : {}) })); };
   const changed = () => { for (const fn of w.listeners) fn(); };
   const attach = (t: { targetId: string; type: string }) => { if (t.type === 'page' && ![...w.sessions.values()].includes(t.targetId)) cmd('Target.attachToTarget', { targetId: t.targetId, flatten: true }); };
-  ws.on('open', () => cmd('Target.setDiscoverTargets', { discover: true }));
+  ws.on('open', () => {
+    cmd('Target.setDiscoverTargets', { discover: true });
+    // downloads go to the browser's downloads folder, named by their id, and this connection gets their events
+    try { mkdirSync(downloadDir(id), { recursive: true }); cmd('Browser.setDownloadBehavior', { behavior: 'allowAndName', downloadPath: downloadDir(id), eventsEnabled: true }); } catch { /* the folder cannot be made */ }
+  });
   ws.on('message', d => {
     const m = JSON.parse(d.toString());
     if (m.id === 1) w.ready = true;
     const opener = m.method === 'Page.windowOpen' && m.sessionId ? w.sessions.get(m.sessionId) : undefined;
     if (w.ready && (m.method === 'Target.targetCreated' || m.method === 'Target.targetInfoChanged' || m.method === 'Target.targetDestroyed' || opener)) for (const fn of w.targetListeners) { try { fn(opener ? { method: m.method, params: { ...m.params, openerId: opener } } : m); } catch { /* listener failed */ } }
+    if (m.method === 'Browser.downloadWillBegin' || m.method === 'Browser.downloadProgress') downloadEvent(id, m.method, m.params);
     if (m.method === 'Target.targetCreated') attach(m.params.targetInfo);
     else if (m.method === 'Target.attachedToTarget') { w.sessions.set(m.params.sessionId, m.params.targetInfo.targetId); cmd('Page.enable', {}, m.params.sessionId); }
     else if (m.method === 'Target.detachedFromTarget' || m.method === 'Target.targetDestroyed') {
@@ -1020,7 +1063,9 @@ const MAX_UNDRAWN = 2, HELD_MS = 1000;
 const QUALITY_FAST = 50, QUALITY_STILL = 80, FAST_GAP_MS = 150, STILL_MS = 300;
 // quality: the quality of the screencast that runs or that the last queued start asks for. chain: the starts and stops
 // of this page's screencast, one at a time.
-interface PageConn { ws: WebSocket; target: string; next: number; pending: Map<number, (r: any) => void>; casting?: boolean; quality: number; chain: Promise<void>; lastFrame: number; stillTimer?: NodeJS.Timeout }
+// world: the execution context of the view's isolated world (WIDGETS) in the main frame; chooser: the file input of a
+// file chooser that the page opened and the view answers.
+interface PageConn { ws: WebSocket; target: string; next: number; pending: Map<number, (r: any) => void>; casting?: boolean; quality: number; chain: Promise<void>; lastFrame: number; stillTimer?: NodeJS.Timeout; world?: number; chooser?: { backendNodeId: number; multiple: boolean } }
 // The switch to a new tab or popup (Settings → Task browsers, and the override of one browser in browser.json).
 export const autoSwitchOn = (id: string) => readMeta(id).autoSwitch ?? machine.get().browser?.autoSwitch ?? true;
 export function attachViewer(client: WebSocket, id: string, autostart: boolean) {
@@ -1040,7 +1085,7 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
   let acks = false, undrawn = 0, waiting: Buffer | null = null, held: (() => void)[] = [], heldTimer: NodeJS.Timeout | undefined;
   // visible: the view is on the screen ('visible' from the view). A hidden view gets no screencast, so Chrome captures
   // and encodes no frames for it. The view stays a viewer (viewers), so the idle stop does not stop the browser.
-  let visible = true;
+  let visible = true, helloed = false;
   const sendFrame = (jpeg: Buffer) => { lastFrame = jpeg.length; undrawn++; client.send(jpeg); };
   // the view has room: send the waiting frame, then let Chrome capture again
   const drain = () => {
@@ -1098,6 +1143,9 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
       else if ((msg.method === 'Page.frameStoppedLoading' && frame === mainFrame) || msg.method === 'Page.loadEventFired') { loading = false; void navState(); }
       else if (msg.method === 'Page.frameNavigated' && !msg.params.frame.parentId) { mainFrame = msg.params.frame.id; void navState(); }
       else if (msg.method === 'Page.navigatedWithinDocument' && frame === mainFrame) void navState();
+      else if (msg.method === 'Runtime.executionContextCreated' && msg.params.context.name === WORLD && msg.params.context.auxData?.frameId === mainFrame) conn.world = msg.params.context.id;
+      else if (msg.method === 'Runtime.bindingCalled' && msg.params.name === 'tbWidget') widget(conn, msg.params.payload);
+      else if (msg.method === 'Page.fileChooserOpened' && msg.params.backendNodeId) { conn.chooser = { backendNodeId: msg.params.backendNodeId, multiple: msg.params.mode === 'selectMultiple' }; send({ type: 'fileChooser', multiple: conn.chooser.multiple }); }
       if (msg.method === 'Page.screencastFrame') {
         const ack = () => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ id: ++conn.next, method: 'Page.screencastFrameAck', params: { sessionId: msg.params.sessionId } })); };
         if (!acks) ack();
@@ -1127,6 +1175,14 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     await call('Page.enable');
     const tree = await call('Page.getFrameTree');
     mainFrame = tree?.frameTree?.frame?.id || ''; loading = false;
+    // the parts of a page that headless Chrome does not draw (WIDGETS): a script in an isolated world that the page
+    // cannot see, a binding that it reports through, and the file chooser of the page
+    await call('Runtime.enable');
+    await call('Runtime.addBinding', { name: 'tbWidget', executionContextName: WORLD });
+    await call('Page.addScriptToEvaluateOnNewDocument', { source: WIDGETS, worldName: WORLD, runImmediately: true });
+    const iw = await call('Page.createIsolatedWorld', { frameId: mainFrame, worldName: WORLD });
+    if (iw?.executionContextId) { conn.world = iw.executionContextId; await call('Runtime.evaluate', { expression: WIDGETS, contextId: conn.world }); }
+    await call('Page.setInterceptFileChooserDialog', { enabled: true });
     await navState();
     await viewport();
     cast(conn, QUALITY_STILL);
@@ -1195,13 +1251,16 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     send({ type: 'agent', ...e, ...(label ? { label } : {}), shown: !e.target || e.target === active });
   });
   const askChanged = (b: string) => { if (b === id) send({ type: 'ask', ask: askOf(id) }); };
+  const downloaded = (b: string, d: Download) => { if (b === id) send({ type: 'download', ...d }); };
+  downloadListeners.add(downloaded);
+  for (const d of recentDownloads(id)) send({ type: 'download', ...d, old: true });
   onAsk(askChanged);
-  client.on('close', () => { if (closed) return; closed = true; stopAgent(); askListeners.delete(askChanged); count(viewers, id, -1); clearInterval(timer); clearTimeout(soonTimer); clearTimeout(cursorTimer); closePage(); sw.seed([]); const dw = dialogWatch.get(id); dw?.listeners.delete(dialogChanged); dw?.targetListeners.delete(targetEvent); });
+  client.on('close', () => { if (closed) return; closed = true; stopAgent(); askListeners.delete(askChanged); downloadListeners.delete(downloaded); count(viewers, id, -1); clearInterval(timer); clearTimeout(soonTimer); clearTimeout(cursorTimer); closePage(); sw.seed([]); const dw = dialogWatch.get(id); dw?.listeners.delete(dialogChanged); dw?.targetListeners.delete(targetEvent); });
   client.on('message', async d => {
     let m: any; try { m = JSON.parse(d.toString()); } catch { return; }
     try {
       // a failed start shows in the state that poll() sends (status().error), not as a second message
-      if (m.type === 'hello') { acks = !!m.acks; if (m.dpr) noteScreen(m.dpr); }
+      if (m.type === 'hello') { acks = !!m.acks; helloed = true; if (m.dpr) noteScreen(m.dpr); }
       // a restart at the screen's pixel density (the view offers it when the running factor differs): the pages reopen
       else if (m.type === 'restartScale') { await stop(id); void ensure(id).then(() => poll(), () => poll()); await poll(); }
       // a view that shows again gets a frame at once: Chrome sends one at each start of a screencast
@@ -1233,6 +1292,11 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
         await poll();
       }
       else if (m.type === 'showWindow') await showWindow(id);
+      // the user's choice in the view's own list or picker for a select box or a date, time or color input
+      else if (m.type === 'widgetSet' && page?.world) await call('Runtime.evaluate', { expression: `__tbSet(${JSON.stringify(m.value)})`, contextId: page.world });
+      // files for the page's file chooser, or files dropped on the view (posted first, addUpload)
+      else if (m.type === 'files' && Array.isArray(m.uploads)) await files(m);
+      else if (m.type === 'openLink' && typeof m.url === 'string' && /^https?:\/\//.test(m.url)) { sw.userNewTab(); await openTab(id, m.url); }
       // Done on the agent's request for help, with the user's note
       else if (m.type === 'askDone') answerAsk(id, typeof m.note === 'string' ? m.note : '');
       else if (m.type === 'copy') {
@@ -1262,7 +1326,7 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
   // The mouse cursor of the page. Headless Chrome reports no cursor over DevTools, so the server asks the page for the
   // cursor at the mouse position (CURSOR) at once and then at most every CURSOR_MS while the mouse moves, one question
   // at a time, and sends the view a 'cursor' message when it changes.
-  let cursor = '', cursorPos: { x: number; y: number } | null = null, cursorTimer: NodeJS.Timeout | undefined, cursorBusy = false, cursorAsked = 0;
+  let title = '', cursor = '', cursorPos: { x: number; y: number } | null = null, cursorTimer: NodeJS.Timeout | undefined, cursorBusy = false, cursorAsked = 0;
   function cursorAt(x: number, y: number) {
     cursorPos = { x, y };
     if (!cursorTimer && !cursorBusy) cursorTimer = setTimeout(askCursor, Math.max(0, cursorAsked + CURSOR_MS - Date.now()));
@@ -1273,9 +1337,13 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     if (!p || closed) return;
     cursorBusy = true;
     try {
-      const r = await call('Runtime.evaluate', { returnByValue: true, expression: `(${CURSOR})(${Number(p.x) || 0}, ${Number(p.y) || 0})` });
-      const c = r?.result?.value;
+      // the cursor, and the title of the element there (headless Chrome draws no tooltip; the view shows the title)
+      const x = Number(p.x) || 0, y = Number(p.y) || 0;
+      const r = await call('Runtime.evaluate', { returnByValue: true, expression: `[(${CURSOR})(${x}, ${y}), (${TITLE})(${x}, ${y})]` });
+      const [c, t] = Array.isArray(r?.result?.value) ? r.result.value : [];
       if (typeof c === 'string' && c !== cursor) { cursor = c; send({ type: 'cursor', cursor: c }); }
+      // a title goes at each check (the view shows it a moment after the mouse stops), an empty one once
+      if (typeof t === 'string' && (t || t !== title)) { title = t; send({ type: 'title', title: t, x, y }); }
     } finally { cursorBusy = false; }
     if (cursorPos) cursorTimer = setTimeout(askCursor, Math.max(0, cursorAsked + CURSOR_MS - Date.now()));
   }
@@ -1313,15 +1381,79 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     if (text) await call('Input.insertText', { text: text.slice(0, 100000) });
     else send({ type: 'error', message: 'The page did not take the pasted image. Save the image and upload it as a file.' });
   }
+  // A report of the isolated world (WIDGETS): a select box or a picker input that the user pressed, or a context menu
+  // that the page did not take. The view draws its own list, picker or menu.
+  function widget(conn: PageConn, payload: string) {
+    if (page !== conn) return;
+    let w: any; try { w = JSON.parse(payload); } catch { return; }
+    if (w.kind === 'contextmenu') { if (!w.prevented) send({ type: 'menu', x: w.x, y: w.y, href: String(w.href || '').slice(0, 2000), src: String(w.src || '').slice(0, 2000), selection: !!w.selection }); }
+    else if (w.kind === 'select' || w.kind === 'input') send({ type: 'widget', ...w });
+  }
+  // The files that the user chose or dropped: written to the browser's uploads folder (DOM.setFileInputFiles and drag
+  // events take paths), then given to the file input of the chooser, or dropped at the point.
+  async function files(m: { uploads: unknown[]; drop?: boolean; x?: number; y?: number }) {
+    const dir = join(folder(id), 'uploads'); mkdirSync(dir, { recursive: true });
+    const paths: string[] = [];
+    for (const u of m.uploads.slice(0, 20)) {
+      const up = takeUpload(id, u); if (!up) continue;
+      const p = join(dir, `${Date.now()}-${paths.length}-${up.name}`);
+      writeFileSync(p, up.data); paths.push(p);
+    }
+    const conn = page; if (!conn || !paths.length) return;
+    if (m.drop) {
+      const at = { x: Number(m.x) || 0, y: Number(m.y) || 0 };
+      const data = { items: [], files: paths, dragOperationsMask: 1 };
+      for (const type of ['dragEnter', 'dragOver', 'drop']) await call('Input.dispatchDragEvent', { type, ...at, data });
+    } else if (conn.chooser) {
+      await call('DOM.setFileInputFiles', { files: conn.chooser.multiple ? paths : paths.slice(0, 1), backendNodeId: conn.chooser.backendNodeId });
+      conn.chooser = undefined;
+    }
+  }
   // one command on the browser connection (Browser.* commands are not on a page connection)
   const browserConn = async (method: string, params: object) => { const m = await live(id); return m ? once(m.ws, method, params) : null; };
   // the start runs while the view polls, so the view shows its progress (status().starting) and then its result
   void (async () => {
-    if (autostart && !(await isRunning(id))) void ensure(id).then(() => poll()).catch(() => poll());
+    // a start waits up to 1 s for the view's 'hello', so the browser starts at the pixel density of its screen
+    if (autostart && !(await isRunning(id))) { for (let i = 0; i < 20 && !helloed; i++) await new Promise(r => setTimeout(r, 50)); void ensure(id).then(() => poll()).catch(() => poll()); }
     await poll();
   })();
 }
 
+// The script of the view's isolated world "tb" in each page (attachViewer). The page cannot see it. Headless Chrome
+// does not draw the popup of a select box, the picker of a date, time or color input, or its context menu, so the
+// script reports them through the binding tbWidget, and the view draws its own list, picker or menu. A select box
+// with several rows (multiple, size) is drawn by the page and stays with it. __tbSet() sets the choice and sends the
+// input and change events. Only the main frame has the script.
+const WORLD = 'tb';
+const WIDGETS = `(() => {
+  if (window.__tbReady) return; window.__tbReady = true;
+  const PICK = ['date', 'time', 'datetime-local', 'month', 'week', 'color'];
+  const send = m => { try { tbWidget(JSON.stringify(m)); } catch {} };
+  const box = el => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; };
+  addEventListener('mousedown', e => {
+    if (e.button !== 0) return;
+    const el = e.target.closest && e.target.closest('select');
+    if (!el || el.disabled || el.multiple || el.size > 1) return;
+    e.preventDefault(); el.focus(); window.__tbEl = el;
+    send({ kind: 'select', rect: box(el), selectedIndex: el.selectedIndex, options: [...el.options].slice(0, 500).map(o => ({ text: o.text.slice(0, 200), disabled: o.disabled, group: o.parentElement.tagName === 'OPTGROUP' ? o.parentElement.label : '' })) });
+  }, true);
+  addEventListener('click', e => {
+    const el = e.target.closest && e.target.closest('input');
+    if (!el || !PICK.includes(el.type) || el.disabled || el.readOnly) return;
+    e.preventDefault(); el.focus(); window.__tbEl = el;
+    send({ kind: 'input', inputType: el.type, value: el.value, min: el.min, max: el.max, step: el.step, rect: box(el) });
+  }, true);
+  addEventListener('contextmenu', e => setTimeout(() => {
+    const a = e.target.closest && e.target.closest('a[href]'), img = e.target.closest && e.target.closest('img');
+    send({ kind: 'contextmenu', prevented: e.defaultPrevented, x: e.clientX, y: e.clientY, href: a ? a.href : '', src: img ? img.currentSrc || img.src : '', selection: !!String(getSelection()) });
+  }), false);
+  window.__tbSet = v => {
+    const el = window.__tbEl; if (!el || !el.isConnected) return false;
+    if (el.tagName === 'SELECT') el.selectedIndex = v; else el.value = v;
+    el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  };
+})()`;
 // A short name for the element at a point of the page, or for the focused element (x null): its label, its text or its
 // placeholder, for the line that says what the agent did ("Clicked Next", "Typed into Email"). A password field gives
 // its label only, never its value.
@@ -1343,6 +1475,8 @@ const CURSOR = `(x, y) => { const e = document.elementFromPoint(x, y); if (!e) r
   if (n?.nodeType === 3 && n.textContent.trim()) { const t = document.createRange(); t.selectNodeContents(n);
     for (const b of t.getClientRects()) if (x >= b.left && x <= b.right && y >= b.top && y <= b.bottom) return 'text'; }
   return 'default'; }`;
+// The title (tooltip text) of the element at a point of the page, or of the nearest element above it that has one.
+const TITLE = `(x, y) => { const e = document.elementFromPoint(x, y); const t = e && e.closest('[title]'); return t ? String(t.title).slice(0, 300) : ''; }`;
 // The text that a copy takes: the selection in a focused text field, else the selection of the page.
 const COPY = `(() => { const a = document.activeElement;
   if (a && (a.tagName === 'TEXTAREA' || (a.tagName === 'INPUT' && a.type !== 'password')) && typeof a.selectionStart === 'number') return a.value.slice(a.selectionStart, a.selectionEnd);

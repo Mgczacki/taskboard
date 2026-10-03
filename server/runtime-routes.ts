@@ -178,6 +178,14 @@ export function mount(app: express.Express, fail: Fail) {
     const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
     res.json({ ask: browser.setAsk(t.id, reason || null) });
   });
+  // A file that the task browser downloaded (task-browser.ts downloads), for the link in the browser view
+  app.get('/api/tasks/:id/browser/downloads/:guid', (req, res) => {
+    const id = String(req.params.id);
+    if (id !== browser.TEMPLATE && !store.get(id)) return res.status(404).end();
+    const f = browser.downloadFile(id, String(req.params.guid));
+    if (!f) return res.status(404).json({ error: 'The download is not there (it can be older than one day).' });
+    res.download(f.path, f.name);
+  });
   // A file for the browser view: an image of a paste, a file for a page's file chooser, or a file dropped on the view
   // (task-browser.ts addUpload). Only the dashboard posts files. The body is { name, type, data } with data in base64.
   app.post('/api/tasks/:id/browser/upload', (req, res) => {
