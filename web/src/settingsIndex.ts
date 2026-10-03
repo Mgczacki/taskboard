@@ -30,11 +30,12 @@ export const SECTIONS: SectionDef[] = [
       { id: 'pushHistory', label: 'Push history', words: 'git log' },
     ] },
   ] },
-  { id: 'controller', title: 'Controller', help: 'The controller of this machine: its name, how it starts, its model and Remote Control.', groups: [
+  { id: 'controller', title: 'Controller', help: 'The controller of this machine: its name, its agent, how it starts, its permission prompts, its model and Remote Control.', groups: [
     { id: 'controller', settings: [
       { id: 'machineName', label: 'This machine', words: 'name host' },
       { id: 'controllerAutostart', label: 'Start the controller with Taskboard and keep it running', words: 'autostart restart' },
-      { id: 'controllerSkipPermissions', label: 'Run the Claude controller with', words: '--dangerously-skip-permissions dangerously skip permissions prompts' },
+      { id: 'controllerAgent', label: 'Controller agent', words: 'claude code codex antigravity agy switch agents.md' },
+      { id: 'controllerSkipPermissions', label: 'Controller: skip permission prompts', words: '--dangerously-skip-permissions --dangerously-bypass-approvals-and-sandbox dangerously bypass skip permissions prompts approvals sandbox' },
       { id: 'controllerModel', label: 'Controller model for', words: 'model claude codex' },
       { id: 'remoteControl', label: 'Remote Control: reach the controller from the Claude app as', words: 'mobile phone link' },
     ] },

@@ -1,5 +1,5 @@
 // Queued messages reach the agent through its hooks (task 217): Claude Code at PostToolUse, UserPromptSubmit and Stop,
-// Antigravity tasks at Stop. Covers: the text with its sender and the note that a task's message is not the user's
+// Antigravity at Stop, the controller on Codex at its Codex hooks. Covers: the text with its sender and the note that a task's message is not the user's
 // approval, delivery once only, the order, the size limit of one hook answer, a long message, the warning after 5
 // minutes and the notices to the sender task, the cap on waiting messages, and the agents without a hook (Codex).
 // No agent runs: the receivers are a controller that does not run, or tasks that are set aside, so the typing loop
@@ -168,13 +168,15 @@ test('Deliver by hook: the typing loop leaves the message, and the next hook eve
   await assert.rejects(queue.typeFirst(c.id, 'nope'), /An earlier message waits/);
 });
 
-test('Antigravity: a task gets queued messages at Stop; the controller role does not', () => {
+test('Antigravity: a task and the controller get queued messages at Stop; a Codex task has no hook, the Codex controller has', () => {
   const t = task('antigravity');
   fill(t, [{ text: 'For agy.', from: 'you' }]);
   const out = events.antigravityEvent(t.id, 'Stop', { conversationId: t.sessionId, fullyIdle: true }).output as { decision: string; reason: string };
   assert.equal(out.decision, 'continue');
   assert.match(out.reason, /For agy\./);
-  assert.equal(queue.hookEvents({ agent: 'antigravity', role: 'controller' }), null);
+  assert.equal(queue.hookEvents({ agent: 'antigravity', role: 'controller' }), 'its turn ends');
+  assert.equal(queue.hookEvents({ agent: 'codex', role: 'controller' }), 'a tool call ends, a prompt is sent or its turn ends');
+  assert.equal(queue.hookEvents({ agent: 'codex' }), null);
 });
 
 test('the queue holds at most 50 waiting messages for a task', async () => {

@@ -15,7 +15,11 @@ export interface MachineSettings {
   name: string;
   routingRules: string;
   newTaskDefaultAgent: 'auto' | 'claude' | 'codex' | 'antigravity';
-  controller: { autostart: boolean; remoteControl: boolean; dangerouslySkipPermissions: boolean; models: Record<'claude' | 'codex' | 'antigravity', string> };
+  // agent: which CLI runs the controller (Settings > Controller agent). skipPermissions: for each agent, whether the
+  // controller starts with that agent's own flag that removes its permission prompts (agents.ts controllerSkipFlags).
+  // accounts: the account that the controller last used for each agent. dangerouslySkipPermissions is the older
+  // Claude Code only setting; it is kept equal to skipPermissions.claude, so an older release reads the same value.
+  controller: ControllerSettings;
   // actions through `tb` that act on other tasks (new, send, set aside, archive): run at once, or wait for Approve
   permissions: { controllerNeedsApproval: boolean; agentsNeedApproval: boolean; trustWorkspaces: boolean; autoReview: boolean; controllerCanApprovePermits: boolean; holdPermissionHook: boolean };
   permitFolders: string[];
@@ -45,6 +49,35 @@ export interface MachineSettings {
   // its chat (server/controller-approve.ts). controllerCanApprovePermits above stays a separate switch: it lets the
   // controller approve low risk permits on its own judgment, without the user's words.
   controllerApprovals: ControllerApprovals;
+}
+export type ControllerAgent = 'claude' | 'codex' | 'antigravity';
+export const CONTROLLER_AGENTS: ControllerAgent[] = ['claude', 'codex', 'antigravity'];
+export interface ControllerSettings {
+  autostart: boolean; remoteControl: boolean; agent: ControllerAgent;
+  skipPermissions: Record<ControllerAgent, boolean>; accounts: Partial<Record<ControllerAgent, string>>;
+  dangerouslySkipPermissions: boolean; models: Record<ControllerAgent, string>;
+}
+export const DEFAULT_CONTROLLER: ControllerSettings = { autostart: true, remoteControl: true, agent: 'claude', skipPermissions: { claude: false, codex: false, antigravity: false }, accounts: {}, dangerouslySkipPermissions: false, models: { claude: 'claude-sonnet-5-5', codex: '', antigravity: '' } };
+// A saved controller value. A file written before Settings > Controller agent has no agent: then agentSaved is false,
+// and the server takes the agent of the running controller task (index.ts), so an update switches nothing.
+// The older dangerouslySkipPermissions (Claude Code only) becomes skipPermissions.claude. Codex and Antigravity start off.
+export function readController(saved: unknown): { controller: ControllerSettings; agentSaved: boolean } {
+  const s = saved && typeof saved === 'object' ? saved as Record<string, any> : {};
+  const agentSaved = CONTROLLER_AGENTS.includes(s.agent);
+  const skip = s.skipPermissions && typeof s.skipPermissions === 'object' ? s.skipPermissions : {};
+  const skipPermissions = { ...DEFAULT_CONTROLLER.skipPermissions };
+  for (const a of CONTROLLER_AGENTS) if (typeof skip[a] === 'boolean') skipPermissions[a] = skip[a];
+  if (typeof skip.claude !== 'boolean' && typeof s.dangerouslySkipPermissions === 'boolean') skipPermissions.claude = s.dangerouslySkipPermissions;
+  const acc = s.accounts && typeof s.accounts === 'object' ? s.accounts : {};
+  const accounts: ControllerSettings['accounts'] = {};
+  for (const a of CONTROLLER_AGENTS) if (typeof acc[a] === 'string' && acc[a]) accounts[a] = acc[a];
+  const models = { ...DEFAULT_CONTROLLER.models };
+  for (const a of CONTROLLER_AGENTS) if (typeof s.models?.[a] === 'string') models[a] = s.models[a];
+  return { agentSaved, controller: {
+    autostart: typeof s.autostart === 'boolean' ? s.autostart : DEFAULT_CONTROLLER.autostart,
+    remoteControl: typeof s.remoteControl === 'boolean' ? s.remoteControl : DEFAULT_CONTROLLER.remoteControl,
+    agent: agentSaved ? s.agent : 'claude', skipPermissions, accounts, dangerouslySkipPermissions: skipPermissions.claude, models,
+  } };
 }
 export interface ControllerApprovals { merge: boolean; push: boolean; forcePush: boolean; release: boolean; restart: boolean; scope: boolean; permit: boolean; mail: boolean }
 // All on: the user asked for this. Force push, release, restart and message drafts have extra checks (controller-approve.ts extraRules).
@@ -84,20 +117,42 @@ export const DEFAULT_ROUTING_RULES = `Use Claude Code or Codex for deep planning
 Use Antigravity for routine work. Do not use it for deep planning.
 When Claude's usage is high, use Codex for deep planning.
 Avoid accounts at their limit or running their maximum number of tasks.`;
-let settings: MachineSettings = { name: process.env.TASKBOARD_MACHINE_NAME || defaultName(), routingRules: DEFAULT_ROUTING_RULES, newTaskDefaultAgent: 'claude', controller: { autostart: true, remoteControl: true, dangerouslySkipPermissions: true, models: { claude: 'claude-sonnet-5-5', codex: '', antigravity: '' } }, permissions: { controllerNeedsApproval: false, agentsNeedApproval: true, trustWorkspaces: true, autoReview: true, controllerCanApprovePermits: false, holdPermissionHook: true }, permitFolders: [], pushes: { taskBranches: 'run', ownRepositories: [], protectedBranches: [] }, ask: { agent: 'claude', account: 'claude-default', model: 'sonnet' }, review: { account: 'claude-default', model: 'sonnet' }, accounts: { defaultMaxParallel: 4 }, browser: { claude: 'task', codex: 'task', chromePath: '', idleStopMinutes: 10, sharp: false, autoSwitch: true }, claudeInChrome: { tasks: false, controller: false }, confirmRisk: { ...DEFAULT_CONFIRM_RISK }, a2aNotes: { slackClientId: '', slackTeamId: '' }, controllerApprovals: { ...DEFAULT_CONTROLLER_APPROVALS } };
+let settings: MachineSettings = { name: process.env.TASKBOARD_MACHINE_NAME || defaultName(), routingRules: DEFAULT_ROUTING_RULES, newTaskDefaultAgent: 'claude', controller: structuredClone(DEFAULT_CONTROLLER), permissions: { controllerNeedsApproval: false, agentsNeedApproval: true, trustWorkspaces: true, autoReview: true, controllerCanApprovePermits: false, holdPermissionHook: true }, permitFolders: [], pushes: { taskBranches: 'run', ownRepositories: [], protectedBranches: [] }, ask: { agent: 'claude', account: 'claude-default', model: 'sonnet' }, review: { account: 'claude-default', model: 'sonnet' }, accounts: { defaultMaxParallel: 4 }, browser: { claude: 'task', codex: 'task', chromePath: '', idleStopMinutes: 10, sharp: false, autoSwitch: true }, claudeInChrome: { tasks: false, controller: false }, confirmRisk: { ...DEFAULT_CONFIRM_RISK }, a2aNotes: { slackClientId: '', slackTeamId: '' }, controllerApprovals: { ...DEFAULT_CONTROLLER_APPROVALS } };
+// false when machine.json names no controller agent (see readController); adoptControllerAgent sets it
+let controllerAgentSaved = true;
 if (existsSync(FILE)) {
   const saved = JSON.parse(readFileSync(FILE, 'utf8'));
-  settings = { ...settings, ...saved, permitFolders: Array.isArray(saved.permitFolders) ? saved.permitFolders : [], pushes: { ...settings.pushes, ...saved.pushes }, controller: { ...settings.controller, ...saved.controller, models: { ...settings.controller.models, ...saved.controller?.models } }, permissions: { ...settings.permissions, ...saved.permissions }, ask: { ...settings.ask, ...saved.ask }, review: { ...settings.review, ...saved.review }, accounts: { ...settings.accounts, ...saved.accounts }, browser: { ...settings.browser, ...saved.browser }, claudeInChrome: readClaudeInChrome(saved.claudeInChrome), confirmRisk: readConfirmRisk(saved.confirmRisk), a2aNotes: { ...settings.a2aNotes, ...saved.a2aNotes }, controllerApprovals: readControllerApprovals(saved.controllerApprovals) };
+  const c = readController(saved.controller); controllerAgentSaved = c.agentSaved;
+  settings = { ...settings, ...saved, permitFolders: Array.isArray(saved.permitFolders) ? saved.permitFolders : [], pushes: { ...settings.pushes, ...saved.pushes }, controller: c.controller, permissions: { ...settings.permissions, ...saved.permissions }, ask: { ...settings.ask, ...saved.ask }, review: { ...settings.review, ...saved.review }, accounts: { ...settings.accounts, ...saved.accounts }, browser: { ...settings.browser, ...saved.browser }, claudeInChrome: readClaudeInChrome(saved.claudeInChrome), confirmRisk: readConfirmRisk(saved.confirmRisk), a2aNotes: { ...settings.a2aNotes, ...saved.a2aNotes }, controllerApprovals: readControllerApprovals(saved.controllerApprovals) };
 } else writeFileSync(FILE, JSON.stringify(settings, null, 2));
 
 export const get = () => settings;
+export const controllerAgentKnown = () => controllerAgentSaved;
+// After an update from a release without the setting: the agent that the controller task runs now.
+export function adoptControllerAgent(agent: ControllerAgent, account?: string) {
+  if (controllerAgentSaved || !CONTROLLER_AGENTS.includes(agent)) return;
+  settings.controller.agent = agent;
+  if (account) settings.controller.accounts[agent] = account;
+  controllerAgentSaved = true;
+  writeFileSync(FILE, JSON.stringify(settings, null, 2));
+}
+// Settings > Controller agent, or a controller account of another agent on the Accounts page (agents.setControllerAgent)
+// previous: the agent and account that ran before, kept so that a switch back uses the same account again
+export function setControllerAgent(agent: ControllerAgent, account: string, previous?: { agent: ControllerAgent; account: string }) {
+  if (!CONTROLLER_AGENTS.includes(agent)) throw new Error('Choose Claude Code, Codex or Antigravity for the controller.');
+  if (previous && CONTROLLER_AGENTS.includes(previous.agent)) settings.controller.accounts[previous.agent] = previous.account;
+  settings.controller.agent = agent;
+  settings.controller.accounts[agent] = account;
+  controllerAgentSaved = true;
+  writeFileSync(FILE, JSON.stringify(settings, null, 2));
+}
 export function checkMaxParallel(value: unknown): number {
   const n = Number(value);
   if (value === '' || value === null || !Number.isInteger(n) || n < 1 || n > 100) throw new Error('The maximum number of tasks must be a whole number from 1 to 100.');
   return n;
 }
 export const controllerLabel = () => `Taskboard controller · ${settings.name}`;
-export function update(patch: { name?: string; routingRules?: string; newTaskDefaultAgent?: MachineSettings['newTaskDefaultAgent']; autostart?: boolean; remoteControl?: boolean; dangerouslySkipPermissions?: boolean; controllerModels?: Partial<Record<'claude' | 'codex' | 'antigravity', string>>; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; holdPermissionHook?: boolean; permitFolders?: string[]; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; defaultMaxParallel?: number; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; browserIdleStopMinutes?: number; browserSharp?: boolean; browserAutoSwitch?: boolean; claudeInChromeTasks?: boolean; claudeInChromeController?: boolean; confirmRisk?: Partial<ConfirmRisk>; a2aSlackClientId?: string; a2aSlackTeamId?: string; controllerApprovals?: Partial<ControllerApprovals> }) {
+export function update(patch: { name?: string; routingRules?: string; newTaskDefaultAgent?: MachineSettings['newTaskDefaultAgent']; autostart?: boolean; remoteControl?: boolean; dangerouslySkipPermissions?: boolean; controllerSkipPermissions?: Partial<Record<ControllerAgent, boolean>>; controllerModels?: Partial<Record<'claude' | 'codex' | 'antigravity', string>>; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; holdPermissionHook?: boolean; permitFolders?: string[]; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; defaultMaxParallel?: number; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; browserIdleStopMinutes?: number; browserSharp?: boolean; browserAutoSwitch?: boolean; claudeInChromeTasks?: boolean; claudeInChromeController?: boolean; confirmRisk?: Partial<ConfirmRisk>; a2aSlackClientId?: string; a2aSlackTeamId?: string; controllerApprovals?: Partial<ControllerApprovals> }) {
   if (patch.routingRules !== undefined) {
     if (typeof patch.routingRules !== 'string') throw new Error('routingRules must be text.');
     settings.routingRules = patch.routingRules.trim().slice(0, 1000);
@@ -145,10 +200,17 @@ export function update(patch: { name?: string; routingRules?: string; newTaskDef
   if (patch.name !== undefined && patch.name.trim()) settings.name = patch.name.trim().slice(0, 40);
   if (patch.autostart !== undefined) settings.controller.autostart = !!patch.autostart;
   if (patch.remoteControl !== undefined) settings.controller.remoteControl = !!patch.remoteControl;
+  // the older name of the Claude Code switch, from an older dashboard page
   if (patch.dangerouslySkipPermissions !== undefined) {
     if (typeof patch.dangerouslySkipPermissions !== 'boolean') throw new Error('The controller permission setting must be on or off.');
-    settings.controller.dangerouslySkipPermissions = patch.dangerouslySkipPermissions;
+    settings.controller.skipPermissions.claude = patch.dangerouslySkipPermissions;
   }
+  if (patch.controllerSkipPermissions !== undefined) {
+    const c = patch.controllerSkipPermissions as Record<string, unknown> | null;
+    if (!c || typeof c !== 'object' || Array.isArray(c) || Object.entries(c).some(([k, v]) => !CONTROLLER_AGENTS.includes(k as ControllerAgent) || typeof v !== 'boolean')) throw new Error('controllerSkipPermissions takes claude, codex and antigravity, each true or false.');
+    Object.assign(settings.controller.skipPermissions, c);
+  }
+  settings.controller.dangerouslySkipPermissions = settings.controller.skipPermissions.claude;
   if (patch.controllerModels !== undefined) {
     if (!patch.controllerModels || typeof patch.controllerModels !== 'object' || Array.isArray(patch.controllerModels)) throw new Error('controllerModels must be an object.');
     for (const [agent, model] of Object.entries(patch.controllerModels)) {

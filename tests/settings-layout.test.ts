@@ -32,7 +32,7 @@ const LABELS_BEFORE = [
   'Reset all keys',
   'Reload automatically when Taskboard is updated',
   'Start the controller with Taskboard and keep it running',
-  'Run the Claude controller with <code>--dangerously-skip-permissions</code>',
+  'Controller: skip permission prompts',
   'Controller model for',
   'Remote Control: reach the controller from the Claude app as',
   "label: 'Who lets an incoming message reach your agents'",
@@ -98,6 +98,8 @@ test('the search finds a setting by a word that is only in its extra words', () 
   assert.equal(filterSettings('github').shows('ownRepositories'), true);
   assert.ok(settingText('controllerSkipPermissions').includes('--dangerously-skip-permissions'));
   assert.equal(filterSettings('dangerously').shows('controllerSkipPermissions'), true);
+  assert.equal(filterSettings('bypass sandbox').shows('controllerSkipPermissions'), true);
+  assert.equal(filterSettings('antigravity').shows('controllerAgent'), true);
 });
 
 test('extra search text from the page shows the keyboard shortcuts', () => {

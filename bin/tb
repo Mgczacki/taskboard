@@ -362,7 +362,7 @@ switch (cmd) {
     const i = await call('GET', '/api/info');
     console.log(`Machine:     ${i.machine} (host ${i.host})`);
     console.log(`Taskboard:   ${i.url} · process ${i.pid} · ${i.tasks} tasks`);
-    if (i.controller) console.log(`Controller:  “${i.controller.label}” · ${i.controller.agent} · ${i.controller.status}${i.controller.remoteUrl ? `\nRemote:      ${i.controller.remoteUrl}` : ''}`);
+    if (i.controller) console.log(`Controller:  “${i.controller.label}” · ${i.controller.agentName || i.controller.agent} · account ${i.controller.account || 'default'} · ${i.controller.status}${i.controller.skipPermissions ? ' · permission prompts skipped' : ''}${i.controller.remoteUrl ? `\nRemote:      ${i.controller.remoteUrl}` : ''}`);
     else console.log('Controller:  not started');
     break;
   }

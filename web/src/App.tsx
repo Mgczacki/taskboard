@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
 import type { Group, SpinOffExchange, Task } from './api';
-import { ATTN, api, dismissBanner, fmtWait, setViewing, useStore } from './api';
+import { AGENT_NAME, ATTN, api, dismissBanner, fmtWait, setViewing, useStore } from './api';
 import { awayBanner, linkText } from './serverStatus';
 import { ACTIONS, CTX_NAME, fmtCombo, hit, hitIn, inBrowser, keyLabel, keysOf, keysText, useKeymap } from './keys';
 import { stepGlass, toggleGlass } from './controllerView';
@@ -252,7 +252,7 @@ export function App() {
       {!railHidden && !hideChrome && <aside className="rail">
         <div className="brand" title={machineName ? `Taskboard on ${machineName}` : undefined}><Logo />Taskboard<small>{connected ? (machineName || 'v0.2') : 'offline'}</small></div>
         <button className="newtask" onClick={() => setNewOpen(true)} title={`New task: ${keysText('newTask')}`}>＋ New task {keyLabel('newTask') && <kbd>{keyLabel('newTask')}</kbd>}</button>
-        <div className="rail-item ctl-item" onClick={openController} title={`The controller agent manages the other agents. Shortcut: ${keysText('controller')}`}>{controller ? <Dot s={controller.status} /> : <span className="dot idle" />}<span className="t"><b>Controller</b>{controller ? '' : ' · start'}</span>{controller?.remoteUrl && <a className="rc-link" href={controller.remoteUrl} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} title="Remote Control is on: open the controller on claude.ai or the Claude mobile app">📱</a>}{keyLabel('controller') && <kbd>{keyLabel('controller')}</kbd>}</div>
+        <div className="rail-item ctl-item" onClick={openController} title={`The controller agent manages the other agents. Shortcut: ${keysText('controller')}`}>{controller ? <Dot s={controller.status} /> : <span className="dot idle" />}<span className="t"><b>Controller</b>{controller ? <span className="sub"> · {AGENT_NAME[controller.agent]}</span> : ' · start'}</span>{controller?.remoteUrl && <a className="rc-link" href={controller.remoteUrl} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} title="Remote Control is on: open the controller on claude.ai or the Claude mobile app">📱</a>}{keyLabel('controller') && <kbd>{keyLabel('controller')}</kbd>}</div>
         <button className="importbtn" onClick={() => setImportOpen(true)} title="Bring in Claude Code, Codex and Antigravity sessions you started outside Taskboard">⇪ Import sessions</button>
         <nav className="nav">
           {(['list', 'board', 'graph', 'canvas', 'waiting', 'inbox', 'permits', 'accounts', 'stats', 'settings'] as Page[]).map(p => <a key={p} href={p === 'canvas' ? `#canvas:${encodeURIComponent(view)}` : `#${p}`} className={page === p ? 'on' : ''} onClick={() => go(p)}>{p[0].toUpperCase() + p.slice(1)}{p === 'list' && <span className="n">{tasks.filter(t => t.status !== 'archived').length}</span>}{p === 'waiting' && waitingCount > 0 && <span className="n needs">{waitingCount}</span>}{p === 'inbox' && reviewCount > 0 && <span className="n" style={{ color: 'var(--st-review)' }}>{reviewCount}</span>}</a>)}

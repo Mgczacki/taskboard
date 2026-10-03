@@ -433,6 +433,9 @@ table.keys td:nth-child(2) { white-space: nowrap; }
 .max-cell .sub { font-size: 11.5px; }
 .field-err { color: var(--st-needs); font-size: 11.5px; }
 .ctl-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.ctl-confirm { margin-top: 8px; padding: 10px 12px; border: 1px solid var(--line2); border-radius: 8px; background: var(--bg2); }
+.ctl-confirm ul, .ctl-box .sub ul { margin: 6px 0; padding-left: 18px; }
+.ctl-warn { color: var(--st-needs); font-weight: 600; }
 .ctl-row input { width: 240px; padding: 4px 8px; }
 .rc-link { margin-left: auto; margin-right: 6px; text-decoration: none; font-size: 12px; }
 
