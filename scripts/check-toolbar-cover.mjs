@@ -154,8 +154,22 @@ const probe = (sel, scrolls = false) => run(`(${PROBE})(${JSON.stringify(sel)}, 
 const heights = () => run(`(() => { const h = s => { const e = document.querySelector(s); return e ? Math.round(e.getBoundingClientRect().height) : null; }; return { toolbar: h('.canvas .ctool'), tabs: h('.canvas .gtabs'), canvasWidth: Math.round(document.querySelector('.canvas')?.getBoundingClientRect().width || 0), more: [...document.querySelectorAll('.canvas .ctool [data-k]')].filter(e => !e.closest('.more-pop')).length, overflow: document.querySelector('.canvas .ctool')?.dataset.overflow || '', theme: document.documentElement.dataset.theme }; })()`);
 
 await send('Page.enable');
-// a new URL that differs only in its hash does not load the page again, so go to a blank page first
-const load = async u => { await send('Page.navigate', { url: 'about:blank' }); await sleep(100); await send('Page.navigate', { url: u }); for (let i = 0; i < 60; i++) { await sleep(150); if (await run('!!document.querySelector(".canvas .ctool, .app")').catch(() => false)) break; } await sleep(900); };
+// a new URL that differs only in its hash does not load the page again, so go to a blank page first. A navigation that
+// gets no answer is tried again, at most 3 times (observed: a navigation now and then got no answer in 30 s, cause unknown).
+const load = async u => {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await send('Page.navigate', { url: 'about:blank' }); await sleep(100); await send('Page.navigate', { url: u });
+      for (let i = 0; i < 60; i++) { await sleep(150); if (await run('!!document.querySelector(".canvas .ctool, .app")').catch(() => false)) break; }
+      await sleep(900); return;
+    } catch (e) {
+      const alive = await run('1 + 1').then(v => v === 2, () => false);
+      console.log(`     (try ${attempt} to load ${u}: ${e.message.slice(0, 60)}; the page ${alive ? 'answers' : 'does not answer'} a script)`);
+      if (attempt === 3) throw e;
+      await send('Page.stopLoading').catch(() => {});
+    }
+  }
+};
 const base = new URL(url); base.hash = ''; base.search = '';
 const setLs = (k, v) => run(`localStorage.setItem(${JSON.stringify(k)}, ${JSON.stringify(v)})`);
 const delLs = k => run(`localStorage.removeItem(${JSON.stringify(k)})`);
@@ -194,7 +208,11 @@ const checkMore = () => run(`(async () => {
   document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   pop?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
   await new Promise(r => setTimeout(r, 100));
-  return { want, have, missing: want.filter(k => !have.includes(k)), problems, focusFirst, closed: !document.querySelector('.more-pop') };
+  const closed = !document.querySelector('.more-pop');
+  if (!focusFirst) problems.push('the menu did not take the focus when it opened');
+  if (!closed) problems.push('Escape did not close the menu');
+  else if (document.activeElement !== more) problems.push('Escape did not give the focus back to the More button');
+  return { want, have, missing: want.filter(k => !have.includes(k)), problems, focusFirst, closed };
 })()`);
 
 const results = [];
