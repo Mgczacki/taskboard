@@ -996,3 +996,5 @@ table.procs tr.proc-group td { padding-top: 10px; }
 .si-table th { color: var(--dim); font-weight: 500; }
 .si-row, .si-add { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .si-add input { width: 16em; }
+/* the hidden text field of the browser view that gets the keys, the IME and dead keys (TaskBrowser.tsx) */
+.bw-kb { position: absolute; width: 2px; height: 1.2em; padding: 0; border: 0; margin: 0; opacity: 0; resize: none; overflow: hidden; pointer-events: none; font-size: 14px; color: transparent; background: transparent; caret-color: transparent; }

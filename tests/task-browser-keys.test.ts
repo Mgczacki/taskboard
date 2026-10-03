@@ -69,3 +69,22 @@ test('Cmd shortcuts for the page keep the Meta bit and their command', () => {
   assert.deepEqual(keyEvent({ down: true, key: 'b', code: 'KeyB', keyCode: 66, modifiers: 0 }),
     { type: 'keyDown', key: 'b', code: 'KeyB', windowsVirtualKeyCode: 66, modifiers: 0, text: 'b', unmodifiedText: 'b' });
 });
+
+// AltGr on Windows and Linux reports Ctrl and Alt with the character it makes (@ on a German layout is AltGr+Q).
+test('an AltGr character types its text without Ctrl and Alt', () => {
+  assert.deepEqual(keyEvent({ down: true, key: '@', code: 'KeyQ', keyCode: 81, modifiers: CTRL | ALT, altGraph: true }),
+    { type: 'keyDown', key: '@', code: 'KeyQ', windowsVirtualKeyCode: 81, modifiers: 0, text: '@', unmodifiedText: '@' });
+  // without the flag, Ctrl and Alt with a character that is not a letter or a digit count as AltGr
+  assert.deepEqual(keyEvent({ down: true, key: '€', code: 'KeyE', keyCode: 69, modifiers: CTRL | ALT | SHIFT }),
+    { type: 'keyDown', key: '€', code: 'KeyE', windowsVirtualKeyCode: 69, modifiers: SHIFT, text: '€', unmodifiedText: '€' });
+  assert.deepEqual(keyEvent({ down: false, key: '@', code: 'KeyQ', keyCode: 81, modifiers: CTRL | ALT, altGraph: true }),
+    { type: 'keyUp', key: '@', code: 'KeyQ', windowsVirtualKeyCode: 81, modifiers: 0 });
+});
+
+test('Ctrl+Alt with a letter stays a shortcut', () => {
+  assert.deepEqual(keyEvent({ down: true, key: 't', code: 'KeyT', keyCode: 84, modifiers: CTRL | ALT }),
+    { type: 'rawKeyDown', key: 't', code: 'KeyT', windowsVirtualKeyCode: 84, modifiers: CTRL | ALT });
+  // Meta with Ctrl and Alt is never AltGr
+  assert.deepEqual(keyEvent({ down: true, key: '@', code: 'KeyQ', keyCode: 81, modifiers: CTRL | ALT | META }),
+    { type: 'rawKeyDown', key: '@', code: 'KeyQ', windowsVirtualKeyCode: 81, modifiers: CTRL | ALT | META });
+});

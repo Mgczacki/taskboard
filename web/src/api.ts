@@ -370,6 +370,11 @@ export const api = {
   browserAction: (id: string, action: 'start' | 'stop' | 'reset') => call<BrowserStatus>('POST', `/api/tasks/${encodeURIComponent(id)}/browser/${action}`, {}),
   browserSound: (id: string, on: boolean) => call<BrowserStatus & { restarted: boolean }>('POST', id === 'template' ? '/api/browser-template/sound' : `/api/tasks/${encodeURIComponent(id)}/browser/sound`, { on }),
   browserTemplate: () => call<BrowserStatus>('GET', '/api/browser-template'),
+  // a file for the browser view (a pasted image, a file for a file chooser, a dropped file); the answer names it
+  browserUpload: async (id: string, file: Blob, name = 'file') => {
+    const data = await new Promise<string>((resolve, reject) => { const r = new FileReader(); r.onload = () => resolve(String(r.result).split(',')[1] || ''); r.onerror = () => reject(r.error); r.readAsDataURL(file); });
+    return call<{ id: string }>('POST', `/api/tasks/${encodeURIComponent(id)}/browser/upload`, { name, type: file.type, data });
+  },
   signinSites: (id: string) => call<{ sites: SigninSite[] | null }>('POST', `/api/tasks/${encodeURIComponent(id)}/browser/signins/sites`, {}),
   signinSaveTemplate: (id: string) => call<{ sites: SigninSite[] }>('POST', `/api/tasks/${encodeURIComponent(id)}/browser/signins/save-template`, {}),
   signinSync: (id: string, sites: string[]) => call<{ sites: string[]; cookies: number }>('POST', `/api/tasks/${encodeURIComponent(id)}/browser/signins/sync`, { sites }),

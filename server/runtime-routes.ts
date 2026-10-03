@@ -154,6 +154,16 @@ export function mount(app: express.Express, fail: Fail) {
     catch (e) { fail(res, e); }
   };
   app.post('/api/tasks/:id/browser/sound', async (req, res) => { const t = task(req, res); if (t) await sound(req, res, t.id); });
+  // A file for the browser view: an image of a paste, a file for a page's file chooser, or a file dropped on the view
+  // (task-browser.ts addUpload). Only the dashboard posts files. The body is { name, type, data } with data in base64.
+  app.post('/api/tasks/:id/browser/upload', (req, res) => {
+    if (!dashboardOnly(req)) return res.status(403).json({ error: 'Only the dashboard sends files to a browser view.' });
+    const id = String(req.params.id);
+    if (id !== browser.TEMPLATE && !store.get(id)) return res.status(404).json({ error: 'No such task.' });
+    const data = typeof req.body?.data === 'string' ? Buffer.from(req.body.data, 'base64') : null;
+    if (!data?.length) return fail(res, 'The file is empty.');
+    try { res.json({ id: browser.addUpload(id, String(req.body?.name || 'file'), String(req.body?.type || ''), data) }); } catch (e) { fail(res, e); }
+  });
   app.post('/api/browser-template/sound', (req, res) => sound(req, res, browser.TEMPLATE));
   // ---------- shared sign-ins (browser-signins.ts) ----------
   // Only the dashboard calls these. They return site names, counts and dates, never a cookie value. The lists use POST

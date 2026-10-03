@@ -12,7 +12,7 @@
 // that got no command from an agent and had no dashboard viewer and no screencast for the time set on the Settings
 // page. It closes the agent connections first: chrome-devtools-mcp connects again at the agent's next tool call.
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
-import { createHmac } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import { closeSync, cpSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import WebSocket from 'ws';
@@ -787,6 +787,31 @@ function answerDialog(id: string, target: string, accept: boolean, promptText?: 
   w.ws.send(JSON.stringify({ id: ++w.next, method: 'Page.handleJavaScriptDialog', params: { accept, ...(promptText !== undefined ? { promptText } : {}) }, sessionId: session }));
 }
 
+// ---------- files from the dashboard ----------
+// An image in a paste, a file that the user picks for a page's file chooser, or a file dropped on the view. The
+// dashboard socket takes messages of at most 1 MB, so the dashboard posts each file first (POST
+// /api/tasks/<id>/browser/upload), and the view then names it by its id. A file stays in memory for UPLOAD_MS and is
+// used once. Only the view of the same browser can use it.
+const UPLOAD_MS = 10 * 60000;
+export const UPLOAD_MAX = 100 * 1024 * 1024;
+interface Upload { browser: string; name: string; type: string; data: Buffer; at: number }
+const uploads = new Map<string, Upload>();
+export function addUpload(browserId: string, name: string, type: string, data: Buffer): string {
+  folder(browserId);
+  if (data.length > UPLOAD_MAX) throw new Error(`A file can be at most ${UPLOAD_MAX / 1024 / 1024} MB.`);
+  const now = Date.now();
+  for (const [k, u] of uploads) if (now - u.at > UPLOAD_MS) uploads.delete(k);
+  const id = randomBytes(12).toString('hex');
+  uploads.set(id, { browser: browserId, name: basename(String(name || 'file')).replace(/[^\w .()+-]/g, '_').slice(0, 120) || 'file', type: String(type || ''), data, at: now });
+  return id;
+}
+export function takeUpload(browserId: string, uploadId: unknown): Upload | null {
+  const u = typeof uploadId === 'string' ? uploads.get(uploadId) : undefined;
+  if (!u || u.browser !== browserId || Date.now() - u.at > UPLOAD_MS) return null;
+  uploads.delete(uploadId as string);
+  return u;
+}
+
 // ---------- the dashboard: screencast of one tab, with mouse and key input ----------
 const FRAME_BACKLOG = 512 * 1024;
 // JPEG quality of the screencast: QUALITY_FAST while frames come less than FAST_GAP_MS apart (scroll, video,
@@ -988,6 +1013,9 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
       }
       else if (m.type === 'key') await key(m);
       else if (m.type === 'text' && typeof m.text === 'string') await call('Input.insertText', { text: m.text.slice(0, 100000) });
+      // an IME or a dead key composes text in the view: the page shows the same composition, and 'text' commits it
+      else if (m.type === 'ime' && typeof m.text === 'string') { const text = m.text.slice(0, 1000); await call('Input.imeSetComposition', { text, selectionStart: text.length, selectionEnd: text.length }); }
+      else if (m.type === 'paste') await paste(m);
       else if (m.type === 'copy') {
         // the selected text of the page, or of the focused text field; the dashboard puts it on the clipboard
         const r = await call('Runtime.evaluate', { returnByValue: true, expression: COPY });
@@ -1036,6 +1064,38 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     const e = keyEvent(m);
     if (e) await call('Input.dispatchKeyEvent', e);
   }
+  // A paste from the view: plain text, HTML and a PNG image. Input.insertText would type the text without a paste
+  // event, so pages that read the paste (rich text editors, code fields, image upload by paste) got nothing. The text,
+  // HTML and image go on the clipboard of the task's Chrome instead, with the page's own Clipboard API (the page's
+  // origin gets the write permission first), and the paste key with the 'paste' command follows. The page then gets a
+  // real paste event with every type. When the write fails (a page without an origin, a blocked frame), the text is
+  // typed as before.
+  async function paste(m: { text?: unknown; html?: unknown; image?: unknown }) {
+    const text = typeof m.text === 'string' ? m.text.slice(0, 1_000_000) : '';
+    const html = typeof m.html === 'string' ? m.html.slice(0, 1_000_000) : '';
+    // the image: a PNG that the dashboard posted (addUpload), named by its id
+    const up = takeUpload(id, m.image);
+    const image = up && up.type === 'image/png' ? up.data.toString('base64') : '';
+    if (!text && !html && !image) return;
+    const origin = (await call('Runtime.evaluate', { returnByValue: true, expression: 'location.origin' }))?.result?.value;
+    if (typeof origin === 'string' && /^https?:\/\//.test(origin) && browserConn) await browserConn('Browser.grantPermissions', { origin, permissions: ['clipboardSanitizedWrite'] }).catch(() => null);
+    const r = await call('Runtime.evaluate', { userGesture: true, awaitPromise: true, returnByValue: true, expression: `(async () => {
+      const items = {};
+      ${text ? `items['text/plain'] = new Blob([${JSON.stringify(text)}], { type: 'text/plain' });` : ''}
+      ${html ? `items['text/html'] = new Blob([${JSON.stringify(html)}], { type: 'text/html' });` : ''}
+      ${image ? `items['image/png'] = await (await fetch('data:image/png;base64,${image}')).blob();` : ''}
+      await navigator.clipboard.write([new ClipboardItem(items)]); return 'ok'; })()` });
+    if (r?.result?.value === 'ok') {
+      const key = { key: 'v', code: 'KeyV', windowsVirtualKeyCode: 86, modifiers: PASTE_MOD };
+      await call('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...key, commands: ['paste'] });
+      await call('Input.dispatchKeyEvent', { type: 'keyUp', ...key });
+      return;
+    }
+    if (text) await call('Input.insertText', { text: text.slice(0, 100000) });
+    else send({ type: 'error', message: 'The page did not take the pasted image. Save the image and upload it as a file.' });
+  }
+  // one command on the browser connection (Browser.* commands are not on a page connection)
+  const browserConn = async (method: string, params: object) => { const m = await live(id); return m ? once(m.ws, method, params) : null; };
   // the start runs while the view polls, so the view shows its progress (status().starting) and then its result
   void (async () => {
     if (autostart && !(await isRunning(id))) void ensure(id).then(() => poll()).catch(() => poll());
@@ -1043,6 +1103,8 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
   })();
 }
 
+// The modifier of the paste key in the task's Chrome: Cmd on macOS, Ctrl elsewhere (bits: 2 Ctrl, 4 Meta).
+const PASTE_MOD = process.platform === 'darwin' ? 4 : 2;
 // The cursor that Chrome would show at a point of the page: the CSS cursor of the element there, and for "auto" the
 // text cursor over text and in a text field, else the arrow. Only the keyword is used (a cursor image is not sent).
 const CURSOR_MS = 100;
@@ -1065,10 +1127,16 @@ const COPY = `(() => { const a = document.activeElement;
 // after the key up too). With that code, Cmd+V in the view made the task's Chrome run a macOS menu key equivalent
 // that opened the window About This Mac (macOS log, task 200).
 // A Meta key alone does not go to the page: the Cmd shortcuts that the page gets carry the Meta bit in modifiers.
-export interface KeyMessage { down: boolean; key: string; code: string; keyCode: number; modifiers: number }
+// AltGr (Windows and Linux) reports Ctrl and Alt together with the character it makes, for example @ on a German
+// layout. altGraph is the view's getModifierState('AltGraph'). Without it, Ctrl and Alt with a character that is not a
+// letter or a digit counts as AltGr too. Such a key types its character, and Ctrl and Alt are taken out of the event,
+// so the page does not see a Ctrl+Alt shortcut.
+export interface KeyMessage { down: boolean; key: string; code: string; keyCode: number; modifiers: number; altGraph?: boolean }
 export function keyEvent(m: KeyMessage): Record<string, unknown> | null {
   if (m.key === 'Meta') return null;
-  const mod = m.modifiers || 0;
+  let mod = m.modifiers || 0;
+  const altGr = m.key.length === 1 && !(mod & 4) && (!!m.altGraph || ((mod & 3) === 3 && !/^[a-z0-9]$/i.test(m.key)));
+  if (altGr) mod &= ~3;
   const commands = m.down ? editCommands(m.key, mod) : [];
   const base = { key: m.key, code: m.code, windowsVirtualKeyCode: m.keyCode, modifiers: mod, ...(commands.length ? { commands } : {}) };
   if (!m.down) return { type: 'keyUp', ...base };

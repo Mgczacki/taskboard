@@ -154,6 +154,9 @@ function urlParts(url: string): { scheme: string; host: string; rest: string; se
 // ---------- the view ----------
 const MOD = (e: { altKey: boolean; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) => (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0);
 const BUTTON = ['left', 'middle', 'right'] as const;
+// the copy, cut and paste keys of this computer: Cmd on a Mac, Ctrl elsewhere
+const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
+const clipKey = (e: React.KeyboardEvent) => (IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey) && !e.altKey && ['v', 'c', 'x'].includes(e.key.toLowerCase());
 // the CSS cursor keywords that the page can report ('cursor' from the server); other values show the arrow
 const CURSORS = new Set(['default', 'pointer', 'text', 'vertical-text', 'move', 'grab', 'grabbing', 'crosshair', 'help', 'wait', 'progress', 'not-allowed', 'no-drop', 'copy', 'alias', 'cell', 'context-menu', 'zoom-in', 'zoom-out', 'none', 'all-scroll', 'col-resize', 'row-resize', 'n-resize', 'e-resize', 's-resize', 'w-resize', 'ne-resize', 'nw-resize', 'se-resize', 'sw-resize', 'ew-resize', 'ns-resize', 'nesw-resize', 'nwse-resize']);
 
@@ -201,6 +204,12 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
   </>;
   const canvas = useRef<HTMLCanvasElement>(null);
   const screen = useRef<HTMLDivElement>(null);
+  // Keys: a hidden text field in the view has the focus, so the system's IME, dead keys, the emoji picker and dictation
+  // have a text field to work in. A key that one of them takes (composition) is left to the field, and its text goes to
+  // the page as a composition ('ime') and then as committed text ('text'). Every other key goes as a key event.
+  const kb = useRef<HTMLTextAreaElement>(null);
+  const composing = useRef(false);
+  const [kbAt, setKbAt] = useState({ x: 0, y: 0 });
   const urlInput = useRef<HTMLInputElement>(null);
   const frameSize = useRef({ w: 1280, h: 800 });
   const ws = useRef<WebSocket | null>(null);
@@ -411,15 +420,36 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
     return true;
   };
   const key = (e: React.KeyboardEvent, down: boolean) => {
-    if (e.metaKey && ['v', 'c', 'x'].includes(e.key.toLowerCase())) return; // these go through the paste, copy and cut events
+    if (clipKey(e)) return; // these go through the paste, copy and cut events
+    // a key that the IME or a dead key takes stays in the hidden field; its text comes with the composition events
+    if (composing.current || e.nativeEvent.isComposing || e.keyCode === 229 || e.key === 'Dead' || e.key === 'Process') return;
     if (down && shortcut(e)) { e.preventDefault(); return; }
     if (e.metaKey && ['l', 'r', '[', ']'].includes(e.key.toLowerCase())) { e.preventDefault(); return; } // the key up of a shortcut
     // Cmd alone does not go to the page. Its key down reached Chrome as a stuck key (see keyEvent in
     // server/task-browser.ts). The Cmd shortcuts that go to the page carry the Meta bit in their modifiers.
     if (e.key === 'Meta') return;
     e.preventDefault();
-    send({ type: 'key', down, key: e.key, code: e.code, keyCode: e.keyCode, modifiers: MOD(e) });
+    send({ type: 'key', down, key: e.key, code: e.code, keyCode: e.keyCode, modifiers: MOD(e), ...(e.getModifierState('AltGraph') ? { altGraph: true } : {}) });
     if (!down && (e.shiftKey || e.metaKey || e.altKey)) peek(); // Shift+Arrow, Cmd+A and the like change the selection
+  };
+  // The hidden field follows the last click, so the IME shows its candidate list near the place that the user types in.
+  const moveKb = (e: React.MouseEvent) => { const r = screen.current?.getBoundingClientRect(); if (r) setKbAt({ x: Math.round(e.clientX - r.left), y: Math.round(e.clientY - r.top) }); };
+  // A paste: plain text, HTML and the first image, which the server puts on the page's clipboard and pastes there, so the
+  // page gets a real paste event (server/task-browser.ts paste). The image goes as a PNG upload first.
+  const pasteFrom = async (dt: DataTransfer) => {
+    const text = dt.getData('text/plain'), html = dt.getData('text/html');
+    const file = [...dt.files].find(f => f.type.startsWith('image/'));
+    let image = '';
+    if (file) {
+      try {
+        const bm = await createImageBitmap(file), c = document.createElement('canvas');
+        c.width = bm.width; c.height = bm.height; c.getContext('2d')?.drawImage(bm, 0, 0); bm.close();
+        const png = await new Promise<Blob | null>(r => c.toBlob(r, 'image/png'));
+        if (png) image = (await api.browserUpload(id, png, 'pasted.png')).id;
+      } catch (e) { note(`Could not paste the image: ${(e as Error).message || e}`); }
+    }
+    // the socket takes messages up to 1 MB
+    if (text || html || image) send({ type: 'paste', text: text.slice(0, 300000), html: html.slice(0, 400000), image });
   };
   const copy = (e: React.ClipboardEvent, cut: boolean) => {
     e.preventDefault();
@@ -621,14 +651,20 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
       {err && <div className="banner">{err} <button className="btn ghost" onClick={() => setErr('')}>OK</button></div>}
       {signinParts}
       <div className={`bw-screen ${framed ? 'framed' : ''}`} ref={screenRef} tabIndex={0}
-        onMouseDown={e => { screen.current?.focus(); mouse('mousePressed', e, e.detail || 1); }}
+        onFocus={e => { if (e.target === e.currentTarget) kb.current?.focus({ preventScroll: true }); }}
+        onMouseDown={e => { e.preventDefault(); kb.current?.focus({ preventScroll: true }); moveKb(e); mouse('mousePressed', e, e.detail || 1); }}
         onMouseUp={e => { mouse('mouseReleased', e, e.detail || 1); peek(); }}
         onMouseMove={e => mouse('mouseMoved', e)}
         onContextMenu={e => e.preventDefault()} style={{ cursor }}
         onKeyDown={e => key(e, true)} onKeyUp={e => key(e, false)}
-        onPaste={e => { const text = e.clipboardData.getData('text'); if (text) send({ type: 'text', text }); e.preventDefault(); }}
+        onPaste={e => { e.preventDefault(); void pasteFrom(e.clipboardData); }}
         onCopy={e => copy(e, false)} onCut={e => copy(e, true)}>
         <canvas ref={canvas} />
+        <textarea ref={kb} className="bw-kb" style={{ left: kbAt.x, top: kbAt.y }} aria-label="Keyboard input for the page" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} tabIndex={-1}
+          onCompositionStart={() => { composing.current = true; }}
+          onCompositionUpdate={e => send({ type: 'ime', text: e.data || '' })}
+          onCompositionEnd={e => { composing.current = false; send({ type: 'text', text: e.data || '' }); e.currentTarget.value = ''; }}
+          onInput={e => { const ne = e.nativeEvent as InputEvent; if (!composing.current && !ne.isComposing && ne.data) send({ type: 'text', text: ne.data }); if (!composing.current) e.currentTarget.value = ''; }} />
         {!framed && <div className="bw-wait"><span className="bw-spin" />{running === null ? 'Connecting…' : 'Waiting for the page…'}</div>}
       </div>
     </div>
