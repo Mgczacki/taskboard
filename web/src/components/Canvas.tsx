@@ -4,7 +4,7 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Group, SpinOffExchange, Task } from '../api';
 import { ATTN, STATUS_LABEL, api, confirmEnd, useStore } from '../api';
-import { AgentChip, Dot, MachineChip, WhereChip } from './ui';
+import { AgentChip, Dot, MachineChip, WhereChip, BrowserAskChip } from './ui';
 import { Terminal, terminalDebugRecord } from './Terminal';
 import { PendingMarker } from './PendingCard';
 import { hit as key, hitIn, inBrowser, keyLabel, keysText, useKeymap } from '../keys';
@@ -15,7 +15,7 @@ import { runGroupChange } from '../groupActions';
 import { inOrder, moveBy, moveToSlot, slotAt, slotHint } from '../groupOrder';
 import { orderKey, renderOrder, slotNear, tileHint, withSavedOrder } from '../tileOrder';
 import { GroupRuntime } from './GroupRuntime';
-import { RuntimeButton, canRun, type RuntimeTab } from './TaskRuntime';
+import { RuntimeButton, canBrowse, canRun, type RuntimeTab } from './TaskRuntime';
 import { panelHolds, type PanelTab } from '../panelShare';
 import { BrowserView } from './TaskBrowser';
 import { readSplit, writeSplit, type Split } from '../browserSplit';
@@ -588,7 +588,7 @@ const CanvasWin = memo(function CanvasWin({ t, i, act, linkTasks, cls, span, end
   // The buttons of the header. A window too narrow for all of them shows ⋯ in their place, and they show in its menu
   // with the agent and runtime chips. narrow starts when the header's content is wider than the header (scrollWidth),
   // and ends when the header is again as wide as that content was.
-  const showBrowser = canRun(t) && !t.openElsewhere && t.status !== 'suspended' && !heldTerminal && !heldBrowser;
+  const showBrowser = canBrowse(t) && !t.openElsewhere && t.status !== 'suspended' && !heldTerminal && !heldBrowser;
   const acts: { k: string; icon: React.ReactNode; text: string; title: string; on?: boolean; aria?: string; fn: () => void }[] = [];
   if (showBrowser) {
     acts.push({ k: 'browser', icon: '🌐', text: sp.open ? 'Close the browser here' : 'Show the browser here', on: sp.open, title: sp.open ? 'Close the browser here and show only the terminal. The browser keeps running.' : 'Open the browser of this task here, above a smaller terminal. A stopped browser starts.', fn: () => a().toggleBrowser(t.id) });
@@ -617,24 +617,24 @@ const CanvasWin = memo(function CanvasWin({ t, i, act, linkTasks, cls, span, end
       <div ref={head} className={`wh ${narrow ? 'narrow' : ''}`} onPointerDown={e => a().startDrag(e, t.id)} onDoubleClick={() => a().toggleMax(t.id)}>
         <span className="grip" title={`Drag to move this window between two others, or onto a group tab. Move it one place: ${keysText('windowEarlier')} / ${keysText('windowLater')}`}>⠿</span><span className="ix">{i + 1}</span><LinkPorts t={t} tasks={linkTasks} onGo={id => a().goTask(id)} side="left" /><Dot s={t.status} /><span className="n">#{t.num}</span><span className="ti">{t.title}</span><LinkPorts t={t} tasks={linkTasks} onGo={id => a().goTask(id)} side="right" />
         <PendingMarker taskId={t.id} small><span className={`st st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span></PendingMarker>
-        {!narrow && <><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} /><RuntimeButton t={t} small onOpen={tab => a().openPanel(t.id, tab)} /></>}
+        {!narrow && <><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} /><BrowserAskChip t={t} /><RuntimeButton t={t} small onOpen={tab => a().openPanel(t.id, tab)} /></>}
         {ending ? <><span className="sel-warn">End & archive?</span><button className="b" onClick={() => a().endTask(t)}>Yes, end it</button><button className="b" onClick={() => a().setEnding(null)}>Cancel</button></> : <>
         {(t.status === 'suspended' || t.openElsewhere) && <button className="b" onClick={() => a().openPanel(t.id)}>{t.openElsewhere ? 'Options…' : 'Resume…'}</button>}
         {!narrow ? acts.map(x => <button key={x.k} className={`b ${x.on ? 'on' : ''}`} title={x.title} aria-label={x.aria} onClick={x.fn}>{x.icon}</button>)
           : <button ref={moreRef} className={`b wmore ${menuOpen ? 'on' : ''}`} aria-haspopup="true" aria-expanded={menuOpen} aria-label="Window menu" title={`The buttons of this window: ${acts.map(x => x.text).join(', ')}`} onClick={() => setMenuOpen(o => !o)}>⋯</button>}
         {narrow && menuOpen && <PopMenu anchor={moreRef.current} close={closeMenu} className="wmenu" label={`Window #${t.num}`}>
-          <div className="wmenu-chips"><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} /><RuntimeButton t={t} small onOpen={tab => { setMenuOpen(false); a().openPanel(t.id, tab); }} /></div>
+          <div className="wmenu-chips"><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} /><BrowserAskChip t={t} /><RuntimeButton t={t} small onOpen={tab => { setMenuOpen(false); a().openPanel(t.id, tab); }} /></div>
           {acts.map(x => <button key={x.k} className={`mi ${x.on ? 'on' : ''}`} title={x.title} aria-label={x.aria} onClick={() => { setMenuOpen(false); x.fn(); }}><span className="mi-ico">{x.icon}</span>{x.text}</button>)}
         </PopMenu>}</>}
       </div>
       {t.restartWhenDone && t.restartFor && <div className="win-note" title={t.restartWait}>{t.restartOverdue ? t.restartWait : `Waiting for the end of the turn ${t.restartFor}.`}{t.restartOverdue && <button className="b" onClick={() => api.restart(t.id, 'now').catch(e => a().toast(String(e.message || e)))}>Restart now</button>}</div>}
       {t.restartFailed && <div className="win-note bad">The restart failed: {t.restartFailed}<button className="b" onClick={() => api.resume(t.id).catch(e => a().toast(String(e.message || e)))}>Try again</button></div>}
-      <div className={`wb ${sp.open && canRun(t) && !heldBrowser ? `split ${sp.side}` : ''}`}>{asking && <AskPanel task={t} close={() => a().toggleAsk(t.id)} onSpinOff={(x, y) => a().onSpinOff(x, y)} />}{t.openElsewhere ? <div className="empty" style={{ padding: 16 }}>Running in another terminal ({t.openElsewhere?.tty}). <button className="btn" onClick={() => a().openPanel(t.id)}>Options…</button></div>
+      <div className={`wb ${sp.open && canBrowse(t) && !heldBrowser ? `split ${sp.side}` : ''}`}>{asking && <AskPanel task={t} close={() => a().toggleAsk(t.id)} onSpinOff={(x, y) => a().onSpinOff(x, y)} />}{t.openElsewhere ? <div className="empty" style={{ padding: 16 }}>Running in another terminal ({t.openElsewhere?.tty}). <button className="btn" onClick={() => a().openPanel(t.id)}>Options…</button></div>
         : t.status === 'suspended' ? <div className="empty" style={{ padding: 16 }}>Suspended. <button className="btn" onClick={() => a().openPanel(t.id)}>Resume…</button></div>
         // a tmux window has one size: while this task's panel shows its terminal, the tile waits
         : heldTerminal ? <div className="tile-in-panel"><div>The terminal shows in the Terminal tab of the task panel.</div><div className="sub">One terminal per task at a time, so neither is cut off. Another tab in the panel, or closing the panel, brings it back here.</div><button className="btn" onClick={() => a().openPanel(null)}>Show it here instead</button></div>
         // the terminal stays the last child, so opening or closing the browser does not mount it again
-        : <>{sp.open && canRun(t) && !heldBrowser && <div className="wb-browser"><BrowserView id={t.id} title={`#${t.num} ${t.title}`} autostart={a().startsHere(t.id)} /></div>}
+        : <>{sp.open && canBrowse(t) && !heldBrowser && <div className="wb-browser"><BrowserView id={t.id} title={`#${t.num} ${t.title}`} autostart={a().startsHere(t.id)} remote={t.machine?.name} /></div>}
           <Terminal taskId={t.id} fontSize={font} onFocus={() => a().focus(t.id)} /></>}</div>
     </div>
   );

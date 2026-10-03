@@ -9,9 +9,12 @@ import * as agents from './agents.ts';
 import * as store from './store.ts';
 import * as procs from './task-procs.ts';
 import * as browser from './task-browser.ts';
+import * as messageQueue from './message-queue.ts';
 import * as signins from './browser-signins.ts';
 import * as memory from './memory.ts';
 import * as summary from './runtime-summary.ts';
+import * as machines from './machines.ts';
+import * as transfer from './transfer.ts';
 
 export const taskOwner = (t: store.Task) => procs.taskOwner(t, agents.baseEnv(t));
 
@@ -75,7 +78,16 @@ export const watchBrowserIdle = () => {
     if (!store.get(id)) return; // the template browser has no task
     try { store.appendLog(id, { did: `Task browser: ${message}${lines.length ? ` Chrome log: ${lines.slice(-3).join(' | ')}` : ''}`, next: 'The browser starts again at the next tool call, or with Start the browser (Retry) in the Browser tab.' }); } catch { /* the task folder is gone */ }
   });
+  // the agent's request for help in its browser: the task list shows it, and Done types the user's note to the agent
+  browser.onAsk(id => { if (store.get(id)) store.touch(id); });
+  browser.onAskDone((id, ask, note) => {
+    const t = store.get(id); if (!t) return;
+    const text = `The user finished in the browser what you asked for ("${ask.reason}").${note ? ` Their note: ${note}` : ''} Look at the page again before you go on.`;
+    void messageQueue.send(t, text, { from: 'you', kind: 'message' }).catch(e => console.error(`task ${id}: the browser answer was not delivered: ${(e as Error).message}`));
+  });
 };
+// the agent's open request for help in the browser of a task (for the task list), or undefined
+export const browserAsk = (id: string) => browser.askOf(id)?.reason;
 
 type Fail = (res: express.Response, e: unknown) => void;
 // Who may change the processes or the browser of a task: the dashboard, tb from the user's own shell (token, no task),
@@ -85,6 +97,10 @@ function mayChange(req: express.Request, taskIds: string[]) {
   return !actor || actor === 'controller' || taskIds.includes(actor);
 }
 const dashboardOnly = (req: express.Request) => !!req.get('origin') && !req.get('x-tb-actor') && !req.get('x-taskboard-token');
+// The dashboard of a paired machine that shows a task of this machine (index.ts signs such a request like a transfer,
+// transfer.ts peer). Only the routes of one task browser accept it: sound, reset and the sign-ins of that browser.
+const peerDashboard = (req: express.Request) => { if (!req.get('x-taskboard-peer-signature')) return false; try { transfer.peer(req); return true; } catch { return false; } };
+const dashboardOrPeer = (req: express.Request) => dashboardOnly(req) || peerDashboard(req);
 
 export function mount(app: express.Express, fail: Fail) {
   // The browsers and processes of the given tasks, with memory, for a view that is open on the dashboard.
@@ -149,17 +165,43 @@ export function mount(app: express.Express, fail: Fail) {
   });
   // sound on or off for one browser (task or template): only the dashboard changes it
   const sound = async (req: express.Request, res: express.Response, id: string) => {
-    if (!dashboardOnly(req)) return res.status(403).json({ error: 'The sound of a browser is changed on the dashboard.' });
+    if (!(id === browser.TEMPLATE ? dashboardOnly(req) : dashboardOrPeer(req))) return res.status(403).json({ error: 'The sound of a browser is changed on the dashboard.' });
     try { const r = await browser.setSound(id, req.body?.on === true); res.json({ ...(await browser.status(id)), restarted: r.restarted }); }
     catch (e) { fail(res, e); }
   };
   app.post('/api/tasks/:id/browser/sound', async (req, res) => { const t = task(req, res); if (t) await sound(req, res, t.id); });
+  // The agent asks the user for help in its browser (tb browser ask "<reason>"), or takes the request back (reason
+  // empty). An agent can ask only in its own task's browser.
+  app.post('/api/tasks/:id/browser/ask', (req, res) => {
+    const t = task(req, res); if (!t) return;
+    if (!mayChange(req, [t.id])) return res.status(403).json({ error: 'An agent can ask for help only in its own task browser.' });
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+    res.json({ ask: browser.setAsk(t.id, reason || null) });
+  });
+  // A file that the task browser downloaded (task-browser.ts downloads), for the link in the browser view
+  app.get('/api/tasks/:id/browser/downloads/:guid', (req, res) => {
+    const id = String(req.params.id);
+    if (id !== browser.TEMPLATE && !store.get(id)) return res.status(404).end();
+    const f = browser.downloadFile(id, String(req.params.guid));
+    if (!f) return res.status(404).json({ error: 'The download is not there (it can be older than one day).' });
+    res.download(f.path, f.name);
+  });
+  // A file for the browser view: an image of a paste, a file for a page's file chooser, or a file dropped on the view
+  // (task-browser.ts addUpload). Only the dashboard posts files. The body is { name, type, data } with data in base64.
+  app.post('/api/tasks/:id/browser/upload', (req, res) => {
+    const id = String(req.params.id);
+    if (!(id === browser.TEMPLATE ? dashboardOnly(req) : dashboardOrPeer(req))) return res.status(403).json({ error: 'Only the dashboard sends files to a browser view.' });
+    if (id !== browser.TEMPLATE && !store.get(id)) return res.status(404).json({ error: 'No such task.' });
+    const data = typeof req.body?.data === 'string' ? Buffer.from(req.body.data, 'base64') : null;
+    if (!data?.length) return fail(res, 'The file is empty.');
+    try { res.json({ id: browser.addUpload(id, String(req.body?.name || 'file'), String(req.body?.type || ''), data) }); } catch (e) { fail(res, e); }
+  });
   app.post('/api/browser-template/sound', (req, res) => sound(req, res, browser.TEMPLATE));
   // ---------- shared sign-ins (browser-signins.ts) ----------
   // Only the dashboard calls these. They return site names, counts and dates, never a cookie value. The lists use POST
   // because a browser sends no Origin header with a same-origin GET.
   const signinRoute = (path: string, fn: (req: express.Request) => Promise<unknown>) => app.post(path, async (req, res) => {
-    if (!dashboardOnly(req)) return res.status(403).json({ error: 'Shared sign-ins are changed only on the dashboard.' });
+    if (!(path.startsWith('/api/tasks/') ? dashboardOrPeer(req) : dashboardOnly(req))) return res.status(403).json({ error: 'Shared sign-ins are changed only on the dashboard.' });
     try { res.json(await fn(req)); } catch (e) { fail(res, e); }
   });
   const taskId = (req: express.Request) => { const t = store.get(String(req.params.id)); if (!t) throw new Error('No such task.'); return t.id; };
@@ -174,6 +216,25 @@ export function mount(app: express.Express, fail: Fail) {
   signinRoute('/api/browser-signins/remove', async req => { await signins.removeSite(String(req.body?.site || '')); return signins.overview(); });
   signinRoute('/api/browser-signins/sign-out-all', async () => signins.signOutAll());
   signinRoute('/api/browser-signins/live', async req => signins.setLive({ live: typeof req.body?.live === 'boolean' ? req.body.live : undefined, liveSites: Array.isArray(req.body?.liveSites) ? req.body.liveSites : undefined }));
+  // Send the template's sign-ins of the chosen sites to a paired machine (the request is signed like a transfer). The
+  // other machine writes them into its template (POST /api/browser-signins/import below).
+  signinRoute('/api/browser-signins/send', async req => {
+    const m = machines.get(String(req.body?.machine || ''));
+    if (!m) throw new Error('Choose a linked machine.');
+    const url = new URL(m.url);
+    if (url.protocol !== 'https:' && !['127.0.0.1', 'localhost', '[::1]'].includes(url.hostname)) throw new Error(`${m.name} has no HTTPS address. Sign-ins go only over HTTPS or to a machine on this computer.`);
+    const cookies = await signins.exportSites(Array.isArray(req.body?.sites) ? req.body.sites.map(String) : []);
+    const path = '/api/browser-signins/import';
+    const r = transfer.signedRequest(path, { cookies });
+    const res = await machines.call(m, 'POST', path, r.payload, r.headers, 60000);
+    if (res.status >= 400) throw new Error(`${m.name}: ${typeof res.data === 'object' ? res.data.error : String(res.data)}`);
+    return { machine: m.name, sites: res.data.sites as string[], cookies: res.data.cookies as number };
+  });
+  // Sign-ins from a paired machine (signed, transfer.ts peer) go into this machine's template.
+  app.post('/api/browser-signins/import', async (req, res) => {
+    try { transfer.peer(req); } catch (e) { return res.status(403).json({ error: (e as Error).message }); }
+    try { res.json(await signins.importCookies(req.body?.cookies)); } catch (e) { fail(res, e); }
+  });
   signinRoute('/api/browser-template/window', async () => { await browser.openTemplateWindow(); return browser.status(browser.TEMPLATE); });
   app.post('/api/tasks/:id/browser/:action', async (req, res) => {
     const t = task(req, res); if (!t) return;
@@ -181,7 +242,7 @@ export function mount(app: express.Express, fail: Fail) {
     try {
       if (req.params.action === 'start') { if (t.status === 'archived') throw new Error('The task is archived.'); await browser.ensure(t.id); }
       else if (req.params.action === 'stop') await browser.stop(t.id);
-      else if (req.params.action === 'reset') { if (!dashboardOnly(req)) return res.status(403).json({ error: 'The browser is reset from the template on the dashboard.' }); await browser.resetFromTemplate(t.id); }
+      else if (req.params.action === 'reset') { if (!dashboardOrPeer(req)) return res.status(403).json({ error: 'The browser is reset from the template on the dashboard.' }); await browser.resetFromTemplate(t.id); }
       else return res.status(404).end();
       res.json(await browser.status(t.id));
     } catch (e) { fail(res, e); }

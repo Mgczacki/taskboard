@@ -16,6 +16,8 @@ export type RuntimeTab = 'browser' | 'procs';
 const REFRESH_MS = 4000;
 
 export const canRun = (t: Task) => !t.machine && t.role !== 'controller';
+// The browser of a task on another machine shows here too (server/browser-forward.ts); its processes do not.
+export const canBrowse = (t: Task) => t.role !== 'controller';
 
 // Read the items of these tasks now and every 4 s while the component is shown.
 function useRuntime(ids: string[]) {

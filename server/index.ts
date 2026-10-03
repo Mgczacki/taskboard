@@ -25,6 +25,7 @@ import * as accounts from './accounts.ts';
 import * as load from './load.ts';
 import * as external from './external.ts';
 import * as machines from './machines.ts';
+import * as browserForward from './browser-forward.ts';
 import * as machine from './machine.ts';
 import * as rules from './rules.ts';
 import { typeCommand } from './type-command.ts';
@@ -136,6 +137,7 @@ await agents.configureIfRunning();
 // A new task can carry pasted images (agents.MAX_IMAGES of at most agents.MAX_IMAGE_BYTES each, as base64).
 app.use('/api/tasks', express.json({ limit: '150mb' }));
 app.use('/api/transfer/stage', express.json({ limit: '40mb' }));
+app.use('/api/browser-signins/import', express.json({ limit: '50mb' })); // at most 5000 cookies (browser-signins.ts)
 app.use(express.json({ limit: '2mb' }));
 
 const ALLOWED_ORIGINS = new Set([URL_BASE, `http://localhost:${PORT}`, 'http://localhost:5173', 'http://127.0.0.1:5173']);
@@ -873,7 +875,11 @@ app.use('/api', async (req, res, next) => {
   const path = target.path + (qs.toString() ? '?' + qs : '');
   const body = req.method === 'GET' ? undefined : { ...req.body, ...(target.path === '/api/tasks' ? { machine: undefined } : {}) };
   const transferAction = /\/transfer\/(move|recover)$/.test(target.path);
-  const relay = transferAction && body ? transfer.signedRequest(path, body) : null;
+  // A browser action that only the dashboard may take (sound, reset, a file upload, sign-ins) goes signed, like a transfer: the other
+  // machine accepts it only from a machine that it is paired with (runtime-routes.ts dashboardOnly).
+  const fromDashboard = !!req.get('origin') && !req.get('x-tb-actor') && !req.get('x-taskboard-token');
+  const browserAction = fromDashboard && /^\/api\/tasks\/[^/]+\/browser\/(sound|reset|upload|signins\/[a-z-]+)$/.test(target.path);
+  const relay = (transferAction || browserAction) && body ? transfer.signedRequest(path, body) : null;
   const forward = async () => { const r = await machines.call(mc, req.method, path, relay?.payload || body, relay?.headers); if (r.status >= 400) throw new Error(typeof r.data === 'object' ? r.data.error : String(r.data)); return r; };
   try {
     if (req.method !== 'GET' && req.get('x-tb-actor') === 'controller' && GUARDED.test(target.path.replace(/\/api\/tasks\/[^/]+/, '/api/tasks/x'))) {
@@ -908,7 +914,7 @@ app.get('/api/server', async (_req, res) => { const h = life.health(); res.json(
 app.patch('/api/info', async (req, res) => {
   if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Machine settings are changed on the dashboard.' });
   try {
-    const { name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerSkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, holdPermissionHook, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, confirmLowerControl, defaultMaxParallel, newTaskDefaultAgent, applyMaxParallelToAll, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp, browserAutoSwitch, claudeInChromeTasks, claudeInChromeController, confirmRisk, a2aSlackClientId, a2aSlackTeamId, controllerApprovals } = req.body;
+    const { name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerSkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, holdPermissionHook, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, confirmLowerControl, defaultMaxParallel, newTaskDefaultAgent, applyMaxParallelToAll, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp, browserScale, browserAutoSwitch, claudeInChromeTasks, claudeInChromeController, confirmRisk, a2aSlackClientId, a2aSlackTeamId, controllerApprovals } = req.body;
     // Letting the controller approve permits gives the user less control. The page asks first and then sends confirmLowerControl.
     if (confirmLowerControl !== true && controllerCanApprovePermits === true && !machine.get().permissions.controllerCanApprovePermits)
       return res.status(400).json({ error: 'Confirm on the Settings page before you give the controller more control.' });
@@ -919,7 +925,7 @@ app.patch('/api/info', async (req, res) => {
       return res.status(400).json({ error: 'Pick a valid model for questions.' });
     if (reviewAccount && accounts.get(reviewAccount)?.agent !== 'claude') return res.status(400).json({ error: 'Pick a Claude Code account for auto review.' });
     if (defaultMaxParallel !== undefined) machine.checkMaxParallel(defaultMaxParallel); // refuse before anything is saved
-    machine.update({ name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerSkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, holdPermissionHook, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, defaultMaxParallel, newTaskDefaultAgent, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp, browserAutoSwitch, claudeInChromeTasks, claudeInChromeController, confirmRisk, a2aSlackClientId, a2aSlackTeamId, controllerApprovals });
+    machine.update({ name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerSkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, holdPermissionHook, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, defaultMaxParallel, newTaskDefaultAgent, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp, browserScale, browserAutoSwitch, claudeInChromeTasks, claudeInChromeController, confirmRisk, a2aSlackClientId, a2aSlackTeamId, controllerApprovals });
     // the Settings page confirms first; running tasks keep running, only new starts check the new maximum
     if (applyMaxParallelToAll === true) accounts.setAllMaxParallel(machine.get().accounts.defaultMaxParallel);
     if (trustWorkspaces === false) trust.restore();
@@ -952,7 +958,7 @@ app.delete('/api/machines/:id', (req, res) => { machines.remove(req.params.id); 
 // waitSig: the signature of the task row on the Waiting page, for a dismiss (dismiss.ts taskSignature)
 const WAITS_ON_USER = ['needs-you', 'stopped', 'review'];
 const waitSig = (t: store.Task) => WAITS_ON_USER.includes(t.status) ? dismiss.taskSignature(t, t.status === 'review' ? pendingFor(t.id) : undefined) : undefined;
-const view = (t: store.Task) => ({ ...t, waitSig: waitSig(t), link: links.info(t), docs: docs.counts(t.id), queue: messageQueue.forView(t.id), waitMin: Math.round((Date.now() - Date.parse(t.statusAt)) / 60000), attach: `tmux -L taskboard attach -t ${t.session}`, ...(t.agent === 'antigravity' ? { tokenEstimate: stats.taskEstimate(t) } : {}) });
+const view = (t: store.Task) => ({ ...t, browserAsk: runtime.browserAsk(t.id), waitSig: waitSig(t), link: links.info(t), docs: docs.counts(t.id), queue: messageQueue.forView(t.id), waitMin: Math.round((Date.now() - Date.parse(t.statusAt)) / 60000), attach: `tmux -L taskboard attach -t ${t.session}`, ...(t.agent === 'antigravity' ? { tokenEstimate: stats.taskEstimate(t) } : {}) });
 pending.setIo({
   capture: session => tmux.capture(session, 0),
   key: async (session, key, literal) => { await tmux.tmux('send-keys', '-t', '=' + session + ':', ...(literal ? ['-l', key] : [key])); },
@@ -1569,8 +1575,17 @@ function onSocket(ws: import('ws').WebSocket, url: URL) {
       const t = store.get(url.searchParams.get('task') || '');
       if (!t) return ws.close(4004, 'no such task');
       attach(ws, t.session, Number(url.searchParams.get('cols')) || 120, Number(url.searchParams.get('rows')) || 40);
-    } else if (url.pathname === '/ws/browser') runtime.viewBrowser(ws, url);
-    else ws.close();
+    } else if (url.pathname === '/ws/browser') {
+      const remote = machines.split(url.searchParams.get('id') || '');
+      if (remote) {
+        // the browser view of a task on another machine: pipe it to that machine's Taskboard server (browser-forward.ts)
+        const mc = machines.get(remote.machine); if (!mc) return ws.close(4004, 'unknown machine');
+        const up = new WebSocket(`${mc.url.replace(/^http/, 'ws')}/ws/browser?id=${encodeURIComponent(remote.id)}${url.searchParams.get('start') === '1' ? '&start=1' : ''}&token=${encodeURIComponent(mc.token)}`, { perMessageDeflate: false, maxPayload: 64 * 1024 * 1024 });
+        browserForward.pipe(ws, up);
+        return;
+      }
+      runtime.viewBrowser(ws, url);
+    } else ws.close();
 }
 // tell each dashboard why the server stops, so it can say "Server restarting" instead of "not reachable"
 life.onStopping(end => { for (const c of eventClients) { try { c.send(JSON.stringify({ type: 'stopping', reason: end.kind, detail: end.detail })); } catch { /* closed */ } } });

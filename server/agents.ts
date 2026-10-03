@@ -492,6 +492,7 @@ function processAndBrowserRules(t: Task): string[] {
   if (mode !== 'off' && taskBrowser.mcpServer(ROOT, t.id)) lines.push(
     'This task has its own Chrome browser, which the user sees in Taskboard. Use the MCP tools of the server `task-browser` for all browser work.',
     `Open a page for the user with \`tb browser open <url>\`.${mode === 'only' ? ' Do not use another browser.' : ''}`,
+    'The user can use this browser too. When a page needs the user (sign-in, captcha, payment), run `tb browser ask "<what to do>"`; the answer comes as a message.',
   );
   return lines;
 }

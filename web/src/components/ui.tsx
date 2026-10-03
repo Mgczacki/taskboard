@@ -9,6 +9,8 @@ export const AgentChip = ({ a }: { a: Task['agent'] }) => <span className={`chip
 export const ByController = ({ t }: { t: Task }) => t.parent === 'controller' ? <span className="chip byctl" title="Started by the controller with tb new">↳ Controller</span> : null;
 // where the session runs, separate from its status: a terminal Taskboard does not own (imported while running)
 export const WhereChip = ({ t }: { t: Task }) => t.openElsewhere ? <span className="chip wchip" title={`Running in another terminal (${t.openElsewhere.tty}, process ${t.openElsewhere.pid}). Status is read from its transcript.`}>⧉ {t.openElsewhere.tty.replace(/^\/dev\//, '')}</span> : null;
+// the agent asked the user for help in the task browser (tb browser ask); Done in the Browser tab answers it
+export const BrowserAskChip = ({ t }: { t: Task }) => t.browserAsk ? <span className="chip bw-askchip" title={`The agent asks you in the Browser tab: ${t.browserAsk}`}><i />Waits for you in the browser</span> : null;
 export const MachineChip = ({ t }: { t: Task }) => t.machine ? <span className="chip mchip" title={`Runs on ${t.machine.name}`}><span className="mdot" />{t.machine.name}</span> : null;
 export const StatusLabel = ({ s }: { s: Status }) => <span className={`st-label ${s}`}>{STATUS_LABEL[s]}</span>;
 

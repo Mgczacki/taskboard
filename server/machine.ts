@@ -32,10 +32,12 @@ export interface MachineSettings {
   accounts: { defaultMaxParallel: number };
   // the browser for each task (server/task-browser.ts); chromePath empty means the installed Google Chrome;
   // idleStopMinutes: a task browser without an agent command or a viewer for this time stops (0: never)
-  // sharp: task browsers start with --force-device-scale-factor=2, so the dashboard view gets frames with two pixels
-  // for each CSS pixel (sharp text on a Retina screen). Agent screenshots are then twice as large too.
+  // scale: the pixels of a task browser for each CSS pixel, set with --force-device-scale-factor at its start. 'screen'
+  // (default) uses the device pixel ratio of the dashboard's screen (the last one that a view reported), 'one' 1 and
+  // 'two' 2. With more pixels the Browser tab is sharp on a high-density screen, and agent screenshots are larger.
+  // sharp: the older setting (true was 2); a settings file with sharp true and no scale reads as 'two'.
   // autoSwitch: the dashboard's browser view switches to a new tab or popup at once (server/tab-switch.ts)
-  browser: { claude: BrowserMode; codex: BrowserMode; chromePath: string; idleStopMinutes: number; sharp: boolean; autoSwitch: boolean };
+  browser: { claude: BrowserMode; codex: BrowserMode; chromePath: string; idleStopMinutes: number; sharp: boolean; scale: BrowserScale; autoSwitch: boolean };
   // Claude in Chrome (the Claude extension in the user's own Chrome) for Claude Code sessions that Taskboard starts.
   // false: the command has --no-chrome, so Claude Code does not show the dialog "Claude in Chrome extension detected"
   // at start. true: Claude Code decides, and can show that dialog once.
@@ -117,13 +119,19 @@ export const DEFAULT_ROUTING_RULES = `Use Claude Code or Codex for deep planning
 Use Antigravity for routine work. Do not use it for deep planning.
 When Claude's usage is high, use Codex for deep planning.
 Avoid accounts at their limit or running their maximum number of tasks.`;
-let settings: MachineSettings = { name: process.env.TASKBOARD_MACHINE_NAME || defaultName(), routingRules: DEFAULT_ROUTING_RULES, newTaskDefaultAgent: 'claude', controller: structuredClone(DEFAULT_CONTROLLER), permissions: { controllerNeedsApproval: false, agentsNeedApproval: true, trustWorkspaces: true, autoReview: true, controllerCanApprovePermits: false, holdPermissionHook: true }, permitFolders: [], pushes: { taskBranches: 'run', ownRepositories: [], protectedBranches: [] }, ask: { agent: 'claude', account: 'claude-default', model: 'sonnet' }, review: { account: 'claude-default', model: 'sonnet' }, accounts: { defaultMaxParallel: 4 }, browser: { claude: 'task', codex: 'task', chromePath: '', idleStopMinutes: 10, sharp: false, autoSwitch: true }, claudeInChrome: { tasks: false, controller: false }, confirmRisk: { ...DEFAULT_CONFIRM_RISK }, a2aNotes: { slackClientId: '', slackTeamId: '' }, controllerApprovals: { ...DEFAULT_CONTROLLER_APPROVALS } };
+let settings: MachineSettings = { name: process.env.TASKBOARD_MACHINE_NAME || defaultName(), routingRules: DEFAULT_ROUTING_RULES, newTaskDefaultAgent: 'claude', controller: structuredClone(DEFAULT_CONTROLLER), permissions: { controllerNeedsApproval: false, agentsNeedApproval: true, trustWorkspaces: true, autoReview: true, controllerCanApprovePermits: false, holdPermissionHook: true }, permitFolders: [], pushes: { taskBranches: 'run', ownRepositories: [], protectedBranches: [] }, ask: { agent: 'claude', account: 'claude-default', model: 'sonnet' }, review: { account: 'claude-default', model: 'sonnet' }, accounts: { defaultMaxParallel: 4 }, browser: { claude: 'task', codex: 'task', chromePath: '', idleStopMinutes: 10, sharp: false, scale: 'screen', autoSwitch: true }, claudeInChrome: { tasks: false, controller: false }, confirmRisk: { ...DEFAULT_CONFIRM_RISK }, a2aNotes: { slackClientId: '', slackTeamId: '' }, controllerApprovals: { ...DEFAULT_CONTROLLER_APPROVALS } };
+export type BrowserScale = 'screen' | 'one' | 'two';
+const SCALES: BrowserScale[] = ['screen', 'one', 'two'];
+function readScale(b: { scale?: unknown; sharp?: unknown } | undefined): BrowserScale {
+  if (SCALES.includes(b?.scale as BrowserScale)) return b!.scale as BrowserScale;
+  return b?.sharp === true ? 'two' : 'screen';
+}
 // false when machine.json names no controller agent (see readController); adoptControllerAgent sets it
 let controllerAgentSaved = true;
 if (existsSync(FILE)) {
   const saved = JSON.parse(readFileSync(FILE, 'utf8'));
   const c = readController(saved.controller); controllerAgentSaved = c.agentSaved;
-  settings = { ...settings, ...saved, permitFolders: Array.isArray(saved.permitFolders) ? saved.permitFolders : [], pushes: { ...settings.pushes, ...saved.pushes }, controller: c.controller, permissions: { ...settings.permissions, ...saved.permissions }, ask: { ...settings.ask, ...saved.ask }, review: { ...settings.review, ...saved.review }, accounts: { ...settings.accounts, ...saved.accounts }, browser: { ...settings.browser, ...saved.browser }, claudeInChrome: readClaudeInChrome(saved.claudeInChrome), confirmRisk: readConfirmRisk(saved.confirmRisk), a2aNotes: { ...settings.a2aNotes, ...saved.a2aNotes }, controllerApprovals: readControllerApprovals(saved.controllerApprovals) };
+  settings = { ...settings, ...saved, permitFolders: Array.isArray(saved.permitFolders) ? saved.permitFolders : [], pushes: { ...settings.pushes, ...saved.pushes }, controller: c.controller, permissions: { ...settings.permissions, ...saved.permissions }, ask: { ...settings.ask, ...saved.ask }, review: { ...settings.review, ...saved.review }, accounts: { ...settings.accounts, ...saved.accounts }, browser: { ...settings.browser, ...saved.browser, scale: readScale(saved.browser) }, claudeInChrome: readClaudeInChrome(saved.claudeInChrome), confirmRisk: readConfirmRisk(saved.confirmRisk), a2aNotes: { ...settings.a2aNotes, ...saved.a2aNotes }, controllerApprovals: readControllerApprovals(saved.controllerApprovals) };
 } else writeFileSync(FILE, JSON.stringify(settings, null, 2));
 
 export const get = () => settings;
@@ -152,7 +160,7 @@ export function checkMaxParallel(value: unknown): number {
   return n;
 }
 export const controllerLabel = () => `Taskboard controller · ${settings.name}`;
-export function update(patch: { name?: string; routingRules?: string; newTaskDefaultAgent?: MachineSettings['newTaskDefaultAgent']; autostart?: boolean; remoteControl?: boolean; dangerouslySkipPermissions?: boolean; controllerSkipPermissions?: Partial<Record<ControllerAgent, boolean>>; controllerModels?: Partial<Record<'claude' | 'codex' | 'antigravity', string>>; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; holdPermissionHook?: boolean; permitFolders?: string[]; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; defaultMaxParallel?: number; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; browserIdleStopMinutes?: number; browserSharp?: boolean; browserAutoSwitch?: boolean; claudeInChromeTasks?: boolean; claudeInChromeController?: boolean; confirmRisk?: Partial<ConfirmRisk>; a2aSlackClientId?: string; a2aSlackTeamId?: string; controllerApprovals?: Partial<ControllerApprovals> }) {
+export function update(patch: { name?: string; routingRules?: string; newTaskDefaultAgent?: MachineSettings['newTaskDefaultAgent']; autostart?: boolean; remoteControl?: boolean; dangerouslySkipPermissions?: boolean; controllerSkipPermissions?: Partial<Record<ControllerAgent, boolean>>; controllerModels?: Partial<Record<'claude' | 'codex' | 'antigravity', string>>; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; holdPermissionHook?: boolean; permitFolders?: string[]; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; defaultMaxParallel?: number; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; browserIdleStopMinutes?: number; browserSharp?: boolean; browserScale?: BrowserScale; browserAutoSwitch?: boolean; claudeInChromeTasks?: boolean; claudeInChromeController?: boolean; confirmRisk?: Partial<ConfirmRisk>; a2aSlackClientId?: string; a2aSlackTeamId?: string; controllerApprovals?: Partial<ControllerApprovals> }) {
   if (patch.routingRules !== undefined) {
     if (typeof patch.routingRules !== 'string') throw new Error('routingRules must be text.');
     settings.routingRules = patch.routingRules.trim().slice(0, 1000);
@@ -241,7 +249,12 @@ export function update(patch: { name?: string; routingRules?: string; newTaskDef
     if (!Number.isFinite(n) || n < 0 || n > 1440) throw new Error('Give the idle time of a task browser in minutes, from 0 (never stop) to 1440.');
     settings.browser.idleStopMinutes = n;
   }
-  if (patch.browserSharp !== undefined) settings.browser.sharp = !!patch.browserSharp;
+  // the older switch: on is two pixels for each point, off follows the screen
+  if (patch.browserSharp !== undefined) { settings.browser.sharp = !!patch.browserSharp; settings.browser.scale = patch.browserSharp ? 'two' : 'screen'; }
+  if (patch.browserScale !== undefined) {
+    if (!SCALES.includes(patch.browserScale)) throw new Error("The browser scale must be 'screen', 'one' or 'two'.");
+    settings.browser.scale = patch.browserScale;
+  }
   if (patch.browserAutoSwitch !== undefined) settings.browser.autoSwitch = !!patch.browserAutoSwitch;
   if (patch.claudeInChromeTasks !== undefined) settings.claudeInChrome.tasks = patch.claudeInChromeTasks === true;
   if (patch.claudeInChromeController !== undefined) settings.claudeInChrome.controller = patch.claudeInChromeController === true;

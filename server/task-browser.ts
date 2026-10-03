@@ -12,7 +12,7 @@
 // that got no command from an agent and had no dashboard viewer and no screencast for the time set on the Settings
 // page. It closes the agent connections first: chrome-devtools-mcp connects again at the agent's next tool call.
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
-import { createHmac } from 'node:crypto';
+import { createHmac, randomBytes } from 'node:crypto';
 import { closeSync, cpSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import WebSocket from 'ws';
@@ -29,13 +29,19 @@ const ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,120}$/;
 // started with --mute-audio because the sound extension did not load (see muteTabs).
 // error: why the last start failed or why Chrome ended by itself (exited), with the useful lines of chrome.log
 // (errorLines) and the time (errorAt). The next start that works removes them.
-export interface Meta { pid?: number; port?: number; started?: string; startMs?: number; tabs?: string[]; suspended?: boolean; idleStopped?: boolean; stoppedAt?: string; error?: string; errorLines?: string[]; errorAt?: string; exited?: boolean; copiedFromTemplate?: string; sound?: boolean; muted?: boolean; muteFlag?: boolean; sharp?: boolean;
+export interface Meta { pid?: number; port?: number; started?: string; startMs?: number; tabs?: string[]; suspended?: boolean; idleStopped?: boolean; stoppedAt?: string; error?: string; errorLines?: string[]; errorAt?: string; exited?: boolean; copiedFromTemplate?: string; sound?: boolean; muted?: boolean; muteFlag?: boolean; sharp?: boolean; scale?: number;
   // sign-in sharing (browser-signins.ts): noShared is the opt-out of this task browser, syncedAt the last sync from the
   // template, clearSites the sites whose cookies the next start deletes (sign out of all), liveSyncAt the last live sync.
   // headed: the template runs in a normal Chrome window (openTemplateWindow). savedFrom: the task whose profile became the template.
   noShared?: boolean; syncedAt?: string; clearSites?: string[]; liveSyncAt?: string; headed?: boolean; savedFrom?: { task: string; at: string };
+  // ask: the agent asked the user for help in this browser (tb browser ask), until the user answers with Done
+  ask?: Ask;
+  // window: the task browser runs as a normal Chrome window on this computer (Open in a window, setWindow), with its
+  // debugging port, so the agent keeps working in the window that the user sees
+  window?: boolean;
   // autoSwitch: the dashboard view switches to a new tab or popup (tab-switch.ts); unset follows the Settings choice
   autoSwitch?: boolean }
+export interface Ask { reason: string; at: string }
 export interface Tab { id: string; title: string; url: string; faviconUrl?: string; dialog?: Dialog }
 // A box that a page opened with alert(), confirm(), prompt() or onbeforeunload. Headless Chrome draws no box, and the
 // page waits until a DevTools client answers it (Page.handleJavaScriptDialog).
@@ -212,9 +218,12 @@ async function start(id: string, t0: number): Promise<Meta & { ws: string }> {
     if (copyTemplate(id)) meta.copiedFromTemplate = new Date().toISOString();
   }
   mkdirSync(profileDir(id), { recursive: true });
+  cleanFiles(id);
   const portFile = join(profileDir(id), 'DevToolsActivePort');
   const urls = (meta.tabs || []).filter(u => /^(https?|file):/.test(u)).slice(0, 20);
-  const sharp = !!machine.get().browser?.sharp;
+  // a task browser in a window draws at the screen's own pixel density, so it gets no scale flag
+  const windowed = !!meta.window && id !== TEMPLATE;
+  const scale = windowed ? 1 : startScale(), sharp = scale > 1;
   // A Chrome that holds the profile but did not answer live() (a busy computer answers slowly) gets the full time.
   // When it answers, it is the browser. When it does not, it is ended before a new Chrome starts.
   let b: { pid: number; port: number; ws: string; child?: ChildProcess } | null = null;
@@ -227,13 +236,16 @@ async function start(id: string, t0: number): Promise<Meta & { ws: string }> {
   }
   const launch = async (muteFlag: boolean) => {
     rmSync(portFile, { force: true });
-    const args = ['--headless=new', `--user-data-dir=${profileDir(id)}`, '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1',
-      '--no-first-run', '--no-default-browser-check', '--hide-crash-restore-bubble', '--window-size=1280,800', '--disable-features=Translate,MediaRouter',
+    // A window (meta.window) is a normal Chrome with the same profile and the debugging port. Chrome sets
+    // navigator.webdriver to true when the debugging port is open, and sign-in pages (Google among them) refuse such a
+    // browser. AutomationControlled off makes it false again (observed with Chrome 154 on 3 October 2026).
+    const args = [...(windowed ? ['--disable-blink-features=AutomationControlled', '--window-size=1280,900'] : ['--headless=new', '--window-size=1280,800']), `--user-data-dir=${profileDir(id)}`, '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1',
+      '--no-first-run', '--no-default-browser-check', '--hide-crash-restore-bubble', '--disable-features=Translate,MediaRouter',
       // some Chrome versions allow Extensions.loadUnpacked (the sound extension, muteTabs) only with this flag
       '--enable-unsafe-extension-debugging',
       ...(muteFlag ? ['--mute-audio'] : []),
-      // Settings → Task browsers → Sharp view: only this start flag makes screencast frames larger than the CSS size
-      ...(sharp ? ['--force-device-scale-factor=2'] : []),
+      // Settings → Task browsers → Picture: only this start flag makes screencast frames larger than the CSS size
+      ...(sharp ? [`--force-device-scale-factor=${scale}`] : []),
       'about:blank']; // headless Chrome takes one start page; the saved pages open below
     const offset = logSize(id), began = Date.now();
     const log = openSync(join(folder(id), 'chrome.log'), 'a');
@@ -265,7 +277,7 @@ async function start(id: string, t0: number): Promise<Meta & { ws: string }> {
     if (muted && !muteFlag) { await closeChrome(b.ws, b.pid); b = await launch(muteFlag = true); }
   }
   const port = b.port;
-  const next: Meta = { ...meta, pid: b.pid, port, started: new Date().toISOString(), muted, muteFlag: muteFlag || undefined, sharp: (reused ? meta.sharp : sharp) || undefined, suspended: undefined, idleStopped: undefined, error: undefined, errorLines: undefined, errorAt: undefined, exited: undefined, stoppedAt: undefined };
+  const next: Meta = { ...meta, pid: b.pid, port, started: new Date().toISOString(), muted, muteFlag: muteFlag || undefined, sharp: (reused ? meta.sharp : sharp) || undefined, scale: (reused ? meta.scale : sharp ? scale : undefined), suspended: undefined, idleStopped: undefined, error: undefined, errorLines: undefined, errorAt: undefined, exited: undefined, stoppedAt: undefined };
   const v = { webSocketDebuggerUrl: b.ws };
   if (urls.length) await openSaved(port, v.webSocketDebuggerUrl, urls);
   next.startMs = Date.now() - t0;
@@ -276,6 +288,27 @@ async function start(id: string, t0: number): Promise<Meta & { ws: string }> {
   // sign-in sharing: the deferred sign-out and the live cookies reach the browser before an agent uses it
   for (const fn of started) { try { await Promise.race([fn(id, v.webSocketDebuggerUrl), new Promise(r => setTimeout(r, 10000))]); } catch (e) { console.error(`task browser ${id}: sign-in sharing at the start failed: ${(e as Error).message}`); } }
   return { ...readMeta(id), ws: v.webSocketDebuggerUrl };
+}
+
+// ---------- the pixel density of a task browser ----------
+// A browser view reports the device pixel ratio of its screen ('hello' with dpr). The last one is kept in
+// browsers/screen.json, so a browser that an agent starts later gets it too. startScale() gives the factor for
+// --force-device-scale-factor at a start: the screen's ratio ('screen'), 1 ('one') or 2 ('two'), from 1 to 3, in steps
+// of 0.25. A running browser keeps its factor until its next start (the view offers a restart when they differ).
+const screenFile = () => join(DIR, 'screen.json');
+let screenDpr: number | undefined;
+export function noteScreen(dpr: unknown) {
+  const n = Math.round(Math.min(3, Math.max(1, Number(dpr) || 1)) * 4) / 4;
+  if (n === screenDpr) return;
+  screenDpr = n;
+  try { mkdirSync(DIR, { recursive: true }); writeFileSync(screenFile(), JSON.stringify({ dpr: n, at: new Date().toISOString() })); } catch { /* read-only */ }
+}
+export function startScale(): number {
+  const s = machine.get().browser?.scale ?? (machine.get().browser?.sharp ? 'two' : 'screen');
+  if (s === 'one') return 1;
+  if (s === 'two') return 2;
+  if (screenDpr === undefined) { try { screenDpr = Number(JSON.parse(readFileSync(screenFile(), 'utf8')).dpr) || 1; } catch { screenDpr = 1; } }
+  return screenDpr;
 }
 
 // ---------- a Chrome that ends by itself after its start ----------
@@ -302,6 +335,8 @@ function watchExit(id: string, pid: number, child?: ChildProcess) {
 }
 function markExited(id: string, pid: number, how: string, offset = Math.max(0, logSize(id) - 16384)) {
   const m = readMeta(id);
+  // the user quit the Chrome of a task browser in a window: the browser goes back to the panel with its pages
+  if (m.window && m.pid === pid && !stopping.has(id) && !starting.has(id)) { writeMeta(id, { ...m, pid: undefined, port: undefined, window: undefined, tabs: windowTabs.get(id) || m.tabs, stoppedAt: new Date().toISOString() }); windowTabs.delete(id); changed(id); return; }
   // the user closed the template's Chrome window: that is not a failure
   if (m.headed && m.pid === pid) { writeMeta(id, { ...m, pid: undefined, headed: undefined, stoppedAt: new Date().toISOString() }); changed(id); return; }
   // a stop or a start of this browser ended this process on purpose, or browser.json names another process now
@@ -374,7 +409,7 @@ export function once(wsUrl: string, method: string, params: object = {}, timeout
 // idle suspend of the task: resume starts the browser again. idle marks a stop by stopIdle(): the next use starts it.
 // A start that comes while a stop runs waits for the stop (ensure() reads this map).
 const stopping = new Map<string, Promise<boolean>>();
-export function stop(id: string, opts: { suspended?: boolean; idle?: boolean } = {}): Promise<boolean> {
+export function stop(id: string, opts: { suspended?: boolean; idle?: boolean; keepTabs?: boolean } = {}): Promise<boolean> {
   const pending = stopping.get(id);
   if (pending) return pending;
   const p = stopNow(id, opts);
@@ -382,7 +417,7 @@ export function stop(id: string, opts: { suspended?: boolean; idle?: boolean } =
   p.finally(() => { if (stopping.get(id) === p) stopping.delete(id); }).catch(() => {});
   return p;
 }
-async function stopNow(id: string, opts: { suspended?: boolean; idle?: boolean }): Promise<boolean> {
+async function stopNow(id: string, opts: { suspended?: boolean; idle?: boolean; keepTabs?: boolean }): Promise<boolean> {
   // a start that runs ends first, so a stop (for example the archive of the task) does not leave its Chrome running
   await starting.get(id)?.catch(() => {});
   const m = readMeta(id);
@@ -400,7 +435,8 @@ async function stopNow(id: string, opts: { suspended?: boolean; idle?: boolean }
   const running = await live(id);
   // a busy Chrome can answer slowly: wait up to 5 s, and keep the saved pages when it does not answer
   const listed = running ? await pageList(running.port!, 5000) : null;
-  const open = listed ? listed.map(t => t.url).filter(u => /^(https?|file):/.test(u)) : m.tabs;
+  // keepTabs: the saved pages stay (a window that the user closed has no pages left)
+  const open = listed && !opts.keepTabs ? listed.map(t => t.url).filter(u => /^(https?|file):/.test(u)) : m.tabs;
   // The template waits up to 30 s: new task browsers copy its cookies. On a busy Mac (load average 140 on 10 cores,
   // 2 October 2026) Chrome took more than 10 s to close, and the end of the wait lost cookies that it had not written.
   await closeChrome(running?.ws, m.pid || holder, id === TEMPLATE ? 30000 : 10000);
@@ -564,6 +600,67 @@ export async function openTemplateWindow(url = 'https://accounts.google.com/') {
   changed(TEMPLATE);
 }
 
+// ---------- a task browser in a normal Chrome window (Open in a window) ----------
+// Chrome cannot change between headless and a window while it runs, and two Chrome processes cannot use one profile.
+// So setWindow() stops the browser (its pages are saved, Browser.close writes the cookies) and starts it again in the
+// other mode with the same profile and pages. Each change reloads the pages: text that the user typed and did not send
+// is lost, so the view asks first when unsent() finds such text. The agent's connection closes at the change, and
+// chrome-devtools-mcp connects again at its next tool call. While the window is open, watchWindow() keeps the page
+// addresses: when the user closes the last tab or quits that Chrome, the browser goes back to the panel with them.
+const windowTabs = new Map<string, string[]>();
+const windowWatch = new Map<string, NodeJS.Timeout>();
+export async function setWindow(id: string, on: boolean) {
+  if (id === TEMPLATE) throw new Error('The template opens in a window from the Settings page.');
+  if (!!readMeta(id).window === on && await isRunning(id)) { if (on) await showWindow(id); return; }
+  await stop(id);
+  updateMeta(id, { window: on || undefined });
+  await ensure(id);
+  if (on) { watchWindow(id); await showWindow(id); }
+  else { windowTabs.delete(id); clearInterval(windowWatch.get(id)); windowWatch.delete(id); }
+}
+// Bring the window of a task browser to the front (Show the window).
+export async function showWindow(id: string) {
+  const m = await live(id); if (!m || !readMeta(id).window) return;
+  const page = (await pageList(m.port!))?.[0]; if (!page) return;
+  const r = await once(m.ws, 'Browser.getWindowForTarget', { targetId: page.id }).catch(() => null);
+  if (r?.windowId) await once(m.ws, 'Browser.setWindowBounds', { windowId: r.windowId, bounds: { windowState: 'normal' } }).catch(() => {});
+  const t = (await (await fetch(`http://127.0.0.1:${m.port}/json/list`)).json() as { id: string; webSocketDebuggerUrl: string }[]).find(x => x.id === page.id);
+  if (t) await once(t.webSocketDebuggerUrl, 'Page.bringToFront').catch(() => {});
+}
+function watchWindow(id: string) {
+  clearInterval(windowWatch.get(id));
+  const timer = setInterval(async () => {
+    const m = readMeta(id);
+    if (!m.window || stopping.has(id) || starting.has(id)) { if (!m.window) { clearInterval(timer); windowWatch.delete(id); } return; }
+    const r = await live(id); if (!r) return; // a Chrome that quit: markExited() handles it
+    const list = await pageList(r.port!); if (!list) return;
+    const urls = list.map(t => t.url).filter(u => /^(https?|file):/.test(u));
+    if (urls.length) { windowTabs.set(id, urls); return; }
+    if (list.length) return; // only blank tabs: the window is still open
+    // the user closed the window (Chrome on macOS keeps running without one): back to the panel with the pages
+    clearInterval(timer); windowWatch.delete(id);
+    updateMeta(id, { tabs: windowTabs.get(id) || m.tabs, window: undefined });
+    windowTabs.delete(id);
+    await stop(id, { keepTabs: true }).catch(() => {});
+    void ensure(id).catch(() => {});
+  }, 2000);
+  timer.unref();
+  windowWatch.set(id, timer);
+}
+// The number of text fields on the open pages with text that is not sent yet (value changed from the page's own), so
+// the view can ask before a change of mode reloads them. Passwords count; their text is never read here.
+const UNSENT = `[...document.querySelectorAll('input, textarea')].filter(e => !['hidden', 'submit', 'button', 'checkbox', 'radio', 'file', 'image', 'reset', 'range', 'color'].includes(e.type) && e.value !== e.defaultValue).length + [...document.querySelectorAll('[contenteditable=""], [contenteditable="true"]')].filter(e => e.textContent.trim()).length`;
+export async function unsent(id: string): Promise<number> {
+  const m = await live(id); if (!m) return 0;
+  const list = await (await fetch(`http://127.0.0.1:${m.port}/json/list`)).json() as { type: string; webSocketDebuggerUrl: string }[];
+  let n = 0;
+  for (const t of list.filter(x => x.type === 'page').slice(0, 20)) {
+    const r = await once(t.webSocketDebuggerUrl, 'Runtime.evaluate', { expression: UNSENT, returnByValue: true }, 2000).catch(() => null);
+    n += Number(r?.result?.value) || 0;
+  }
+  return n;
+}
+
 // The task was removed from Taskboard: stop its browser and delete its profile (it holds copied sign-ins).
 export async function remove(id: string) { await stop(id).catch(() => {}); rmSync(folder(id), { recursive: true, force: true }); }
 
@@ -572,7 +669,7 @@ export async function remove(id: string) { await stop(id).catch(() => {}); rmSyn
 export interface Status { id: string; running: boolean; port?: number; tabs: Tab[]; profile: boolean; copiedFromTemplate?: string; suspended?: boolean; idleStopped?: boolean; idleStopMinutes: number; startMs?: number; started?: string; stoppedAt?: string; error?: string; errorLines?: string[]; errorAt?: string; exited?: boolean; starting?: { seconds: number; limitSeconds: number; pid?: number }; systemMemory?: memory.SystemMemory | null; memMb?: number | null; rssMb?: number | null; agents: number; viewers: number; chrome: string | null; sound: boolean; muted: boolean; sharp: boolean;
   // sign-in sharing: noShared (opt-out), syncedAt, headed (the template in a Chrome window), and from statusExtra:
   // templateSites, the number of sites with cookies in the template (null: unknown)
-  noShared: boolean; syncedAt?: string; headed?: boolean; templateSites?: number | null }
+  noShared: boolean; syncedAt?: string; headed?: boolean; templateSites?: number | null; window?: boolean }
 // More status fields from another module (browser-signins.ts adds templateSites).
 let statusExtra: (id: string) => Promise<Partial<Status>> = async () => ({});
 export const setStatusExtra = (fn: (id: string) => Promise<Partial<Status>>) => { statusExtra = fn; };
@@ -590,7 +687,7 @@ export async function status(id: string): Promise<Status> {
     starting: startingNow(id), systemMemory: running ? undefined : await memory.systemMemory(),
     // memMb is the footprint of the browser's processes (memory.ts). rssMb has the same value for older callers.
     memMb: mem, rssMb: mem, agents: agentCount(id), viewers: viewers.get(id) || 0, chrome: chromePath(), sound: !!m.sound, muted: mutedNow(m, !!running), sharp: !!(running && m.sharp),
-    noShared: !!m.noShared, syncedAt: m.syncedAt, headed: id === TEMPLATE && templateWindowOpen() ? true : undefined, ...(await statusExtra(id).catch(() => ({}))) };
+    noShared: !!m.noShared, syncedAt: m.syncedAt, headed: id === TEMPLATE && templateWindowOpen() ? true : undefined, window: m.window || undefined, ...(await statusExtra(id).catch(() => ({}))) };
 }
 
 export async function openTab(id: string, url: string): Promise<Tab> {
@@ -657,10 +754,11 @@ export async function stopIdle(now = Date.now()): Promise<string[]> {
     const m = readMeta(id);
     // a Chrome that ended while this server did not watch it (watchExit), and a Chrome that this server did not start
     if (m.pid && !pidAlive(m.pid)) markExited(id, m.pid, '');
-    else if (m.pid && !starting.has(id)) watchExit(id, m.pid);
+    else if (m.pid && !starting.has(id)) { watchExit(id, m.pid); if (m.window && !windowWatch.has(id)) watchWindow(id); }
     if (id === TEMPLATE || !ms) continue;
     if (!m.pid || !pidAlive(m.pid)) { lastUse.delete(id); continue; }
-    if (viewed(id) || starting.has(id) || stopping.has(id)) { lastUse.set(id, now); continue; }
+    // a browser in a window is in the user's hands: it stops only when the user closes the window
+    if (viewed(id) || starting.has(id) || stopping.has(id) || m.window) { lastUse.set(id, now); continue; }
     const conns = [...(agentConnections.get(id) || [])];
     const since = Math.max(lastUse.get(id) || 0, Date.parse(m.started || '') || 0, loadedAt, ...conns.map(c => c.last));
     if (now - since < ms) continue;
@@ -714,8 +812,10 @@ export function proxyAgent(client: WebSocket, id: string, waitMs = AGENT_WAIT_MS
     // a short time for the commands that the client sends after its first one failed
     setTimeout(done, 1000).unref();
   };
+  const watch = agentWatch(id);
   client.on('message', (d, binary) => {
     conn.last = Date.now(); const msg = binary ? d as Buffer : d.toString();
+    if (typeof msg === 'string') watch.command(msg);
     if (refusal) refuse(msg);
     else if (up?.readyState === WebSocket.OPEN) up.send(msg); else if (queue.length < 1000) queue.push(msg); else done();
   });
@@ -727,9 +827,139 @@ export function proxyAgent(client: WebSocket, id: string, waitMs = AGENT_WAIT_MS
     clearTimeout(timer);
     up = new WebSocket(m.ws, { perMessageDeflate: false, maxPayload: 512 * 1024 * 1024 });
     up.on('open', () => { for (const q of queue) up!.send(q); queue.length = 0; });
-    up.on('message', (d, binary) => { if (client.readyState === WebSocket.OPEN) client.send(binary ? d : d.toString()); });
+    up.on('message', (d, binary) => { if (!binary) watch.answer(d.toString()); if (client.readyState === WebSocket.OPEN) client.send(binary ? d : d.toString()); });
     up.on('close', done); up.on('error', done);
   }).catch(e => giveUp(agentRefusal(id, e as Error)));
+}
+
+// ---------- what the agent does, for the dashboard ----------
+// The proxy reads each DevTools command of the agent before it forwards it (agentWatch), and turns the commands that
+// act on a page into short events: a click (with its point in CSS pixels of the page), typed text (only its length),
+// a scroll, a navigation, a new tab, a file upload, and a look at the page (a screenshot or a snapshot). The dashboard
+// views of the browser show the last event and draw the agent's pointer (attachViewer). Nothing is held or refused:
+// the user and the agent both act at any time. The commands carry a session id; the target of each session comes from
+// Target.attachedToTarget events and from the answers to Target.attachToTarget.
+export interface AgentEvent { kind: 'click' | 'type' | 'key' | 'scroll' | 'navigate' | 'newTab' | 'upload' | 'look' | 'drag'; target?: string; x?: number; y?: number; url?: string; chars?: number; at: number }
+const activity = new Map<string, Set<(e: AgentEvent) => void>>();
+export function onAgentEvent(id: string, fn: (e: AgentEvent) => void) {
+  let set = activity.get(id); if (!set) activity.set(id, set = new Set());
+  set.add(fn);
+  return () => { set.delete(fn); };
+}
+const lastAgent = new Map<string, AgentEvent>();
+export const lastAgentEvent = (id: string) => lastAgent.get(id);
+const LOOK = new Set(['Page.captureScreenshot', 'Accessibility.getFullAXTree', 'Accessibility.queryAXTree', 'DOMSnapshot.captureSnapshot']);
+export function agentWatch(id: string) {
+  const sessions = new Map<string, string>(), attaching = new Map<number, string>();
+  // typed characters wait up to TYPE_MS, so a burst of keys is one event
+  let typed: AgentEvent | null = null, typeTimer: NodeJS.Timeout | undefined;
+  const TYPE_MS = 300;
+  const emit = (e: AgentEvent) => { lastAgent.set(id, e); for (const fn of activity.get(id) || []) { try { fn(e); } catch { /* listener failed */ } } };
+  const flushTyped = () => { clearTimeout(typeTimer); typeTimer = undefined; if (typed) { const e = typed; typed = null; emit(e); } };
+  const type = (target: string | undefined, chars: number) => {
+    if (typed && typed.target !== target) flushTyped();
+    typed = typed ? { ...typed, chars: (typed.chars || 0) + chars, at: Date.now() } : { kind: 'type', target, chars, at: Date.now() };
+    typeTimer ??= setTimeout(flushTyped, TYPE_MS);
+  };
+  return {
+    command(text: string) {
+      if (text.length > 200000) return; // a large command (a script, a file) is not an action to show
+      let m: { id?: number; method?: string; params?: any; sessionId?: string };
+      try { m = JSON.parse(text); } catch { return; }
+      const method = m.method || '', p = m.params || {}, target = m.sessionId ? sessions.get(m.sessionId) : undefined, at = Date.now();
+      if (method === 'Target.attachToTarget' && typeof m.id === 'number' && typeof p.targetId === 'string') attaching.set(m.id, p.targetId);
+      else if (method === 'Input.dispatchMouseEvent') {
+        if (p.type === 'mousePressed') { flushTyped(); emit({ kind: 'click', target, x: Number(p.x) || 0, y: Number(p.y) || 0, at }); }
+        else if (p.type === 'mouseWheel') emit({ kind: 'scroll', target, x: Number(p.x) || 0, y: Number(p.y) || 0, at });
+      }
+      else if (method === 'Input.insertText' && typeof p.text === 'string') type(target, p.text.length);
+      else if (method === 'Input.dispatchKeyEvent' && (p.type === 'keyDown' || p.type === 'char' || p.type === 'rawKeyDown')) {
+        if (typeof p.text === 'string' && p.text && p.type !== 'char' && p.text !== '\r') type(target, p.text.length);
+        else if (p.type !== 'char') { flushTyped(); if (/^(Enter|Tab|Escape|Backspace|Delete|Arrow\w+|Page\w+|Home|End)$/.test(String(p.key || ''))) emit({ kind: 'key', target, url: String(p.key), at }); }
+      }
+      else if (method === 'Input.dispatchDragEvent' && p.type === 'drop') emit({ kind: 'drag', target, x: Number(p.x) || 0, y: Number(p.y) || 0, at });
+      else if (method === 'Page.navigate' && typeof p.url === 'string') { flushTyped(); emit({ kind: 'navigate', target, url: p.url.slice(0, 300), at }); }
+      else if (method === 'Page.reload') emit({ kind: 'navigate', target, url: '', at });
+      else if (method === 'Target.createTarget') emit({ kind: 'newTab', url: String(p.url || '').slice(0, 300), at });
+      else if (method === 'DOM.setFileInputFiles') emit({ kind: 'upload', target, chars: Array.isArray(p.files) ? p.files.length : 0, at });
+      else if (LOOK.has(method)) emit({ kind: 'look', target, at });
+    },
+    answer(text: string) {
+      // only the attach events, and the answers to an attach command that waits, are read (the answer has no method)
+      if (!text.includes('attach') && !(attaching.size && text.includes('sessionId'))) return;
+      let m: { id?: number; method?: string; params?: any; result?: any };
+      try { m = JSON.parse(text); } catch { return; }
+      if (m.method === 'Target.attachedToTarget' && m.params?.sessionId && m.params?.targetInfo?.targetId) sessions.set(m.params.sessionId, m.params.targetInfo.targetId);
+      else if (m.method === 'Target.detachedFromTarget' && m.params?.sessionId) sessions.delete(m.params.sessionId);
+      else if (typeof m.id === 'number' && attaching.has(m.id)) { if (m.result?.sessionId) sessions.set(m.result.sessionId, attaching.get(m.id)!); attaching.delete(m.id); }
+    },
+  };
+}
+
+// ---------- the agent asks the user for help (tb browser ask) ----------
+// The agent names what it needs, for example a sign-in or a captcha. The browser view shows the reason with a Done
+// button and a note field, and the task list shows a chip. Done clears the request and types the note into the
+// agent's session (onAskDone, runtime-routes.ts). Nothing waits on the request: the agent decides itself whether it
+// waits. askOf() keeps the request in memory, so the task list does not read browser.json for each task.
+const asks = new Map<string, Ask | null>();
+export function askOf(id: string): Ask | null {
+  if (!asks.has(id)) { let a: Ask | null = null; try { a = readMeta(id).ask ?? null; } catch { /* invalid id */ } asks.set(id, a); }
+  return asks.get(id) ?? null;
+}
+const askDone = new Set<(id: string, ask: Ask, note: string) => void>();
+export const onAskDone = (fn: (id: string, ask: Ask, note: string) => void) => { askDone.add(fn); };
+const askListeners = new Set<(id: string) => void>();
+export const onAsk = (fn: (id: string) => void) => { askListeners.add(fn); };
+export function setAsk(id: string, reason: string | null) {
+  const ask = reason ? { reason: reason.replace(/\s+/g, ' ').trim().slice(0, 300), at: new Date().toISOString() } : null;
+  updateMeta(id, { ask: ask ?? undefined });
+  asks.set(id, ask);
+  for (const fn of askListeners) { try { fn(id); } catch { /* listener failed */ } }
+  return ask;
+}
+export function answerAsk(id: string, note: string) {
+  const ask = askOf(id);
+  if (!ask) return false;
+  setAsk(id, null);
+  for (const fn of askDone) { try { fn(id, ask, note.replace(/\s+$/, '').slice(0, 2000)); } catch (e) { console.error(`task browser ${id}: the answer to the agent failed: ${(e as Error).message}`); } }
+  return true;
+}
+
+// ---------- downloads ----------
+// Headless Chrome saves a download on the server computer, where the user does not see it. Each running browser saves
+// its downloads in its downloads folder (Browser.setDownloadBehavior on the watch connection, watchDialogs), named by
+// the download id. The dashboard view lists them and offers each finished file with a link
+// (GET /api/tasks/<id>/browser/downloads/<guid>). Files older than DOWNLOAD_KEEP_MS go at the next start.
+export interface Download { guid: string; name: string; url: string; state: 'inProgress' | 'completed' | 'canceled'; bytes: number; total: number; at: number }
+const DOWNLOAD_KEEP_MS = 24 * 3600000;
+const downloads = new Map<string, Map<string, Download>>();
+const downloadListeners = new Set<(id: string, d: Download) => void>();
+export const downloadDir = (id: string) => join(folder(id), 'downloads');
+function downloadEvent(id: string, method: string, p: any) {
+  let list = downloads.get(id); if (!list) downloads.set(id, list = new Map());
+  const guid = String(p.guid || ''); if (!/^[\w-]{1,80}$/.test(guid)) return;
+  const had = list.get(guid);
+  const d: Download = method === 'Browser.downloadWillBegin'
+    ? { guid, name: basename(String(p.suggestedFilename || 'download')).slice(0, 200) || 'download', url: String(p.url || '').slice(0, 500), state: 'inProgress', bytes: 0, total: 0, at: Date.now() }
+    : { ...(had || { guid, name: 'download', url: '', at: Date.now() }), state: p.state === 'completed' || p.state === 'canceled' ? p.state : 'inProgress', bytes: Number(p.receivedBytes) || 0, total: Number(p.totalBytes) || 0 };
+  list.set(guid, d);
+  // progress events come many times a second: only a new download and a change of state go to the views
+  if (had && had.state === d.state) return;
+  for (const fn of downloadListeners) { try { fn(id, d); } catch { /* listener failed */ } }
+}
+export const recentDownloads = (id: string) => [...(downloads.get(id)?.values() || [])].filter(d => Date.now() - d.at < DOWNLOAD_KEEP_MS);
+export function downloadFile(id: string, guid: string): { path: string; name: string } | null {
+  const d = downloads.get(id)?.get(guid);
+  if (!d || d.state !== 'completed' || !/^[\w-]{1,80}$/.test(guid)) return null;
+  const path = join(downloadDir(id), guid);
+  return existsSync(path) ? { path, name: d.name } : null;
+}
+// files of earlier downloads and uploads that are older than DOWNLOAD_KEEP_MS (at each start)
+function cleanFiles(id: string) {
+  for (const dir of [downloadDir(id), join(folder(id), 'uploads')]) {
+    let names: string[] = []; try { names = readdirSync(dir); } catch { continue; }
+    for (const n of names) { try { const f = join(dir, n); if (Date.now() - statSync(f).mtimeMs > DOWNLOAD_KEEP_MS) rmSync(f, { force: true }); } catch { /* gone */ } }
+  }
 }
 
 // ---------- dialogs ----------
@@ -755,12 +985,17 @@ function watchDialogs(id: string, browserWs: string): DialogWatch {
   const cmd = (method: string, params: object = {}, sessionId?: string) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ id: ++w.next, method, params, ...(sessionId ? { sessionId } : {}) })); };
   const changed = () => { for (const fn of w.listeners) fn(); };
   const attach = (t: { targetId: string; type: string }) => { if (t.type === 'page' && ![...w.sessions.values()].includes(t.targetId)) cmd('Target.attachToTarget', { targetId: t.targetId, flatten: true }); };
-  ws.on('open', () => cmd('Target.setDiscoverTargets', { discover: true }));
+  ws.on('open', () => {
+    cmd('Target.setDiscoverTargets', { discover: true });
+    // downloads go to the browser's downloads folder, named by their id, and this connection gets their events
+    try { mkdirSync(downloadDir(id), { recursive: true }); cmd('Browser.setDownloadBehavior', { behavior: 'allowAndName', downloadPath: downloadDir(id), eventsEnabled: true }); } catch { /* the folder cannot be made */ }
+  });
   ws.on('message', d => {
     const m = JSON.parse(d.toString());
     if (m.id === 1) w.ready = true;
     const opener = m.method === 'Page.windowOpen' && m.sessionId ? w.sessions.get(m.sessionId) : undefined;
     if (w.ready && (m.method === 'Target.targetCreated' || m.method === 'Target.targetInfoChanged' || m.method === 'Target.targetDestroyed' || opener)) for (const fn of w.targetListeners) { try { fn(opener ? { method: m.method, params: { ...m.params, openerId: opener } } : m); } catch { /* listener failed */ } }
+    if (m.method === 'Browser.downloadWillBegin' || m.method === 'Browser.downloadProgress') downloadEvent(id, m.method, m.params);
     if (m.method === 'Target.targetCreated') attach(m.params.targetInfo);
     else if (m.method === 'Target.attachedToTarget') { w.sessions.set(m.params.sessionId, m.params.targetInfo.targetId); cmd('Page.enable', {}, m.params.sessionId); }
     else if (m.method === 'Target.detachedFromTarget' || m.method === 'Target.targetDestroyed') {
@@ -787,6 +1022,31 @@ function answerDialog(id: string, target: string, accept: boolean, promptText?: 
   w.ws.send(JSON.stringify({ id: ++w.next, method: 'Page.handleJavaScriptDialog', params: { accept, ...(promptText !== undefined ? { promptText } : {}) }, sessionId: session }));
 }
 
+// ---------- files from the dashboard ----------
+// An image in a paste, a file that the user picks for a page's file chooser, or a file dropped on the view. The
+// dashboard socket takes messages of at most 1 MB, so the dashboard posts each file first (POST
+// /api/tasks/<id>/browser/upload), and the view then names it by its id. A file stays in memory for UPLOAD_MS and is
+// used once. Only the view of the same browser can use it.
+const UPLOAD_MS = 10 * 60000;
+export const UPLOAD_MAX = 100 * 1024 * 1024;
+interface Upload { browser: string; name: string; type: string; data: Buffer; at: number }
+const uploads = new Map<string, Upload>();
+export function addUpload(browserId: string, name: string, type: string, data: Buffer): string {
+  folder(browserId);
+  if (data.length > UPLOAD_MAX) throw new Error(`A file can be at most ${UPLOAD_MAX / 1024 / 1024} MB.`);
+  const now = Date.now();
+  for (const [k, u] of uploads) if (now - u.at > UPLOAD_MS) uploads.delete(k);
+  const id = randomBytes(12).toString('hex');
+  uploads.set(id, { browser: browserId, name: basename(String(name || 'file')).replace(/[^\w .()+-]/g, '_').slice(0, 120) || 'file', type: String(type || ''), data, at: now });
+  return id;
+}
+export function takeUpload(browserId: string, uploadId: unknown): Upload | null {
+  const u = typeof uploadId === 'string' ? uploads.get(uploadId) : undefined;
+  if (!u || u.browser !== browserId || Date.now() - u.at > UPLOAD_MS) return null;
+  uploads.delete(uploadId as string);
+  return u;
+}
+
 // ---------- the dashboard: screencast of one tab, with mouse and key input ----------
 const FRAME_BACKLOG = 512 * 1024;
 // JPEG quality of the screencast: QUALITY_FAST while frames come less than FAST_GAP_MS apart (scroll, video,
@@ -803,7 +1063,9 @@ const MAX_UNDRAWN = 2, HELD_MS = 1000;
 const QUALITY_FAST = 50, QUALITY_STILL = 80, FAST_GAP_MS = 150, STILL_MS = 300;
 // quality: the quality of the screencast that runs or that the last queued start asks for. chain: the starts and stops
 // of this page's screencast, one at a time.
-interface PageConn { ws: WebSocket; target: string; next: number; pending: Map<number, (r: any) => void>; casting?: boolean; quality: number; chain: Promise<void>; lastFrame: number; stillTimer?: NodeJS.Timeout }
+// world: the execution context of the view's isolated world (WIDGETS) in the main frame; chooser: the file input of a
+// file chooser that the page opened and the view answers.
+interface PageConn { ws: WebSocket; target: string; next: number; pending: Map<number, (r: any) => void>; casting?: boolean; quality: number; chain: Promise<void>; lastFrame: number; stillTimer?: NodeJS.Timeout; world?: number; chooser?: { backendNodeId: number; multiple: boolean } }
 // The switch to a new tab or popup (Settings → Task browsers, and the override of one browser in browser.json).
 export const autoSwitchOn = (id: string) => readMeta(id).autoSwitch ?? machine.get().browser?.autoSwitch ?? true;
 export function attachViewer(client: WebSocket, id: string, autostart: boolean) {
@@ -823,7 +1085,7 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
   let acks = false, undrawn = 0, waiting: Buffer | null = null, held: (() => void)[] = [], heldTimer: NodeJS.Timeout | undefined;
   // visible: the view is on the screen ('visible' from the view). A hidden view gets no screencast, so Chrome captures
   // and encodes no frames for it. The view stays a viewer (viewers), so the idle stop does not stop the browser.
-  let visible = true;
+  let visible = true, helloed = false;
   const sendFrame = (jpeg: Buffer) => { lastFrame = jpeg.length; undrawn++; client.send(jpeg); };
   // the view has room: send the waiting frame, then let Chrome capture again
   const drain = () => {
@@ -850,7 +1112,8 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
   // deviceScaleFactor 0 keeps the factor that Chrome started with. An emulated factor does not change the size of a
   // screencast frame; only the start flag --force-device-scale-factor does (Sharp view). With the flag and a factor of
   // 1 here, the page would draw at 1x and the frame would only stretch it.
-  const viewport = () => call('Emulation.setDeviceMetricsOverride', { width: size.w, height: size.h, deviceScaleFactor: 0, mobile: false });
+  // A browser in a window keeps the size of its window: the view does not change it.
+  const viewport = () => readMeta(id).window ? call('Emulation.clearDeviceMetricsOverride') : call('Emulation.setDeviceMetricsOverride', { width: size.w, height: size.h, deviceScaleFactor: 0, mobile: false });
   // Show this tab. auto: the view switched by itself (tab-switch.ts). A later open() wins over one that still runs.
   async function open(target: string, auto?: { from: string; reason: string }) {
     const seq = ++openSeq;
@@ -880,6 +1143,9 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
       else if ((msg.method === 'Page.frameStoppedLoading' && frame === mainFrame) || msg.method === 'Page.loadEventFired') { loading = false; void navState(); }
       else if (msg.method === 'Page.frameNavigated' && !msg.params.frame.parentId) { mainFrame = msg.params.frame.id; void navState(); }
       else if (msg.method === 'Page.navigatedWithinDocument' && frame === mainFrame) void navState();
+      else if (msg.method === 'Runtime.executionContextCreated' && msg.params.context.name === WORLD && msg.params.context.auxData?.frameId === mainFrame) conn.world = msg.params.context.id;
+      else if (msg.method === 'Runtime.bindingCalled' && msg.params.name === 'tbWidget') widget(conn, msg.params.payload);
+      else if (msg.method === 'Page.fileChooserOpened' && msg.params.backendNodeId) { conn.chooser = { backendNodeId: msg.params.backendNodeId, multiple: msg.params.mode === 'selectMultiple' }; send({ type: 'fileChooser', multiple: conn.chooser.multiple }); }
       if (msg.method === 'Page.screencastFrame') {
         const ack = () => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ id: ++conn.next, method: 'Page.screencastFrameAck', params: { sessionId: msg.params.sessionId } })); };
         if (!acks) ack();
@@ -909,6 +1175,14 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     await call('Page.enable');
     const tree = await call('Page.getFrameTree');
     mainFrame = tree?.frameTree?.frame?.id || ''; loading = false;
+    // the parts of a page that headless Chrome does not draw (WIDGETS): a script in an isolated world that the page
+    // cannot see, a binding that it reports through, and the file chooser of the page
+    await call('Runtime.enable');
+    await call('Runtime.addBinding', { name: 'tbWidget', executionContextName: WORLD });
+    await call('Page.addScriptToEvaluateOnNewDocument', { source: WIDGETS, worldName: WORLD, runImmediately: true });
+    const iw = await call('Page.createIsolatedWorld', { frameId: mainFrame, worldName: WORLD });
+    if (iw?.executionContextId) { conn.world = iw.executionContextId; await call('Runtime.evaluate', { expression: WIDGETS, contextId: conn.world }); }
+    await call('Page.setInterceptFileChooserDialog', { enabled: true });
     await navState();
     await viewport();
     cast(conn, QUALITY_STILL);
@@ -959,18 +1233,36 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     // the first list after the view or the browser started: these tabs are not new
     if (!seeded) { sw.seed(list.map(t => t.id)); seeded = true; } else sw.listed(list, asked);
     const meta = readMeta(id);
-    send({ type: 'tabs', tabs: list, active, agents: agentCount(id), muted: mutedNow(meta, true), autoSwitch: autoSwitchOn(id), autoSwitchOwn: meta.autoSwitch !== undefined });
+    send({ type: 'tabs', tabs: list, active, agents: agentCount(id), muted: mutedNow(meta, true), autoSwitch: autoSwitchOn(id), autoSwitchOwn: meta.autoSwitch !== undefined, ask: askOf(id), scale: meta.scale || 1, wantScale: meta.window ? 1 : startScale(), window: !!meta.window });
     // the first tab when the view shows none; a shown tab that closed is handled by the switch (sw.destroyed)
     const target = active && list.some(t => t.id === active) ? active : sw.back() || list[0]?.id || '';
     if (target && target !== opening && (target !== active || !page)) await open(target);
   }
   const timer = setInterval(() => { void poll(); }, 1000);
-  client.on('close', () => { if (closed) return; closed = true; count(viewers, id, -1); clearInterval(timer); clearTimeout(soonTimer); clearTimeout(cursorTimer); closePage(); sw.seed([]); const dw = dialogWatch.get(id); dw?.listeners.delete(dialogChanged); dw?.targetListeners.delete(targetEvent); });
+  // What the agent does: each event goes to the view, with the name of the element that a click or typing hit, when
+  // the event is on the shown tab (LABEL). A label question waits at most 300 ms, so the strip is not late.
+  const stopAgent = onAgentEvent(id, async e => {
+    let label: string | undefined;
+    if ((e.kind === 'click' || e.kind === 'type') && (!e.target || e.target === active) && page) {
+      const expr = `(${LABEL})(${e.kind === 'click' ? `${Number(e.x) || 0}, ${Number(e.y) || 0}` : 'null, null'})`;
+      const r = await Promise.race([call('Runtime.evaluate', { returnByValue: true, expression: expr }), new Promise(r => setTimeout(() => r(null), 300))]) as any;
+      if (typeof r?.result?.value === 'string') label = r.result.value;
+    }
+    send({ type: 'agent', ...e, ...(label ? { label } : {}), shown: !e.target || e.target === active });
+  });
+  const askChanged = (b: string) => { if (b === id) send({ type: 'ask', ask: askOf(id) }); };
+  const downloaded = (b: string, d: Download) => { if (b === id) send({ type: 'download', ...d }); };
+  downloadListeners.add(downloaded);
+  for (const d of recentDownloads(id)) send({ type: 'download', ...d, old: true });
+  onAsk(askChanged);
+  client.on('close', () => { if (closed) return; closed = true; stopAgent(); askListeners.delete(askChanged); downloadListeners.delete(downloaded); count(viewers, id, -1); clearInterval(timer); clearTimeout(soonTimer); clearTimeout(cursorTimer); closePage(); sw.seed([]); const dw = dialogWatch.get(id); dw?.listeners.delete(dialogChanged); dw?.targetListeners.delete(targetEvent); });
   client.on('message', async d => {
     let m: any; try { m = JSON.parse(d.toString()); } catch { return; }
     try {
       // a failed start shows in the state that poll() sends (status().error), not as a second message
-      if (m.type === 'hello') acks = !!m.acks;
+      if (m.type === 'hello') { acks = !!m.acks; helloed = true; if (m.dpr) noteScreen(m.dpr); }
+      // a restart at the screen's pixel density (the view offers it when the running factor differs): the pages reopen
+      else if (m.type === 'restartScale') { await stop(id); void ensure(id).then(() => poll(), () => poll()); await poll(); }
       // a view that shows again gets a frame at once: Chrome sends one at each start of a screencast
       else if (m.type === 'visible') { const on = !!m.on; if (on !== visible) { visible = on; if (page) cast(page, on ? QUALITY_STILL : null); } }
       else if (m.type === 'drawn') { undrawn = Math.max(0, undrawn - 1); drain(); }
@@ -988,6 +1280,25 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
       }
       else if (m.type === 'key') await key(m);
       else if (m.type === 'text' && typeof m.text === 'string') await call('Input.insertText', { text: m.text.slice(0, 100000) });
+      // an IME or a dead key composes text in the view: the page shows the same composition, and 'text' commits it
+      else if (m.type === 'ime' && typeof m.text === 'string') { const text = m.text.slice(0, 1000); await call('Input.imeSetComposition', { text, selectionStart: text.length, selectionEnd: text.length }); }
+      else if (m.type === 'paste') await paste(m);
+      // Open in a window, or back to the panel. Without force, the view first learns how many fields have unsent text.
+      else if (m.type === 'window') {
+        const on = !!m.on;
+        if (!m.force) { const n = await unsent(id); if (n) { send({ type: 'windowUnsent', on, fields: n }); return; } }
+        send({ type: 'windowSwitching', on });
+        await setWindow(id, on);
+        await poll();
+      }
+      else if (m.type === 'showWindow') await showWindow(id);
+      // the user's choice in the view's own list or picker for a select box or a date, time or color input
+      else if (m.type === 'widgetSet' && page?.world) await call('Runtime.evaluate', { expression: `__tbSet(${JSON.stringify(m.value)})`, contextId: page.world });
+      // files for the page's file chooser, or files dropped on the view (posted first, addUpload)
+      else if (m.type === 'files' && Array.isArray(m.uploads)) await files(m);
+      else if (m.type === 'openLink' && typeof m.url === 'string' && /^https?:\/\//.test(m.url)) { sw.userNewTab(); await openTab(id, m.url); }
+      // Done on the agent's request for help, with the user's note
+      else if (m.type === 'askDone') answerAsk(id, typeof m.note === 'string' ? m.note : '');
       else if (m.type === 'copy') {
         // the selected text of the page, or of the focused text field; the dashboard puts it on the clipboard
         const r = await call('Runtime.evaluate', { returnByValue: true, expression: COPY });
@@ -1015,7 +1326,7 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
   // The mouse cursor of the page. Headless Chrome reports no cursor over DevTools, so the server asks the page for the
   // cursor at the mouse position (CURSOR) at once and then at most every CURSOR_MS while the mouse moves, one question
   // at a time, and sends the view a 'cursor' message when it changes.
-  let cursor = '', cursorPos: { x: number; y: number } | null = null, cursorTimer: NodeJS.Timeout | undefined, cursorBusy = false, cursorAsked = 0;
+  let title = '', cursor = '', cursorPos: { x: number; y: number } | null = null, cursorTimer: NodeJS.Timeout | undefined, cursorBusy = false, cursorAsked = 0;
   function cursorAt(x: number, y: number) {
     cursorPos = { x, y };
     if (!cursorTimer && !cursorBusy) cursorTimer = setTimeout(askCursor, Math.max(0, cursorAsked + CURSOR_MS - Date.now()));
@@ -1026,9 +1337,13 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     if (!p || closed) return;
     cursorBusy = true;
     try {
-      const r = await call('Runtime.evaluate', { returnByValue: true, expression: `(${CURSOR})(${Number(p.x) || 0}, ${Number(p.y) || 0})` });
-      const c = r?.result?.value;
+      // the cursor, and the title of the element there (headless Chrome draws no tooltip; the view shows the title)
+      const x = Number(p.x) || 0, y = Number(p.y) || 0;
+      const r = await call('Runtime.evaluate', { returnByValue: true, expression: `[(${CURSOR})(${x}, ${y}), (${TITLE})(${x}, ${y})]` });
+      const [c, t] = Array.isArray(r?.result?.value) ? r.result.value : [];
       if (typeof c === 'string' && c !== cursor) { cursor = c; send({ type: 'cursor', cursor: c }); }
+      // a title goes at each check (the view shows it a moment after the mouse stops), an empty one once
+      if (typeof t === 'string' && (t || t !== title)) { title = t; send({ type: 'title', title: t, x, y }); }
     } finally { cursorBusy = false; }
     if (cursorPos) cursorTimer = setTimeout(askCursor, Math.max(0, cursorAsked + CURSOR_MS - Date.now()));
   }
@@ -1036,13 +1351,119 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     const e = keyEvent(m);
     if (e) await call('Input.dispatchKeyEvent', e);
   }
+  // A paste from the view: plain text, HTML and a PNG image. Input.insertText would type the text without a paste
+  // event, so pages that read the paste (rich text editors, code fields, image upload by paste) got nothing. The text,
+  // HTML and image go on the clipboard of the task's Chrome instead, with the page's own Clipboard API (the page's
+  // origin gets the write permission first), and the paste key with the 'paste' command follows. The page then gets a
+  // real paste event with every type. When the write fails (a page without an origin, a blocked frame), the text is
+  // typed as before.
+  async function paste(m: { text?: unknown; html?: unknown; image?: unknown }) {
+    const text = typeof m.text === 'string' ? m.text.slice(0, 1_000_000) : '';
+    const html = typeof m.html === 'string' ? m.html.slice(0, 1_000_000) : '';
+    // the image: a PNG that the dashboard posted (addUpload), named by its id
+    const up = takeUpload(id, m.image);
+    const image = up && up.type === 'image/png' ? up.data.toString('base64') : '';
+    if (!text && !html && !image) return;
+    const origin = (await call('Runtime.evaluate', { returnByValue: true, expression: 'location.origin' }))?.result?.value;
+    if (typeof origin === 'string' && /^https?:\/\//.test(origin) && browserConn) await browserConn('Browser.grantPermissions', { origin, permissions: ['clipboardSanitizedWrite'] }).catch(() => null);
+    const r = await call('Runtime.evaluate', { userGesture: true, awaitPromise: true, returnByValue: true, expression: `(async () => {
+      const items = {};
+      ${text ? `items['text/plain'] = new Blob([${JSON.stringify(text)}], { type: 'text/plain' });` : ''}
+      ${html ? `items['text/html'] = new Blob([${JSON.stringify(html)}], { type: 'text/html' });` : ''}
+      ${image ? `items['image/png'] = await (await fetch('data:image/png;base64,${image}')).blob();` : ''}
+      await navigator.clipboard.write([new ClipboardItem(items)]); return 'ok'; })()` });
+    if (r?.result?.value === 'ok') {
+      const key = { key: 'v', code: 'KeyV', windowsVirtualKeyCode: 86, modifiers: PASTE_MOD };
+      await call('Input.dispatchKeyEvent', { type: 'rawKeyDown', ...key, commands: ['paste'] });
+      await call('Input.dispatchKeyEvent', { type: 'keyUp', ...key });
+      return;
+    }
+    if (text) await call('Input.insertText', { text: text.slice(0, 100000) });
+    else send({ type: 'error', message: 'The page did not take the pasted image. Save the image and upload it as a file.' });
+  }
+  // A report of the isolated world (WIDGETS): a select box or a picker input that the user pressed, or a context menu
+  // that the page did not take. The view draws its own list, picker or menu.
+  function widget(conn: PageConn, payload: string) {
+    if (page !== conn) return;
+    let w: any; try { w = JSON.parse(payload); } catch { return; }
+    if (w.kind === 'contextmenu') { if (!w.prevented) send({ type: 'menu', x: w.x, y: w.y, href: String(w.href || '').slice(0, 2000), src: String(w.src || '').slice(0, 2000), selection: !!w.selection }); }
+    else if (w.kind === 'select' || w.kind === 'input') send({ type: 'widget', ...w });
+  }
+  // The files that the user chose or dropped: written to the browser's uploads folder (DOM.setFileInputFiles and drag
+  // events take paths), then given to the file input of the chooser, or dropped at the point.
+  async function files(m: { uploads: unknown[]; drop?: boolean; x?: number; y?: number }) {
+    const dir = join(folder(id), 'uploads'); mkdirSync(dir, { recursive: true });
+    const paths: string[] = [];
+    for (const u of m.uploads.slice(0, 20)) {
+      const up = takeUpload(id, u); if (!up) continue;
+      const p = join(dir, `${Date.now()}-${paths.length}-${up.name}`);
+      writeFileSync(p, up.data); paths.push(p);
+    }
+    const conn = page; if (!conn || !paths.length) return;
+    if (m.drop) {
+      const at = { x: Number(m.x) || 0, y: Number(m.y) || 0 };
+      const data = { items: [], files: paths, dragOperationsMask: 1 };
+      for (const type of ['dragEnter', 'dragOver', 'drop']) await call('Input.dispatchDragEvent', { type, ...at, data });
+    } else if (conn.chooser) {
+      await call('DOM.setFileInputFiles', { files: conn.chooser.multiple ? paths : paths.slice(0, 1), backendNodeId: conn.chooser.backendNodeId });
+      conn.chooser = undefined;
+    }
+  }
+  // one command on the browser connection (Browser.* commands are not on a page connection)
+  const browserConn = async (method: string, params: object) => { const m = await live(id); return m ? once(m.ws, method, params) : null; };
   // the start runs while the view polls, so the view shows its progress (status().starting) and then its result
   void (async () => {
-    if (autostart && !(await isRunning(id))) void ensure(id).then(() => poll()).catch(() => poll());
+    // a start waits up to 1 s for the view's 'hello', so the browser starts at the pixel density of its screen
+    if (autostart && !(await isRunning(id))) { for (let i = 0; i < 20 && !helloed; i++) await new Promise(r => setTimeout(r, 50)); void ensure(id).then(() => poll()).catch(() => poll()); }
     await poll();
   })();
 }
 
+// The script of the view's isolated world "tb" in each page (attachViewer). The page cannot see it. Headless Chrome
+// does not draw the popup of a select box, the picker of a date, time or color input, or its context menu, so the
+// script reports them through the binding tbWidget, and the view draws its own list, picker or menu. A select box
+// with several rows (multiple, size) is drawn by the page and stays with it. __tbSet() sets the choice and sends the
+// input and change events. Only the main frame has the script.
+const WORLD = 'tb';
+const WIDGETS = `(() => {
+  if (window.__tbReady) return; window.__tbReady = true;
+  const PICK = ['date', 'time', 'datetime-local', 'month', 'week', 'color'];
+  const send = m => { try { tbWidget(JSON.stringify(m)); } catch {} };
+  const box = el => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; };
+  addEventListener('mousedown', e => {
+    if (e.button !== 0) return;
+    const el = e.target.closest && e.target.closest('select');
+    if (!el || el.disabled || el.multiple || el.size > 1) return;
+    e.preventDefault(); el.focus(); window.__tbEl = el;
+    send({ kind: 'select', rect: box(el), selectedIndex: el.selectedIndex, options: [...el.options].slice(0, 500).map(o => ({ text: o.text.slice(0, 200), disabled: o.disabled, group: o.parentElement.tagName === 'OPTGROUP' ? o.parentElement.label : '' })) });
+  }, true);
+  addEventListener('click', e => {
+    const el = e.target.closest && e.target.closest('input');
+    if (!el || !PICK.includes(el.type) || el.disabled || el.readOnly) return;
+    e.preventDefault(); el.focus(); window.__tbEl = el;
+    send({ kind: 'input', inputType: el.type, value: el.value, min: el.min, max: el.max, step: el.step, rect: box(el) });
+  }, true);
+  addEventListener('contextmenu', e => setTimeout(() => {
+    const a = e.target.closest && e.target.closest('a[href]'), img = e.target.closest && e.target.closest('img');
+    send({ kind: 'contextmenu', prevented: e.defaultPrevented, x: e.clientX, y: e.clientY, href: a ? a.href : '', src: img ? img.currentSrc || img.src : '', selection: !!String(getSelection()) });
+  }), false);
+  window.__tbSet = v => {
+    const el = window.__tbEl; if (!el || !el.isConnected) return false;
+    if (el.tagName === 'SELECT') el.selectedIndex = v; else el.value = v;
+    el.dispatchEvent(new Event('input', { bubbles: true })); el.dispatchEvent(new Event('change', { bubbles: true }));
+    return true;
+  };
+})()`;
+// A short name for the element at a point of the page, or for the focused element (x null): its label, its text or its
+// placeholder, for the line that says what the agent did ("Clicked Next", "Typed into Email"). A password field gives
+// its label only, never its value.
+const LABEL = `(x, y) => { let e = x === null ? document.activeElement : document.elementFromPoint(x, y);
+  if (!e || e === document.body) return '';
+  const pick = n => { const t = (n.getAttribute?.('aria-label') || (n.labels && n.labels[0] && n.labels[0].innerText) || n.getAttribute?.('placeholder') || n.getAttribute?.('title') || (n.tagName === 'INPUT' || n.tagName === 'TEXTAREA' ? n.getAttribute('name') : n.innerText) || '').replace(/\\s+/g, ' ').trim(); return t.length > 40 ? t.slice(0, 39) + '…' : t; };
+  for (let i = 0; e && i < 4; i++, e = e.parentElement) { const t = pick(e); if (t) return t; }
+  return ''; }`;
+// The modifier of the paste key in the task's Chrome: Cmd on macOS, Ctrl elsewhere (bits: 2 Ctrl, 4 Meta).
+const PASTE_MOD = process.platform === 'darwin' ? 4 : 2;
 // The cursor that Chrome would show at a point of the page: the CSS cursor of the element there, and for "auto" the
 // text cursor over text and in a text field, else the arrow. Only the keyword is used (a cursor image is not sent).
 const CURSOR_MS = 100;
@@ -1054,6 +1475,8 @@ const CURSOR = `(x, y) => { const e = document.elementFromPoint(x, y); if (!e) r
   if (n?.nodeType === 3 && n.textContent.trim()) { const t = document.createRange(); t.selectNodeContents(n);
     for (const b of t.getClientRects()) if (x >= b.left && x <= b.right && y >= b.top && y <= b.bottom) return 'text'; }
   return 'default'; }`;
+// The title (tooltip text) of the element at a point of the page, or of the nearest element above it that has one.
+const TITLE = `(x, y) => { const e = document.elementFromPoint(x, y); const t = e && e.closest('[title]'); return t ? String(t.title).slice(0, 300) : ''; }`;
 // The text that a copy takes: the selection in a focused text field, else the selection of the page.
 const COPY = `(() => { const a = document.activeElement;
   if (a && (a.tagName === 'TEXTAREA' || (a.tagName === 'INPUT' && a.type !== 'password')) && typeof a.selectionStart === 'number') return a.value.slice(a.selectionStart, a.selectionEnd);
@@ -1065,10 +1488,16 @@ const COPY = `(() => { const a = document.activeElement;
 // after the key up too). With that code, Cmd+V in the view made the task's Chrome run a macOS menu key equivalent
 // that opened the window About This Mac (macOS log, task 200).
 // A Meta key alone does not go to the page: the Cmd shortcuts that the page gets carry the Meta bit in modifiers.
-export interface KeyMessage { down: boolean; key: string; code: string; keyCode: number; modifiers: number }
+// AltGr (Windows and Linux) reports Ctrl and Alt together with the character it makes, for example @ on a German
+// layout. altGraph is the view's getModifierState('AltGraph'). Without it, Ctrl and Alt with a character that is not a
+// letter or a digit counts as AltGr too. Such a key types its character, and Ctrl and Alt are taken out of the event,
+// so the page does not see a Ctrl+Alt shortcut.
+export interface KeyMessage { down: boolean; key: string; code: string; keyCode: number; modifiers: number; altGraph?: boolean }
 export function keyEvent(m: KeyMessage): Record<string, unknown> | null {
   if (m.key === 'Meta') return null;
-  const mod = m.modifiers || 0;
+  let mod = m.modifiers || 0;
+  const altGr = m.key.length === 1 && !(mod & 4) && (!!m.altGraph || ((mod & 3) === 3 && !/^[a-z0-9]$/i.test(m.key)));
+  if (altGr) mod &= ~3;
   const commands = m.down ? editCommands(m.key, mod) : [];
   const base = { key: m.key, code: m.code, windowsVirtualKeyCode: m.keyCode, modifiers: mod, ...(commands.length ? { commands } : {}) };
   if (!m.down) return { type: 'keyUp', ...base };

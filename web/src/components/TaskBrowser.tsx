@@ -154,11 +154,15 @@ function urlParts(url: string): { scheme: string; host: string; rest: string; se
 // ---------- the view ----------
 const MOD = (e: { altKey: boolean; ctrlKey: boolean; metaKey: boolean; shiftKey: boolean }) => (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0);
 const BUTTON = ['left', 'middle', 'right'] as const;
+// the copy, cut and paste keys of this computer: Cmd on a Mac, Ctrl elsewhere
+const IS_MAC = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform);
+const clipKey = (e: React.KeyboardEvent) => (IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey) && !e.altKey && ['v', 'c', 'x'].includes(e.key.toLowerCase());
 // the CSS cursor keywords that the page can report ('cursor' from the server); other values show the arrow
 const CURSORS = new Set(['default', 'pointer', 'text', 'vertical-text', 'move', 'grab', 'grabbing', 'crosshair', 'help', 'wait', 'progress', 'not-allowed', 'no-drop', 'copy', 'alias', 'cell', 'context-menu', 'zoom-in', 'zoom-out', 'none', 'all-scroll', 'col-resize', 'row-resize', 'n-resize', 'e-resize', 's-resize', 'w-resize', 'ne-resize', 'nw-resize', 'se-resize', 'sw-resize', 'ew-resize', 'ns-resize', 'nesw-resize', 'nwse-resize']);
 
 // onCanvas: the task panel passes it, so the More menu can show the browser in the task's Canvas window
-export function BrowserView({ id, title = '', autostart = false, floating = false, archived = false, isTemplate = false, onCanvas }: { id: string; title?: string; autostart?: boolean; floating?: boolean; archived?: boolean; isTemplate?: boolean; onCanvas?: () => void }) {
+// remote: the name of the machine that runs the task, for the browser of a task on another machine (browser-forward.ts)
+export function BrowserView({ id, title = '', autostart = false, floating = false, archived = false, isTemplate = false, onCanvas, remote }: { id: string; title?: string; autostart?: boolean; floating?: boolean; archived?: boolean; isTemplate?: boolean; onCanvas?: () => void; remote?: string }) {
   const isPopped = usePopped(id);
   if (isPopped && !floating) return (
     <div className="bw-empty"><div className="bw-card">
@@ -167,10 +171,10 @@ export function BrowserView({ id, title = '', autostart = false, floating = fals
       <div className="bw-actions"><button className="btn primary" onClick={() => popped.get(id)?.()}>Put it back here</button></div>
     </div></div>
   );
-  return <Live id={id} title={title} autostart={autostart} floating={floating} archived={archived} isTemplate={isTemplate} onCanvas={onCanvas} />;
+  return <Live id={id} title={title} autostart={autostart} floating={floating} archived={archived} isTemplate={isTemplate} onCanvas={onCanvas} remote={remote} />;
 }
 
-function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }: { id: string; title: string; autostart: boolean; floating: boolean; archived: boolean; isTemplate: boolean; onCanvas?: () => void }) {
+function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, remote }: { id: string; title: string; autostart: boolean; floating: boolean; archived: boolean; isTemplate: boolean; onCanvas?: () => void; remote?: string }) {
   const [tabs, setTabs] = useState<BrowserTab[]>([]);
   const [active, setActive] = useState('');
   const [state, setState] = useState<BrowserStatus | null>(null);
@@ -191,6 +195,36 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
   // autoNote: the last switch that the server made by itself. offers: new tabs that did not take the view.
   const [autoNote, setAutoNote] = useState<{ id: string; from: string; reason: string } | null>(null);
   const [offers, setOffers] = useState<string[]>([]);
+  // What the agent did last ('agent' from the server, AgentEvent in server/task-browser.ts), and its request for help.
+  // userAt: the time of the user's last input in this view, so the strip can say that both act on the page.
+  const [agentEvt, setAgentEvt] = useState<AgentEvt | null>(null);
+  const [ask, setAsk] = useState<{ reason: string; at: string } | null>(null);
+  const [askNote, setAskNote] = useState('');
+  const userAt = useRef(0);
+  // the pixels for each point of the running browser (scale) and the ones that a start would use now (wantScale)
+  const [scale, setScale] = useState({ now: 1, want: 1 });
+  // Open in a window (server/task-browser.ts setWindow): inWindow while the browser is a normal Chrome window on this
+  // computer; switching while a change runs; unsent when the pages have text that a change would lose (the view asks).
+  const [inWindow, setInWindow] = useState(false);
+  const [switching, setSwitching] = useState<boolean | null>(null);
+  const [unsent, setUnsent] = useState<{ on: boolean; fields: number } | null>(null);
+  const windowable = !remote && !isTemplate && id !== 'template' && !archived;
+  // The parts of the page that headless Chrome does not draw (WIDGETS in server/task-browser.ts): the view draws a
+  // select list (widget kind 'select'), opens a picker of its own browser (kind 'input'), shows a context menu (menu),
+  // asks for files for the page's file chooser (chooser), and lists downloads.
+  const [widget, setWidget] = useState<Widget | null>(null);
+  const [menu, setMenu] = useState<PageMenu | null>(null);
+  const [chooser, setChooser] = useState<{ multiple: boolean } | null>(null);
+  const [downloads, setDownloads] = useState<DownloadItem[]>([]);
+  const [dropping, setDropping] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
+  // tip: the title of the element under the mouse ('title' from the server), shown after TIP_MS like a tooltip
+  const [tip, setTip] = useState<{ text: string; x: number; y: number; at: number } | null>(null);
+  // Zoom (Cmd or Ctrl with +, - and 0): the page gets a viewport of the view's size divided by the zoom, as with
+  // Chrome's page zoom, and the view draws the frames to its own size. zoomRef is read by sendSize.
+  const [zoom, setZoom] = useState(1);
+  const zoomRef = useRef(1);
+  const toWindow = (on: boolean, force = false) => { setPop(null); setUnsent(null); send({ type: 'window', on, force }); };
   const [autoSwitch, setAutoSwitch] = useState({ on: true, own: false });
   const [sharing, reloadSharing] = useSharing(id, isTemplate || archived, running);
   const setShared = (on: boolean) => api.signinShared(id, on).then(() => { reloadSharing(); setTold(on ? 'This browser gets shared sign-ins again.' : 'This browser gets no shared sign-ins now. It keeps the sign-ins it has: Reset gives an empty profile.'); }).catch(e => setErr(String(e.message || e)));
@@ -201,6 +235,12 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
   </>;
   const canvas = useRef<HTMLCanvasElement>(null);
   const screen = useRef<HTMLDivElement>(null);
+  // Keys: a hidden text field in the view has the focus, so the system's IME, dead keys, the emoji picker and dictation
+  // have a text field to work in. A key that one of them takes (composition) is left to the field, and its text goes to
+  // the page as a composition ('ime') and then as committed text ('text'). Every other key goes as a key event.
+  const kb = useRef<HTMLTextAreaElement>(null);
+  const composing = useRef(false);
+  const [kbAt, setKbAt] = useState({ x: 0, y: 0 });
   const urlInput = useRef<HTMLInputElement>(null);
   const frameSize = useRef({ w: 1280, h: 800 });
   const ws = useRef<WebSocket | null>(null);
@@ -277,9 +317,18 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
         const m = JSON.parse(ev.data);
         if (m.type === 'frameSize') frameSize.current = { w: m.w, h: m.h };
         // the server sends the tabs every second: an unchanged list keeps the old array, so the view does not draw again
-        else if (m.type === 'tabs') { setTabs(prev => JSON.stringify(prev) === JSON.stringify(m.tabs) ? prev : m.tabs); setRunning(true); setAgents(m.agents || 0); setMuted(m.muted ?? null); setErr(''); setAutoSwitch(prev => prev.on === (m.autoSwitch !== false) && prev.own === !!m.autoSwitchOwn ? prev : { on: m.autoSwitch !== false, own: !!m.autoSwitchOwn }); }
+        else if (m.type === 'agent') setAgentEvt({ ...m, seen: Date.now() });
+        else if (m.type === 'ask') setAsk(m.ask || null);
+        else if (m.type === 'widget') { setMenu(null); setWidget(m); }
+        else if (m.type === 'menu') { setWidget(null); setMenu(m); }
+        else if (m.type === 'fileChooser') setChooser({ multiple: !!m.multiple });
+        else if (m.type === 'download') setDownloads(prev => [...prev.filter(d => d.guid !== m.guid), m].slice(-20));
+        else if (m.type === 'windowUnsent') setUnsent({ on: !!m.on, fields: m.fields || 0 });
+        else if (m.type === 'windowSwitching') { setSwitching(!!m.on); setTimeout(() => setSwitching(null), 20000); }
+        else if (m.type === 'tabs') { setInWindow(prev => { const w = !!m.window; if (w !== prev) setSwitching(null); return w; }); if (typeof m.scale === 'number') setScale(prev => prev.now === m.scale && prev.want === m.wantScale ? prev : { now: m.scale, want: m.wantScale || 1 }); setAsk(prev => JSON.stringify(prev) === JSON.stringify(m.ask || null) ? prev : m.ask || null); setTabs(prev => JSON.stringify(prev) === JSON.stringify(m.tabs) ? prev : m.tabs); setRunning(true); setAgents(m.agents || 0); setMuted(m.muted ?? null); setErr(''); setAutoSwitch(prev => prev.on === (m.autoSwitch !== false) && prev.own === !!m.autoSwitchOwn ? prev : { on: m.autoSwitch !== false, own: !!m.autoSwitchOwn }); }
         else if (m.type === 'active') onActive.current(m.id, m.auto);
         else if (m.type === 'offer') setOffers(prev => [...prev.filter(x => x !== m.id), m.id]);
+        else if (m.type === 'title') setTip(m.title ? { text: m.title, x: m.x, y: m.y, at: Date.now() } : null);
         else if (m.type === 'cursor') setCursor(CURSORS.has(m.cursor) ? m.cursor : 'default');
         else if (m.type === 'nav') setNav({ loading: !!m.loading, canBack: !!m.canBack, canForward: !!m.canForward });
         else if (m.type === 'copied') {
@@ -291,7 +340,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
         else if (m.type === 'state') { setRunning(m.running); setState(m); setMuted(m.muted ?? null); if (!m.running) { setTabs([]); setActive(''); setFramed(false); clearFrames(); } }
         else if (m.type === 'error') setErr(m.message);
       };
-      s.onopen = () => { send({ type: 'hello', acks: true }); send({ type: 'visible', on: shown.current }); sendSize(); };
+      s.onopen = () => { send({ type: 'hello', acks: true, dpr: devicePixelRatio }); send({ type: 'visible', on: shown.current }); sendSize(); };
       s.onclose = () => { if (!closed) retry = setTimeout(connect, 2000); };
     };
     connect();
@@ -312,7 +361,9 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
   }, [running]);
 
   // the page's viewport is the size of this view, so a frame fills it without bars
-  const sendSize = () => { const r = screen.current?.getBoundingClientRect(); if (r && r.width > 100 && r.height > 100) send({ type: 'size', w: r.width, h: r.height }); };
+  const sendSize = () => { const r = screen.current?.getBoundingClientRect(), z = zoomRef.current; if (r && r.width > 100 && r.height > 100) send({ type: 'size', w: r.width / z, h: r.height / z }); };
+  const setZoomTo = (z: number) => { const n = Math.round(Math.min(3, Math.max(0.5, z)) * 100) / 100; zoomRef.current = n; setZoom(n); sendSize(); note(`Zoom ${Math.round(n * 100)}%`); };
+  const zoomStep = (d: number) => { const i = ZOOMS.findIndex(x => x >= zoomRef.current - 0.001); setZoomTo(d === 0 ? 1 : ZOOMS[Math.max(0, Math.min(ZOOMS.length - 1, (i < 0 ? ZOOMS.length - 1 : i) + d))]); };
   useEffect(() => {
     if (!screen.current) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
@@ -352,6 +403,13 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
   const dialog = activeTab?.dialog;
   useEffect(() => { setPromptText(dialog?.defaultPrompt || ''); }, [active, dialog?.type, dialog?.message]);
   const answer = (accept: boolean) => send({ type: 'dialog', id: active, accept, ...(dialog?.type === 'prompt' ? { text: promptText } : {}) });
+  // the page's select list, picker and context menu close on a click outside them, and when the tab changes
+  useEffect(() => {
+    if (!widget && !menu) return;
+    const down = (e: PointerEvent) => { if (!(e.target as HTMLElement).closest?.('.bw-list-pop, .bw-picker, .bw-pagemenu')) { setWidget(null); setMenu(null); } };
+    addEventListener('pointerdown', down, true); return () => removeEventListener('pointerdown', down, true);
+  }, [widget, menu]);
+  useEffect(() => { setWidget(null); setMenu(null); setChooser(null); }, [active]);
   // the tab list and the More menu close on a click outside them
   useEffect(() => {
     if (!pop) return;
@@ -372,6 +430,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
   const flushMove = () => { const p = pendingMove.current; if (!p) return; cancelAnimationFrame(p.raf); pendingMove.current = null; send(p.msg); };
   const mouse = (event: string, e: React.MouseEvent, clickCount = 0) => {
     if (!canvas.current) return;
+    if (event !== 'mouseMoved') userAt.current = Date.now();
     const msg = { type: 'mouse', event, ...point(e), button: event === 'mouseMoved' ? (e.buttons ? 'left' : 'none') : BUTTON[e.button] || 'left', buttons: e.buttons, clickCount, modifiers: MOD(e) };
     if (event === 'mouseMoved') {
       if (pendingMove.current) pendingMove.current.msg = msg;
@@ -411,15 +470,79 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
     return true;
   };
   const key = (e: React.KeyboardEvent, down: boolean) => {
-    if (e.metaKey && ['v', 'c', 'x'].includes(e.key.toLowerCase())) return; // these go through the paste, copy and cut events
+    if (widget?.kind === 'select' && listKey(e, down)) return;
+    if (clipKey(e)) return; // these go through the paste, copy and cut events
+    if ((IS_MAC ? e.metaKey && !e.ctrlKey : e.ctrlKey && !e.metaKey) && !e.altKey && ['=', '+', '-', '_', '0'].includes(e.key)) { e.preventDefault(); if (down) zoomStep(e.key === '0' ? 0 : e.key === '-' || e.key === '_' ? -1 : 1); return; }
+    // a key that the IME or a dead key takes stays in the hidden field; its text comes with the composition events
+    if (composing.current || e.nativeEvent.isComposing || e.keyCode === 229 || e.key === 'Dead' || e.key === 'Process') return;
     if (down && shortcut(e)) { e.preventDefault(); return; }
     if (e.metaKey && ['l', 'r', '[', ']'].includes(e.key.toLowerCase())) { e.preventDefault(); return; } // the key up of a shortcut
     // Cmd alone does not go to the page. Its key down reached Chrome as a stuck key (see keyEvent in
     // server/task-browser.ts). The Cmd shortcuts that go to the page carry the Meta bit in their modifiers.
     if (e.key === 'Meta') return;
     e.preventDefault();
-    send({ type: 'key', down, key: e.key, code: e.code, keyCode: e.keyCode, modifiers: MOD(e) });
+    userAt.current = Date.now();
+    send({ type: 'key', down, key: e.key, code: e.code, keyCode: e.keyCode, modifiers: MOD(e), ...(e.getModifierState('AltGraph') ? { altGraph: true } : {}) });
     if (!down && (e.shiftKey || e.metaKey || e.altKey)) peek(); // Shift+Arrow, Cmd+A and the like change the selection
+  };
+  // The keys of an open select list: Up and Down move, Enter chooses, Escape closes. listAt is the marked row.
+  const [listAt, setListAt] = useState(-1);
+  useEffect(() => { setListAt(widget?.kind === 'select' ? widget.selectedIndex : -1); }, [widget]);
+  const choose = (value: string | number) => { send({ type: 'widgetSet', value }); setWidget(null); kb.current?.focus({ preventScroll: true }); };
+  const listKey = (e: React.KeyboardEvent, down: boolean) => {
+    if (!widget || widget.kind !== 'select' || !['ArrowDown', 'ArrowUp', 'Enter', 'Escape', ' '].includes(e.key)) return false;
+    e.preventDefault();
+    if (!down) return true;
+    const opts = widget.options, step = (d: number) => { let i = listAt; for (let k = 0; k < opts.length; k++) { i = Math.max(0, Math.min(opts.length - 1, i + d)); if (!opts[i].disabled) break; } setListAt(i); };
+    if (e.key === 'ArrowDown') step(1); else if (e.key === 'ArrowUp') step(-1);
+    else if (e.key === 'Escape') setWidget(null);
+    else if (listAt >= 0 && !opts[listAt]?.disabled) choose(listAt);
+    return true;
+  };
+  // a point or a box of the page (CSS pixels, like frameSize) in pixels of the view
+  const toView = (x: number, y: number) => { const r = screen.current?.getBoundingClientRect(), f = frameSize.current; return r && f.w ? { x: x * r.width / f.w, y: y * r.height / f.h } : { x, y }; };
+  // files for the page's file chooser, or dropped on the view: posted first (api.browserUpload), then named by their ids
+  const sendFiles = async (list: File[], drop?: { x: number; y: number }) => {
+    if (!list.length) return;
+    try {
+      const uploads = [];
+      for (const f of list.slice(0, 20)) uploads.push((await api.browserUpload(id, f, f.name)).id);
+      send({ type: 'files', uploads, ...(drop ? { drop: true, ...drop } : {}) });
+      note(list.length === 1 ? `Sent ${list[0].name}` : `Sent ${list.length} files`);
+    } catch (e) { setErr(`The file did not reach the page: ${(e as Error).message || e}`); }
+  };
+  const menuAction = async (what: string) => {
+    const m = menu; setMenu(null); if (!m) return;
+    if (what === 'open' && m.href) send({ type: 'openLink', url: m.href });
+    else if (what === 'openImage' && m.src) send({ type: 'openLink', url: m.src });
+    else if (what === 'copyLink' && m.href) navigator.clipboard?.writeText(m.href).then(() => note('Copied the link address'), () => note('Could not copy'));
+    else if (what === 'copyImage' && m.src) navigator.clipboard?.writeText(m.src).then(() => note('Copied the image address'), () => note('Could not copy'));
+    else if (what === 'copy') { if (selection.current) navigator.clipboard?.writeText(selection.current).then(() => note('Copied'), () => note('Could not copy')); }
+    else if (what === 'paste') {
+      try { const t = await navigator.clipboard.readText(); if (t) send({ type: 'paste', text: t.slice(0, 300000), html: '', image: '' }); }
+      catch { note('Press the paste key: this browser did not allow reading the clipboard'); }
+    }
+    else if (what === 'back') back(); else if (what === 'forward') forward(); else if (what === 'reload') reload();
+    kb.current?.focus({ preventScroll: true });
+  };
+  // The hidden field follows the last click, so the IME shows its candidate list near the place that the user types in.
+  const moveKb = (e: React.MouseEvent) => { const r = screen.current?.getBoundingClientRect(); if (r) setKbAt({ x: Math.round(e.clientX - r.left), y: Math.round(e.clientY - r.top) }); };
+  // A paste: plain text, HTML and the first image, which the server puts on the page's clipboard and pastes there, so the
+  // page gets a real paste event (server/task-browser.ts paste). The image goes as a PNG upload first.
+  const pasteFrom = async (dt: DataTransfer) => {
+    const text = dt.getData('text/plain'), html = dt.getData('text/html');
+    const file = [...dt.files].find(f => f.type.startsWith('image/'));
+    let image = '';
+    if (file) {
+      try {
+        const bm = await createImageBitmap(file), c = document.createElement('canvas');
+        c.width = bm.width; c.height = bm.height; c.getContext('2d')?.drawImage(bm, 0, 0); bm.close();
+        const png = await new Promise<Blob | null>(r => c.toBlob(r, 'image/png'));
+        if (png) image = (await api.browserUpload(id, png, 'pasted.png')).id;
+      } catch (e) { note(`Could not paste the image: ${(e as Error).message || e}`); }
+    }
+    // the socket takes messages up to 1 MB
+    if (text || html || image) send({ type: 'paste', text: text.slice(0, 300000), html: html.slice(0, 400000), image });
   };
   const copy = (e: React.ClipboardEvent, cut: boolean) => {
     e.preventDefault();
@@ -532,11 +655,22 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
   </button>;
   const noteTab = autoNote && tabs.find(t => t.id === autoNote.id);
   const fromTab = autoNote && tabs.find(t => t.id === autoNote.from);
+  const windowLine = (unsent || switching !== null) && <div className="bw-agentline both" role="status">
+    {switching !== null ? <span className="bw-what"><span className="bw-spin" /> {switching ? 'Opening the browser in its own window. The pages load again.' : 'Moving the browser back here. The pages load again.'}</span>
+      : <><span className="bw-what">{unsent!.fields} {unsent!.fields === 1 ? 'field has' : 'fields have'} text that is not sent yet. The pages load again, and that text is lost.</span>
+        <button className="btn" onClick={() => toWindow(unsent!.on, true)}>{unsent!.on ? 'Open in a window anyway' : 'Move back anyway'}</button>
+        <button className="btn ghost" onClick={() => setUnsent(null)}>Cancel</button></>}
+  </div>;
+  const agentLine = <AgentStrip evt={agentEvt} ask={ask} note={askNote} setNote={setAskNote} userAt={userAt} onWindow={windowable && !inWindow ? () => toWindow(true) : undefined}
+    onDone={() => { send({ type: 'askDone', note: askNote.trim() }); setAsk(null); setAskNote(''); note('The agent got your answer'); }} />;
   const switchedLine = autoNote && autoNote.id === active && <div className="bw-switched" role="status">
     <span className="bw-switched-t">{autoNote.reason === 'back' ? <>The tab closed. Back to <b>{noteTab ? tabName(noteTab) : 'the earlier tab'}</b>.</> : <>Switched to the new tab: <b>{noteTab ? tabName(noteTab) : 'loading…'}</b></>}</span>
     {autoNote.reason !== 'back' && fromTab && <button className="btn ghost" onClick={goBack} title={`Show ${tabName(fromTab)} again`}>Go back</button>}
     <button className="bw-ib" onClick={() => setAutoNote(null)} aria-label="Hide this line" title="Hide this line"><Icon d={I.close} size={13} /></button>
   </div>;
+  // a restart gives a sharp picture when the browser runs with fewer pixels than this screen has (the pages reopen)
+  const rescale = Math.abs(scale.want - scale.now) > 0.1 && !isTemplate;
+  const restartScale = () => { setPop(null); send({ type: 'restartScale' }); };
   const autoSwitchItem = <button className="bw-mi" role="menuitemcheckbox" aria-checked={autoSwitch.on} onClick={() => { setPop(null); send({ type: 'autoSwitch', on: !autoSwitch.on }); }}>
     <Icon d={autoSwitch.on ? I.popout : I.close} size={15} /><span>Switch to new tabs and popups: {autoSwitch.on ? 'on' : 'off'}<small>{autoSwitch.own ? 'Set for this browser. Click to change.' : 'From Settings. Click to change for this browser.'}</small></span>
   </button>;
@@ -547,6 +681,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
           {navButtons}
           {address}
           {flash && <span className="bw-chip flash">{flash}</span>}
+          {zoom !== 1 && <button className="bw-chip" onClick={() => setZoomTo(1)} title="Zoom of this view. Click for 100%.">{Math.round(zoom * 100)}%</button>}
           <button className={`bw-tabsbtn bw-popbtn ${pop === 'tabs' ? 'on' : ''}`} onClick={() => setPop(p => p === 'tabs' ? null : 'tabs')} aria-expanded={pop === 'tabs'} aria-label={`All ${tabs.length} tabs`} title={`All ${tabs.length} tabs${waiting ? '. A page waits for an answer.' : ''}`}>
             <b>{tabs.length}</b><Icon d={I.down} size={12} />{waiting ? <i className="bw-ask" /> : offered.length > 0 && <i className="bw-new" />}
           </button>
@@ -567,6 +702,8 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
             <button className="bw-mi" role="menuitem" onClick={popOut}><Icon d={I.popout} size={15} /><span>Pop out<small>Show the browser in its own window</small></span></button>
             {onCanvas && <button className="bw-mi" role="menuitem" onClick={() => { setPop(null); onCanvas(); }}><Icon d={I.canvas} size={15} /><span>Show on Canvas<small>Above the terminal of this task</small></span></button>}
             {autoSwitchItem}
+            {windowable && !inWindow && <button className="bw-mi" role="menuitem" onClick={() => toWindow(true)}><Icon d={I.popout} size={15} /><span>Open in a window<small>A normal Chrome window on this computer, with the same profile and tabs. For passkeys, password managers and hard sign-ins. The pages load again.</small></span></button>}
+            {rescale && <button className="bw-mi" role="menuitem" onClick={restartScale}><Icon d={I.reload} size={15} /><span>Restart for a sharp picture<small>The browser runs with {scale.now} pixel{scale.now === 1 ? '' : 's'} for each point; this screen wants {scale.want}. The pages open again.</small></span></button>}
             <div className="bw-msep" />
             {!isTemplate && !archived && <>
               {!sharing?.noShared && <button className="bw-mi" role="menuitem" onClick={() => { setPop(null); setSignin('sync'); }}><Icon d={I.reload} size={15} /><span>Sync sign-ins from the template<small>Adds its cookies for the sites you choose</small></span></button>}
@@ -575,7 +712,8 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
               <button className="bw-mi danger" role="menuitem" onClick={() => { setPop(null); setSignin('reset'); }}><Icon d={I.stop} size={15} /><span>{sharing?.noShared ? 'Reset to an empty profile' : 'Reset from template'}<small>Deletes this browser's own sign-ins</small></span></button>
               <div className="bw-msep" />
             </>}
-            {!isTemplate && <BrowserMemory id={id} row />}
+            {!isTemplate && !remote && <BrowserMemory id={id} row />}
+            {remote && <div className="bw-minfo" title="The Chrome of this task runs on the other machine. Its picture and your input go through this Taskboard.">This browser runs on {remote}</div>}
             {agents > 0 && <div className="bw-minfo"><i className="bw-agent in" />An agent is connected to this browser</div>}
             {keyLabel('browserLeave') && <div className="bw-minfo" title="While the focus is in this browser, every key goes to the page, also ⌘ and ⌃ keys."><kbd>{keyLabel('browserLeave')}</kbd> gives the keys back to Taskboard</div>}
           </div>}
@@ -600,10 +738,14 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
           {address}
           <div className="bw-side">
             {flash && <span className="bw-chip flash">{flash}</span>}
+            {zoom !== 1 && <button className="bw-chip" onClick={() => setZoomTo(1)} title="Zoom of this view. Click for 100%.">{Math.round(zoom * 100)}%</button>}
             {keyLabel('browserLeave') && <span className="bw-chip bw-leave" title={`While the focus is in this browser, every key goes to the page, also ⌘ and ⌃ keys. Press ${keysText('browserLeave')} to give the keys back to Taskboard.`}><kbd>{keyLabel('browserLeave')}</kbd> leaves</span>}
+            {remote && <span className="bw-chip" title="The Chrome of this task runs on the other machine. Its picture and your input go through this Taskboard.">On {remote}</span>}
             {agents > 0 && <span className="bw-chip agent" title="An agent is connected to this browser through its task-browser tools"><i />Agent</span>}
-            {!isTemplate && <BrowserMemory id={id} />}
+            {!isTemplate && !remote && <BrowserMemory id={id} />}
+            {rescale && <button className="bw-chip" onClick={restartScale} title={`The browser runs with ${scale.now} pixel(s) for each point; this screen wants ${scale.want}. A restart opens the pages again.`}>Restart for a sharp picture</button>}
             {sound}
+            {windowable && !inWindow && <button className="btn ghost" onClick={() => toWindow(true)} title="A normal Chrome window on this computer, with the same profile and tabs. For passkeys, password managers and hard sign-ins. The pages load again.">Open in a window</button>}
             {!floating && <button className="bw-ib" onClick={popOut} aria-label="Pop out" title="Show the browser in its own window"><Icon d={I.popout} /></button>}
             {stopButton}
           </div>
@@ -611,6 +753,21 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
         </div>
       </>}
       {switchedLine}
+      {windowLine}
+      {agentLine}
+      {chooser && <div className="bw-agentline both" role="status">
+        <span className="bw-what">The page asks for {chooser.multiple ? 'files' : 'a file'}.</span>
+        <button className="btn primary" onClick={() => fileInput.current?.click()}>Choose {chooser.multiple ? 'files' : 'a file'}…</button>
+        <button className="btn ghost" onClick={() => setChooser(null)}>Cancel</button>
+        <input ref={fileInput} type="file" multiple={chooser.multiple} hidden onChange={e => { const list = [...(e.target.files || [])]; e.target.value = ''; setChooser(null); void sendFiles(list); }} />
+      </div>}
+      {downloads.some(d => !d.old && !d.hidden) && <div className="bw-downloads" role="status">
+        {downloads.filter(d => !d.old && !d.hidden).slice(-3).map(d => <span key={d.guid} className="bw-dl">
+          <Icon d={I.down} size={13} /><span className="bw-dl-n" title={d.url}>{d.name}</span>
+          {d.state === 'completed' ? <a className="btn ghost" href={`/api/tasks/${encodeURIComponent(id)}/browser/downloads/${encodeURIComponent(d.guid)}`} download={d.name}>Save</a> : <span className="dim">{d.state === 'canceled' ? 'canceled' : 'downloading…'}</span>}
+          <button className="bw-ib" onClick={() => setDownloads(prev => prev.map(x => x.guid === d.guid ? { ...x, hidden: true } : x))} aria-label="Hide this download" title="Hide this download"><Icon d={I.close} size={12} /></button>
+        </span>)}
+      </div>}
       {dialog && <div className="bw-dialog" role="alertdialog" aria-label="The page waits for an answer">
         <i className="bw-ask in" />
         <span className="bw-dialog-t"><b>{dialog.type === 'beforeunload' ? 'Leave this page?' : dialog.type === 'alert' ? 'The page says:' : 'The page asks:'}</b> {dialog.message}</span>
@@ -620,15 +777,55 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
       </div>}
       {err && <div className="banner">{err} <button className="btn ghost" onClick={() => setErr('')}>OK</button></div>}
       {signinParts}
-      <div className={`bw-screen ${framed ? 'framed' : ''}`} ref={screenRef} tabIndex={0}
-        onMouseDown={e => { screen.current?.focus(); mouse('mousePressed', e, e.detail || 1); }}
+      <div className={`bw-screen ${framed ? 'framed' : ''} ${inWindow ? 'inwin' : ''} ${dropping ? 'dropping' : ''}`} ref={screenRef} tabIndex={0}
+        onFocus={e => { if (e.target === e.currentTarget) kb.current?.focus({ preventScroll: true }); }}
+        onMouseDown={e => { e.preventDefault(); kb.current?.focus({ preventScroll: true }); moveKb(e); mouse('mousePressed', e, e.detail || 1); }}
         onMouseUp={e => { mouse('mouseReleased', e, e.detail || 1); peek(); }}
         onMouseMove={e => mouse('mouseMoved', e)}
+        onMouseLeave={() => setTip(null)}
         onContextMenu={e => e.preventDefault()} style={{ cursor }}
         onKeyDown={e => key(e, true)} onKeyUp={e => key(e, false)}
-        onPaste={e => { const text = e.clipboardData.getData('text'); if (text) send({ type: 'text', text }); e.preventDefault(); }}
+        onPaste={e => { e.preventDefault(); void pasteFrom(e.clipboardData); }}
+        onDragOver={e => { if ([...e.dataTransfer.types].includes('Files')) { e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; setDropping(true); } }}
+        onDragLeave={() => setDropping(false)}
+        onDrop={e => { if (!e.dataTransfer.files.length) return; e.preventDefault(); setDropping(false); void sendFiles([...e.dataTransfer.files], point(e)); }}
         onCopy={e => copy(e, false)} onCut={e => copy(e, true)}>
         <canvas ref={canvas} />
+        {agentEvt && <AgentPointer evt={agentEvt} frame={frameSize.current} active={active} />}
+        {tip && <Tooltip tip={tip} at={toView(tip.x, tip.y)} />}
+        {widget?.kind === 'select' && (() => { const p = toView(widget.rect.x, widget.rect.y + widget.rect.h), w = toView(widget.rect.w, 0).x; return (
+          <div className="bw-list-pop" role="listbox" aria-label="Choices of the select box" style={{ left: p.x, top: p.y, minWidth: Math.max(120, w) }} onMouseDown={e => e.stopPropagation()}>
+            {widget.options.map((o, i) => <div key={i} role="option" aria-selected={i === widget.selectedIndex} aria-disabled={o.disabled}
+              className={`bw-opt ${i === listAt ? 'sel' : ''} ${o.disabled ? 'off' : ''} ${i === widget.selectedIndex ? 'on' : ''}`}
+              onMouseEnter={() => !o.disabled && setListAt(i)} onClick={() => !o.disabled && choose(i)}>
+              {o.group && (i === 0 || widget.options[i - 1].group !== o.group) && <div className="bw-optgroup">{o.group}</div>}{o.text || ' '}</div>)}
+          </div>); })()}
+        {widget?.kind === 'input' && (() => { const p = toView(widget.rect.x, widget.rect.y); return (
+          <input className="bw-picker" type={widget.inputType} defaultValue={widget.value} min={widget.min || undefined} max={widget.max || undefined} step={widget.step || undefined} style={{ left: p.x, top: p.y }}
+            ref={el => { if (el && !el.dataset.opened) { el.dataset.opened = '1'; el.focus(); try { el.showPicker(); } catch { /* the view shows the field itself */ } } }}
+            onMouseDown={e => e.stopPropagation()} onChange={e => { if (widget.inputType === 'color' || e.target.value) choose(e.target.value); }}
+            onKeyDown={e => { e.stopPropagation(); if (e.key === 'Escape') setWidget(null); if (e.key === 'Enter') choose((e.target as HTMLInputElement).value); }} onBlur={() => setTimeout(() => setWidget(w => w?.kind === 'input' ? null : w), 300)} />); })()}
+        {menu && (() => { const p = toView(menu.x, menu.y); return (
+          <div className="bw-pop bw-menu bw-pagemenu" role="menu" style={{ left: p.x, top: p.y }} onMouseDown={e => e.stopPropagation()}>
+            {menu.href && <><button className="bw-mi" role="menuitem" onClick={() => void menuAction('open')}><span>Open the link in a new tab</span></button><button className="bw-mi" role="menuitem" onClick={() => void menuAction('copyLink')}><span>Copy the link address</span></button><div className="bw-msep" /></>}
+            {menu.src && <><button className="bw-mi" role="menuitem" onClick={() => void menuAction('openImage')}><span>Open the image in a new tab</span></button><button className="bw-mi" role="menuitem" onClick={() => void menuAction('copyImage')}><span>Copy the image address</span></button><div className="bw-msep" /></>}
+            {menu.selection && <button className="bw-mi" role="menuitem" onClick={() => void menuAction('copy')}><span>Copy</span></button>}
+            <button className="bw-mi" role="menuitem" onClick={() => void menuAction('paste')}><span>Paste</span></button>
+            <div className="bw-msep" />
+            <button className="bw-mi" role="menuitem" disabled={!nav.canBack} onClick={() => void menuAction('back')}><span>Back</span></button>
+            <button className="bw-mi" role="menuitem" disabled={!nav.canForward} onClick={() => void menuAction('forward')}><span>Forward</span></button>
+            <button className="bw-mi" role="menuitem" onClick={() => void menuAction('reload')}><span>Reload</span></button>
+          </div>); })()}
+        {inWindow && <div className="bw-wincover" onMouseDown={e => e.stopPropagation()} onWheel={e => e.stopPropagation()}><div className="bw-card">
+          <h3>The browser is in its own window</h3>
+          <p>Use it there, on this computer. The agent works in the same window. Back to the panel, or closing the window, brings the browser back here with the same tabs and sign-ins.</p>
+          <div className="bw-actions"><button className="btn" onClick={() => send({ type: 'showWindow' })}>Show the window</button><button className="btn primary" onClick={() => toWindow(false)}>Back to the panel</button></div>
+        </div></div>}
+        <textarea ref={kb} className="bw-kb" style={{ left: kbAt.x, top: kbAt.y }} aria-label="Keyboard input for the page" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} tabIndex={-1}
+          onCompositionStart={() => { composing.current = true; }}
+          onCompositionUpdate={e => send({ type: 'ime', text: e.data || '' })}
+          onCompositionEnd={e => { composing.current = false; send({ type: 'text', text: e.data || '' }); e.currentTarget.value = ''; }}
+          onInput={e => { const ne = e.nativeEvent as InputEvent; if (!composing.current && !ne.isComposing && ne.data) send({ type: 'text', text: ne.data }); if (!composing.current) e.currentTarget.value = ''; }} />
         {!framed && <div className="bw-wait"><span className="bw-spin" />{running === null ? 'Connecting…' : 'Waiting for the page…'}</div>}
       </div>
     </div>
@@ -710,4 +907,83 @@ function SoundSwitch({ id, muted, labeled = false, onChange, onDone, onError }: 
       <Icon d={muted ? I.muted : I.sound} />{labeled && <span>{label}</span>}
     </button>
   );
+}
+
+// ---------- what the agent does ----------
+// AgentEvt: one action of the agent (server/task-browser.ts agentWatch), with the label of the element it hit and the
+// time this view got it (seen).
+interface AgentEvt { kind: 'click' | 'type' | 'key' | 'scroll' | 'navigate' | 'newTab' | 'upload' | 'look' | 'drag'; target?: string; x?: number; y?: number; url?: string; chars?: number; label?: string; shown?: boolean; seen: number }
+const STRIP_MS = 30000, BOTH_MS = 4000, POINTER_MS = 3000;
+function agentText(e: AgentEvt): string {
+  const on = e.label ? ` “${e.label}”` : '';
+  const where = e.shown === false ? ' in another tab' : '';
+  switch (e.kind) {
+    case 'click': return (on ? `Clicked${on}` : 'Clicked the page') + where;
+    case 'type': return `Typed ${e.chars || 0} ${e.chars === 1 ? 'character' : 'characters'}${on ? ` into${on}` : ''}${where}`;
+    case 'key': return `Pressed ${e.url || 'a key'}${where}`;
+    case 'scroll': return 'Scrolled the page' + where;
+    case 'navigate': { if (!e.url) return 'Reloaded the page' + where; try { return `Opened ${new URL(e.url).host || e.url}${where}`; } catch { return `Opened ${e.url}${where}`; } }
+    case 'newTab': return 'Opened a new tab';
+    case 'upload': return `Chose ${e.chars || 0} ${e.chars === 1 ? 'file' : 'files'} for an upload${where}`;
+    case 'drag': return 'Dragged on the page' + where;
+    default: return 'Looked at the page' + where;
+  }
+}
+const ago = (ms: number) => ms < 1500 ? 'now' : ms < 60000 ? `${Math.round(ms / 1000)} s ago` : `${Math.round(ms / 60000)} min ago`;
+// The strip under the address row: the agent's request for help (orange, with a note field and Done), or else the
+// agent's last action for STRIP_MS after it. When the user also acted within BOTH_MS, it says that both use the page.
+// It blocks nothing: the user and the agent can act at any time.
+function AgentStrip({ evt, ask, note, setNote, userAt, onDone, onWindow }: { evt: AgentEvt | null; ask: { reason: string; at: string } | null; note: string; setNote: (v: string) => void; userAt: React.MutableRefObject<number>; onDone: () => void; onWindow?: () => void }) {
+  const [, tick] = useState(0);
+  const live = !!evt && Date.now() - evt.seen < STRIP_MS;
+  useEffect(() => { if (!live && !ask) return; const t = setInterval(() => tick(n => n + 1), 1000); return () => clearInterval(t); }, [live, !!ask, evt?.seen]);
+  if (ask) return (
+    <div className="bw-agentline asking" role="status">
+      <span className="bw-who"><i />The agent asks you</span>
+      <span className="bw-what" title={ask.reason}>“{ask.reason}”</span>
+      <input className="bw-note" value={note} onChange={e => setNote(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') onDone(); }} placeholder="Note for the agent (optional)" aria-label="Note for the agent" />
+      <button className="btn primary" onClick={onDone} title="Tell the agent that you are done. Your note goes with it.">Done</button>
+      {onWindow && <button className="btn" onClick={onWindow} title="A normal Chrome window on this computer, with the same profile and tabs. For passkeys, password managers and hard sign-ins. The pages load again.">Open in a window</button>}
+    </div>
+  );
+  if (!live) return null;
+  const both = Math.abs(userAt.current - evt!.seen) < BOTH_MS && Date.now() - userAt.current < STRIP_MS;
+  return (
+    <div className={`bw-agentline ${both ? 'both' : ''}`} role="status">
+      <span className="bw-who"><i />{both ? 'You and the agent both use this page' : 'Agent'}</span>
+      <span className="bw-what">{both ? 'Agent: ' : ''}{agentText(evt!)} · {ago(Date.now() - evt!.seen)}</span>
+    </div>
+  );
+}
+// The agent's pointer over the page: where it clicked, scrolled or dropped last, for POINTER_MS, with a ring at a click.
+// The point is in CSS pixels of the page, like the frame size (frameSize), so it maps to the canvas in percent.
+function AgentPointer({ evt, frame, active }: { evt: AgentEvt; frame: { w: number; h: number }; active: string }) {
+  const [, tick] = useState(0);
+  useEffect(() => { const t = setTimeout(() => tick(n => n + 1), POINTER_MS + 50); return () => clearTimeout(t); }, [evt.seen]);
+  if (evt.x === undefined || evt.y === undefined || Date.now() - evt.seen > POINTER_MS || (evt.target && evt.target !== active) || !frame.w || !frame.h) return null;
+  const style = { left: `${(evt.x / frame.w) * 100}%`, top: `${(evt.y / frame.h) * 100}%` };
+  return (
+    <div className="bw-apointer" style={style} aria-hidden="true">
+      {evt.kind === 'click' && <span key={evt.seen} className="bw-aring" />}
+      <svg viewBox="0 0 24 24" width="18" height="18"><path d="M4 2l16 9-7 2-3 7z" fill="var(--bw-agent)" stroke="#fff" strokeWidth="1.5" /></svg>
+      <span className="bw-atag">Agent</span>
+    </div>
+  );
+}
+
+// ---------- the parts of the page that the view draws ----------
+type Widget = { kind: 'select'; rect: { x: number; y: number; w: number; h: number }; selectedIndex: number; options: { text: string; disabled: boolean; group: string }[] }
+  | { kind: 'input'; rect: { x: number; y: number; w: number; h: number }; inputType: string; value: string; min?: string; max?: string; step?: string };
+interface PageMenu { x: number; y: number; href: string; src: string; selection: boolean }
+interface DownloadItem { guid: string; name: string; url: string; state: 'inProgress' | 'completed' | 'canceled'; old?: boolean; hidden?: boolean }
+
+// the zoom levels of the view, as in Chrome
+const ZOOMS = [0.5, 0.67, 0.75, 0.8, 0.9, 1, 1.1, 1.25, 1.5, 1.75, 2, 2.5, 3];
+const TIP_MS = 600;
+// The title of the element under the mouse, like a browser's tooltip: it shows TIP_MS after the mouse stopped there, a
+// little below the mouse.
+function Tooltip({ tip, at }: { tip: { text: string; at: number }; at: { x: number; y: number } }) {
+  const [show, setShow] = useState(false);
+  useEffect(() => { setShow(false); const t = setTimeout(() => setShow(true), Math.max(0, TIP_MS - (Date.now() - tip.at))); return () => clearTimeout(t); }, [tip]);
+  return show ? <div className="bw-tip" role="tooltip" style={{ left: at.x + 4, top: at.y + 20 }}>{tip.text}</div> : null;
 }

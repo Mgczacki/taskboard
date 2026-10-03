@@ -358,7 +358,7 @@ const MODES: { value: BrowserMode; label: string }[] = [
   { value: 'only', label: 'Task browser only' },
   { value: 'off', label: 'Off: no task browser' },
 ];
-function TaskBrowserSettings({ info, busy, save }: { info: MachineInfo | null; busy: boolean; save: (p: { browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; browserIdleStopMinutes?: number; browserSharp?: boolean; browserAutoSwitch?: boolean; claudeInChromeTasks?: boolean; claudeInChromeController?: boolean }) => Promise<void> }) {
+function TaskBrowserSettings({ info, busy, save }: { info: MachineInfo | null; busy: boolean; save: (p: { browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; browserIdleStopMinutes?: number; browserSharp?: boolean; browserScale?: 'screen' | 'one' | 'two'; browserAutoSwitch?: boolean; claudeInChromeTasks?: boolean; claudeInChromeController?: boolean }) => Promise<void> }) {
   const [tpl, setTpl] = useState<BrowserStatus | null>(null);
   const [chrome, setChrome] = useState('');
   const [idle, setIdle] = useState('');
@@ -392,8 +392,13 @@ function TaskBrowserSettings({ info, busy, save }: { info: MachineInfo | null; b
           <div className="sub">A task browser stops when no agent sends it a command and no one views it on the dashboard for this time. Its pages are saved. The next tool call of the agent starts it again with the same pages, in a few seconds. 0 means never stop. Default: 10.</div>
         </SettingItem>
         <SettingItem id="browserSharp">
-          <label className="opt"><input type="checkbox" disabled={busy} checked={!!b.sharp} onChange={e => void save({ browserSharp: e.target.checked })} /> Sharp view on Retina screens</label>
-          <div className="sub">Task browsers start with two pixels for each point, so text in the Browser tab is sharp. The view then gets about 2.4 times more data, which can be slow from another computer. Agent screenshots are twice as large and use more tokens. A browser that runs now changes at its next start: stop it and start it again. Default: off.</div>
+          <label className="opt" htmlFor="browser-scale">Picture of the Browser tab</label>
+          <div><select id="browser-scale" disabled={busy} value={b.scale || (b.sharp ? 'two' : 'screen')} onChange={e => void save({ browserScale: e.target.value as 'screen' | 'one' | 'two' })}>
+            <option value="screen">Match the pixel density of this screen</option>
+            <option value="one">One pixel for each point</option>
+            <option value="two">Two pixels for each point</option>
+          </select></div>
+          <div className="sub">A task browser starts with this many pixels for each point. On a high-density screen, more pixels make text in the Browser tab sharp. The view then gets more data (about 2.4 times more at two pixels), and agent screenshots are larger and use more tokens. A browser that runs now changes at its next start: its More menu offers the restart. Default: match the screen.</div>
         </SettingItem>
         <SettingItem id="browserAutoSwitch">
           <label className="opt"><input type="checkbox" disabled={busy} checked={b.autoSwitch !== false} onChange={e => void save({ browserAutoSwitch: e.target.checked })} /> Switch to new tabs and popups automatically</label>
