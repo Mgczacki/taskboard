@@ -7,6 +7,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
+import { waitFor } from './helpers/wait-for.ts';
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-long-text-')));
 process.env.TASKBOARD_DIR = join(root, 'state');
@@ -40,17 +41,22 @@ async function liveTask(agent: 'claude' | 'codex', env: Record<string, string> =
   const t = store.create({ id: `long-${n}`, num: n, title: 'Long text fixture', agent, status: 'idle', cwd: root, folder: root, session: `task-${n}`, sessionId: `fixture-${n}`, account: agent === 'codex' ? 'codex-fixture' : undefined, desc: '' });
   mkdirSync(store.taskDir(t.id), { recursive: true });
   await tmux.newSession(t.session, root, { TASK_DIR: store.taskDir(t.id), FAKE_AGENT: agent, ...env }, [join(bin, agent)], async () => {});
-  for (let i = 0; i < 40 && !/for shortcuts/.test(await tmux.capture(t.session, 0)); i++) await pause(50);
+  await waitFor(async () => /for shortcuts/.test(await tmux.capture(t.session, 0)), {
+    description: `${agent} to draw its input box`,
+    state: async () => `expected for shortcuts; screen:\n${await tmux.capture(t.session, 0)}`,
+  });
   return t;
 }
-const until = async (check: () => boolean, ms = 20000) => { for (let i = 0; i < ms / 100 && !check(); i++) await pause(100); return check(); };
 
 test('failure 1 reproduced: typing the whole text, 400 ms, then Enter does not submit long text to a Codex-like input box', { timeout: 120000 }, async () => {
   for (const n of [2000, 6000, 12000]) {
     const t = await liveTask('codex');
     try {
       await tmux.sendKeys(t.session, textOf(n));
-      await pause(1500);
+      await waitFor(async () => (await tmux.capture(t.session, 0)).includes(`[Pasted Content ${n + 1} chars]`), {
+        description: `Codex to draw the pasted text of ${n} characters`,
+        state: async () => `expected pasted text; screen:\n${await tmux.capture(t.session, 0)}`,
+      });
       // the Enter came during the fast input, so it became a part of the paste and nothing was submitted
       assert.deepEqual(submitted(t), [], `length ${n}`);
       assert.match(await tmux.capture(t.session, 0), new RegExp(`\\[Pasted Content ${n + 1} chars\\]`));
@@ -68,7 +74,10 @@ test('long text arrives whole and is submitted once, for Codex and Claude Code i
       try {
         const r = await deliverText(t, textOf(n));
         assert.equal(r.submitted, true, `${agent} ${n}`);
-        assert.ok(await until(() => submitted(t).length > 0, 3000));
+        await waitFor(() => submitted(t).length > 0, {
+          description: `${agent} to submit ${n} characters`,
+          state: async () => `expected one submission; submissions: ${JSON.stringify(submitted(t))}; screen:\n${await tmux.capture(t.session, 0)}`,
+        });
         assert.deepEqual(submitted(t).map(s => s.text), [textOf(n)], `${agent} ${n}`);
       } finally { await tmux.killSession(t.session); }
     }
@@ -83,7 +92,9 @@ test('an empty text and a draft in the box are refused, and Enter is not pressed
     await assert.rejects(agents.sendTaskText(t, ''), /The text is empty/);
     // a lone "T" left in the box, as in task 51: the paste would join it, so nothing is typed
     await tmux.tmux('send-keys', '-t', `=${t.session}:`, '-l', 'T');
-    await pause(300);
+    await waitFor(async () => (await tmux.capture(t.session, 0)).includes('› T'), {
+      description: 'Codex to show the draft', state: async () => `expected T in the input box; screen:\n${await tmux.capture(t.session, 0)}`,
+    });
     await assert.rejects(deliverText(t, textOf(6000)), /holds a draft that a person typed\. Taskboard does not type into a draft\. Nothing was typed\./);
     await pause(800);
     assert.deepEqual(submitted(t), []);
@@ -120,8 +131,14 @@ test('failure 2: a Codex task with a 7,000 character prompt in a worktree starts
     const old = tmux.newSessionArgs('old-158', t.cwd, agents.baseEnv(t), agents.command(t, prompt, false));
     assert.ok(tmux.commandBytes(old) > 16364, `old command has ${tmux.commandBytes(old)} bytes`);
     await assert.rejects(tmux.tmux(...old), /command too long/);
-    for (let i = 0; i < 50 && agents.pendingPrompt.has(t.id); i++) { await agents.typePendingPrompt(store.get(t.id)!, await tmux.capture(t.session, 0)); await pause(100); }
-    assert.ok(await until(() => submitted(t).length > 0));
+    await waitFor(async () => {
+      if (!agents.pendingPrompt.has(t.id)) return true;
+      await agents.typePendingPrompt(store.get(t.id)!, await tmux.capture(t.session, 0));
+      return !agents.pendingPrompt.has(t.id);
+    }, { description: 'the first Codex prompt to leave the pending queue', state: async () => `screen:\n${await tmux.capture(t.session, 0)}` });
+    await waitFor(() => submitted(t).length > 0, {
+      description: 'Codex to submit the first prompt', state: async () => `expected one submission; screen:\n${await tmux.capture(t.session, 0)}`,
+    });
     assert.deepEqual(submitted(t).map(s => s.text), [prompt]);
     assert.equal(agents.pendingPrompt.has(t.id), false);
   } finally { await tmux.killSession(t.session); }
@@ -147,7 +164,9 @@ test('resuming a task without a saved session id starts a new session with its f
     assert.equal(r.status, 'working');
     assert.match(r.statusSource || '', /new session with its first prompt/);
     assert.equal(await tmux.hasSession(t.session), true);
-    assert.ok(await until(() => submitted(t).some(s => s.argv && s.text === 'FIRST_PROMPT_158 Renumber the migrations.'), 5000));
+    await waitFor(() => submitted(t).some(s => s.argv && s.text === 'FIRST_PROMPT_158 Renumber the migrations.'), {
+      description: 'the resumed task to receive its first prompt', state: async () => `submissions: ${JSON.stringify(submitted(t))}; screen:\n${await tmux.capture(t.session, 0)}`,
+    });
   } finally { await tmux.killSession(t.session); }
   // a Codex task with a session id still resumes that session
   assert.equal(agents.neverStarted({ ...t, sessionId: 'saved' }), false);
@@ -174,7 +193,9 @@ test('Codex update dialog: the real text is a blocking question, and no Enter re
   // a live Codex that shows the dialog: tb send refuses and types nothing
   const t = await liveTask('codex', { FAKE_UPDATE: '1' });
   try {
-    await pause(800);
+    await waitFor(async () => (await tmux.capture(t.session, 0)).includes('Update available'), {
+      description: 'the Codex update question', state: async () => `expected Update available; screen:\n${await tmux.capture(t.session, 0)}`,
+    });
     await assert.rejects(agents.sendTaskText(store.get(t.id)!, 'Please continue'), /asks a question/);
     await agents.typePendingPrompt(t, await tmux.capture(t.session, 0));
     agents.pendingPrompt.set(t.id, 'A first prompt');

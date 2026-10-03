@@ -242,6 +242,9 @@ A move between windows never changes a task's groups. A new task goes after the 
   Use `tb new --no-worktree` or "Use the folder as is" in the new task form when you need the original folder.
   A new worktree uses the source folder's `node_modules` when present. Otherwise Taskboard installs dependencies from a supported lockfile.
   Run `pnpm test` to see every test name and the name of any failed test.
+  Tests that start servers or tmux sessions use separate ports, folders, and socket names.
+  Wait for the expected screen, file, or server state with `tests/helpers/wait-for.ts`.
+  Include the last screen and expected state in a wait failure. Keep fixed sleeps only when elapsed time is the behavior under test.
 - **Task processes:** `tb run <name> [--port n] [--stop "<command>"] [--cwd dir] -- <command>` starts a dev server,
   database or other process for the agent's task. A group owns no processes. Each process runs in its own window
   of the tmux session `proc-<num>`, so it keeps running when the Taskboard server

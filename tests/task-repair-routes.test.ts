@@ -29,7 +29,7 @@ const freePort = () => new Promise<number>(resolve => { const s = createServer()
 test('the routes repair the branch, and the next push needs a force push card that the user approves', async () => {
   const port = await freePort();
   const base = `http://127.0.0.1:${port}`;
-  const child = spawn(join(process.cwd(), 'node_modules/.bin/tsx'), ['server/index.ts'], { cwd: process.cwd(),
+  const child = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { cwd: process.cwd(),
     env: { ...process.env, TASKBOARD_PORT: String(port), TASKBOARD_DIR: tbdir, TASKBOARD_VAULT: vault,
       TASKBOARD_TMUX_SOCKET: `tb-repair-route-${port}`, TASKBOARD_MACHINE_NAME: 'repair-test' }, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = ''; child.stdout.on('data', b => { output += b.toString(); }); child.stderr.on('data', b => { output += b.toString(); });

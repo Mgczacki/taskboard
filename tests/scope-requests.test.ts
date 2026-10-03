@@ -7,6 +7,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { once } from 'node:events';
+import { waitFor } from './helpers/wait-for.ts';
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-scope-')));
 const tbdir = join(root, 'tbdir'), vault = join(root, 'vault'), bin = join(root, 'bin'), workspace = join(root, 'workspace');
@@ -50,14 +52,14 @@ test('a task without a worktree asks for scopes, and only the user approves them
   const port = await new Promise<number>(resolve => { const s = createServer(); s.listen(0, '127.0.0.1', () => { const a = s.address(); const p = typeof a === 'object' && a ? a.port : 0; s.close(() => resolve(p)); }); });
   const base = `http://127.0.0.1:${port}`;
   const env = { ...clean, PATH: `${bin}:${process.env.PATH}`, TASKBOARD_PORT: String(port), TASKBOARD_DIR: tbdir, TASKBOARD_VAULT: vault, TASKBOARD_TMUX_SOCKET: socket, TASKBOARD_MACHINE_NAME: 'scope-test' };
-  const child = spawn(join(process.cwd(), 'node_modules/.bin/tsx'), ['server/index.ts'], { cwd: process.cwd(), env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { cwd: process.cwd(), env, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = ''; child.stdout.on('data', b => { output += b.toString(); }); child.stderr.on('data', b => { output += b.toString(); });
   try {
-    for (let i = 0; i < 150; i++) {
-      if (child.exitCode !== null) throw new Error(output);
-      try { if ((await fetch(base + '/api/info')).ok) break; } catch { /* the server starts */ }
-      await new Promise(r => setTimeout(r, 100));
-    }
+    await waitFor(async () => {
+      if (child.exitCode !== null) throw new Error(`test server exited ${child.exitCode}: ${output}`);
+      return (await fetch(base + '/api/info')).ok;
+    }, { description: 'the scope test server to answer /api/info', timeoutMs: 60_000,
+      state: () => `expected HTTP 200 at ${base}; server output:\n${output.slice(-3000)}` });
     const token = readFileSync(join(tbdir, 'token'), 'utf8').trim();
     const as = (actor: string) => ({ 'content-type': 'application/json', 'x-taskboard-token': token, 'x-tb-actor': actor });
     const user = { 'content-type': 'application/json', origin: base };
@@ -86,9 +88,10 @@ test('a task without a worktree asks for scopes, and only the user approves them
     const cli = tb(['scope', 'request', 'worktree', '--repo', alpha, '--base', 'origin/master', '--branch', 'task/alpha-change', '--reason', 'Change alpha']);
     let cliOut = ''; cli.stdout.on('data', b => { cliOut += b; }); cli.stderr.on('data', b => { cliOut += b; });
     const cliDone = new Promise(resolve => cli.on('close', resolve));
-    let card: { id: string; detail: string; state: string } | undefined;
-    for (let i = 0; i < 100 && !card; i++) { card = (await (await fetch(base + '/api/approvals')).json()).find((a: { action: string; state: string }) => a.action === 'scope' && a.state === 'pending'); if (!card) await new Promise(r => setTimeout(r, 100)); }
-    assert.ok(card, cliOut + output);
+    const card = await waitFor(async (): Promise<{ id: string; detail: string; state: string } | undefined> =>
+      (await (await fetch(base + '/api/approvals')).json()).find((a: { action: string; state: string }) => a.action === 'scope' && a.state === 'pending'),
+    { description: 'the scope approval card', timeoutMs: 60_000,
+      state: () => `expected a pending scope card; CLI:\n${cliOut}; server:\n${output.slice(-3000)}` });
     const alphaHead = git(alpha, 'rev-parse', 'HEAD');
     const path1 = join(`${alpha}-wt`, 'plain-task--alpha');
     for (const line of ['Task: #1 Research without a worktree', `Repository: ${alpha}`, `Base: origin/master at ${alphaHead}`, 'New branch: task/alpha-change', `Worktree folder: ${path1}`, 'Reason: Change alpha', 'is not changed', 'does not exist yet', 'does not overlap'])
@@ -119,13 +122,18 @@ test('a task without a worktree asks for scopes, and only the user approves them
     // 4. the restart after the turn: the stand-in agent starts with --add-dir for the new worktree, and the note arrives
     await post('/api/hooks/claude', { taskId: 'plain-task', input: { hook_event_name: 'Stop' } }, { 'content-type': 'application/json', 'x-taskboard-token': token });
     const args = () => existsSync(join(root, 'args-claude')) ? readFileSync(join(root, 'args-claude'), 'utf8') : '';
-    for (let i = 0; i < 400 && !args().includes(path1); i++) await new Promise(r => setTimeout(r, 100));
-    assert.ok(args().split('\n').join(' ').includes(`--add-dir ${path1}`), args() + output);
+    await waitFor(() => args().split('\n').join(' ').includes(`--add-dir ${path1}`), {
+      description: 'the restarted agent to receive the attached worktree', timeoutMs: 90_000,
+      state: () => `expected --add-dir ${path1}; args:\n${args()}; server:\n${output.slice(-3000)}`,
+    });
     assert.match(args(), /Attached worktree alpha: branch task\/alpha-change/);
     // the same conversation id (--resume when a transcript exists, --session-id when the stand-in wrote none)
     assert.match(args(), /--(resume|session-id)\n11111111-2222-3333-4444-555555555555/);
-    for (let i = 0; i < 50 && !readdirSync(join(vault, 'tasks', 'plain-task', 'inbox')).some(f => f.startsWith('scope-')); i++) await new Promise(r => setTimeout(r, 100));
-    const note = readdirSync(join(vault, 'tasks', 'plain-task', 'inbox')).find(f => f.startsWith('scope-'));
+    const inbox = join(vault, 'tasks', 'plain-task', 'inbox');
+    const note = await waitFor(() => existsSync(inbox) && readdirSync(inbox).find(f => f.startsWith('scope-')), {
+      description: 'the restarted task to receive its scope note', timeoutMs: 60_000,
+      state: () => `expected a scope note in ${inbox}; args:\n${args()}; server:\n${output.slice(-3000)}`,
+    });
     assert.ok(note);
     assert.match(readFileSync(join(vault, 'tasks', 'plain-task', 'inbox', note!), 'utf8'), /tb git commit --worktree alpha/);
     assert.equal((await getTask('plain-task')).restartWhenDone, undefined);
@@ -231,6 +239,10 @@ test('a task without a worktree asks for scopes, and only the user approves them
     // 11. archive keeps the attached worktrees; a removal keeps uncommitted work and the branch
     const archived = await post('/api/tasks/plain-task/kill', {}, user);
     assert.equal(archived.status, 200, JSON.stringify(archived.data));
+    await waitFor(async () => (await getTask('plain-task'))?.status === 'archived', {
+      description: 'the task archive request to reach archived status', timeoutMs: 60_000,
+      state: async () => `expected archived; task: ${JSON.stringify(await getTask('plain-task'))}; server:\n${output.slice(-3000)}`,
+    });
     assert.equal((await getTask('plain-task')).status, 'archived');
     assert.ok(existsSync(path1) && existsSync(path2));
     writeFileSync(join(path2, 'unsaved.txt'), 'work in progress\n');
@@ -251,9 +263,9 @@ test('a task without a worktree asks for scopes, and only the user approves them
     assert.equal(git(alpha, 'branch', '--list', 'task/alpha-change').trim().replace(/^[*+ ]+/, ''), 'task/alpha-change');
     assert.deepEqual((await getTask('plain-task')).scopes.map((s: { name: string }) => s.name), ['gamma', 'read-reference', 'read-reference-2']);
   } finally {
-    child.kill();
-    await new Promise(r => setTimeout(r, 300));
+    child.kill('SIGTERM');
+    if (child.exitCode === null && child.signalCode === null) await once(child, 'exit');
     try { execFileSync('tmux', ['-L', socket, 'kill-server'], { stdio: 'ignore' }); } catch { /* no tmux server */ }
-    rmSync(root, { recursive: true, force: true });
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   }
 });

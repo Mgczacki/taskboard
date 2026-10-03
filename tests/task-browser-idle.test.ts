@@ -43,7 +43,7 @@ before(async () => {
   await new Promise<void>(r => page.listen(0, '127.0.0.1', () => r()));
   const a = page.address(); pageUrl = `http://127.0.0.1:${typeof a === 'object' && a ? a.port : 0}/kept`;
   port = await freePort(); base = `http://127.0.0.1:${port}`;
-  server = spawn(join(process.cwd(), 'node_modules/.bin/tsx'), ['server/index.ts'], { cwd: process.cwd(),
+  server = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { cwd: process.cwd(),
     env: { ...process.env, TASKBOARD_PORT: String(port), TASKBOARD_DIR: tbdir, TASKBOARD_VAULT: vault, TASKBOARD_TMUX_SOCKET: `tb-browser-idle-${port}`, TASKBOARD_MACHINE_NAME: 'browser-idle-test' },
     stdio: ['ignore', 'pipe', 'pipe'] });
   server.stdout!.on('data', b => { output += b.toString(); }); server.stderr!.on('data', b => { output += b.toString(); });

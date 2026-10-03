@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { after } from 'node:test';
 import WebSocket from 'ws';
+import { waitFor } from './helpers/wait-for.ts';
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-sound-')));
 process.env.TASKBOARD_DIR = join(root, 'state');
@@ -73,10 +74,19 @@ async function mutes(id: string, reload = false): Promise<Record<string, boolean
   } finally { c.close(); }
 }
 const allMuted = async (id: string, want: boolean) => {
-  const m = await mutes(id);
-  assert.ok(Object.keys(m).length > 0, 'the browser has tabs');
-  assert.deepEqual(Object.entries(m).filter(([, v]) => v !== want), [], `every tab is ${want ? 'muted' : 'not muted'}`);
-  return m;
+  let seen: Record<string, boolean> = {};
+  return waitFor(async () => {
+    seen = await mutes(id);
+    return Object.keys(seen).length && Object.values(seen).every(v => v === want) ? seen : null;
+  }, { description: `every tab in ${id} to be ${want ? 'muted' : 'not muted'}`, timeoutMs: 60_000,
+    state: () => `expected every tab ${want ? 'muted' : 'not muted'}; tabs: ${JSON.stringify(seen)}; browser: ${JSON.stringify(browser.readMeta(id))}` });
+};
+const tabMute = async (id: string, url: string, want: boolean) => {
+  let seen: Record<string, boolean> = {};
+  await waitFor(async () => { seen = await mutes(id); return seen[url] === want; }, {
+    description: `${url} to be ${want ? 'muted' : 'not muted'}`, timeoutMs: 60_000,
+    state: () => `expected ${url}: ${want}; tabs: ${JSON.stringify(seen)}; browser: ${JSON.stringify(browser.readMeta(id))}`,
+  });
 };
 // Run an expression in the page of the tab with this id.
 async function inPage(id: string, tabId: string, expression: string) {
@@ -89,10 +99,11 @@ async function inPage(id: string, tabId: string, expression: string) {
 const tabIds = async (id: string) => (await browser.tabs(id)).map(t => t.id).sort();
 const page = (name: string) => { const f = join(root, `${name}.html`); writeFileSync(f, `<title>${name}</title>`); return `file://${f}`; };
 
-test('a first start is muted, for a task browser and for the template', { skip, timeout: 60000 }, async () => {
-  await browser.ensure(browser.TEMPLATE);
-  await allMuted(browser.TEMPLATE, true);
-  await browser.stop(browser.TEMPLATE);
+test('a first start is muted, for a task browser and for the template', { skip, timeout: 180000 }, async () => {
+  try {
+    await browser.ensure(browser.TEMPLATE);
+    await allMuted(browser.TEMPLATE, true);
+  } finally { await browser.stop(browser.TEMPLATE).catch(() => {}); }
   await browser.ensure('s1');
   assert.equal(args('s1').includes('--mute-audio'), false, 'the mute comes from the tabs, not from a start flag');
   await allMuted('s1', true);
@@ -137,14 +148,12 @@ test('a new page, a reload, a popup and a new start of the extension keep the st
   for (const on of [true, false]) {
     await browser.setSound('s1', on);
     const t = await browser.openTab('s1', page(`new-${on}`));
-    assert.equal((await mutes('s1'))[t.url], !on, 'a new page');
+    await tabMute('s1', t.url, !on);
     await inPage('s1', t.id, 'location.reload(), 1');
-    await sleep(500);
-    assert.equal((await mutes('s1'))[t.url], !on, 'a reload');
+    await tabMute('s1', t.url, !on);
     const popup = page(`popup-${on}`);
     await inPage('s1', t.id, `window.open(${JSON.stringify(popup)}, '_blank', 'popup') ? 1 : 0`);
-    await sleep(500);
-    assert.equal((await mutes('s1'))[popup], !on, 'a popup');
+    await tabMute('s1', popup, !on);
     // a new start of the extension (muteTabs loads it again after Chrome stopped its idle service worker)
     const after = await mutes('s1', true);
     assert.deepEqual(Object.entries(after).filter(([, v]) => v !== !on), [], 'a new start of the extension');
@@ -214,7 +223,7 @@ test('only the dashboard changes the sound', { skip, timeout: 60000 }, async () 
   writeFileSync(join(vault, 'tasks', 's2.md'), `---\nid: s2\nnum: 1\ntitle: Task 1\nagent: claude\nstatus: idle\ncwd: ${work}\nfolder: ${work}\nsession: tb-sound-s2\ncreated: 2026-01-01T00:00:00.000Z\nupdated: 2026-01-01T00:00:00.000Z\nstatusAt: 2026-01-01T00:00:00.000Z\n---\n# Task 1\n`);
   const port = await new Promise<number>(resolve => { const s = createServer(); s.listen(0, '127.0.0.1', () => { const a = s.address(); const p = typeof a === 'object' && a ? a.port : 0; s.close(() => resolve(p)); }); });
   const socket = `tb-sound-route-${port}`, base = `http://127.0.0.1:${port}`;
-  const child = spawn(join(process.cwd(), 'node_modules/.bin/tsx'), ['server/index.ts'], { cwd: process.cwd(),
+  const child = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { cwd: process.cwd(),
     env: { ...process.env, TASKBOARD_PORT: String(port), TASKBOARD_DIR: tbdir, TASKBOARD_VAULT: vault, TASKBOARD_TMUX_SOCKET: socket, TASKBOARD_MACHINE_NAME: 'sound-test' },
     stdio: ['ignore', 'pipe', 'pipe'] });
   let output = ''; child.stdout.on('data', b => { output += b; }); child.stderr.on('data', b => { output += b; });

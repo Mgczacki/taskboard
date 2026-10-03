@@ -1270,10 +1270,22 @@ app.post('/api/tasks/:id/type-command', async (req, res) => {
 runtime.mount(app, fail);
 runtime.watchResume();
 runtime.watchBrowserIdle();
+const endingTasks = new Set<string>();
+const activeRestarts = new Map<string, Promise<void>>();
 app.post('/api/tasks/:id/kill', async (req, res) => {
   const t = store.get(req.params.id); if (!t) return res.status(404).end();
   await guarded(req, res, `end and archive #${t.num} ${t.title}`, '', 'kill',
-    async () => { await tmux.killSession(t.session); await stopTaskSandboxes(t.id); await runtime.stopTaskRuntime(t, 'stopped'); trimTerminalLog(store.terminalLog(t.id)); return view(store.update(t.id, { status: 'archived', statusSource: 'Session ended and archived.' })!); }, () => `#${t.num} ended and archived.`);
+    async () => {
+      endingTasks.add(t.id);
+      try {
+        await activeRestarts.get(t.id);
+        await tmux.killSession(t.session);
+        await stopTaskSandboxes(t.id);
+        await runtime.stopTaskRuntime(t, 'stopped');
+        trimTerminalLog(store.terminalLog(t.id));
+        return view(store.update(t.id, { status: 'archived', statusSource: 'Session ended and archived.' })!);
+      } finally { endingTasks.delete(t.id); }
+    }, () => `#${t.num} ended and archived.`);
 });
 // Remove a task from Taskboard (dashboard only). Ends its tmux session unless it runs in another terminal; the note
 // and folder go to ~/.taskboard/trash, and the conversation files of Claude Code / Codex stay where they are.
@@ -1772,6 +1784,14 @@ const RESTART_CLEARED = { restartWhenDone: undefined, restartWhenDoneAt: undefin
 // a log that cannot be written must not change the result of the restart
 const restartLog = (id: string, entry: { did: string; wait?: string; next?: string }) => { try { store.appendLog(id, entry); } catch (e) { console.error('restart log', e); } };
 async function restartTask(t: store.Task, by = 'Taskboard') {
+  if (endingTasks.has(t.id) || store.get(t.id)?.status === 'archived') return;
+  const running = activeRestarts.get(t.id);
+  if (running) return running;
+  const attempt = restartTaskNow(t, by);
+  activeRestarts.set(t.id, attempt);
+  try { await attempt; } finally { if (activeRestarts.get(t.id) === attempt) activeRestarts.delete(t.id); }
+}
+async function restartTaskNow(t: store.Task, by: string) {
   const notice = t.scopeNotice, why = t.restartFor ? ` ${t.restartFor}` : '';
   store.update(t.id, { ...RESTART_CLEARED, scopeNotice: undefined, restartFailed: undefined });
   let started = true;
@@ -1800,6 +1820,7 @@ function turnEnded(t: store.Task) {
   return { ended: !!r && (r.state === 'finished' || r.state === 'aborted'), text: r?.text };
 }
 async function pendingRestart(t: store.Task): Promise<boolean> {
+  if (endingTasks.has(t.id) || store.get(t.id)?.status === 'archived') return false;
   // the session started again after the approval (tb resume, Resume, a move): it already has the new folder
   if ((store.launchedAt.get(t.id) || 0) > (Date.parse(t.restartWhenDoneAt || '') || Infinity)) {
     store.update(t.id, RESTART_CLEARED);
@@ -1809,6 +1830,7 @@ async function pendingRestart(t: store.Task): Promise<boolean> {
   }
   const turn = turnEnded(t);
   const screen = (await tmux.capture(t.session, 0)).split('\n').filter(l => l.trim()).slice(-15).join('\n');
+  if (endingTasks.has(t.id) || store.get(t.id)?.status === 'archived') return false;
   const { reason, overdue } = scopeRestart.restartWaitReason({
     status: t.status, ended: turn.ended, lastText: turn.text, quiet: quietFor(t), quietLong: quietFor(t, 60000), screen, blocking: agents.blockingQuestion,
     restartFor: t.restartFor, waitedMs: Date.now() - (Date.parse(t.restartWhenDoneAt || '') || Date.now()), limitMs: RESTART_WAIT_MS,

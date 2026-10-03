@@ -17,7 +17,7 @@ const task = (id: string, num: number, extra: Partial<Task> = {}) => {
   const t = { id, num, title: `Task ${num}`, agent: 'claude', session: `s-${id}`, status: 'needs-you', cwd: '/tmp', statusAt: '2026-10-02T10:00:00.000Z', ...extra } as Task;
   tasks.set(id, t); return t;
 };
-pending.setIo({ capture: async () => '', key: async () => {}, cancelCopyMode: async () => {}, sendText: async () => ({ submitted: true }),
+pending.setIo({ capture: async session => [...tasks.values()].find(t => t.session === session)?.ask || '', key: async () => {}, cancelCopyMode: async () => {}, sendText: async () => ({ submitted: true }),
   getTask: id => tasks.get(id), log: () => {}, answered: () => {}, wait: async () => {} });
 const fresh = () => { dismiss.reset(); dismiss.load(mkdtempSync(join(tmpdir(), 'tb-dismiss-'))); };
 const entry = (sig: string, extra: Partial<Dismissal> = {}) => ({ sig, kind: 'item' as const, taskId: 't1', taskNum: 1, title: 'T', question: 'Q?', label: 'Question', ...extra });

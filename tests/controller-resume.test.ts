@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { once } from 'node:events';
 import test from 'node:test';
+import { waitFor } from './helpers/wait-for.ts';
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-controller-resume-')));
 process.env.TASKBOARD_DIR = join(root, 'state');
@@ -50,9 +51,10 @@ test('tb resume uses the panel status route and keeps approval cards', { timeout
     let out = ''; p.stdout.on('data', d => out += d); p.stderr.on('data', d => out += d); p.once('exit', code => done({ code, out }));
   });
   try {
-    let up = false;
-    for (let i = 0; i < 100 && !up; i++) { try { up = (await request('GET', '/api/info', 'read')).status === 200; } catch { /* not listening yet */ } if (!up) await new Promise(done => setTimeout(done, 100)); }
-    assert.ok(up, output);
+    await waitFor(async () => (await request('GET', '/api/info', 'read')).status === 200, {
+      description: 'the resume test server to answer /api/info', timeoutMs: 60_000,
+      state: () => `expected HTTP 200 at ${url}; server output:\n${output.slice(-3000)}`,
+    });
     const pending = await request('POST', '/api/tasks/parked/send', 'controller', { text: 'Keep the pending card' });
     assert.equal(pending.status, 202);
     const card = pending.data.approval.id;
@@ -94,7 +96,9 @@ test('tb resume uses the panel status route and keeps approval cards', { timeout
     assert.equal(refusedSend.code, 1); assert.match(refusedSend.out, /Run tb resume <task>, then send again/);
   } finally {
     child.kill('SIGTERM');
-    if (child.exitCode === null) await once(child, 'exit');
+    if (child.exitCode === null && child.signalCode === null) await once(child, 'exit');
     for (const name of ['task-1', 'task-3']) try { execFileSync('tmux', ['-L', socket, 'kill-session', '-t', name], { stdio: 'ignore' }); } catch { /* test session is already gone */ }
+    try { execFileSync('tmux', ['-L', socket, 'kill-server'], { stdio: 'ignore' }); } catch { /* gone */ }
+    rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   }
 });

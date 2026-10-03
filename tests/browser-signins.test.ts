@@ -11,6 +11,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { after } from 'node:test';
 import WebSocket from 'ws';
+import { waitFor } from './helpers/wait-for.ts';
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-signins-')));
 process.env.TASKBOARD_DIR = join(root, 'state');
@@ -50,12 +51,18 @@ const has = async (id: string, name: string, value?: string) => (await cookies(i
 // run JavaScript in a page of the site, in a new tab that closes after
 async function inPage(id: string, site: string, js: string) {
   const t = await browser.openTab(id, url(site));
-  const list = await (await fetch(`http://127.0.0.1:${browser.readMeta(id).port}/json/list`)).json() as { id: string; webSocketDebuggerUrl: string }[];
-  const page = list.find(p => p.id === t.id)!;
-  for (let i = 0; i < 50; i++) { if ((await cdp(page.webSocketDebuggerUrl, 'Runtime.evaluate', { expression: 'document.readyState + location.host', returnByValue: true })).result.value === `complete${site}:${PORT}`) break; await new Promise(r => setTimeout(r, 100)); }
-  const r = await cdp(page.webSocketDebuggerUrl, 'Runtime.evaluate', { expression: js, returnByValue: true });
-  await browser.closeTab(id, t.id);
-  return r.result.value;
+  try {
+    const list = await (await fetch(`http://127.0.0.1:${browser.readMeta(id).port}/json/list`)).json() as { id: string; webSocketDebuggerUrl: string }[];
+    const page = list.find(p => p.id === t.id)!;
+    await waitFor(async () => (await cdp(page.webSocketDebuggerUrl, 'Runtime.evaluate', {
+      expression: 'document.readyState + location.host', returnByValue: true,
+    })).result.value === `complete${site}:${PORT}`, {
+      description: `${site} to finish loading in ${id}`, timeoutMs: 60_000,
+      state: () => `expected complete${site}:${PORT}; browser: ${JSON.stringify(browser.readMeta(id))}`,
+    });
+    const r = await cdp(page.webSocketDebuggerUrl, 'Runtime.evaluate', { expression: js, returnByValue: true });
+    return r.result.value;
+  } finally { await browser.closeTab(id, t.id); }
 }
 
 test('siteOf groups subdomains under the registrable name', () => {
@@ -109,7 +116,10 @@ test('save as template copies sign-ins and site data, without history', { skip, 
   assert.equal(await browser.isRunning('template'), false, 'the template is closed again');
   assert.equal(browser.readMeta('template').savedFrom?.task, 's1');
   // s1 starts again with its pages
-  for (let i = 0; i < 100 && !(await browser.isRunning('s1')); i++) await new Promise(r => setTimeout(r, 100));
+  await waitFor(async () => (await browser.isRunning('s1')) && (await browser.tabs('s1')).length === tabsBefore, {
+    description: 's1 to restart with its saved tabs', timeoutMs: 90_000,
+    state: async () => `expected ${tabsBefore} restored tabs; tabs: ${JSON.stringify(await browser.tabs('s1'))}; browser: ${JSON.stringify(browser.readMeta('s1'))}`,
+  });
   assert.equal((await browser.tabs('s1')).length, tabsBefore);
   // a new task browser gets the cookie and the local storage of the saved browser
   assert.equal(await has('s2', 'c_sid', values.s), true);
