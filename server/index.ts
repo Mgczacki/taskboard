@@ -371,6 +371,11 @@ const cardView = (o: { a: approvals.Approval; kind?: controllerApprove.Controlle
     ...expiryOf(o.a), controllerMayApprove: !!o.kind && allowed,
     ...(o.userOnly ? { userOnly: o.userOnly } : !allowed ? { userOnly: `Settings > Controller approvals does not let the controller approve ${controllerApprove.KIND_NAME[o.kind!]} cards.` } : {}) };
 };
+// The details of the controller guidance that the controller reads on demand (agents.ts controllerGuide)
+app.get('/api/controller/guide/:topic', (req, res) => {
+  const text = agents.controllerGuide(req.params.topic);
+  text ? res.type('text/plain').send(text) : res.status(404).json({ error: 'There is no such guide. Topics: approvals, mail.' });
+});
 app.get('/api/controller/approvals', (req, res) => {
   const actor = req.get('x-tb-actor');
   if (actor && !isController(req)) return res.status(403).json({ error: 'Only the user and the controller list the approval cards.' });
