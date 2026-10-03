@@ -59,7 +59,14 @@ export interface RuntimeItem { task: string; kind: 'browser' | 'proc'; name: str
 export interface RuntimeList { items: RuntimeItem[]; total: { browsers: number; procs: number; memMb: number } }
 // dialog: a box that the page opened (alert, confirm, prompt, beforeunload) and that waits for an answer (server/task-browser.ts)
 export interface BrowserTab { id: string; title: string; url: string; faviconUrl?: string; dialog?: { type: 'alert' | 'confirm' | 'prompt' | 'beforeunload'; message: string; defaultPrompt?: string } }
-export interface BrowserStatus { id: string; running: boolean; port?: number; tabs: BrowserTab[]; profile: boolean; copiedFromTemplate?: string; suspended?: boolean; idleStopped?: boolean; idleStopMinutes: number; startMs?: number; started?: string; stoppedAt?: string; error?: string; errorLines?: string[]; errorAt?: string; exited?: boolean; starting?: { seconds: number; limitSeconds: number; pid?: number }; systemMemory?: { totalMb: number; availableMb: number; availablePct: number; low: boolean } | null; memMb?: number | null; rssMb?: number | null; agents: number; viewers: number; chrome: string | null; sound: boolean; muted: boolean; sharp?: boolean; check?: { chrome: string | null; node: string | null; mcp: boolean } }
+export interface BrowserStatus { id: string; running: boolean; port?: number; tabs: BrowserTab[]; profile: boolean; copiedFromTemplate?: string; suspended?: boolean; idleStopped?: boolean; idleStopMinutes: number; startMs?: number; started?: string; stoppedAt?: string; error?: string; errorLines?: string[]; errorAt?: string; exited?: boolean; starting?: { seconds: number; limitSeconds: number; pid?: number }; systemMemory?: { totalMb: number; availableMb: number; availablePct: number; low: boolean } | null; memMb?: number | null; rssMb?: number | null; agents: number; viewers: number; chrome: string | null; sound: boolean; muted: boolean; sharp?: boolean; check?: { chrome: string | null; node: string | null; mcp: boolean };
+  // shared sign-ins (server/browser-signins.ts): noShared is the opt-out of this task browser, templateSites the number of
+  // sites with cookies in the template (null: unknown), headed: the template is open in a normal Chrome window
+  noShared?: boolean; syncedAt?: string; headed?: boolean; templateSites?: number | null }
+// A site with cookies in a browser: the name and the count only, never a value.
+export interface SigninSite { site: string; cookies: number; lastUsed?: string }
+export interface SigninBrowser { id: string; num?: number; title?: string; status?: string; running: boolean; noShared: boolean; copiedFromTemplate?: string; syncedAt?: string; liveSyncAt?: string; agents: number }
+export interface SigninOverview { template: { profile: boolean; running: boolean; headed: boolean; savedFrom?: { task: string; at: string } }; sites: SigninSite[] | null; settings: { live: boolean; liveSites: string[] }; browsers: SigninBrowser[] }
 // A worktree or a read folder that the user approved after the task started (server/scopes.ts)
 export interface Scope { id: string; kind: 'worktree' | 'read'; name: string; path: string; at: string; reason: string; repo?: string; branch?: string; base?: string; baseCommit?: string }
 export interface Approval { id: string; actor: string; action: string; summary: string; detail: string; created: string; state: 'pending' | 'running' | 'approved' | 'denied' | 'failed' | 'expired' | 'unknown' | 'returned'; result?: string; returnable?: boolean; payload?: { permitId?: string; pushId?: string; state?: { forcePush?: boolean }; canPermit?: boolean; message?: string; hash?: string; body?: string; quality?: { state: string; flags: { text: string; start: number; end: number; reason: string; code?: string }[] } } & Partial<MessagePayload> }
@@ -348,6 +355,15 @@ export const api = {
   browserAction: (id: string, action: 'start' | 'stop' | 'reset') => call<BrowserStatus>('POST', `/api/tasks/${encodeURIComponent(id)}/browser/${action}`, {}),
   browserSound: (id: string, on: boolean) => call<BrowserStatus & { restarted: boolean }>('POST', id === 'template' ? '/api/browser-template/sound' : `/api/tasks/${encodeURIComponent(id)}/browser/sound`, { on }),
   browserTemplate: () => call<BrowserStatus>('GET', '/api/browser-template'),
+  signinSites: (id: string) => call<{ sites: SigninSite[] | null }>('POST', `/api/tasks/${encodeURIComponent(id)}/browser/signins/sites`, {}),
+  signinSaveTemplate: (id: string) => call<{ sites: SigninSite[] }>('POST', `/api/tasks/${encodeURIComponent(id)}/browser/signins/save-template`, {}),
+  signinSync: (id: string, sites: string[]) => call<{ sites: string[]; cookies: number }>('POST', `/api/tasks/${encodeURIComponent(id)}/browser/signins/sync`, { sites }),
+  signinShared: (id: string, on: boolean) => call<BrowserStatus>('POST', `/api/tasks/${encodeURIComponent(id)}/browser/signins/shared`, { on }),
+  signinOverview: () => call<SigninOverview>('POST', '/api/browser-signins/overview', {}),
+  signinRemove: (site: string) => call<SigninOverview>('POST', '/api/browser-signins/remove', { site }),
+  signinSignOutAll: () => call<{ sites: string[]; now: string[]; later: string[] }>('POST', '/api/browser-signins/sign-out-all', {}),
+  signinLive: (patch: { live?: boolean; liveSites?: string[] }) => call<{ live: boolean; liveSites: string[] }>('POST', '/api/browser-signins/live', patch),
+  templateWindow: () => call<BrowserStatus>('POST', '/api/browser-template/window', {}),
   browserTemplateAction: (action: 'start' | 'stop') => call<BrowserStatus>('POST', `/api/browser-template/${action}`, {}),
   getUi: () => call<Record<string, unknown>>('GET', '/api/ui'),
   putUi: (x: Record<string, unknown>) => call('PUT', '/api/ui', x),

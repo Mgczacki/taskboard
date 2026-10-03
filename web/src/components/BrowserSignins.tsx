@@ -1,0 +1,143 @@
+// Shared sign-ins of task browsers (server/browser-signins.ts) on the dashboard:
+// - SigninNote: one line on the task browser panel when the template has no sign-ins, or when this browser opted out
+// - SigninDialog: save this browser as the template, sync sign-ins from the template, and reset from the template
+// - SigninSettings: the Settings list of the template's sites, live sharing, sign out of all, and the task browsers
+//   that hold shared sign-ins
+// The server sends site names, counts and dates. No cookie value reaches the dashboard.
+import { useEffect, useState } from 'react';
+import type { BrowserStatus, SigninOverview, SigninSite } from '../api';
+import { api } from '../api';
+
+const openSettings = () => dispatchEvent(new CustomEvent('taskboard:open', { detail: { settings: 'taskBrowsers' } }));
+const when = (iso?: string) => iso ? new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+const msg = (e: unknown) => String((e as Error)?.message || e);
+
+// The status fields of sign-in sharing for one task browser, read again after each change and after a start or stop.
+export function useSharing(id: string, skip: boolean, running: boolean | null): [BrowserStatus | null, () => void] {
+  const [s, setS] = useState<BrowserStatus | null>(null);
+  const [n, setN] = useState(0);
+  useEffect(() => { if (!skip) api.browser(id).then(setS).catch(() => {}); }, [id, skip, n, running]);
+  return [s, () => setN(x => x + 1)];
+}
+
+export type SigninMode = 'save' | 'sync' | 'reset';
+export function SigninNote({ status, onMode, onShared }: { status: BrowserStatus | null; onMode: (m: SigninMode) => void; onShared: (on: boolean) => void }) {
+  if (!status) return null;
+  if (status.noShared) return (
+    <div className="banner bw-signins">This browser does not get shared sign-ins.
+      <button className="btn ghost" onClick={() => onShared(true)} title="New sign-ins from the template, sync and live sharing reach this browser again">Turn on</button>
+    </div>
+  );
+  if (status.templateSites !== 0) return null;
+  return (
+    <div className="banner bw-signins">No saved sign-ins. Sign in in Settings, or save this browser's sign-ins for new tasks.
+      <button className="btn ghost" onClick={openSettings}>Settings</button>
+      {status.profile && <button className="btn ghost" onClick={() => onMode('save')}>Use this browser's sign-ins for new tasks</button>}
+    </div>
+  );
+}
+
+export function SigninDialog({ id, mode, onClose, onDone }: { id: string; mode: SigninMode; onClose: () => void; onDone: (text: string) => void }) {
+  const [sites, setSites] = useState<SigninSite[] | null | undefined>(undefined);
+  const [tpl, setTpl] = useState<SigninOverview | null>(null);
+  const [pick, setPick] = useState<Set<string>>(new Set());
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  useEffect(() => {
+    if (mode === 'save') api.signinSites(id).then(r => setSites(r.sites)).catch(e => setErr(msg(e)));
+    api.signinOverview().then(o => { setTpl(o); if (mode === 'sync') { setSites(o.sites); setPick(new Set((o.sites || []).map(s => s.site))); } }).catch(e => setErr(msg(e)));
+  }, [id, mode]);
+  const run = async () => {
+    setBusy(true); setErr('');
+    try {
+      if (mode === 'save') { const r = await api.signinSaveTemplate(id); onDone(`The template now has ${r.sites.length} site(s) from this browser.`); }
+      else if (mode === 'sync') { const r = await api.signinSync(id, [...pick]); onDone(`Added ${r.cookies} cookie(s) for ${r.sites.length} site(s) from the template.`); }
+      else { await api.browserAction(id, 'reset'); onDone('The profile was reset.'); }
+    } catch (e) { setErr(msg(e)); } finally { setBusy(false); }
+  };
+  const toggle = (s: string) => setPick(p => { const n = new Set(p); if (n.has(s)) n.delete(s); else n.add(s); return n; });
+  const title = mode === 'save' ? "Use this browser's sign-ins for new tasks?" : mode === 'sync' ? 'Sync sign-ins from the template' : 'Reset this browser from the template?';
+  const list = sites && <ul className="si-list">{sites.map(s => <li key={s.site}>
+    {mode === 'sync' ? <label><input type="checkbox" checked={pick.has(s.site)} onChange={() => toggle(s.site)} /> {s.site}</label> : s.site}
+    <span className="sub"> {s.cookies} cookie(s){s.lastUsed ? `, last used ${when(s.lastUsed)}` : ''}</span></li>)}</ul>;
+  return (
+    <div className="scrim open" onMouseDown={e => { if (e.target === e.currentTarget && !busy) onClose(); }}>
+      <div className="modal si-modal" role="dialog" aria-label={title}>
+        <header><h2>{title}</h2><button className="btn ghost icon" onClick={onClose} disabled={busy} aria-label="Close">✕</button></header>
+        <div className="body">
+          {mode === 'save' && <>
+            <div>The template gets the sign-ins and site data of this browser. Each new task browser copies the template. History, open tabs and caches are not copied.</div>
+            <div className="si-warn"><b>Every agent can use these accounts.</b> An agent with a task browser can read its cookies and act as you on these sites.</div>
+            {sites === undefined && !err && <div className="sub">Reading the sites…</div>}
+            {sites === null && <div className="sub">The sites of this stopped browser cannot be read here. Start the browser to see them.</div>}
+            {sites && (sites.length ? <><div>Sites with cookies in this browser:</div>{list}</> : <div>This browser has no cookies.</div>)}
+            {tpl?.template.profile && <div className="sub">This replaces the current template{tpl.sites ? ` (${tpl.sites.length} site(s))` : ''}. Task browsers that copied it keep their copy.</div>}
+            <div className="sub">A running browser stops and starts again with its pages. The template browser must be closed.</div>
+          </>}
+          {mode === 'sync' && <>
+            <div>The template's cookies of the chosen sites go into this browser. This browser keeps its own sign-ins, tabs and site data.</div>
+            <div className="sub">Only cookies are synced. Local storage and IndexedDB of these sites are not, so a site that keeps its sign-in there needs Reset from template. A stopped browser starts for the sync.</div>
+            {sites === undefined && !err && <div className="sub">Reading the template…</div>}
+            {sites && (sites.length ? list : <div>The template has no sign-ins.</div>)}
+          </>}
+          {mode === 'reset' && <div>This deletes the profile of this task browser and copies the template again. The browser loses its own sign-ins, site data and history. Its open pages stay saved.</div>}
+          {err && <div className="banner">{err}</div>}
+        </div>
+        <footer><span style={{ flex: 1 }} /><button className="btn" onClick={onClose} disabled={busy}>Cancel</button>
+          <button className={`btn ${mode === 'reset' ? 'danger' : 'primary'}`} disabled={busy || (mode === 'sync' && !pick.size) || (mode === 'save' && sites === undefined && !err)} onClick={() => void run()}>
+            {busy ? 'Working…' : mode === 'save' ? 'Save as the template' : mode === 'sync' ? `Sync ${pick.size} site(s)` : 'Reset'}
+          </button></footer>
+      </div>
+    </div>
+  );
+}
+
+// ---------- Settings ----------
+export function SigninSettings() {
+  const [o, setO] = useState<SigninOverview | null>(null);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [note, setNote] = useState('');
+  const [asking, setAsking] = useState(false);
+  const [add, setAdd] = useState('');
+  const load = () => api.signinOverview().then(setO).catch(e => setErr(msg(e)));
+  useEffect(() => { void load(); const t = setInterval(load, 10000); return () => clearInterval(t); }, []);
+  const act = async (fn: () => Promise<unknown>, done = '') => { setBusy(true); setErr(''); try { await fn(); setNote(done); await load(); } catch (e) { setErr(msg(e)); } finally { setBusy(false); } };
+  if (!o) return <div className="sub">{err || 'Reading the shared sign-ins…'}</div>;
+  const live = new Set(o.settings.liveSites);
+  const setLive = (patch: { live?: boolean; liveSites?: string[] }) => act(() => api.signinLive(patch));
+  const sitesShown = [...new Set([...(o.sites || []).map(s => s.site), ...o.settings.liveSites])].sort();
+  const info = new Map((o.sites || []).map(s => [s.site, s]));
+  const shared = o.browsers.filter(b => !b.noShared && (b.copiedFromTemplate || b.syncedAt || b.liveSyncAt));
+  const out = o.browsers.filter(b => b.noShared);
+  const name = (b: { num?: number; title?: string; id: string }) => b.num ? `#${b.num} ${b.title || ''}` : b.id;
+  return <>
+    <div className="sub">The template keeps sign-ins for these sites. A new task browser copies them at its first start. Names only: Taskboard never shows a cookie value.</div>
+    {o.sites === null && <div className="sub">The sites cannot be read while the template is closed (no sqlite3 program). Open the template browser to see them.</div>}
+    {sitesShown.length ? <table className="si-table"><thead><tr><th>Site</th><th>Cookies</th><th>Last used</th><th>Live</th><th /></tr></thead><tbody>
+      {sitesShown.map(s => <tr key={s}>
+        <td>{s}</td><td>{info.get(s)?.cookies ?? '—'}</td><td>{when(info.get(s)?.lastUsed) || '—'}</td>
+        <td><input type="checkbox" aria-label={`Share ${s} live`} disabled={busy} checked={live.has(s)} onChange={e => void setLive({ liveSites: e.target.checked ? [...live, s] : [...live].filter(x => x !== s) })} /></td>
+        <td><button className="btn ghost" disabled={busy} onClick={() => void act(() => api.signinRemove(s), `${s} was removed from the template.`)} title="Delete the cookies and site data of this site in the template. Task browsers keep the copies they have.">Remove</button></td>
+      </tr>)}
+    </tbody></table> : <div className="sub">{o.template.profile ? 'The template has no sign-ins.' : 'No template profile yet.'}</div>}
+    <label className="opt"><input type="checkbox" disabled={busy} checked={o.settings.live} onChange={e => void setLive({ live: e.target.checked })} /> Share sign-ins between all task browsers live</label>
+    <div className="sub">For the sites marked Live only. Every 5 s Taskboard copies new, changed and deleted cookies of these sites between all running task browsers and the template, and keeps them for browsers that start later. So a sign-in in one browser reaches the others, and a sign-out too. Not covered: local storage, IndexedDB and service workers (sites that keep a sign-in there), session cookies after a restart, and sign-ins that a site binds to one device. When two browsers change the same cookie within 5 s, one of them wins. The kept cookies are encrypted in the Taskboard folder (file mode 0600).</div>
+    <div className="si-add"><input value={add} onChange={e => setAdd(e.target.value)} placeholder="example.com" aria-label="Add a site to live sharing" spellCheck={false} />
+      <button className="btn" disabled={busy || !add.trim()} onClick={() => { const s = add.trim().toLowerCase(); setAdd(''); void setLive({ liveSites: [...live, s] }); }}>Add a live site</button></div>
+    <div className="si-row">
+      {asking
+        ? <><span>Sign out of all? The template profile is deleted, live sharing stops, and every task browser loses the cookies of these sites.</span>
+          <button className="btn danger" disabled={busy} onClick={() => { setAsking(false); void act(async () => { const r = await api.signinSignOutAll(); setNote(`Signed out of ${r.sites.length} site(s): ${r.now.length} running browser(s) now, ${r.later.length} at their next start.`); }); }}>Sign out of all</button>
+          <button className="btn" onClick={() => setAsking(false)}>Cancel</button></>
+        : <button className="btn danger" disabled={busy || (!o.template.profile && !live.size)} onClick={() => setAsking(true)}>Sign out of all…</button>}
+    </div>
+    {note && <div className="sub">{note}</div>}
+    {err && <div className="banner">{err}</div>}
+    <div className="opt">Task browsers with shared sign-ins</div>
+    {shared.length ? <ul className="si-list">{shared.map(b => <li key={b.id}>{name(b)}
+      <span className="sub"> {[b.copiedFromTemplate && `copied ${when(b.copiedFromTemplate)}`, b.syncedAt && `synced ${when(b.syncedAt)}`, b.liveSyncAt && o.settings.live && `live ${when(b.liveSyncAt)}`, b.running && 'running', b.agents && `${b.agents} agent connection(s)`].filter(Boolean).join(' · ')}</span></li>)}</ul>
+      : <div className="sub">None.</div>}
+    {!!out.length && <div className="sub">Opted out (no shared sign-ins): {out.map(name).join(', ')}.</div>}
+  </>;
+}

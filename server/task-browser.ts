@@ -28,7 +28,11 @@ const ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,120}$/;
 // started with --mute-audio because the sound extension did not load (see muteTabs).
 // error: why the last start failed or why Chrome ended by itself (exited), with the useful lines of chrome.log
 // (errorLines) and the time (errorAt). The next start that works removes them.
-export interface Meta { pid?: number; port?: number; started?: string; startMs?: number; tabs?: string[]; suspended?: boolean; idleStopped?: boolean; stoppedAt?: string; error?: string; errorLines?: string[]; errorAt?: string; exited?: boolean; copiedFromTemplate?: string; sound?: boolean; muted?: boolean; muteFlag?: boolean; sharp?: boolean }
+export interface Meta { pid?: number; port?: number; started?: string; startMs?: number; tabs?: string[]; suspended?: boolean; idleStopped?: boolean; stoppedAt?: string; error?: string; errorLines?: string[]; errorAt?: string; exited?: boolean; copiedFromTemplate?: string; sound?: boolean; muted?: boolean; muteFlag?: boolean; sharp?: boolean;
+  // sign-in sharing (browser-signins.ts): noShared is the opt-out of this task browser, syncedAt the last sync from the
+  // template, clearSites the sites whose cookies the next start deletes (sign out of all), liveSyncAt the last live sync.
+  // headed: the template runs in a normal Chrome window (openTemplateWindow). savedFrom: the task whose profile became the template.
+  noShared?: boolean; syncedAt?: string; clearSites?: string[]; liveSyncAt?: string; headed?: boolean; savedFrom?: { task: string; at: string } }
 export interface Tab { id: string; title: string; url: string; faviconUrl?: string; dialog?: Dialog }
 // A box that a page opened with alert(), confirm(), prompt() or onbeforeunload. Headless Chrome draws no box, and the
 // page waits until a DevTools client answers it (Page.handleJavaScriptDialog).
@@ -39,6 +43,7 @@ export const profileDir = (id: string) => join(folder(id), 'profile');
 const metaFile = (id: string) => join(folder(id), 'browser.json');
 export function readMeta(id: string): Meta { try { return JSON.parse(readFileSync(metaFile(id), 'utf8')); } catch { return {}; } }
 function writeMeta(id: string, m: Meta) { mkdirSync(folder(id), { recursive: true }); writeFileSync(metaFile(id), JSON.stringify(m, null, 2)); }
+export function updateMeta(id: string, patch: Partial<Meta>) { writeMeta(id, { ...readMeta(id), ...patch }); changed(id); }
 
 // The key that lets the agents of one task use that task's browser through the Taskboard server.
 export const cdpKey = (taskId: string) => createHmac('sha256', TOKEN).update(`cdp:${taskId}`).digest('hex').slice(0, 32);
@@ -67,8 +72,20 @@ async function live(id: string): Promise<(Meta & { ws: string }) | null> {
   return v ? { ...m, ws: v.webSocketDebuggerUrl } : null;
 }
 export const isRunning = async (id: string) => !!(await live(id));
-// the template's Chrome process exists (checked by process, so a slow answer cannot hide an open template)
-const templateOpen = () => { const m = readMeta(TEMPLATE); return !!m.port && pidAlive(m.pid); };
+// the DevTools address of a running browser, or null
+export const browserWs = async (id: string) => (await live(id))?.ws ?? null;
+// the template's Chrome process exists (checked by process, so a slow answer cannot hide an open template). A template
+// in a normal Chrome window (headed) has no port.
+export const templateOpen = () => { const m = readMeta(TEMPLATE); return (!!m.port || !!m.headed) && pidAlive(m.pid); };
+export const templateWindowOpen = () => { const m = readMeta(TEMPLATE); return !!m.headed && pidAlive(m.pid); };
+// A short use of the template by the sign-in sharing (browser-signins.ts withTemplate): the template starts, gives or
+// takes cookies, and stops. A new task browser waits for that use to end before it copies the template.
+let templateUse: Promise<unknown> | null = null;
+export function holdTemplate<T>(p: Promise<T>): Promise<T> {
+  const mine = p.finally(() => { if (templateUse === mine) templateUse = null; });
+  templateUse = mine; mine.catch(() => {});
+  return p;
+}
 
 export async function tabs(id: string): Promise<Tab[]> {
   const m = await live(id); if (!m) return [];
@@ -83,11 +100,14 @@ async function pageList(port: number, timeout = 1500): Promise<Tab[] | null> {
 }
 
 // Copy the template profile, without the files that lock a running profile and without caches.
-const SKIP = new Set(['SingletonLock', 'SingletonSocket', 'SingletonCookie', 'DevToolsActivePort', 'Cache', 'Code Cache', 'GPUCache', 'GrShaderCache', 'ShaderCache', 'GraphiteDawnCache', 'component_crx_cache']);
+export const SKIP = new Set(['SingletonLock', 'SingletonSocket', 'SingletonCookie', 'DevToolsActivePort', 'Cache', 'Code Cache', 'GPUCache', 'GrShaderCache', 'ShaderCache', 'GraphiteDawnCache', 'component_crx_cache']);
+export function copyProfile(from: string, to: string, skip: Set<string> = SKIP) {
+  cpSync(from, to, { recursive: true, filter: src => !skip.has(basename(src)) });
+}
 function copyTemplate(id: string) {
   const from = profileDir(TEMPLATE);
   if (!existsSync(from)) return false;
-  cpSync(from, profileDir(id), { recursive: true, filter: src => !SKIP.has(basename(src)) });
+  copyProfile(from, profileDir(id));
   return true;
 }
 
@@ -160,6 +180,8 @@ export function ensure(id: string): Promise<Meta & { ws: string }> {
     await stopping.get(id)?.catch(() => {}); // an idle stop that is running ends first, then the browser starts again
     const running = await live(id);
     if (running) return running;
+    // the template in a normal Chrome window holds the profile and has no debugging port
+    if (id === TEMPLATE && templateWindowOpen()) throw new Error('The template is open in a Chrome window. Close that window first (Chrome menu, Quit Google Chrome).');
     const t0 = Date.now();
     progress.set(id, { since: t0 }); changed(id);
     try { return await start(id, t0); }
@@ -180,7 +202,9 @@ async function start(id: string, t0: number): Promise<Meta & { ws: string }> {
   if (!bin) throw new Error('No Chrome found. Install Google Chrome, or set the Chrome path on the Settings page.');
   const meta = readMeta(id);
   mkdirSync(folder(id), { recursive: true });
-  if (!existsSync(profileDir(id)) && id !== TEMPLATE) {
+  // a task browser that opted out of shared sign-ins (noShared) starts with an empty profile
+  if (!existsSync(profileDir(id)) && id !== TEMPLATE && !meta.noShared) {
+    await templateUse?.catch(() => {});
     if (templateOpen()) throw new Error('The template browser is open. Close it on the Settings page, then try again. A copy of an open profile can lose its sign-ins.');
     if (copyTemplate(id)) meta.copiedFromTemplate = new Date().toISOString();
   }
@@ -246,7 +270,9 @@ async function start(id: string, t0: number): Promise<Meta & { ws: string }> {
   lastUse.set(id, Date.now());
   watchExit(id, b.pid, b.child);
   watchDialogs(id, v.webSocketDebuggerUrl);
-  return { ...next, ws: v.webSocketDebuggerUrl };
+  // sign-in sharing: the deferred sign-out and the live cookies reach the browser before an agent uses it
+  for (const fn of started) { try { await Promise.race([fn(id, v.webSocketDebuggerUrl), new Promise(r => setTimeout(r, 10000))]); } catch (e) { console.error(`task browser ${id}: sign-in sharing at the start failed: ${(e as Error).message}`); } }
+  return { ...readMeta(id), ws: v.webSocketDebuggerUrl };
 }
 
 // ---------- a Chrome that ends by itself after its start ----------
@@ -273,6 +299,8 @@ function watchExit(id: string, pid: number, child?: ChildProcess) {
 }
 function markExited(id: string, pid: number, how: string, offset = Math.max(0, logSize(id) - 16384)) {
   const m = readMeta(id);
+  // the user closed the template's Chrome window: that is not a failure
+  if (m.headed && m.pid === pid) { writeMeta(id, { ...m, pid: undefined, headed: undefined, stoppedAt: new Date().toISOString() }); changed(id); return; }
   // a stop or a start of this browser ended this process on purpose, or browser.json names another process now
   if (m.pid !== pid || stopping.has(id) || starting.has(id)) return;
   const lines = usefulLines(logSince(id, offset));
@@ -286,6 +314,9 @@ function markExited(id: string, pid: number, how: string, offset = Math.max(0, l
 }
 
 // Listeners for a start that failed and for a Chrome that ended by itself (runtime-routes.ts writes the task log).
+// Listeners that run after each start, before ensure() returns (browser-signins.ts).
+const started = new Set<(id: string, ws: string) => Promise<void> | void>();
+export const onStarted = (fn: (id: string, ws: string) => Promise<void> | void) => { started.add(fn); };
 const problems = new Set<(id: string, message: string, lines: string[]) => void>();
 export const onProblem = (fn: (id: string, message: string, lines: string[]) => void) => { problems.add(fn); };
 const problem = (id: string, message: string, lines: string[]) => { for (const fn of problems) try { fn(id, message, lines); } catch { /* listener failed */ } };
@@ -326,7 +357,7 @@ async function openSaved(port: number, browserWs: string, urls: string[]) {
 }
 
 // One DevTools command over a new connection (for the few calls that are not on a long-lived connection).
-function once(wsUrl: string, method: string, params: object = {}, timeout = 5000): Promise<any> {
+export function once(wsUrl: string, method: string, params: object = {}, timeout = 5000): Promise<any> {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl, { perMessageDeflate: false });
     const timer = setTimeout(() => { ws.terminate(); reject(new Error(`${method} timed out`)); }, timeout);
@@ -352,6 +383,14 @@ async function stopNow(id: string, opts: { suspended?: boolean; idle?: boolean }
   // a start that runs ends first, so a stop (for example the archive of the task) does not leave its Chrome running
   await starting.get(id)?.catch(() => {});
   const m = readMeta(id);
+  // the template in a normal Chrome window: SIGTERM lets Chrome close its profile and write its cookies
+  if (m.headed && m.pid) {
+    if (pidAlive(m.pid)) { try { process.kill(m.pid, 'SIGTERM'); } catch { /* ended */ } }
+    await closeChrome(undefined, m.pid, 30000);
+    writeMeta(id, { ...readMeta(id), pid: undefined, headed: undefined, stoppedAt: new Date().toISOString() });
+    changed(id);
+    return true;
+  }
   // a Chrome that holds the profile but is not in browser.json (a start that failed before this version lost it)
   const holder = m.pid ? undefined : profileHolder(id);
   if (!m.pid && !m.port && !holder) return false;
@@ -359,7 +398,9 @@ async function stopNow(id: string, opts: { suspended?: boolean; idle?: boolean }
   // a busy Chrome can answer slowly: wait up to 5 s, and keep the saved pages when it does not answer
   const listed = running ? await pageList(running.port!, 5000) : null;
   const open = listed ? listed.map(t => t.url).filter(u => /^(https?|file):/.test(u)) : m.tabs;
-  await closeChrome(running?.ws, m.pid || holder);
+  // The template waits up to 30 s: new task browsers copy its cookies. On a busy Mac (load average 140 on 10 cores,
+  // 2 October 2026) Chrome took more than 10 s to close, and the end of the wait lost cookies that it had not written.
+  await closeChrome(running?.ws, m.pid || holder, id === TEMPLATE ? 30000 : 10000);
   writeMeta(id, { ...readMeta(id), pid: undefined, port: undefined, tabs: open, stoppedAt: new Date().toISOString(), suspended: opts.suspended || undefined, idleStopped: opts.idle || undefined });
   changed(id);
   return !!running;
@@ -367,9 +408,9 @@ async function stopNow(id: string, opts: { suspended?: boolean; idle?: boolean }
 
 // Close Chrome with Browser.close. Chrome writes cookies to disk when it closes: wait up to 10 s before the kill, so a
 // busy Chrome keeps its sign-ins.
-async function closeChrome(ws: string | undefined, pid: number | undefined) {
+async function closeChrome(ws: string | undefined, pid: number | undefined, waitMs = 10000) {
   if (ws) await once(ws, 'Browser.close').catch(() => {});
-  for (let i = 0; i < 100 && pidAlive(pid); i++) await new Promise(r => setTimeout(r, 100));
+  for (let i = 0; i < waitMs / 100 && pidAlive(pid); i++) await new Promise(r => setTimeout(r, 100));
   if (pid && pidAlive(pid)) { try { process.kill(-pid, 'SIGKILL'); } catch { try { process.kill(pid, 'SIGKILL'); } catch { /* ended */ } } }
 }
 
@@ -480,23 +521,58 @@ async function setSoundNow(id: string, on: boolean): Promise<{ restarted: boolea
   return { restarted: true };
 }
 
-// Copy the template again: the task browser loses its own sign-ins and gets the template's.
+// Copy the template again: the task browser loses its own sign-ins and gets the template's. A task browser that opted
+// out of shared sign-ins (noShared) gets an empty profile instead.
 export async function resetFromTemplate(id: string) {
   if (id === TEMPLATE) throw new Error('The template cannot be reset from itself.');
+  if (readMeta(id).noShared) {
+    await stop(id);
+    rmSync(profileDir(id), { recursive: true, force: true });
+    writeMeta(id, { ...readMeta(id), copiedFromTemplate: undefined, syncedAt: undefined, clearSites: undefined });
+    changed(id);
+    return;
+  }
   if (!existsSync(profileDir(TEMPLATE))) throw new Error('There is no template profile yet. Open the template browser on the Settings page and sign in first.');
   if (templateOpen()) throw new Error('The template browser is open. Close it on the Settings page first.');
   await stop(id);
   rmSync(profileDir(id), { recursive: true, force: true });
   copyTemplate(id);
-  writeMeta(id, { ...readMeta(id), copiedFromTemplate: new Date().toISOString() });
+  writeMeta(id, { ...readMeta(id), copiedFromTemplate: new Date().toISOString(), syncedAt: undefined, clearSites: undefined });
   changed(id);
 }
+// Open the template profile in a normal Chrome window, without headless mode, without a debugging port and without
+// any automation flag. Google and some other sites refuse a sign-in in a browser that a program controls (the headless
+// task browser reports HeadlessChrome and navigator.webdriver). The user signs in in this window and closes it. Task
+// browsers then copy the profile. Taskboard cannot see or control this window: it only records its process.
+export async function openTemplateWindow(url = 'https://accounts.google.com/') {
+  if (templateWindowOpen()) return;
+  const bin = chromePath();
+  if (!bin) throw new Error('No Chrome found. Install Google Chrome, or set the Chrome path on the Settings page.');
+  await stop(TEMPLATE);
+  await templateUse?.catch(() => {});
+  mkdirSync(profileDir(TEMPLATE), { recursive: true });
+  const log = openSync(join(folder(TEMPLATE), 'chrome.log'), 'a');
+  const child = spawn(bin, [`--user-data-dir=${profileDir(TEMPLATE)}`, '--no-first-run', '--no-default-browser-check', /^https?:\/\//.test(url) ? url : 'about:blank'], { detached: true, stdio: ['ignore', log, log] });
+  closeSync(log);
+  child.unref();
+  if (!child.pid) throw new Error('Chrome did not start.');
+  writeMeta(TEMPLATE, { ...readMeta(TEMPLATE), pid: child.pid, port: undefined, headed: true, started: new Date().toISOString(), error: undefined, errorLines: undefined, errorAt: undefined, exited: undefined });
+  watchExit(TEMPLATE, child.pid, child);
+  changed(TEMPLATE);
+}
+
 // The task was removed from Taskboard: stop its browser and delete its profile (it holds copied sign-ins).
 export async function remove(id: string) { await stop(id).catch(() => {}); rmSync(folder(id), { recursive: true, force: true }); }
 
 // starting: a start runs (seconds since it began, the limit, and the Chrome process it waits for). systemMemory: the
 // free memory of the computer, sent while the browser is not running, so the dashboard can warn before a start.
-export interface Status { id: string; running: boolean; port?: number; tabs: Tab[]; profile: boolean; copiedFromTemplate?: string; suspended?: boolean; idleStopped?: boolean; idleStopMinutes: number; startMs?: number; started?: string; stoppedAt?: string; error?: string; errorLines?: string[]; errorAt?: string; exited?: boolean; starting?: { seconds: number; limitSeconds: number; pid?: number }; systemMemory?: memory.SystemMemory | null; memMb?: number | null; rssMb?: number | null; agents: number; viewers: number; chrome: string | null; sound: boolean; muted: boolean; sharp: boolean }
+export interface Status { id: string; running: boolean; port?: number; tabs: Tab[]; profile: boolean; copiedFromTemplate?: string; suspended?: boolean; idleStopped?: boolean; idleStopMinutes: number; startMs?: number; started?: string; stoppedAt?: string; error?: string; errorLines?: string[]; errorAt?: string; exited?: boolean; starting?: { seconds: number; limitSeconds: number; pid?: number }; systemMemory?: memory.SystemMemory | null; memMb?: number | null; rssMb?: number | null; agents: number; viewers: number; chrome: string | null; sound: boolean; muted: boolean; sharp: boolean;
+  // sign-in sharing: noShared (opt-out), syncedAt, headed (the template in a Chrome window), and from statusExtra:
+  // templateSites, the number of sites with cookies in the template (null: unknown)
+  noShared: boolean; syncedAt?: string; headed?: boolean; templateSites?: number | null }
+// More status fields from another module (browser-signins.ts adds templateSites).
+let statusExtra: (id: string) => Promise<Partial<Status>> = async () => ({});
+export const setStatusExtra = (fn: (id: string) => Promise<Partial<Status>>) => { statusExtra = fn; };
 // a running browser has the state that muteTabs set (none for a browser started before this setting existed); a
 // stopped browser gets the saved choice at its next start
 const mutedNow = (m: Meta, running: boolean) => running ? !!m.muted : !m.sound;
@@ -510,7 +586,8 @@ export async function status(id: string): Promise<Status> {
     startMs: m.startMs, started: running ? m.started : undefined, stoppedAt: m.stoppedAt, error: running ? undefined : m.error, errorLines: running ? undefined : m.errorLines, errorAt: running ? undefined : m.errorAt, exited: running ? undefined : m.exited,
     starting: startingNow(id), systemMemory: running ? undefined : await memory.systemMemory(),
     // memMb is the footprint of the browser's processes (memory.ts). rssMb has the same value for older callers.
-    memMb: mem, rssMb: mem, agents: agentCount(id), viewers: viewers.get(id) || 0, chrome: chromePath(), sound: !!m.sound, muted: mutedNow(m, !!running), sharp: !!(running && m.sharp) };
+    memMb: mem, rssMb: mem, agents: agentCount(id), viewers: viewers.get(id) || 0, chrome: chromePath(), sound: !!m.sound, muted: mutedNow(m, !!running), sharp: !!(running && m.sharp),
+    noShared: !!m.noShared, syncedAt: m.syncedAt, headed: id === TEMPLATE && templateWindowOpen() ? true : undefined, ...(await statusExtra(id).catch(() => ({}))) };
 }
 
 export async function openTab(id: string, url: string): Promise<Tab> {
