@@ -337,7 +337,7 @@ export function App() {
 const FIXED: [string, string, string][] = [
   ['Mac app', '⌘N / ⇧⌘N', 'New window / new canvas window (File menu)'],
   ['Anywhere', 'Esc', 'Close the panel or clear the selection (outside a terminal, a text field and the task browser)'],
-  ['Canvas', 'Sideways swipe', 'Scrolls the canvas, or turns one page when Per page is on; Shift + mouse wheel does the same'],
+  ['Canvas', 'Sideways swipe', 'Scrolls the canvas, or turns one page when Per page is on; Shift + mouse wheel does the same. Over a task browser, the page scrolls instead'],
   ['Graph page', 'Arrows / ↩', 'Select the nearest task / open it'],
   ['Board and canvas', '⌘-click', 'Select several tasks, then act on them in the bar at the bottom'],
 ];
