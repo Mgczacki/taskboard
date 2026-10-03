@@ -28,8 +28,10 @@ Then open **Taskboard** from Spotlight, Raycast, Launchpad or `~/Applications` (
 The browser works too: <http://127.0.0.1:4317>.
 
 - **Update:** `git pull && pnpm install && pnpm release` (the server), and `pnpm app` (the Mac app, if `desktop/` changed).
-- **Is it installed?** `ls ~/Applications/Taskboard.app` for the app; `launchctl print gui/$(id -u)/com.taskboard.server | grep state`
-  for the server; `curl -s -o /dev/null -w "%{http_code}\n" http://127.0.0.1:4317/` should print 200.
+- **Is it installed? Why does it not start?** `pnpm doctor` in the checkout prints the state of the server and of the
+  login service (installed, loaded, crashed with the last log lines, port used by another program, no release) and the
+  step that repairs it. `pnpm doctor --repair` runs that step. The Mac app shows the same check on its waiting page,
+  with a **Start server** button, and in its menu-bar item.
 - `pnpm app` downloads Electron from its GitHub releases and checks it against the published SHA-256 sums (Electron's
   own installer needs Node 22.12+, so the build does this itself on older Node).
 
@@ -45,6 +47,18 @@ pnpm install
 pnpm release                     # copy → install → typecheck → build → start check → switch → restart
 sh scripts/install-launchd.sh    # once: run the release as a login service that restarts by itself
 ```
+
+`scripts/install-launchd.sh` runs in Terminal, as you (not with sudo). It refuses to run where launchctl cannot load
+services (ssh, an agent's sandbox), and changes nothing then. It waits until the old service is removed before it
+loads the new one, retries the load, checks that the server answers within 30 s, and puts the previous service back if
+any step fails. It is safe to run again: when nothing changed it only checks the server. Its last line is the result.
+It runs the server as `~/.taskboard/Taskboard Server.app` (a copy of node with that name), so Activity Monitor, top and
+System Settings → General → Login Items show **Taskboard Server** instead of node or tsx. Run it once again after
+each update of Node.
+
+On Linux, `scripts/install-systemd.sh` does the same with a systemd user service (`taskboard.service`). Run
+`loginctl enable-linger $USER` once if the server must start at boot without a login. On Windows, a task in Task
+Scheduler that runs at logon is the equivalent; there is no script for it yet.
 
 - **Update:** `pnpm release` again. If the new release does not answer within 30 s, it switches back by itself.
   `pnpm release --ref <commit>` releases a commit instead of the current files; `--no-switch` only builds and checks.
@@ -63,6 +77,17 @@ sh scripts/install-launchd.sh    # once: run the release as a login service that
   Never use `pkill -f` patterns. Agents keep running in tmux in every case and reconnect when the server is back.
 - **Remove the login service:** `launchctl bootout gui/$(id -u)/com.taskboard.server && rm ~/Library/LaunchAgents/com.taskboard.server.plist`
 - **Log:** `~/.taskboard/server.log` (it says when and why the server stopped).
+- **Find Taskboard's processes:** `tb top` prints every process of Taskboard grouped by task, with CPU, memory, energy
+  impact and age; **Settings → Taskboard server → Processes** shows the same table. Each agent starts as
+  `tb#<task number> <agent>` (the controller as `tb#controller <agent>`):
+  - `ps -ax -o pid,pcpu,rss,args | grep 'tb#'`, or `pgrep -fl 'tb#'`
+  - htop: F4 (filter) and type `tb#`. htop shows the command line, so the name is visible.
+  - top: `top -pid <pid>`. top and Activity Monitor show the program file name (`2.1.288` for Claude Code, `codex`),
+    not `tb#`. Use `tb top` for these.
+  - by environment: `ps -wwE -o pid,args -p <pid> | grep -o 'TASK_ID=[^ ]*'` names the task of any process an agent
+    started, also one whose parent ended.
+  - Activity Monitor → Energy groups all of Taskboard's processes (server, tmux, agents, task browsers) under
+    **Taskboard Server**, because they share the server's coalition.
 - **Open an agent from a normal terminal:** `tmux -L taskboard attach -t task-<number>` (the task panel has a copy button).
 - **Node:** Node 20.19 or newer is recommended. On 20.18 pnpm skips Vite's native bundler unless installing with
   `--force` (the release script does that).
@@ -277,5 +302,7 @@ A move between windows never changes a task's groups. A new task goes after the 
   sign-in in a browser that a program controls.
 - macOS does not show the environment of some system programs (for example `/bin/sleep`) to `ps`. A child of such a
   program that leaves its process group is not found by its `TB_PROC_OWNER` mark.
-- The server does not start at login unless you run `scripts/install-launchd.sh` once (stop the manually started server first).
+- The server does not start at login unless you run `scripts/install-launchd.sh` once (it stops a manually started server itself).
+- System Settings → Login Items shows the server as **Taskboard Server** without the app icon: macOS uses the key
+  `AssociatedBundleIdentifiers` only when the program and the app are signed with the same Developer Team ID.
   After a reboot, tasks show Suspended and resume when you open them.

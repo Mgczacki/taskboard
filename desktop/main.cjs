@@ -6,7 +6,8 @@
 // - a system-wide shortcut that shows or hides the window (default Control-Option-Command-T)
 // - its own menus, which leave Taskboard's shortcuts (⌘K, ⌘S, ⌘/, ⌃⌥ keys) to the page
 // - pop-out group windows as app windows; links to other sites open in your browser
-// - a waiting page while the server does not answer, which reconnects by itself
+// - a waiting page while the server does not answer, which reconnects by itself. It shows why the server does not
+//   answer (desktop/doctor.cjs) and a Start server button that runs the repair; the menu-bar item shows the same
 // - every open window (where it is, and where you are in it) comes back after quitting, a Taskboard update or a
 //   restart of the Mac; opens at login by default
 // - no title bar: the window buttons appear when the pointer is near the top edge, and hide again after
@@ -25,6 +26,10 @@ const SERVER = TEST_SERVER || 'http://127.0.0.1:4317';
 const TOKEN_FILE = process.env.TASKBOARD_APP_TOKEN || join(homedir(), '.taskboard', 'token');
 if (process.env.TASKBOARD_APP_DATA) app.setPath('userData', process.env.TASKBOARD_APP_DATA);
 if (process.env.TASKBOARD_APP_DEBUG_PORT) app.commandLine.appendSwitch('remote-debugging-port', process.env.TASKBOARD_APP_DEBUG_PORT);
+const doctor = require('./doctor.cjs');
+// The doctor checks the login service that serves SERVER. A test app checks a test service only when it names one
+// (TB_LAUNCHD_LABEL and TASKBOARD_DIR); otherwise it has no doctor, so it never repairs the real service.
+const DOCTOR_CFG = !TEST_SERVER ? doctor.config() : process.env.TB_LAUNCHD_LABEL && process.env.TASKBOARD_DIR ? doctor.config() : null;
 const ATTN = ['needs-you', 'stopped', 'review'];   // same as web/src/api.ts ATTN
 const STATUS_WORDS = { 'needs-you': 'needs you', stopped: 'stopped', review: 'review' };
 
@@ -37,6 +42,8 @@ function loadSettings() { try { settings = { ...settings, ...JSON.parse(readFile
 function saveSettings() { try { writeFileSync(settingsFile(), JSON.stringify(settings, null, 2)); } catch { /* read-only */ } }
 
 let win = null, tray = null, quitting = false, serverUp = false, waiting = [];
+// the last doctor check while the server does not answer (null while it answers), and a repair that runs now
+let diagnosis = null, repairing = null, lastRepair = null, lastDoctorAt = 0;
 
 const sameOrigin = url => { try { return new URL(url).origin === SERVER; } catch { return false; } };
 const webPreferences = { contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false, preload: join(__dirname, 'preload.cjs') };
@@ -148,6 +155,27 @@ ipcMain.on('window-opacity', (e, v) => {
   if (w && !w.isDestroyed() && Number.isFinite(v)) w.setOpacity(Math.min(1, Math.max(0.4, v)));
 });
 
+// ---------- doctor: why the server does not answer, and Start server ----------
+async function runDoctor() {
+  if (!DOCTOR_CFG) return { state: 'unknown', ok: false, title: 'No check for a test server', reason: 'This test app does not name a test login service.', action: null };
+  lastDoctorAt = Date.now();
+  try { const c = await doctor.check(DOCTOR_CFG); delete c.facts; diagnosis = c; } catch (e) { diagnosis = { state: 'unknown', ok: false, title: 'The check failed', reason: String(e && e.message || e), action: null }; }
+  return diagnosis;
+}
+// Runs the repair of a fresh check (install or restart); the caller cannot choose another command.
+async function startServer() {
+  if (!DOCTOR_CFG) return { ok: false, line: 'This test app does not repair a server.' };
+  if (!repairing) repairing = doctor.repair(DOCTOR_CFG).then(r => { lastRepair = { ok: r.ok, line: r.line, output: r.output || [], at: Date.now() }; return lastRepair; })
+    .catch(e => (lastRepair = { ok: false, line: `The repair failed: ${e && e.message || e}`, output: [], at: Date.now() }))
+    .finally(() => { repairing = null; lastTrayMenuKey = ''; void poll(); });
+  lastTrayMenuKey = ''; if (tray) tray.setContextMenu(trayMenu(0));
+  return repairing;
+}
+// only the waiting page (a file: page of this app) may ask; the dashboard page cannot start a repair
+const fromWaitingPage = e => String(e.senderFrame?.url || '').startsWith('file:');
+ipcMain.handle('doctor', async e => fromWaitingPage(e) ? { ...(await runDoctor()), repairing: !!repairing, lastRepair } : null);
+ipcMain.handle('start-server', async e => fromWaitingPage(e) ? startServer() : null);
+
 // Reopen the windows of the last session (the main one first), or one main window the first time.
 function restoreSession() {
   const saved = Array.isArray(settings.windows) ? settings.windows.filter(x => x && sameOrigin(x.url)) : [];
@@ -196,6 +224,8 @@ async function poll() {
   const wasUp = serverUp;
   serverUp = !!tasks;
   if (serverUp && !wasUp) backOnline(); // came back: every window leaves the waiting page for where it was
+  if (serverUp) diagnosis = null;
+  else if (!repairing && Date.now() - lastDoctorAt > 10_000) await runDoctor(); // the menu-bar item shows why
   // dismissed: the user dismissed what the task waits on (server/dismiss.ts); the status is unchanged
   waiting = (tasks || []).filter(t => ATTN.includes(t.status) && t.role !== 'controller' && !t.dismissed).sort((a, b) => (b.waitMin || 0) - (a.waitMin || 0));
   const unread = (tasks || []).filter(t => t.status === 'unread' && t.role !== 'controller').length;
@@ -217,7 +247,8 @@ async function poll() {
   if (tray) {
     tray.setTitle(!serverUp ? ' off' : waiting.length ? ` ${waiting.length}` : '');
     tray.setToolTip(!serverUp ? 'Taskboard: server not answering' : `Taskboard: ${waiting.length} waiting on you · ${unread} done, unread`);
-    const trayMenuKey = JSON.stringify([serverUp, waiting.map(t => [t.id, t.status, t.waitMin]), unread, groups]);
+    if (!serverUp && diagnosis) tray.setToolTip(`Taskboard: ${diagnosis.title}`);
+    const trayMenuKey = JSON.stringify([serverUp, waiting.map(t => [t.id, t.status, t.waitMin]), unread, groups, diagnosis && [diagnosis.state, diagnosis.title], !!repairing, lastRepair && lastRepair.at]);
     if (trayMenuKey !== lastTrayMenuKey) { lastTrayMenuKey = trayMenuKey; tray.setContextMenu(trayMenu(unread)); }
   }
 }
@@ -225,7 +256,13 @@ async function poll() {
 const accel = () => settings.shortcut.replace('Control', 'Ctrl').replace('Alt', 'Option').replace('Command', 'Cmd');
 function trayMenu(unread) {
   const items = [];
-  if (!serverUp) items.push({ label: 'Taskboard server is not answering', enabled: false }, { label: 'It restarts by itself if the login service is installed', enabled: false });
+  if (!serverUp) {
+    items.push({ label: diagnosis ? diagnosis.title : 'Taskboard server is not answering', enabled: false });
+    if (repairing) items.push({ label: 'Starting the server…', enabled: false });
+    else if (diagnosis && (diagnosis.action === 'install' || diagnosis.action === 'restart')) items.push({ label: 'Start Server', click: () => void startServer() });
+    if (lastRepair && !repairing) items.push({ label: lastRepair.line.slice(0, 90), enabled: false });
+    items.push({ label: 'Show Details…', click: show });
+  }
   else {
     items.push({ label: waiting.length ? `${waiting.length} waiting on you` : 'Nothing waiting on you', enabled: false });
     for (const t of waiting.slice(0, 12)) items.push({ label: `#${t.num} ${t.title.slice(0, 48)} — ${STATUS_WORDS[t.status] || t.status}${t.waitMin ? `, ${t.waitMin} min` : ''}`, click: () => openInPage({ task: t.id }) });

@@ -39,6 +39,8 @@ for (const p of parts) {
     reasons.push(`tmux -L ${socket} holds the real agents and the controller`);
   if (/launchctl\b.*\b(bootout|unload|remove|kill|kickstart|stop)\b.*taskboard/i.test(p))
     reasons.push('this stops the Taskboard login service');
+  if (/\bdoctor(\.mjs)?\b.*--repair\b/.test(p))
+    reasons.push('the doctor repair loads or restarts the Taskboard login service; only the user runs it, from the Taskboard app or Terminal');
 }
 // The user approves one release for one task on the dashboard. The guard consumes that permit before the command runs.
 const release = /\bpnpm\s+(run\s+)?release\b|scripts\/release\.mjs/.test(cmd);

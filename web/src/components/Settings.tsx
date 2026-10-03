@@ -19,6 +19,7 @@ import type { KeyAction } from '../keys';
 import { ACTIONS, CTX_NAME, comboOf, fmtCombo, isCustom, keysOf, resetKeys, setKeys, setRecording, useKeymap } from '../keys';
 import { filterSettings, matcher, settingText } from '../settingsIndex';
 import { SettingGroup, SettingItem, SettingSection, SettingsFilterProvider, SettingsNav, hashSection, sectionAnchor } from './SettingsLayout';
+import { Processes } from './Processes';
 
 // One checkbox for each risk kind of a card option (server/machine.ts confirmRisk).
 const CONFIRM_RISK_ROWS: [keyof ConfirmRisk, string][] = [
@@ -161,6 +162,7 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
 
             <SettingSection id="server">
               <SettingGroup section="server" id="restart"><RestartBox /><ServerStarts /></SettingGroup>
+              <SettingGroup section="server" id="processes" title="Processes"><Processes /></SettingGroup>
             </SettingSection>
 
             <SettingSection id="accounts">
@@ -338,6 +340,7 @@ function ServerStarts() {
       <div><b>Server starts</b></div>
       <div className="sub">The server runs as the login service <code>com.taskboard.server</code> (launchd), not inside the Taskboard app. Quitting the app does not stop the server or the agents. launchd starts the server again about 10 s after it ends. The log is <code>~/.taskboard/server.log</code>.</div>
       {!h ? <div className="sub">No start data. An older server does not record it.</div> : <>
+        {h.loginService && <p>Starts at login: {h.loginService.startsAtLogin ? 'yes' : 'no'}. Loaded: {h.loginService.loaded ? 'yes' : 'no'}{h.loginService.loaded && !h.loginService.runsThisServer ? ' (it does not run this server process)' : ''}. Last start: {when(h.startedAt)}.</p>}
         <p>Process {h.pid}, release {h.release}. Started {when(h.startedAt)}, up {up(h.uptimeSec)}. The previous server ended: {reasonText(h.previous?.kind)}{h.previous?.detail ? ` (${h.previous.detail})` : ''}.</p>
         <p className="sub">In the last {Object.values(h.counts).reduce((a, b) => a + b, 0)} ends: {h.planned} planned (release, rollback or restart), {h.counts.crash} crash{h.counts.crash === 1 ? '' : 'es'}, {h.counts.signal} other stop signal{h.counts.signal === 1 ? '' : 's'}, {h.counts.unknown} without a log entry. Errors this server survived: {h.recovered.count}{h.recovered.last ? ` (last ${when(h.recovered.last.at)}: ${h.recovered.last.line})` : ''}.</p>
         <table className="starts"><thead><tr><th>Started</th><th>Process</th><th>Release</th><th>Ended</th><th>Reason</th></tr></thead><tbody>
