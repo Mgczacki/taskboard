@@ -11,6 +11,7 @@ import { api, fmtWait } from '../api';
 import type { DocumentLink } from '../documentLinks';
 import { decorateDocument } from '../documentContent';
 import { inBrowser } from '../keys';
+import { clampFloat, keepOnScreen, startFloatDrag } from '../floatWindow';
 
 export interface DocInfo { name: string; path: string; kind: 'md' | 'html' | 'other'; size: number; mtime: string; from?: { task: string; num: number; title: string; at: string }; sentTo?: { task: string; num: number; at: string }[]; pending?: boolean }
 // files of tasks on another machine are fetched through this server (?machine=)
@@ -81,26 +82,22 @@ let z = 200, n = 0;
 function floating(title: string, sub: string, path: string, body: (el: HTMLElement) => void) {
   const host = document.createElement('div'); host.className = 'floatwin'; host.style.zIndex = String(++z);
   const k = n++ % 6;
-  Object.assign(host.style, { left: Math.max(20, innerWidth - 960 - k * 28) + 'px', top: 70 + k * 28 + 'px', width: '900px', height: Math.min(720, innerHeight - 120) + 'px' });
+  const at = clampFloat(Math.max(20, innerWidth - 960 - k * 28), 70 + k * 28, 900, 40, innerWidth, innerHeight);
+  Object.assign(host.style, { left: at.left + 'px', top: at.top + 'px', width: '900px', height: Math.min(720, innerHeight - 120) + 'px' });
   document.body.appendChild(host);
   const root = createRoot(host);
-  const close = () => { root.unmount(); host.remove(); };
+  const fit = () => keepOnScreen(host);
+  addEventListener('resize', fit);
+  const close = () => { removeEventListener('resize', fit); root.unmount(); host.remove(); };
   root.render(<FloatWin title={title} sub={sub} path={path} close={close} host={host} body={body} />);
 }
 function FloatWin({ title, sub, path, close, host, body }: { title: string; sub: string; path: string; close: () => void; host: HTMLElement; body: (el: HTMLElement) => void }) {
   const inner = useRef<HTMLDivElement>(null);
   useEffect(() => { if (inner.current) body(inner.current); }, []);
-  const drag = (e: React.PointerEvent) => {
-    if ((e.target as HTMLElement).closest('button')) return;
-    const sx = e.clientX, sy = e.clientY, l = host.offsetLeft, t = host.offsetTop; host.classList.add('moving');
-    const mv = (ev: PointerEvent) => { host.style.left = l + ev.clientX - sx + 'px'; host.style.top = Math.max(0, t + ev.clientY - sy) + 'px'; };
-    const up = () => { removeEventListener('pointermove', mv); removeEventListener('pointerup', up); host.classList.remove('moving'); };
-    addEventListener('pointermove', mv); addEventListener('pointerup', up);
-  };
   useEffect(() => { const k = (e: KeyboardEvent) => { if (e.key === 'Escape' && host.style.zIndex === String(z) && !inBrowser(e)) close(); }; addEventListener('keydown', k); return () => removeEventListener('keydown', k); }, []);
   return (
     <>
-      <div className="fw-h" onPointerDown={drag} onDoubleClick={() => host.classList.toggle('big')} onMouseDown={() => { host.style.zIndex = String(++z); }}>
+      <div className="fw-h" onPointerDown={e => startFloatDrag(e, host)} onDoubleClick={() => host.classList.toggle('big')} onMouseDown={() => { host.style.zIndex = String(++z); }}>
         <div className="fw-t"><b>{title}</b><span>{sub}</span></div>
         <button className="btn" onClick={() => openInBrowser(path)} title="Open at full size in its own browser tab">Open in new tab ↗</button>
         <button className="btn icon" onClick={close} title="Close (Esc)">✕</button>

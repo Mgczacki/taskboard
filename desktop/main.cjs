@@ -133,15 +133,35 @@ function createWindow(saved) {
   loadInto(win, saved?.url || `${SERVER}/`);
 }
 
+// The pop-out window of a task browser (/?browser=<id>, TaskBrowser.tsx) opens with the size and position of the last
+// one (settings.browserBounds), when that place is still on a screen. Its header is the drag area (app.css).
+const isBrowserWindow = url => { try { return new URL(url).searchParams.has('browser'); } catch { return false; } };
+const onScreen = b => !!b && [b.x, b.y, b.width, b.height].every(Number.isFinite) && screen.getAllDisplays().some(d => {
+  const a = d.workArea; // at least 80 px of the top edge inside the work area of a display
+  return b.x + b.width - 80 > a.x && b.x + 80 < a.x + a.width && b.y >= a.y && b.y + 40 < a.y + a.height;
+});
+function browserBounds() {
+  const b = settings.browserBounds;
+  if (!onScreen(b)) return null;
+  // another browser window at the same place: the new one goes 28 px lower and to the right
+  const taken = BrowserWindow.getAllWindows().some(w => !w.isDestroyed() && isBrowserWindow(targets.get(w) || '') && w.getBounds().x === b.x && w.getBounds().y === b.y);
+  return taken ? { ...b, x: b.x + 28, y: b.y + 28 } : { ...b };
+}
+
 // Another window: the whole dashboard, or one canvas view on its own (?solo=1, like the page's pop-out windows).
 // Extra windows close for real.
 function openWindow(url, size, saved) {
   const from = BrowserWindow.getFocusedWindow() || win;
   const at = from ? from.getBounds() : { x: 80, y: 80, width: 1500, height: 950 };
-  const b = saved?.bounds || { x: at.x + 28, y: at.y + 28, width: size?.width || at.width, height: size?.height || at.height };
+  const browser = isBrowserWindow(url);
+  const b = saved?.bounds || (browser && browserBounds()) || { x: at.x + 28, y: at.y + 28, width: size?.width || at.width, height: size?.height || at.height };
   const w = new BrowserWindow({ ...b, minWidth: 600, minHeight: 400, title: 'Taskboard', show: !saved, ...chrome });
   w.setWindowButtonVisibility(false);
   if (saved) w.once('ready-to-show', () => { if (saved.visible !== false) { w.show(); place(w, saved); } });
+  if (browser) {
+    const keep = () => { if (!w.isMaximized() && !w.isFullScreen() && !w.isMinimized()) { settings.browserBounds = w.getBounds(); saveSession(); } };
+    w.on('resize', keep); w.on('move', keep);
+  }
   track(w);
   loadInto(w, url);
   return w;

@@ -31,6 +31,8 @@ import { countMessage } from '../perfStats';
 import { hit, keyLabel, keysText, useKeymap } from '../keys';
 import { wheelBatch } from '../browserWheel';
 import { SigninDialog, SigninNote, useSharing, type SigninMode } from './BrowserSignins';
+import { isApp, useAppWindow } from '../appWindow';
+import { clampFloat, keepOnScreen, startFloatDrag } from '../floatWindow';
 
 // ---------- which browsers are popped out ----------
 // Pop out opens the view in its own window (/?browser=<id>, BrowserWindowPage below; an app window in the desktop app).
@@ -45,7 +47,9 @@ type WinMsg = { type: 'open' | 'closed' | 'close'; id: string } | { type: 'who' 
 const channel = typeof BroadcastChannel === 'function' ? new BroadcastChannel('tb-browser-windows') : null;
 const post = (m: WinMsg) => channel?.postMessage(m);
 const BROWSER_PAGE = new URLSearchParams(location.search).get('browser');
-const askClose = (id: string) => () => post({ type: 'close', id });
+// Put it back here: ask the window to close, and show the view here at once. A window that closes itself with
+// window.close() in the desktop app sends no 'closed' (its pagehide message does not arrive), so this page does not wait.
+const askClose = (id: string) => () => { post({ type: 'close', id }); if (popped.delete(id)) notify(); };
 channel?.addEventListener('message', (e: MessageEvent<WinMsg>) => {
   const m = e.data;
   if (m.type === 'open' && !popped.has(m.id)) { popped.set(m.id, askClose(m.id)); notify(); }
@@ -55,7 +59,6 @@ channel?.addEventListener('message', (e: MessageEvent<WinMsg>) => {
 });
 if (!BROWSER_PAGE) post({ type: 'who' });
 
-const isApp = () => !!(window as unknown as { taskboardApp?: { isApp: boolean } }).taskboardApp?.isApp;
 export function popOutBrowser(id: string, title: string, sub = '', autostart = false) {
   if (popped.has(id)) return;
   const q = new URLSearchParams({ browser: id, title, ...(sub ? { sub } : {}), ...(autostart ? { start: '1' } : {}) });
@@ -66,9 +69,12 @@ export function popOutBrowser(id: string, title: string, sub = '', autostart = f
 }
 
 // The page of a browser window: only the view, with the task as the window title.
+// In the Mac app the window has no title bar: the header .bw-window-h is the drag area (app.css), with room on the
+// left for the window buttons. A double click on it zooms the window, as on a title bar.
 export function BrowserWindowPage() {
   const q = new URLSearchParams(location.search);
   const id = q.get('browser') || '', title = q.get('title') || 'Task browser', sub = q.get('sub') || '';
+  useAppWindow();
   useEffect(() => {
     document.title = title;
     post({ type: 'open', id });
@@ -87,26 +93,22 @@ let z = 300, n = 0;
 function floatInPage(id: string, title: string, sub: string, autostart: boolean) {
   const host = document.createElement('div'); host.className = 'floatwin bw-float'; host.style.zIndex = String(++z);
   const k = n++ % 6;
-  Object.assign(host.style, { left: Math.max(20, innerWidth - 1040 - k * 28) + 'px', top: 70 + k * 28 + 'px', width: '980px', height: Math.min(720, innerHeight - 120) + 'px' });
+  const at = clampFloat(Math.max(20, innerWidth - 1040 - k * 28), 70 + k * 28, 980, 40, innerWidth, innerHeight);
+  Object.assign(host.style, { left: at.left + 'px', top: at.top + 'px', width: '980px', height: Math.min(720, innerHeight - 120) + 'px' });
   document.body.appendChild(host);
   const root = createRoot(host);
-  const close = () => { root.unmount(); host.remove(); popped.delete(id); notify(); };
+  const fit = () => keepOnScreen(host);
+  addEventListener('resize', fit);
+  const close = () => { removeEventListener('resize', fit); root.unmount(); host.remove(); popped.delete(id); notify(); };
   popped.set(id, close); notify();
   root.render(<FloatBrowser id={id} title={title} sub={sub} close={close} host={host} autostart={autostart} />);
 }
 function FloatBrowser({ id, title, sub, close, host, autostart }: { id: string; title: string; sub: string; close: () => void; host: HTMLElement; autostart: boolean }) {
   const [big, setBig] = useState(false);
   const toggle = () => { host.classList.toggle('big'); setBig(host.classList.contains('big')); };
-  const drag = (e: React.PointerEvent) => {
-    if ((e.target as HTMLElement).closest('button')) return;
-    const sx = e.clientX, sy = e.clientY, l = host.offsetLeft, t = host.offsetTop; host.classList.add('moving');
-    const mv = (ev: PointerEvent) => { host.style.left = l + ev.clientX - sx + 'px'; host.style.top = Math.max(0, t + ev.clientY - sy) + 'px'; };
-    const up = () => { removeEventListener('pointermove', mv); removeEventListener('pointerup', up); host.classList.remove('moving'); };
-    addEventListener('pointermove', mv); addEventListener('pointerup', up);
-  };
   return (
     <>
-      <div className="fw-h" onPointerDown={drag} onDoubleClick={toggle} onMouseDown={() => { host.style.zIndex = String(++z); }}>
+      <div className="fw-h" onPointerDown={e => startFloatDrag(e, host)} onDoubleClick={toggle} onMouseDown={() => { host.style.zIndex = String(++z); }}>
         <div className="fw-t"><b>{title}</b><span>{sub}</span></div>
         <button className="bw-ib" onClick={toggle} aria-label={big ? 'Smaller window' : 'Larger window'} title="Make the window larger or smaller (double-click the title bar)">{big ? <Icon d={I.shrink} /> : <Icon d={I.grow} />}</button>
         <button className="bw-ib" onClick={close} aria-label="Put the browser back" title="Put the browser back in the task panel"><Icon d={I.close} /></button>
