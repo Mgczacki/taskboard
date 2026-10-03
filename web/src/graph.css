@@ -1,6 +1,8 @@
 /* Graph view: lanes of task cards and document nodes, joined by authorship and handoff edges. */
 .graph { position: absolute; inset: 0; display: flex; flex-direction: column; }
-.gtool { flex: none; height: 42px; display: flex; align-items: center; gap: 10px; padding: 0 12px; border-bottom: 1px solid var(--line); background: var(--bg); white-space: nowrap; overflow: hidden; }
+/* no fixed height and no overflow: hidden: at a narrow width the zoom buttons were cut off at the right edge (task 208).
+   It wraps to a second row, which pushes the graph down. */
+.gtool { flex: none; min-height: 42px; display: flex; flex-wrap: wrap; row-gap: 6px; align-items: center; gap: 10px; padding: 5px 12px; border-bottom: 1px solid var(--line); background: var(--bg); white-space: nowrap; }
 .gtool .lbl { font-size: 12px; color: var(--dim); }
 .gtool .sp { flex: 1; }
 .gtool .opt { font-size: 12.5px; }

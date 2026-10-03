@@ -33,6 +33,11 @@
 .dr-bar { white-space: nowrap; }
 .dr-bar-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .tr-title { flex-wrap: nowrap; white-space: nowrap; }
+/* triage: the task pane fits its column and its action row wraps, so no button goes past the right edge (task 208) */
+.tr-main { grid-template-columns: 300px minmax(0, 1fr); }
+@media (max-width: 800px) { .tr-main { grid-template-columns: 200px minmax(0, 1fr); } }
+.tr-item { min-width: 0; }
+.tr-actions { flex: none; flex-wrap: wrap; row-gap: 6px; }
 .tr-title h3 { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .tr-term { display: flex; }
 .tr-term .xterm-box { flex: 1; }
@@ -72,7 +77,26 @@
 
 /* canvas */
 .canvas { position: absolute; inset: 0; display: flex; flex-direction: column; }
-.canvas .ctool { display: flex; flex-wrap: wrap; row-gap: 6px; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+/* The toolbar is a flex: none row with its own height, above the window grid (.stage-grid, flex: 1, min-height: 0).
+   Never give it a fixed height: a row that does not fit then lies under the window grid, which comes later in the page
+   and is drawn over it (task 208, the Swiss theme had height: 46px). Items that do not fit move into the More menu
+   (toolbarFit.ts), so it stays one row. It wraps only when the items that never move do not fit on one row. */
+.canvas .ctool { flex: none; min-height: 40px; display: flex; flex-wrap: wrap; row-gap: 6px; align-items: center; gap: 8px; padding: 6px 10px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+.canvas .ctool > .ct-i { flex: none; display: flex; align-items: center; gap: 8px; }
+.canvas .ctool > .ct-more { flex: none; }
+.canvas .ctool.tight > .ct-i .pager .btn { padding-left: 8px; padding-right: 8px; }
+.canvas .ctool.tight > .ct-i .seg button { padding-left: 8px; padding-right: 8px; font-size: 14px; line-height: 1; }
+.pop-menu { position: fixed; z-index: 60; min-width: 220px; max-width: min(420px, calc(100vw - 16px)); overflow: auto; padding: 4px; background: var(--panel); border: 1px solid var(--line2); border-radius: 8px; box-shadow: 0 16px 40px rgba(0,0,0,.45); white-space: nowrap; }
+.pop-menu .more-row { display: flex; align-items: center; gap: 8px; padding: 4px; }
+.pop-menu .more-row > .btn, .pop-menu .more-row .pager { flex: 1; }
+.pop-menu .more-row > .btn { justify-content: flex-start; }
+.pop-menu .more-row .lbl { font-size: 11.5px; color: var(--dim); min-width: 64px; }
+.pop-menu .mh { font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--dim); padding: 6px 8px 2px; }
+.pop-menu .mi { display: flex; width: 100%; gap: 8px; align-items: center; padding: 6px 8px; border: 0; border-radius: 5px; background: none; color: var(--text); cursor: pointer; font: inherit; font-size: 12.5px; text-align: left; }
+.pop-menu .mi:hover, .pop-menu .mi:focus-visible { background: var(--hover); }
+.pop-menu .mi.on { color: var(--accent); }
+.pop-menu .mi .mi-ico { min-width: 18px; font-size: 11px; flex: none; text-align: center; color: var(--dim); }
+.pop-menu.add-pop { min-width: 320px; max-height: 60vh; }
 /* The window count and "typing into #N". A mousedown on a window adds the "typing into" text. With the width of its
    content, the toolbar wrapped to a second line between mousedown and mouseup, the windows moved down, and the click
    was lost. Its width starts at 0 here and it fills the free space, so the text can not wrap the toolbar. */
@@ -80,7 +104,7 @@
 .canvas .ctool .lbl { font-size: 11.5px; color: var(--dim); }
 .canvas .ctool .pager { display: flex; align-items: center; gap: 6px; }
 .canvas .ctool .pager .btn { display: inline-flex; align-items: center; gap: 5px; }
-.canvas .ctool .pager .pw, .canvas .ctool .pager .pneed { font: 11px var(--mono); color: var(--st-needs); }
+.canvas .ctool .pager .pw, .canvas .ctool .pneed { font: 11px var(--mono); color: var(--st-needs); }
 .canvas .ctool .keyhint { font-family: var(--mono); font-size: 10.5px; }
 .canvas .menu { position: absolute; top: 34px; left: 0; background: var(--panel); border: 1px solid var(--line2); border-radius: 8px; box-shadow: 0 16px 40px rgba(0,0,0,.5); padding: 4px; z-index: 20; min-width: 320px; max-height: 60vh; overflow: auto; }
 .canvas .menu .mi { display: flex; gap: 8px; align-items: center; padding: 6px 8px; border-radius: 5px; cursor: pointer; font-size: 12.5px; }
@@ -99,6 +123,16 @@
 .wh .st { font-size: 11px; white-space: nowrap; }
 .wh .b { background: none; border: 0; color: var(--dim); cursor: pointer; padding: 3px 5px; border-radius: 4px; font-size: 12px; }
 .wh .b:hover { background: var(--hover); color: var(--text); }
+.wh .b.wmore { flex: none; margin-left: auto; font-size: 14px; line-height: 1; padding: 2px 7px; }
+/* a narrow header: the title and the status text give their width with an ellipsis, so ⋯ stays in the window */
+.wh.narrow { overflow: hidden; }
+.wh.narrow .ti { min-width: 0; }
+.wh.narrow .st, .wh.narrow .pc-mark { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.wh.narrow > :is(.grip, .dot, .n) { flex: none; }
+.wh.narrow > .ix { display: none; }
+.pop-menu.wmenu { min-width: 240px; }
+.pop-menu .wmenu-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--line); margin-bottom: 4px; }
+.pop-menu .wmenu-chips:empty { display: none; }
 .win .wb { flex: 1; min-height: 0; display: flex; }
 /* a pending or failed restart of the session, below the window header (Canvas.tsx) */
 .win-note { flex: none; display: flex; align-items: center; gap: 8px; padding: 3px 8px; font-size: 11px; color: var(--text); background: var(--panel2); border-bottom: 1px solid var(--line); border-left: 3px solid var(--st-needs); }
@@ -155,6 +189,14 @@
 
 /* style switcher: it uses the colour tokens of the theme it shows */
 .tbs{position:relative;font:12.5px/1.2 var(--sans)}
+/* The page header keeps its controls in the window (task 208): the waiting pill gives its width first, and below
+   1000 px it shows only its count, and the style button only its colours. Before, the style button went past the right
+   edge at 768 px and below. */
+.top > * { flex-shrink: 0; }
+.top > .attn-wrap { flex-shrink: 1; min-width: 0; overflow: hidden; }
+.top > .attn-wrap .attn { min-width: 0; overflow: hidden; }
+@media (max-width: 1000px) { .top .attn .sep, .top .attn .long, .top .attn kbd, .top .tbs-lbl, .top .tbs-btn b { display: none; } }
+@media (max-width: 700px) { .top .opt-text { display: none; } }
 .tbs-float{position:fixed;top:12px;right:14px;z-index:95}
 .tbs-btn{all:unset;box-sizing:border-box;display:inline-flex;align-items:center;gap:8px;height:32px;padding:0 10px 0 8px;border-radius:8px;cursor:pointer;background:var(--panel);color:var(--text);border:1px solid color-mix(in srgb,var(--accent) 60%,var(--line2));box-shadow:0 0 0 3px var(--accent-bg);white-space:nowrap}
 .tbs-btn:hover{background:var(--hover)}
@@ -195,6 +237,12 @@
 .rail-item.on { background: var(--panel2); color: var(--text); }
 .rail-item .gopen { display: none; margin-left: 4px; background: none; border: 1px solid var(--line2); color: var(--muted); border-radius: 4px; font-size: 11px; padding: 0 5px; cursor: pointer; }
 .rail-item:hover .gopen { display: inline-block; }
+.canvas .gtabs-wrap { flex: none; position: relative; }
+/* the arrows at the ends of the tab row: over the row, with a fade to the tab background */
+.gscroll { position: absolute; top: 0; bottom: 1px; z-index: 2; width: 34px; padding: 0 8px; border: 0; color: var(--muted); font-size: 17px; line-height: 1; cursor: pointer; }
+.gscroll.l { left: 0; text-align: left; background: linear-gradient(to right, var(--bg2) 50%, transparent); }
+.gscroll.r { right: 0; text-align: right; background: linear-gradient(to left, var(--bg2) 50%, transparent); }
+.gscroll:hover, .gscroll:focus-visible { color: var(--text); }
 .canvas .gtabs { flex: none; height: 40px; display: flex; align-items: flex-end; gap: 2px; padding: 0 10px; background: var(--bg2); border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
 .gtab { position: relative; flex: none; display: flex; align-items: center; gap: 7px; height: 32px; padding: 0 10px 0 12px; border: 1px solid transparent; border-bottom: 0; border-radius: 8px 8px 0 0; color: var(--muted); cursor: pointer; font-size: 12.5px; user-select: none; }
 .gtab:hover { background: var(--hover); color: var(--text); }
@@ -236,8 +284,9 @@
 .drag-ghost { position: fixed; z-index: 999; pointer-events: none; background: var(--panel2); border: 1px solid var(--accent); border-radius: 6px; padding: 4px 8px; font-size: 12px; color: var(--text); }
 .drag-ghost.refused { border-color: var(--st-stopped); color: var(--st-stopped); }
 /* focus mode */
-.canvas.focus-mode .gtabs, .canvas.focus-mode .ctool { display: none; }
-.canvas.focus-mode.reveal .gtabs, .canvas.focus-mode.reveal .ctool { display: flex; position: relative; z-index: 5; box-shadow: 0 10px 30px rgba(0,0,0,.5); }
+.canvas.focus-mode .gtabs-wrap, .canvas.focus-mode .ctool { display: none; }
+.canvas.focus-mode.reveal .gtabs-wrap { display: block; z-index: 5; }
+.canvas.focus-mode.reveal .ctool { display: flex; position: relative; z-index: 5; box-shadow: 0 10px 30px rgba(0,0,0,.5); }
 .fm-bar { position: fixed; bottom: 12px; right: 14px; z-index: 950; display: flex; align-items: center; gap: 8px; padding: 4px 4px 4px 12px; background: var(--panel2); border: 1px solid var(--line2); border-radius: 18px; box-shadow: 0 8px 24px rgba(0,0,0,.45); font-size: 12px; color: var(--muted); opacity: .5; transition: opacity .15s; }
 .fm-bar:hover { opacity: 1; }
 /* a key hint on a primary button takes the button's text colour */
@@ -312,6 +361,10 @@
 .acc-page .tb td { vertical-align: middle; }
 .acc-page .tb td .sub, .acc-page .sub { font-size: 11.5px; color: var(--dim); }
 .acc-page .tb td.acts { display: flex; gap: 6px; flex-wrap: wrap; }
+/* The buttons column gets the width that the other columns leave: 14 px in a table of 600 px, which cut its buttons
+   off (task 208). Below 900 px the table keeps 900 px and its box scrolls sideways. */
+.acc-page .tb { overflow-x: auto; }
+.acc-page .tb table { min-width: 900px; }
 .acc-page .tb tr.r { cursor: default; }
 .acct-sel { width: 100%; background: var(--bg2); border: 1px solid var(--line2); border-radius: 7px; padding: 7px 9px; color: var(--text); font: inherit; }
 
@@ -681,6 +734,9 @@ table.keyset .keycell { text-align: right; white-space: normal; }
 .rtb-ico.p { border-radius: 1px; background: var(--st-unread); }
 .rtb-total { margin-left: 6px; font: 10.5px var(--mono); color: var(--accent); }
 .tabs .tabs-sp { flex: 1; }
+/* the tab row of the task panel scrolls sideways when the panel is narrow, so the last tab is not cut off (task 208) */
+.drawer .tabs { overflow-x: auto; scrollbar-width: none; }
+.drawer .tabs > button { flex: none; white-space: nowrap; }
 .tabs .rtb { align-self: center; margin-right: 4px; }
 .rtb-pop { position: fixed; z-index: 300; max-height: 70vh; overflow: auto; display: flex; flex-direction: column; gap: 8px; padding: 10px 12px; background: var(--panel); color: var(--text); border: 1px solid var(--line2); border-radius: 10px; box-shadow: 0 16px 40px rgb(0 0 0 / .35); font-size: 12.5px; }
 .rtb-pop-h { display: flex; align-items: center; gap: 8px; }

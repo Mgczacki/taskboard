@@ -183,7 +183,7 @@ html[data-theme="swiss"] {
   & .node.task.idle > circle, & .node.task.parked > circle, & .lg svg circle[fill="#1d2127"] { fill: #fff; }
   & .node.task.archived > circle { fill: #ddd; }
   /* canvas toolbar, menus */
-  & .ctool { background: #fff; border-bottom: 2px solid #000; height: 46px; }
+  & .ctool { background: #fff; border-bottom: 2px solid #000; min-height: 46px; }
   & .ctool select { border: 2px solid #000; background: #fff; color: #000; font-weight: 600; }
   & .wh .ix { border: 1.5px solid #000; color: #000; font-weight: 600; }
   & .menu, & .keys .kbox { border: 2px solid #000; background: #fff; }

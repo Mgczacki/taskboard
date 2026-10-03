@@ -293,7 +293,7 @@ export function App() {
             ? <button className="attn" onClick={() => go('waiting')} title={`The Waiting page: everything waiting on you. Triage shortcut: ${keysText('triage')}`}>{queue.length} waiting on you<span className="sep">·</span><span className="long">longest {fmtWait(queue[0].waitMin)}</span>{keyLabel('triage') && <kbd>{keyLabel('triage')}</kbd>}</button>
             : <span className="attn quiet">Nothing waiting</span>}</div>
           <span className="spacer" />
-          {page === 'list' && <label className="opt"><input type="checkbox" checked={showArchived} onChange={e => setShowArchived(e.target.checked)} /> Show archived</label>}
+          {page === 'list' && <label className="opt" title="Show archived tasks"><input type="checkbox" checked={showArchived} onChange={e => setShowArchived(e.target.checked)} /> <span className="opt-text">Show archived</span></label>}
           <StyleSwitcher />
         </header>}
         <div className="view">
