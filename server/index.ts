@@ -53,7 +53,8 @@ import * as scopeRestart from './scope-restart.ts';
 import * as pending from './pending.ts';
 import * as dismiss from './dismiss.ts';
 import * as scopes from './scopes.ts';
-import { controllerMailToken } from './a2anotes/auth.ts';
+import * as controllerApprove from './controller-approve.ts';
+import { controllerMailToken, isControllerToken } from './a2anotes/auth.ts';
 import * as tmux from './tmux.ts';
 import * as transfer from './transfer.ts';
 const MACHINE_ID = machineId();
@@ -310,6 +311,111 @@ app.post('/api/approvals/:id/return', async (req, res) => {
   if (!req.get('origin')) return res.status(403).json({ error: 'approvals are decided on the dashboard' });
   try { const a = await approvals.giveBack(req.params.id, String(req.body.comment || '')); a ? res.json(a) : res.status(404).end(); } catch (e) { fail(res, e); }
 });
+// ---------- the controller approves a card on the user's request (server/controller-approve.ts) ----------
+// Only the controller: tb sends x-tb-actor "controller" and the token that only the controller session has
+// (TB_MAIL_CONTROLLER_TOKEN). A task that sets the header has no token and is refused.
+const isController = (req: express.Request) => req.get('x-tb-actor') === 'controller' && isControllerToken(req.get('x-tb-mail-controller'));
+function controllerTranscript() {
+  const c = store.get('controller');
+  return { path: c?.transcript || (c?.sessionId ? importer.transcriptFor(c.agent, c.sessionId, (accounts.get(c.account) || accounts.defaultFor(c.agent)).dir) : undefined), agent: c?.agent || '', sessionId: c?.sessionId, account: c?.account };
+}
+// every open card that the controller may approve, with its task (a card of the controller itself has none)
+function openCards(): controllerApprove.OpenCard[] {
+  return approvals.open().flatMap(a => {
+    const k = controllerApprove.kindOf(a); if (!('kind' in k)) return [];
+    const t = store.get(a.actor); const own = t && t.role !== 'controller';
+    return [{ a, kind: k.kind, ...(own ? { taskId: t.id, taskNum: t.num } : {}) }];
+  });
+}
+// When a card stops being valid: a push card 10 minutes after the request, a permit at its own time.
+const expiryOf = (a: approvals.Approval) => controllerApprove.expiryOf(a, permits.get((a.payload as { permitId?: string })?.permitId || '')?.expiresAt);
+// Close an expired push or permit card the same way as the timer does (the 5 second loop at the top of this file).
+function closeExpired(a: approvals.Approval, why: string) {
+  if (a.action === 'git-push') {
+    const record = push.allPushes().find(p => p.approvalId === a.id);
+    if (record) { push.finishPush(record, 'expired', 'The push request expired.'); const t = store.get(record.taskId); if (t) pushNotice(t, record); }
+  }
+  if (a.action === 'permit') { const p = permits.get((a.payload as { permitId?: string })?.permitId || ''); if (p) permits.expire(p); }
+  approvals.close(a.id, 'expired', why);
+}
+// a release or restart that runs now, in words, or ''
+function releaseInFlight(): string {
+  const run = approvals.running().find(a => a.action === 'release' || a.action === 'restart');
+  if (run) return `A ${run.action} card runs now (${run.id}).`;
+  if (Date.now() - restartStarted < 60_000) return 'A restart of Taskboard started less than a minute ago.';
+  const dir = join(TB_DIR, 'release-permits');
+  for (const f of existsSync(dir) ? readdirSync(dir) : []) {
+    try {
+      const p = JSON.parse(readFileSync(join(dir, f), 'utf8')) as { taskId: string; expiresAt: number };
+      if (p.expiresAt > Date.now()) return `Task #${store.get(p.taskId)?.num ?? p.taskId} may run its approved release until ${new Date(p.expiresAt).toTimeString().slice(0, 8)}.`;
+    } catch { /* a broken file is no permit */ }
+  }
+  return '';
+}
+const cardView = (o: { a: approvals.Approval; kind?: controllerApprove.ControllerKind; userOnly?: string }) => {
+  const t = store.get(o.a.actor); const h = controllerApprove.headOf(o.a);
+  const allowed = o.kind ? machine.get().controllerApprovals[o.kind] : false;
+  return { id: o.a.id, kind: o.kind || null, kindName: o.kind ? controllerApprove.KIND_NAME[o.kind] : null, label: o.kind === 'forcePush' ? 'FORCE PUSH' : undefined,
+    task: t && t.role !== 'controller' ? { id: t.id, num: t.num, title: t.title } : null, requestedBy: o.a.actor === 'controller' ? 'controller' : t ? `#${t.num}` : o.a.actor,
+    // a message card shows only its header lines: the controller reads a message body with tb mail get, where A2A Notes
+    // decides what the controller may see (a2anotes/cards.ts list)
+    summary: o.a.summary, detail: o.kind === 'mail' ? o.a.detail.split('\n\n')[0] : o.a.detail, created: o.a.created, version: controllerApprove.versionOf(o.a), ...(h ? { head: h.head, range: h.range, branch: h.branch } : {}),
+    ...expiryOf(o.a), controllerMayApprove: !!o.kind && allowed,
+    ...(o.userOnly ? { userOnly: o.userOnly } : !allowed ? { userOnly: `Settings > Controller approvals does not let the controller approve ${controllerApprove.KIND_NAME[o.kind!]} cards.` } : {}) };
+};
+app.get('/api/controller/approvals', (req, res) => {
+  const actor = req.get('x-tb-actor');
+  if (actor && !isController(req)) return res.status(403).json({ error: 'Only the user and the controller list the approval cards.' });
+  res.json({ cards: approvals.open().map(a => { const k = controllerApprove.kindOf(a); return cardView({ a, ...('kind' in k ? { kind: k.kind } : { userOnly: k.userOnly }) }); }), settings: machine.get().controllerApprovals });
+});
+app.post('/api/approvals/:id/controller-approve', async (req, res) => {
+  if (!isController(req)) return res.status(403).json({ error: 'Only the controller approves a card for the user, with tb approve. A task can never approve a card.' });
+  const a = approvals.get(req.params.id);
+  if (!a) return res.status(404).json({ error: 'No card with this id. Run tb approvals list.' });
+  if (a.state === 'expired') return res.status(410).json({ error: `This card expired: ${a.result || 'it can no longer run'}. Nothing ran.` });
+  if (a.state !== 'pending') return res.status(409).json({ error: `This card is ${a.state} already${a.result ? `: ${a.result}` : '.'}` });
+  const k = controllerApprove.kindOf(a);
+  if (!('kind' in k)) return res.status(403).json({ error: k.userOnly });
+  const name = controllerApprove.KIND_NAME[k.kind];
+  if (!machine.get().controllerApprovals[k.kind]) return res.status(403).json({ error: `Settings > Controller approvals does not let the controller approve ${name} cards. The user can switch it on, or decide on the dashboard.` });
+  if (String(req.body.version || '') !== controllerApprove.versionOf(a))
+    return res.status(409).json({ error: 'The card is not the one that you listed: its version is different. Run tb approvals list again, and tell the user which card you mean.' });
+  const h = controllerApprove.headOf(a);
+  if (h && !controllerApprove.sameHead(String(req.body.head || ''), h.head))
+    return res.status(409).json({ error: `Pass the branch head of the card with --head. The card ${a.id} merges or pushes ${h.head} (range ${h.range}). The head that you gave is "${String(req.body.head || '')}".` });
+  const expired = expiryOf(a).expired;
+  if (expired) { closeExpired(a, expired); return res.status(410).json({ error: expired }); }
+  const open = openCards(); const card = open.find(o => o.a.id === a.id)!;
+  const words = String(req.body.userRequest || '').trim();
+  const t = controllerTranscript();
+  let named: controllerApprove.Naming;
+  try {
+    named = controllerApprove.checkUserRequest(card, open, { words, userWrote: w => permits.userWroteCount(t.path, t.agent, w), usedFor: controllerApprove.usedFor });
+    controllerApprove.extraRules(card, words, { inFlight: releaseInFlight(), protectedBranch: !!h && (k.kind === 'push' || k.kind === 'forcePush') && push.isProtectedBranch(h.branch, undefined, machine.get().pushes.protectedBranches) });
+  } catch (e) { return res.status(e instanceof controllerApprove.ApproveError ? e.status : 400).json({ error: e instanceof Error ? e.message : String(e) }); }
+  const why = await approvals.stale(a.id);
+  if (why) return res.status(409).json({ error: `${why} The card stays on the dashboard. Nothing ran.` });
+  const decider: approvals.Decider = { by: 'controller', userRequest: words };
+  const task = card.taskId ? store.get(card.taskId) : undefined;
+  let decided: approvals.Approval | undefined;
+  if (k.kind === 'permit') {
+    const p = permits.get((a.payload as { permitId?: string }).permitId || ''); const pt = p && store.get(p.taskId);
+    if (!p || !pt) return res.status(404).json({ error: 'The permit of this card is gone.' });
+    if (!approvals.startExternal(a.id, decider)) return res.status(409).json({ error: 'The card is no longer pending.' });
+    try {
+      const r = await permits.run(p, pt, 'controller', '', words);
+      approvals.finishExternal(a.id, r.state === 'succeeded' ? 'approved' : 'failed', `Controller decided permit ${p.id} on the user's request: ${r.state}${r.error ? `. ${r.error}` : ''}.`);
+    } catch (e) { approvals.finishExternal(a.id, 'failed', String(e)); }
+    decided = approvals.get(a.id);
+  } else decided = await approvals.decide(a.id, true, decider);
+  const x = decided!;
+  const said = `${x.state === 'approved' ? 'Approved' : `Approval ${x.state}`}: ${name} card ${a.id}${task ? ` of task #${task.num}` : ''}${h ? ` (${h.branch} at ${h.head.slice(0, 12)})` : ''}. Result: ${x.result || x.state}`;
+  controllerApprove.audit({ at: new Date().toISOString(), card: a.id, action: a.action, kind: k.kind, actor: a.actor, taskNum: task?.num, version: controllerApprove.versionOf(a), head: h?.head,
+    userRequest: words, named, controller: { agent: t.agent, sessionId: t.sessionId, account: t.account }, state: x.state, result: x.result || '' });
+  // the same notices as a click reach the task (the card's action), and its log names the controller and the user's words
+  if (task) try { store.appendLog(task.id, { did: `The controller approved the ${name} card ${a.id} on the user's request: "${words.slice(0, 300)}". Result: ${(x.result || x.state).slice(0, 300)}` }); } catch (e) { console.error('could not write the task log', e); }
+  res.status(x.state === 'approved' ? 200 : 409).json({ approval: x, said, ...(x.state === 'approved' ? {} : { error: said }) });
+});
 const scopeHintText = taskGit.scopeHint;
 function createPermit(task: store.Task, reason: string, steps: permits.StepInput[], refusalId?: string, statedRisk = '') {
     const actor = task.id;
@@ -419,13 +525,14 @@ app.post('/api/permits/:id/controller-approve', async (req, res) => {
   const riskClass = p.riskClass === 'low' && permits.classify(p.steps, task) === 'low' ? 'low' : 'high';
   if (riskClass === 'low' && !lowRule) return res.status(403).json({ error: 'Settings does not allow controller approval of low-risk commands.' });
   if (riskClass === 'high') {
+    if (!machine.get().controllerApprovals.permit) return res.status(403).json({ error: 'Settings > Controller approvals does not let the controller approve permits on the user\'s request.' });
     const controller = store.get('controller');
     const transcript = controller?.transcript || (controller?.sessionId ? importer.transcriptFor(controller.agent, controller.sessionId, (accounts.get(controller.account) || accounts.defaultFor(controller.agent)).dir) : undefined);
     if (!permits.explicitControllerRequest(transcript, controller?.agent || '', requestText, p))
       return res.status(403).json({ error: 'A high-risk command needs the user’s explicit words in the controller chat.' });
   }
   const card = p.approvalId ? approvals.get(p.approvalId) : undefined;
-  if (!card || !approvals.startExternal(card.id)) return res.status(409).json({ error: 'The approval card is no longer pending.' });
+  if (!card || !approvals.startExternal(card.id, { by: 'controller', ...(riskClass === 'high' ? { userRequest: requestText } : {}) })) return res.status(409).json({ error: 'The approval card is no longer pending.' });
   try {
     const result = await permits.run(p, task, 'controller', '', requestText);
     approvals.finishExternal(card.id, result.state === 'succeeded' ? 'approved' : 'failed', `Controller decided permit ${p.id}: ${result.state}.`);
@@ -527,7 +634,10 @@ async function createPushRequest(task: store.Task, reason: string, options: { br
         if (state.thenRelease) createReleaseApproval(task);
         return output;
       } catch (e) { push.finishPush(record, 'failed', String(e)); pushNotice(task, record); throw e; }
-    }, { onDeny: () => { push.finishPush(record, 'denied', 'Denied by the user.'); pushNotice(task, record); } });
+    }, { onDeny: () => { push.finishPush(record, 'denied', 'Denied by the user.'); pushNotice(task, record); }, check: async () => {
+      const head = (await execFileP('git', ['rev-parse', 'HEAD'], { cwd: state.branch === 'master' ? task.folder : task.cwd })).stdout.trim();
+      return head === state.newHead ? undefined : `The branch ${state.branch} moved to ${head} after the card was made. The card pushes ${state.newHead}. Ask the task to run tb git push-request again.`;
+    } });
     const record = push.recordPush(state, id, approval.id);
     pushNotice(task, record);
     return { push: record, approval };
@@ -584,7 +694,7 @@ app.post('/api/git/merge-request', async (req, res) => {
     const task = gitTask(actorTask, req.body.worktree);
     const expected = await taskGit.mergeState(task);
     const approval = approvals.request({ actor, action: 'git-merge', summary: `merge ${expected.branch} into local master${task.scopeKey ? ` of ${task.folder}` : ''}`,
-      detail: `Task: #${task.num} ${task.title}\nBranch head: ${expected.source}\nMaster head: ${expected.target}\nRepository: ${task.folder}${task.scopeKey ? `\nAttached worktree: ${task.scopeKey} (${task.cwd})` : ''}`, payload: expected },
+      detail: `Task: #${task.num} ${task.title}\nBranch head: ${expected.source}\nMaster head: ${expected.target}\nRange: ${expected.target}..${expected.source}\nRepository: ${task.folder}${task.scopeKey ? `\nAttached worktree: ${task.scopeKey} (${task.cwd})` : ''}`, payload: expected },
       async () => {
         try {
           const result = await taskGit.mergeTask(task, expected);
@@ -594,7 +704,12 @@ app.post('/api/git/merge-request', async (req, res) => {
           store.update(actor, { status: 'unread', ask: '', statusSource: e instanceof Error ? e.message : String(e) });
           throw e;
         }
-      });
+      }, { check: async () => {
+        // the controller approves only the card that it listed: a moved branch or master stops it before anything runs
+        const now = await taskGit.mergeState(task);
+        return JSON.stringify(now) === JSON.stringify(expected) ? undefined
+          : `The branch or master moved after the card was made. Branch head now ${now.source}, master head now ${now.target}. The card shows ${expected.source} and ${expected.target}. Ask the task to run tb git merge-request again.`;
+      } });
     store.update(actor, { status: 'needs-you', ask: `Approve: merge ${expected.branch} into local master`, statusSource: 'Waiting for your approval on the dashboard.' });
     res.status(202).json({ approval });
   } catch (e) { fail(res, e); }
@@ -702,12 +817,17 @@ app.post('/api/scope/:id/controller-approve', async (req, res) => {
   const card = approvals.get(req.params.id);
   if (!card || card.action !== 'scope') return res.status(404).json({ error: 'No scope request with this id.' });
   if (card.state !== 'pending') return res.status(409).json({ error: `The scope request is ${card.state}.` });
+  if (!machine.get().controllerApprovals.scope) return res.status(403).json({ error: 'Settings > Controller approvals does not let the controller approve scope requests. The user decides on the dashboard.' });
   const words = String(req.body.userRequest || '').trim();
-  const controller = store.get('controller');
-  const transcript = controller?.transcript || (controller?.sessionId ? importer.transcriptFor(controller.agent, controller.sessionId, (accounts.get(controller.account) || accounts.defaultFor(controller.agent)).dir) : undefined);
-  if (!/\bapprove\b/i.test(words) || !words.includes(card.id) || !permits.userWrote(transcript, controller?.agent || '', words))
-    return res.status(403).json({ error: `The controller approves a scope request only with the user's exact chat message, and that message must say approve and name ${card.id}. Ask the user, or let the user decide on the dashboard.` });
-  const decided = await approvals.decide(card.id, true);
+  const t = controllerTranscript();
+  const open = openCards();
+  let named: controllerApprove.Naming;
+  // the same check as tb approve (controller-approve.ts checkUserRequest)
+  try { named = controllerApprove.checkUserRequest(open.find(o => o.a.id === card.id)!, open, { words, userWrote: w => permits.userWroteCount(t.path, t.agent, w), usedFor: controllerApprove.usedFor }); }
+  catch (e) { return res.status(403).json({ error: `The controller approves a scope request only with the user's exact chat message, with an approval word, and the message must name ${card.id}. ${e instanceof Error ? e.message : ''} Ask the user, or let the user decide on the dashboard.` }); }
+  const decided = (await approvals.decide(card.id, true, { by: 'controller', userRequest: words }))!;
+  controllerApprove.audit({ at: new Date().toISOString(), card: card.id, action: card.action, kind: 'scope', actor: card.actor, taskNum: store.get(card.actor)?.num, version: controllerApprove.versionOf(card),
+    userRequest: words, named, controller: { agent: t.agent, sessionId: t.sessionId, account: t.account }, state: decided.state, result: decided.result || '' });
   res.json(decided);
 });
 // The dashboard removes one scope. A worktree with uncommitted changes stays; ignored files need confirm: true.
@@ -770,7 +890,7 @@ app.get('/api/server', (_req, res) => res.json(life.health()));
 app.patch('/api/info', async (req, res) => {
   if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Machine settings are changed on the dashboard.' });
   try {
-    const { name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, holdPermissionHook, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, confirmLowerControl, defaultMaxParallel, newTaskDefaultAgent, applyMaxParallelToAll, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp, claudeInChromeTasks, claudeInChromeController, confirmRisk, a2aSlackClientId, a2aSlackTeamId } = req.body;
+    const { name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, holdPermissionHook, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, confirmLowerControl, defaultMaxParallel, newTaskDefaultAgent, applyMaxParallelToAll, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp, claudeInChromeTasks, claudeInChromeController, confirmRisk, a2aSlackClientId, a2aSlackTeamId, controllerApprovals } = req.body;
     // Letting the controller approve permits gives the user less control. The page asks first and then sends confirmLowerControl.
     if (confirmLowerControl !== true && controllerCanApprovePermits === true && !machine.get().permissions.controllerCanApprovePermits)
       return res.status(400).json({ error: 'Confirm on the Settings page before you give the controller more control.' });
@@ -781,7 +901,7 @@ app.patch('/api/info', async (req, res) => {
       return res.status(400).json({ error: 'Pick a valid model for questions.' });
     if (reviewAccount && accounts.get(reviewAccount)?.agent !== 'claude') return res.status(400).json({ error: 'Pick a Claude Code account for auto review.' });
     if (defaultMaxParallel !== undefined) machine.checkMaxParallel(defaultMaxParallel); // refuse before anything is saved
-    machine.update({ name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, holdPermissionHook, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, defaultMaxParallel, newTaskDefaultAgent, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp, claudeInChromeTasks, claudeInChromeController, confirmRisk, a2aSlackClientId, a2aSlackTeamId });
+    machine.update({ name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, holdPermissionHook, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, defaultMaxParallel, newTaskDefaultAgent, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp, claudeInChromeTasks, claudeInChromeController, confirmRisk, a2aSlackClientId, a2aSlackTeamId, controllerApprovals });
     // the Settings page confirms first; running tasks keep running, only new starts check the new maximum
     if (applyMaxParallelToAll === true) accounts.setAllMaxParallel(machine.get().accounts.defaultMaxParallel);
     if (trustWorkspaces === false) trust.restore();

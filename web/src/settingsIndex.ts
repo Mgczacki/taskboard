@@ -12,6 +12,9 @@ export const SECTIONS: SectionDef[] = [
       { id: 'controllerManagesTasks', label: 'The controller may create and manage tasks without asking', words: 'tb new send park archive resume approval' },
       { id: 'agentsManageTasks', label: 'Other agents may start, type into, set aside and archive tasks without asking', words: 'tb approval' },
     ] },
+    { id: 'controllerApprovals', title: 'Controller approvals', settings: [
+      { id: 'controllerApprovalKinds', label: 'Let the controller approve this kind when I ask in the chat', words: 'tb approve merge push force push release restart scope permit message draft chat' },
+    ] },
     { id: 'permits', title: 'Permit requests', settings: [
       { id: 'controllerApprovesPermits', label: 'The controller may approve low risk suggestions', words: 'permit approval risk' },
       { id: 'holdPermissionHook', label: 'Answer Claude Code permission questions on the Waiting page', words: 'waiting inbox question hook permission dialog' },

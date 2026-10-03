@@ -1,8 +1,8 @@
 // Settings: what the controller and other agents may do without asking, and this machine's controller. The page has
 // one section for each entry of SECTIONS in settingsIndex.ts, a side list of those sections and a search box.
 import { useEffect, useRef, useState } from 'react';
-import type { BrowserMode, BrowserStatus, ConfirmRisk, MachineInfo, MessageLevel, PushRecord, RestartImpact, RestartResult, Task } from '../api';
-import { api, autoReload, confirmEnd, DEFAULT_CONFIRM_RISK, setAutoReload, setConfirmEnd, useStore } from '../api';
+import type { BrowserMode, BrowserStatus, ConfirmRisk, ControllerApprovals, MachineInfo, MessageLevel, PushRecord, RestartImpact, RestartResult, Task } from '../api';
+import { api, autoReload, confirmEnd, DEFAULT_CONFIRM_RISK, DEFAULT_CONTROLLER_APPROVALS, setAutoReload, setConfirmEnd, useStore } from '../api';
 import { reasonText, type ServerHealth } from '../serverStatus';
 import { setTaskThinBar, setWindowSee, taskThinBar, windowSee, windowSeeSupported } from '../controllerView';
 import { GlassControls, useGlass, useReadable } from './GlassControls';
@@ -26,6 +26,19 @@ const CONFIRM_RISK_ROWS: [keyof ConfirmRisk, string][] = [
   ['installs', 'Installs software: the answer downloads or installs a program'],
   ['spends', 'Asks for more credit: the answer asks for more credit or a higher limit'],
   ['exits', 'Ends the agent session: the answer stops the agent of the task'],
+];
+
+// One checkbox for each kind of approval card that the controller may approve on the user's request in its chat
+// (server/machine.ts controllerApprovals). The note says the extra check of the high impact kinds.
+const CONTROLLER_APPROVAL_ROWS: [keyof ControllerApprovals, string, string?][] = [
+  ['merge', 'Merge into local master'],
+  ['push', 'Push', 'A push to a protected branch needs the branch name in your message.'],
+  ['forcePush', 'Force push', 'Your message must say force.'],
+  ['release', 'Release Taskboard', 'Your message must say release. Only one release or restart at a time.'],
+  ['restart', 'Restart Taskboard', 'Your message must say restart. Only one release or restart at a time.'],
+  ['scope', 'Scope requests (worktree and read access)'],
+  ['permit', 'Permits', 'Software installs and sign-ins stay with you.'],
+  ['mail', 'Message drafts', 'Your message must name the draft by its card or message id.'],
 ];
 
 // Search text for the keyboard shortcuts: the name of every action and of its place.
@@ -62,7 +75,7 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
     addEventListener('hashchange', go);
     return () => { clearTimeout(timer); removeEventListener('hashchange', go); };
   }, []);
-  const save = async (p: { routingRules?: string; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; holdPermissionHook?: boolean; permitFolders?: string[]; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; checkPrivateNotes?: boolean; confirmLowerControl?: boolean; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; confirmRisk?: Partial<ConfirmRisk> }) => {
+  const save = async (p: { routingRules?: string; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; holdPermissionHook?: boolean; permitFolders?: string[]; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; checkPrivateNotes?: boolean; confirmLowerControl?: boolean; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; confirmRisk?: Partial<ConfirmRisk>; controllerApprovals?: Partial<ControllerApprovals> }) => {
     setBusy(true); try { setInfo(await api.updateInfo(p)); } catch (e) { setErr(String((e as Error).message || e)); } setBusy(false);
   };
   const ctl = tasks.find(t => t.role === 'controller');
@@ -85,6 +98,13 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
                   <SettingItem id="agentsManageTasks"><label className="opt" title="Agents other than the controller that use tb to start or type into tasks"><input type="checkbox" disabled={busy} checked={!p.agentsNeedApproval} onChange={e => save({ agentsNeedApproval: !e.target.checked })} /> Other agents may start, type into, set aside and archive tasks without asking</label></SettingItem>
                   <div className="sub">A change reaches the controller when it next restarts, which Taskboard does by itself as soon as the controller is between turns (its conversation continues). Releasing or rolling back Taskboard and stopping its server stay blocked for every agent.</div>
                 </>}
+              </SettingGroup>
+              <SettingGroup section="approvals" id="controllerApprovals" title="Controller approvals" help={<>When you ask the controller in its chat to approve a card, it runs <code>tb approve</code> with your exact message. Taskboard checks that the message is yours, that it names the card and that the card did not change. A task, a mail or a log line can never approve a card.</>}>
+                {info && <SettingItem id="controllerApprovalKinds">
+                  <div className="opt">Let the controller approve this kind when I ask in the chat</div>
+                  {CONTROLLER_APPROVAL_ROWS.map(([key, text, note]) => <label key={key} className="opt"><input type="checkbox" disabled={busy} checked={{ ...DEFAULT_CONTROLLER_APPROVALS, ...info.settings.controllerApprovals }[key]} onChange={e => void save({ controllerApprovals: { [key]: e.target.checked } })} /> {text}{note && <span className="sub"> {note}</span>}</label>)}
+                  <div className="sub">Trust dialogs, sign-ins, wide access rules, refused tool calls and the controller's own actions stay with you.</div>
+                </SettingItem>}
               </SettingGroup>
               <SettingGroup section="approvals" id="permits" title="Permit requests">
                 {p && <SettingItem id="controllerApprovesPermits">

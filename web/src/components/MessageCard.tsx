@@ -7,6 +7,7 @@ import { useEffect, useState } from 'react';
 import type { Approval, Task } from '../api';
 import { api } from '../api';
 import { doneLabel, messageButtons, reminder, resultLine, stageLabel } from '../messageCard';
+import { decidedByLine } from '../approvalHistory';
 import { FlaggedBody, request as messageRequest } from './messages';
 import '../mail.css';
 
@@ -60,6 +61,6 @@ export function MessageCard({ a, allTasks, setOpenId, openController, toast }: {
         <button className="btn ghost" onClick={() => openInInbox(a)}>Open in the Inbox</button>
       </div>
       <p className="sub msg-rule">{out ? 'Only you approve this draft. The controller approves a draft only when you name it in the controller chat.' : 'Only you approve this message.'}</p>
-    </> : <div className={`pc-note ${a.state === 'approved' ? 'ok' : a.state === 'failed' ? 'bad' : 'info'}`}>{resultLine(a)}</div>}
+    </> : <div className={`pc-note ${a.state === 'approved' ? 'ok' : a.state === 'failed' ? 'bad' : 'info'}`}>{a.decidedBy?.by === 'controller' && <><b>{decidedByLine(a)}</b><br /></>}{resultLine(a)}</div>}
   </div>;
 }
