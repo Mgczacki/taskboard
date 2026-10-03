@@ -8,6 +8,11 @@
 // Chrome draws no box for it, so the view shows the question of the shown tab in a bar with OK and Cancel.
 // The sound switch (SoundSwitch) is in both views: a browser starts muted until the user turns its sound on.
 // The server sends the shown tab's loading state and history ("nav"), so back, forward and reload work like Chrome's.
+// New tabs and popups (server/tab-switch.ts): the server switches the view to a popup or a tab that an agent opened, and
+// says so ('active' with auto). The view then shows one line with a Go back button, moves the keys and the mouse to
+// the new tab, and keeps a half typed address with the old tab (drafts). A popup that closes takes the view back. A
+// background tab (middle or Cmd click), and every new tab while the switch is off, comes as an 'offer': a badge and a
+// button. The switch is on the Settings page, and the More menu overrides it for one browser.
 // Shared sign-ins (BrowserSignins.tsx): a line when the template has none or this browser opted out, and in the More
 // menu and the card of a stopped browser: save as the template, sync from the template, the opt-out, and Reset.
 // Keys with Cmd: L focuses the address, R reloads, [ and ] go back and forward, V pastes, C and X copy. The other keys
@@ -181,6 +186,10 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
   const [cursor, setCursor] = useState('default');
   const [signin, setSignin] = useState<SigninMode | null>(null);
   const [told, setTold] = useState('');
+  // autoNote: the last switch that the server made by itself. offers: new tabs that did not take the view.
+  const [autoNote, setAutoNote] = useState<{ id: string; from: string; reason: string } | null>(null);
+  const [offers, setOffers] = useState<string[]>([]);
+  const [autoSwitch, setAutoSwitch] = useState({ on: true, own: false });
   const [sharing, reloadSharing] = useSharing(id, isTemplate || archived, running);
   const setShared = (on: boolean) => api.signinShared(id, on).then(() => { reloadSharing(); setTold(on ? 'This browser gets shared sign-ins again.' : 'This browser gets no shared sign-ins now. It keeps the sign-ins it has: Reset gives an empty profile.'); }).catch(e => setErr(String(e.message || e)));
   const signinParts = !isTemplate && !archived && <>
@@ -194,6 +203,13 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
   const frameSize = useRef({ w: 1280, h: 800 });
   const ws = useRef<WebSocket | null>(null);
   const flashTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const autoNoteTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
+  const root = useRef<HTMLDivElement>(null);
+  // drafts: an address that the user typed into the address bar and did not go to, for each tab (with the tab's address
+  // at that time). backTo: the tab that Go back returns to, so the view can give its draft the focus again.
+  const drafts = useRef(new Map<string, { text: string; url: string }>());
+  const backTo = useRef('');
+  const onActive = useRef<(id: string, auto?: { from: string; reason: string }) => void>(() => {});
   const selection = useRef(''), peekTimer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   const peek = () => { clearTimeout(peekTimer.current); peekTimer.current = setTimeout(() => send({ type: 'copy', peek: true }), 120); };
   // Frames: createImageBitmap decodes one JPEG at a time off the main thread. A frame that comes during a decode waits
@@ -259,8 +275,9 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
         const m = JSON.parse(ev.data);
         if (m.type === 'frameSize') frameSize.current = { w: m.w, h: m.h };
         // the server sends the tabs every second: an unchanged list keeps the old array, so the view does not draw again
-        else if (m.type === 'tabs') { setTabs(prev => JSON.stringify(prev) === JSON.stringify(m.tabs) ? prev : m.tabs); setRunning(true); setAgents(m.agents || 0); setMuted(m.muted ?? null); setErr(''); }
-        else if (m.type === 'active') setActive(m.id);
+        else if (m.type === 'tabs') { setTabs(prev => JSON.stringify(prev) === JSON.stringify(m.tabs) ? prev : m.tabs); setRunning(true); setAgents(m.agents || 0); setMuted(m.muted ?? null); setErr(''); setAutoSwitch(prev => prev.on === (m.autoSwitch !== false) && prev.own === !!m.autoSwitchOwn ? prev : { on: m.autoSwitch !== false, own: !!m.autoSwitchOwn }); }
+        else if (m.type === 'active') onActive.current(m.id, m.auto);
+        else if (m.type === 'offer') setOffers(prev => [...prev.filter(x => x !== m.id), m.id]);
         else if (m.type === 'cursor') setCursor(CURSORS.has(m.cursor) ? m.cursor : 'default');
         else if (m.type === 'nav') setNav({ loading: !!m.loading, canBack: !!m.canBack, canForward: !!m.canForward });
         else if (m.type === 'copied') {
@@ -276,7 +293,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
       s.onclose = () => { if (!closed) retry = setTimeout(connect, 2000); };
     };
     connect();
-    return () => { closed = true; clearTimeout(retry); clearTimeout(flashTimer.current); clearTimeout(peekTimer.current); ws.current?.close(); };
+    return () => { closed = true; clearTimeout(retry); clearTimeout(flashTimer.current); clearTimeout(autoNoteTimer.current); clearTimeout(peekTimer.current); ws.current?.close(); };
   }, [id]);
 
   // The server streams frames only while the view is on the screen: the page is visible (not a background tab, not a
@@ -303,7 +320,33 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
   }, [running]);
 
   const activeTab = tabs.find(t => t.id === active);
-  useEffect(() => { if (!editing) setAddr(activeTab?.url === 'about:blank' ? '' : activeTab?.url || ''); }, [activeTab?.url, editing]);
+  // The view shows another tab. A half typed address stays with the old tab. After a switch by the server, the keys and
+  // the mouse go to the new tab: the focus moves from the address bar to the page, but only when it was in this view.
+  onActive.current = (next, auto) => {
+    if (next !== active) {
+      const input = urlInput.current;
+      if (active && input && document.activeElement === input && addr.trim() && addr !== activeTab?.url) drafts.current.set(active, { text: addr, url: activeTab?.url || '' });
+      if (auto && root.current?.contains(document.activeElement)) screen.current?.focus();
+      // Go back to a tab with a draft: the draft and the focus return to the address bar (the text is set here, because
+      // the focus can come before the effect below runs, and that effect does not change the field while it has focus)
+      const draft = drafts.current.get(next);
+      if (next === backTo.current && draft) { setAddr(draft.text); setTimeout(() => { const el = urlInput.current; if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); } }, 0); }
+      backTo.current = '';
+    }
+    setActive(next);
+    setOffers(prev => prev.includes(next) ? prev.filter(x => x !== next) : prev);
+    if (auto) {
+      setAutoNote({ id: next, ...auto });
+      clearTimeout(autoNoteTimer.current); autoNoteTimer.current = setTimeout(() => setAutoNote(null), 10000);
+    }
+  };
+  // the address of the shown tab, or the draft that the user left in this tab (while the tab is still at that address)
+  useEffect(() => {
+    if (editing) return;
+    const d = drafts.current.get(active);
+    if (d && d.url !== (activeTab?.url || '')) drafts.current.delete(active);
+    setAddr(drafts.current.get(active)?.text ?? (activeTab?.url === 'about:blank' ? '' : activeTab?.url || ''));
+  }, [active, activeTab?.url, editing]);
   const dialog = activeTab?.dialog;
   useEffect(() => { setPromptText(dialog?.defaultPrompt || ''); }, [active, dialog?.type, dialog?.message]);
   const answer = (accept: boolean) => send({ type: 'dialog', id: active, accept, ...(dialog?.type === 'prompt' ? { text: promptText } : {}) });
@@ -392,7 +435,9 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
     for (const [key, code, keyCode] of [['Control', 'ControlLeft', 17], ['Alt', 'AltLeft', 18], ['Shift', 'ShiftLeft', 16]] as const) send({ type: 'key', down: false, key, code, keyCode, modifiers: 0 });
     leaveBrowser(e.currentTarget as HTMLElement);
   };
-  const go = () => { setEditing(false); if (addr.trim()) send({ type: 'nav', action: 'go', url: addr.trim() }); screen.current?.focus(); };
+  const go = () => { drafts.current.delete(active); setEditing(false); if (addr.trim()) send({ type: 'nav', action: 'go', url: addr.trim() }); screen.current?.focus(); };
+  const select = (tab: string) => send({ type: 'select', id: tab });
+  const goBack = () => { if (!autoNote) return; backTo.current = autoNote.from; setAutoNote(null); select(autoNote.from); };
   const startNow = () => { setErr(''); send({ type: 'start' }); };
 
   // A start that runs (state.starting): its time, and after 15 s a note that the computer is slow. A start can take up to
@@ -467,7 +512,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
       </span>
       <input ref={urlInput} className="bw-url" value={addr} placeholder="Search or type an address" aria-label="Address"
         onFocus={e => { setEditing(true); setPop(null); e.target.select(); }} onBlur={() => setEditing(false)} onChange={e => setAddr(e.target.value)}
-        onKeyDown={e => { if (e.key === 'Enter') go(); if (e.key === 'Escape') { setEditing(false); setAddr(activeTab?.url || ''); screen.current?.focus(); } }} spellCheck={false} />
+        onKeyDown={e => { if (e.key === 'Enter') go(); if (e.key === 'Escape') { drafts.current.delete(active); setEditing(false); setAddr(activeTab?.url || ''); screen.current?.focus(); } }} spellCheck={false} />
       {!editing && addr && (compact && pageTitle
         ? <span className="bw-urlview" aria-hidden="true" title={addr}><span className="bw-ttl">{pageTitle}</span>{parts.host && <span className="dim">{parts.host}</span>}</span>
         : <span className="bw-urlview" aria-hidden="true"><span className="dim">{parts.scheme}</span>{parts.host}<span className="dim">{parts.rest}</span></span>)}
@@ -477,16 +522,33 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
   const popOut = () => { setPop(null); popOutBrowser(id, title || (isTemplate ? 'Template browser' : 'Task browser'), isTemplate ? 'Sign in here. New task browsers copy this profile.' : ''); };
   const stopButton = <button className="bw-ib danger" onClick={() => send({ type: 'stop' })} aria-label={isTemplate ? 'Close the template browser' : 'Stop the browser'} title={isTemplate ? 'Close the template browser. New task browsers can copy it only when it is closed.' : 'Stop the browser. Its pages open again at the next start.'}><Icon d={I.power} /></button>;
   const sound = <SoundSwitch id={id} muted={muted} onChange={setMuted} onDone={s => setMuted(s.muted)} onError={setErr} />;
+  // new tabs that did not take the view: a button that shows the newest one, with the number of them
+  const offered = offers.filter(o => o !== active && tabs.some(t => t.id === o));
+  const newest = tabs.find(t => t.id === offered[offered.length - 1]);
+  const offerButton = newest && <button className="bw-chip bw-offer" onClick={() => { setOffers([]); select(newest.id); }} title={`Show the new tab: ${newest.url}${offered.length > 1 ? `. ${offered.length} new tabs are waiting.` : ''}`}>
+    <i className="bw-new" />New tab: <span className="bw-offer-t">{tabName(newest)}</span>{offered.length > 1 && <b>+{offered.length - 1}</b>}
+  </button>;
+  const noteTab = autoNote && tabs.find(t => t.id === autoNote.id);
+  const fromTab = autoNote && tabs.find(t => t.id === autoNote.from);
+  const switchedLine = autoNote && autoNote.id === active && <div className="bw-switched" role="status">
+    <span className="bw-switched-t">{autoNote.reason === 'back' ? <>The tab closed. Back to <b>{noteTab ? tabName(noteTab) : 'the earlier tab'}</b>.</> : <>Switched to the new tab: <b>{noteTab ? tabName(noteTab) : 'loading…'}</b></>}</span>
+    {autoNote.reason !== 'back' && fromTab && <button className="btn ghost" onClick={goBack} title={`Show ${tabName(fromTab)} again`}>Go back</button>}
+    <button className="bw-ib" onClick={() => setAutoNote(null)} aria-label="Hide this line" title="Hide this line"><Icon d={I.close} size={13} /></button>
+  </div>;
+  const autoSwitchItem = <button className="bw-mi" role="menuitemcheckbox" aria-checked={autoSwitch.on} onClick={() => { setPop(null); send({ type: 'autoSwitch', on: !autoSwitch.on }); }}>
+    <Icon d={autoSwitch.on ? I.popout : I.close} size={15} /><span>Switch to new tabs and popups: {autoSwitch.on ? 'on' : 'off'}<small>{autoSwitch.own ? 'Set for this browser. Click to change.' : 'From Settings. Click to change for this browser.'}</small></span>
+  </button>;
   return (
-    <div className={`bw ${inside ? 'kb' : ''} ${compact ? 'compact' : ''}`} data-tb-browser="" onKeyDownCapture={leave} onFocus={() => setInside(true)} onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setInside(false); }}>
+    <div ref={root} className={`bw ${inside ? 'kb' : ''} ${compact ? 'compact' : ''}`} data-tb-browser="" onKeyDownCapture={leave} onFocus={() => setInside(true)} onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setInside(false); }}>
       {compact ? (
         <div className="bw-bar bw-row">
           {navButtons}
           {address}
           {flash && <span className="bw-chip flash">{flash}</span>}
           <button className={`bw-tabsbtn bw-popbtn ${pop === 'tabs' ? 'on' : ''}`} onClick={() => setPop(p => p === 'tabs' ? null : 'tabs')} aria-expanded={pop === 'tabs'} aria-label={`All ${tabs.length} tabs`} title={`All ${tabs.length} tabs${waiting ? '. A page waits for an answer.' : ''}`}>
-            <b>{tabs.length}</b><Icon d={I.down} size={12} />{waiting && <i className="bw-ask" />}
+            <b>{tabs.length}</b><Icon d={I.down} size={12} />{waiting ? <i className="bw-ask" /> : offered.length > 0 && <i className="bw-new" />}
           </button>
+          {offerButton}
           <button className="bw-ib" onClick={() => send({ type: 'new', url: 'about:blank' })} aria-label="New tab" title="New tab"><Icon d={I.plus} /></button>
           {sound}
           {stopButton}
@@ -494,14 +556,15 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
             <Icon d={I.more} weight={3} />{agents > 0 && <i className="bw-agent" />}
           </button>
           {nav.loading && <div className="bw-progress" />}
-          {pop === 'tabs' && <TabList tabs={tabs} active={active} name={tabName}
-            onSelect={t => { setPop(null); send({ type: 'select', id: t }); screen.current?.focus(); }}
+          {pop === 'tabs' && <TabList tabs={tabs} active={active} name={tabName} offered={offered}
+            onSelect={t => { setPop(null); select(t); screen.current?.focus(); }}
             onClose={t => send({ type: 'close', id: t })} onNew={() => { setPop(null); send({ type: 'new', url: 'about:blank' }); }}
             onDone={() => { setPop(null); screen.current?.focus(); }} />}
           {pop === 'menu' && <div className="bw-pop bw-menu" role="menu">
             {activeTab?.url && activeTab.url !== 'about:blank' && <button className="bw-mi" role="menuitem" onClick={() => { setPop(null); copyAddress(); }}><Icon d={I.copy} size={15} /><span>Copy the address</span></button>}
             <button className="bw-mi" role="menuitem" onClick={popOut}><Icon d={I.popout} size={15} /><span>Pop out<small>Show the browser in its own window</small></span></button>
             {onCanvas && <button className="bw-mi" role="menuitem" onClick={() => { setPop(null); onCanvas(); }}><Icon d={I.canvas} size={15} /><span>Show on Canvas<small>Above the terminal of this task</small></span></button>}
+            {autoSwitchItem}
             <div className="bw-msep" />
             {!isTemplate && !archived && <>
               {!sharing?.noShared && <button className="bw-mi" role="menuitem" onClick={() => { setPop(null); setSignin('sync'); }}><Icon d={I.reload} size={15} /><span>Sync sign-ins from the template<small>Adds its cookies for the sites you choose</small></span></button>}
@@ -518,15 +581,17 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
       ) : <>
         <div className="bw-tabs" onDoubleClick={e => { if (e.target === e.currentTarget) send({ type: 'new', url: 'about:blank' }); }}>
           {tabs.map(t => (
-            <div key={t.id} className={`bw-tab ${t.id === active ? 'on' : ''}`} onClick={() => send({ type: 'select', id: t.id })}
+            <div key={t.id} className={`bw-tab ${t.id === active ? 'on' : ''} ${offered.includes(t.id) ? 'new' : ''}`} onClick={() => select(t.id)}
               onAuxClick={e => { if (e.button === 1) { e.preventDefault(); send({ type: 'close', id: t.id }); } }} title={t.title ? `${t.title}\n${t.url}` : t.url}>
               {t.id === active && nav.loading ? <span className="bw-spin" aria-label="Loading" /> : <Favicon tab={t} />}
-              {t.dialog && <i className="bw-ask" title="This page waits for an answer" />}
+              {t.dialog ? <i className="bw-ask" title="This page waits for an answer" /> : offered.includes(t.id) && <i className="bw-new" title="A new tab" />}
               <span className="t">{tabName(t)}</span>
               <button className="bw-x" onClick={e => { e.stopPropagation(); send({ type: 'close', id: t.id }); }} aria-label="Close this tab" title="Close this tab (middle-click)"><Icon d={I.close} size={12} /></button>
             </div>
           ))}
-          <button className="bw-ib bw-new" onClick={() => send({ type: 'new', url: 'about:blank' })} aria-label="New tab" title="New tab"><Icon d={I.plus} /></button>
+          <button className="bw-ib bw-newtab" onClick={() => send({ type: 'new', url: 'about:blank' })} aria-label="New tab" title="New tab"><Icon d={I.plus} /></button>
+          {offerButton}
+          <button className={`bw-ib bw-auto ${autoSwitch.on ? 'on' : ''}`} onClick={() => send({ type: 'autoSwitch', on: !autoSwitch.on })} aria-pressed={autoSwitch.on} aria-label="Switch to new tabs and popups" title={`Switch to new tabs and popups: ${autoSwitch.on ? 'on' : 'off'} (${autoSwitch.own ? 'set for this browser' : 'from Settings'}). Click to change for this browser.`}><Icon d={I.popout} size={14} /></button>
         </div>
         <div className="bw-bar">
           {navButtons}
@@ -543,6 +608,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
           {nav.loading && <div className="bw-progress" />}
         </div>
       </>}
+      {switchedLine}
       {dialog && <div className="bw-dialog" role="alertdialog" aria-label="The page waits for an answer">
         <i className="bw-ask in" />
         <span className="bw-dialog-t"><b>{dialog.type === 'beforeunload' ? 'Leave this page?' : dialog.type === 'alert' ? 'The page says:' : 'The page asks:'}</b> {dialog.message}</span>
@@ -569,7 +635,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas }
 
 // The tab list of the compact row: one row for each tab, with a find field from 8 tabs. Up and Down move the
 // selection, Enter shows the selected tab, Escape closes the list.
-function TabList({ tabs, active, name, onSelect, onClose, onNew, onDone }: { tabs: BrowserTab[]; active: string; name: (t: BrowserTab) => string; onSelect: (id: string) => void; onClose: (id: string) => void; onNew: () => void; onDone: () => void }) {
+function TabList({ tabs, active, name, offered, onSelect, onClose, onNew, onDone }: { tabs: BrowserTab[]; active: string; name: (t: BrowserTab) => string; offered: string[]; onSelect: (id: string) => void; onClose: (id: string) => void; onNew: () => void; onDone: () => void }) {
   const [find, setFind] = useState('');
   const [sel, setSel] = useState(-1);
   const box = useRef<HTMLDivElement>(null), field = useRef<HTMLInputElement>(null);
@@ -591,7 +657,7 @@ function TabList({ tabs, active, name, onSelect, onClose, onNew, onDone }: { tab
       <div className="bw-lb">
         {shown.map((t, i) => (
           <div key={t.id} role="option" aria-selected={t.id === active} className={`bw-li ${t.id === active ? 'on' : ''} ${i === at ? 'sel' : ''}`} onClick={() => onSelect(t.id)} onMouseMove={() => { if (i !== at) setSel(i); }} title={t.url}>
-            <span className="bw-li-f"><Favicon tab={t} />{t.dialog && <i className="bw-ask" />}</span>
+            <span className="bw-li-f"><Favicon tab={t} />{t.dialog ? <i className="bw-ask" /> : offered.includes(t.id) && <i className="bw-new" />}</span>
             <span className="t">{name(t)}<small>{siteOf(t.url) || t.url}</small></span>
             {t.dialog && <span className="bw-tag" title={t.dialog.message}>waits for an answer</span>}
             <button className="bw-x" onClick={e => { e.stopPropagation(); onClose(t.id); }} aria-label="Close this tab" title="Close this tab"><Icon d={I.close} size={12} /></button>

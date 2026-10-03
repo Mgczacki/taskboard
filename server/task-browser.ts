@@ -19,6 +19,7 @@ import WebSocket from 'ws';
 import { PORT, ROOT, TB_DIR, TOKEN } from './config.ts';
 import * as machine from './machine.ts';
 import * as memory from './memory.ts';
+import { TabSwitch } from './tab-switch.ts';
 
 export const DIR = join(TB_DIR, 'browsers');
 export const TEMPLATE = 'template';
@@ -32,7 +33,9 @@ export interface Meta { pid?: number; port?: number; started?: string; startMs?:
   // sign-in sharing (browser-signins.ts): noShared is the opt-out of this task browser, syncedAt the last sync from the
   // template, clearSites the sites whose cookies the next start deletes (sign out of all), liveSyncAt the last live sync.
   // headed: the template runs in a normal Chrome window (openTemplateWindow). savedFrom: the task whose profile became the template.
-  noShared?: boolean; syncedAt?: string; clearSites?: string[]; liveSyncAt?: string; headed?: boolean; savedFrom?: { task: string; at: string } }
+  noShared?: boolean; syncedAt?: string; clearSites?: string[]; liveSyncAt?: string; headed?: boolean; savedFrom?: { task: string; at: string };
+  // autoSwitch: the dashboard view switches to a new tab or popup (tab-switch.ts); unset follows the Settings choice
+  autoSwitch?: boolean }
 export interface Tab { id: string; title: string; url: string; faviconUrl?: string; dialog?: Dialog }
 // A box that a page opened with alert(), confirm(), prompt() or onbeforeunload. Headless Chrome draws no box, and the
 // page waits until a DevTools client answers it (Page.handleJavaScriptDialog).
@@ -737,13 +740,17 @@ export function proxyAgent(client: WebSocket, id: string, waitMs = AGENT_WAIT_MS
 // on there. Page.javascriptDialogOpening and Page.javascriptDialogClosed keep dialogs (target id -> dialog). The
 // connection ends when Chrome stops. Chrome opens the dialog of a background tab only when that tab comes to the front,
 // so a dialog usually belongs to the shown tab or to a tab that the user left while its dialog was open.
-interface DialogWatch { ws: WebSocket; dialogs: Map<string, Dialog>; sessions: Map<string, string>; listeners: Set<() => void>; next: number }
+// The same connection gives the dashboard views the target events (targetListeners): Target.targetCreated,
+// Target.targetInfoChanged and Target.targetDestroyed, from the answer to Target.setDiscoverTargets on (ready), and
+// Page.windowOpen of each page with the page's target id (openerId). Chrome reports the targets that exist already
+// before that answer, and those are not new tabs.
+interface DialogWatch { ws: WebSocket; dialogs: Map<string, Dialog>; sessions: Map<string, string>; listeners: Set<() => void>; targetListeners: Set<(m: { method: string; params: any }) => void>; ready: boolean; next: number }
 const dialogWatch = new Map<string, DialogWatch>();
 function watchDialogs(id: string, browserWs: string): DialogWatch {
   const had = dialogWatch.get(id);
   if (had && had.ws.readyState <= WebSocket.OPEN) return had;
   const ws = new WebSocket(browserWs, { perMessageDeflate: false });
-  const w: DialogWatch = { ws, dialogs: new Map(), sessions: new Map(), listeners: new Set(had?.listeners), next: 0 };
+  const w: DialogWatch = { ws, dialogs: new Map(), sessions: new Map(), listeners: new Set(had?.listeners), targetListeners: new Set(had?.targetListeners), ready: false, next: 0 };
   dialogWatch.set(id, w);
   const cmd = (method: string, params: object = {}, sessionId?: string) => { if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ id: ++w.next, method, params, ...(sessionId ? { sessionId } : {}) })); };
   const changed = () => { for (const fn of w.listeners) fn(); };
@@ -751,6 +758,9 @@ function watchDialogs(id: string, browserWs: string): DialogWatch {
   ws.on('open', () => cmd('Target.setDiscoverTargets', { discover: true }));
   ws.on('message', d => {
     const m = JSON.parse(d.toString());
+    if (m.id === 1) w.ready = true;
+    const opener = m.method === 'Page.windowOpen' && m.sessionId ? w.sessions.get(m.sessionId) : undefined;
+    if (w.ready && (m.method === 'Target.targetCreated' || m.method === 'Target.targetInfoChanged' || m.method === 'Target.targetDestroyed' || opener)) for (const fn of w.targetListeners) { try { fn(opener ? { method: m.method, params: { ...m.params, openerId: opener } } : m); } catch { /* listener failed */ } }
     if (m.method === 'Target.targetCreated') attach(m.params.targetInfo);
     else if (m.method === 'Target.attachedToTarget') { w.sessions.set(m.params.sessionId, m.params.targetInfo.targetId); cmd('Page.enable', {}, m.params.sessionId); }
     else if (m.method === 'Target.detachedFromTarget' || m.method === 'Target.targetDestroyed') {
@@ -794,8 +804,19 @@ const QUALITY_FAST = 50, QUALITY_STILL = 80, FAST_GAP_MS = 150, STILL_MS = 300;
 // quality: the quality of the screencast that runs or that the last queued start asks for. chain: the starts and stops
 // of this page's screencast, one at a time.
 interface PageConn { ws: WebSocket; target: string; next: number; pending: Map<number, (r: any) => void>; casting?: boolean; quality: number; chain: Promise<void>; lastFrame: number; stillTimer?: NodeJS.Timeout }
+// The switch to a new tab or popup (Settings → Task browsers, and the override of one browser in browser.json).
+export const autoSwitchOn = (id: string) => readMeta(id).autoSwitch ?? machine.get().browser?.autoSwitch ?? true;
 export function attachViewer(client: WebSocket, id: string, autostart: boolean) {
-  let page: PageConn | null = null, active = '', known = new Set<string>(), chosen = false, closed = false;
+  // opening: the tab of the open() that runs now, so a poll does not start a second open() of it
+  let page: PageConn | null = null, active = '', seeded = false, closed = false, openSeq = 0, opening = '';
+  // New tabs and popups, and the tab that closed (tab-switch.ts). A switch opens the tab and tells the view why
+  // ('active' with auto), so the view shows one line with a Go back button. An offer is a badge in the view.
+  const sw = new TabSwitch(d => {
+    if (closed) return;
+    if (d.kind === 'switch') void open(d.id, { from: d.from, reason: d.reason }).catch(() => {});
+    else send({ type: 'offer', id: d.id, reason: d.reason });
+    soon();
+  }, () => autoSwitchOn(id));
   let frameW = 0, frameH = 0, lastFrame = 0;
   // acks: the view reports drawn frames. undrawn: frames sent to the view that it did not report yet. waiting: the
   // newest frame that the view had no room for. held: the acks that Chrome waits for.
@@ -830,16 +851,23 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
   // screencast frame; only the start flag --force-device-scale-factor does (Sharp view). With the flag and a factor of
   // 1 here, the page would draw at 1x and the frame would only stretch it.
   const viewport = () => call('Emulation.setDeviceMetricsOverride', { width: size.w, height: size.h, deviceScaleFactor: 0, mobile: false });
-  async function open(target: string) {
-    const m = await live(id); if (!m || closed) return;
+  // Show this tab. auto: the view switched by itself (tab-switch.ts). A later open() wins over one that still runs.
+  async function open(target: string, auto?: { from: string; reason: string }) {
+    const seq = ++openSeq;
+    opening = target;
+    try { await show(seq, target, auto); } finally { if (seq === openSeq) opening = ''; }
+  }
+  async function show(seq: number, target: string, auto?: { from: string; reason: string }) {
+    const m = await live(id); if (!m || closed || seq !== openSeq) return;
     const list = await (await fetch(`http://127.0.0.1:${m.port}/json/list`)).json() as { id: string; type: string; webSocketDebuggerUrl: string }[];
-    const t = list.find(x => x.id === target && x.type === 'page'); if (!t) return;
+    const t = list.find(x => x.id === target && x.type === 'page'); if (!t || seq !== openSeq) return;
     closePage();
     waiting = null; cursorBusy = false;
     active = target;
+    sw.shown(target);
     // tell the view now: a page with an open dialog answers the calls below only after the dialog closes, and the
-    // view must show that tab to show its question
-    send({ type: 'active', id: target });
+    // view must show that tab to show its question. The old frame stays in the view until the new tab's first frame.
+    send({ type: 'active', id: target, ...(auto ? { auto } : {}) });
     const ws = new WebSocket(t.webSocketDebuggerUrl, { perMessageDeflate: false, maxPayload: 64 * 1024 * 1024 });
     const conn: PageConn = { ws, target, next: 0, pending: new Map(), quality: QUALITY_STILL, chain: Promise.resolve(), lastFrame: 0 };
     page = conn;
@@ -903,28 +931,41 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     });
   }
   const dialogChanged = () => { void poll(); };
-  // Polls can overlap (the timer, the view's messages and dialog changes start them). A poll can wait in open() for a
-  // long time: a page with an open dialog answers only after the dialog closes.
+  // the target events of the browser connection (watchDialogs) go to the tab switch; a change of the tab list sends
+  // the view a new list soon (soon), so the tab strip shows a new tab before the next poll
+  const targetEvent = (e: { method: string; params: any }) => {
+    if (!seeded) return;
+    if (e.method === 'Page.windowOpen') return sw.windowOpen(e.params.openerId, String(e.params.url || ''));
+    if (e.method === 'Target.targetCreated') sw.created(e.params.targetInfo);
+    else if (e.method === 'Target.targetInfoChanged') { if (e.params.targetInfo.type === 'page') { sw.changed(e.params.targetInfo); soon(); } return; }
+    else if (e.method === 'Target.targetDestroyed') { if (!sw.known(e.params.targetId)) return; sw.destroyed(e.params.targetId); }
+    soon();
+  };
+  let soonTimer: NodeJS.Timeout | undefined;
+  const soon = () => { soonTimer ??= setTimeout(() => { soonTimer = undefined; void poll(); }, 50); };
+  // Polls can overlap (the timer, the view's messages, dialog changes and target events start them). A poll can wait
+  // in open() for a long time: a page with an open dialog answers only after the dialog closes.
+  // The poll is also the fallback of the target events: a tab that they did not report is a new tab for the switch.
   async function poll() {
     if (closed) return;
     const m = await live(id);
-    if (!m) { closePage(); active = ''; known = new Set(); send({ type: 'state', ...(await status(id)) }); return; }
+    if (!m) { closePage(); active = ''; seeded = false; send({ type: 'state', ...(await status(id)) }); return; }
     const dw = watchDialogs(id, m.ws);
     if (!dw.listeners.has(dialogChanged)) dw.listeners.add(dialogChanged);
-    const list = (await pageList(m.port!) || []).map(t => { const dialog = dw.dialogs.get(t.id); return dialog ? { ...t, dialog } : t; });
-    const fresh = list.filter(t => !known.has(t.id));
-    const first = !known.size;
-    known = new Set(list.map(t => t.id));
-    send({ type: 'tabs', tabs: list, active, agents: agentCount(id), muted: mutedNow(readMeta(id), true) });
-    // follow the agent: a tab that opens later becomes the shown tab, unless the user picked a tab in the last minute
-    let target = active;
-    if (!list.some(t => t.id === active)) target = list[0]?.id || '';
-    else if (!first && fresh.length && !chosen) target = fresh[fresh.length - 1].id;
-    if (target && (target !== active || !page)) await open(target);
+    if (!dw.targetListeners.has(targetEvent)) dw.targetListeners.add(targetEvent);
+    const asked = Date.now(), listed = await pageList(m.port!);
+    if (!listed || closed) return;
+    const list = listed.map(t => { const dialog = dw.dialogs.get(t.id); return dialog ? { ...t, dialog } : t; });
+    // the first list after the view or the browser started: these tabs are not new
+    if (!seeded) { sw.seed(list.map(t => t.id)); seeded = true; } else sw.listed(list, asked);
+    const meta = readMeta(id);
+    send({ type: 'tabs', tabs: list, active, agents: agentCount(id), muted: mutedNow(meta, true), autoSwitch: autoSwitchOn(id), autoSwitchOwn: meta.autoSwitch !== undefined });
+    // the first tab when the view shows none; a shown tab that closed is handled by the switch (sw.destroyed)
+    const target = active && list.some(t => t.id === active) ? active : sw.back() || list[0]?.id || '';
+    if (target && target !== opening && (target !== active || !page)) await open(target);
   }
   const timer = setInterval(() => { void poll(); }, 1000);
-  let chosenTimer: NodeJS.Timeout | undefined;
-  client.on('close', () => { if (closed) return; closed = true; count(viewers, id, -1); clearInterval(timer); clearTimeout(chosenTimer); clearTimeout(cursorTimer); closePage(); dialogWatch.get(id)?.listeners.delete(dialogChanged); });
+  client.on('close', () => { if (closed) return; closed = true; count(viewers, id, -1); clearInterval(timer); clearTimeout(soonTimer); clearTimeout(cursorTimer); closePage(); sw.seed([]); const dw = dialogWatch.get(id); dw?.listeners.delete(dialogChanged); dw?.targetListeners.delete(targetEvent); });
   client.on('message', async d => {
     let m: any; try { m = JSON.parse(d.toString()); } catch { return; }
     try {
@@ -935,9 +976,13 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
       else if (m.type === 'drawn') { undrawn = Math.max(0, undrawn - 1); drain(); }
       else if (m.type === 'start') { void ensure(id).then(() => poll(), () => poll()); await poll(); }
       else if (m.type === 'stop') { await stop(id); await poll(); }
-      else if (m.type === 'select' && typeof m.id === 'string') { chosen = true; clearTimeout(chosenTimer); chosenTimer = setTimeout(() => { chosen = false; }, 60000); await open(m.id); }
+      else if (m.type === 'select' && typeof m.id === 'string') await open(m.id);
+      // the switch of this browser (the More menu): a choice that differs from Settings is kept for this browser, and the
+      // same choice as Settings (or null) follows Settings again
+      else if (m.type === 'autoSwitch') { const on = typeof m.on === 'boolean' && m.on !== (machine.get().browser?.autoSwitch ?? true) ? m.on : undefined; updateMeta(id, { autoSwitch: on }); await poll(); }
       else if (m.type === 'size' && m.w > 100 && m.h > 100) { size = { w: Math.min(3840, Math.round(m.w)), h: Math.min(2160, Math.round(m.h)) }; await viewport(); }
       else if (m.type === 'mouse') {
+        if (m.event === 'mousePressed') sw.userClick(m.button, m.modifiers || 0);
         await call('Input.dispatchMouseEvent', { type: m.event, x: m.x, y: m.y, button: m.button || 'none', buttons: m.buttons || 0, clickCount: m.clickCount || 0, modifiers: m.modifiers || 0, ...(m.event === 'mouseWheel' ? { deltaX: m.dx || 0, deltaY: m.dy || 0 } : {}) });
         if (m.event === 'mouseMoved' || m.event === 'mouseReleased') cursorAt(m.x, m.y);
       }
@@ -959,7 +1004,7 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
           if (entry) await call('Page.navigateToHistoryEntry', { entryId: entry.id });
         }
       }
-      else if (m.type === 'new') { const t = await openTab(id, typeof m.url === 'string' && m.url ? m.url : 'about:blank'); chosen = true; await open(t.id); }
+      else if (m.type === 'new') { sw.userNewTab(); const t = await openTab(id, typeof m.url === 'string' && m.url ? m.url : 'about:blank'); await open(t.id); }
       else if (m.type === 'close' && typeof m.id === 'string') await closeTab(id, m.id);
       else if (m.type === 'dialog' && typeof m.id === 'string') {
         // answer the dialog of that tab: OK or Cancel, with the text for a prompt()

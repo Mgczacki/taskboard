@@ -358,7 +358,7 @@ const MODES: { value: BrowserMode; label: string }[] = [
   { value: 'only', label: 'Task browser only' },
   { value: 'off', label: 'Off: no task browser' },
 ];
-function TaskBrowserSettings({ info, busy, save }: { info: MachineInfo | null; busy: boolean; save: (p: { browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; browserIdleStopMinutes?: number; browserSharp?: boolean; claudeInChromeTasks?: boolean; claudeInChromeController?: boolean }) => Promise<void> }) {
+function TaskBrowserSettings({ info, busy, save }: { info: MachineInfo | null; busy: boolean; save: (p: { browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; browserIdleStopMinutes?: number; browserSharp?: boolean; browserAutoSwitch?: boolean; claudeInChromeTasks?: boolean; claudeInChromeController?: boolean }) => Promise<void> }) {
   const [tpl, setTpl] = useState<BrowserStatus | null>(null);
   const [chrome, setChrome] = useState('');
   const [idle, setIdle] = useState('');
@@ -394,6 +394,10 @@ function TaskBrowserSettings({ info, busy, save }: { info: MachineInfo | null; b
         <SettingItem id="browserSharp">
           <label className="opt"><input type="checkbox" disabled={busy} checked={!!b.sharp} onChange={e => void save({ browserSharp: e.target.checked })} /> Sharp view on Retina screens</label>
           <div className="sub">Task browsers start with two pixels for each point, so text in the Browser tab is sharp. The view then gets about 2.4 times more data, which can be slow from another computer. Agent screenshots are twice as large and use more tokens. A browser that runs now changes at its next start: stop it and start it again. Default: off.</div>
+        </SettingItem>
+        <SettingItem id="browserAutoSwitch">
+          <label className="opt"><input type="checkbox" disabled={busy} checked={b.autoSwitch !== false} onChange={e => void save({ browserAutoSwitch: e.target.checked })} /> Switch to new tabs and popups automatically</label>
+          <div className="sub">On: the Browser tab shows a popup (a sign-in window, window.open, a link that opens a new tab) and a tab that an agent opens as soon as it opens, and goes back when the popup closes. A tab that you open in the background (middle click, or ⌘ click) stays in the background. Off: the tab strip shows a button for the new tab. The More menu of a browser changes this for that browser only. Default: on.</div>
         </SettingItem>
       </>}
     </SettingGroup>

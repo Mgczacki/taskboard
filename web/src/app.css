@@ -593,7 +593,7 @@ table.keyset .keycell { text-align: right; white-space: normal; }
 .bw-x { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 20px; height: 20px; padding: 0; border: 0; border-radius: 50%; background: none; color: var(--dim); cursor: pointer; opacity: 0; }
 .bw-tab:hover .bw-x, .bw-tab.on .bw-x { opacity: 1; }
 .bw-x:hover { background: var(--hover); color: var(--text); }
-.bw-new { align-self: center; min-width: 28px; height: 28px; margin: 0 0 3px 4px; border-radius: 50%; padding: 0; }
+.bw-newtab { align-self: center; min-width: 28px; height: 28px; margin: 0 0 3px 4px; border-radius: 50%; padding: 0; }
 .bw-fav { flex: none; width: 16px; height: 16px; border-radius: 3px; object-fit: contain; display: inline-flex; align-items: center; justify-content: center; color: var(--dim); }
 .bw-fav.letter { background: color-mix(in srgb, var(--accent) 22%, var(--panel2)); color: var(--text); font: 600 10px/1 var(--sans); }
 .bw-spin { flex: none; width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--line2); border-top-color: var(--accent); animation: bw-spin .8s linear infinite; }
@@ -641,6 +641,21 @@ table.keyset .keycell { text-align: right; white-space: normal; }
 .bw-ask { width: 8px; height: 8px; border-radius: 50%; background: var(--st-needs); box-shadow: 0 0 0 2px var(--panel); }
 .bw-ask.in { flex: none; box-shadow: none; }
 .bw-tab .bw-ask { position: absolute; left: 22px; top: 7px; }
+/* a new tab that did not take the view (a background tab, or any new tab while the switch is off) */
+.bw-new { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 2px var(--panel); }
+.bw-tab .bw-new { position: absolute; left: 22px; top: 7px; }
+.bw-tabsbtn .bw-new { position: absolute; right: -3px; top: -3px; }
+.bw-li-f .bw-new { position: absolute; right: -4px; top: -4px; }
+.bw-chip.bw-offer { flex: 0 1 auto; min-width: 0; max-width: 220px; color: var(--text); border-color: color-mix(in srgb, var(--accent) 55%, var(--line)); background: var(--accent-bg); cursor: pointer; align-self: center; }
+.bw-chip.bw-offer:hover { border-color: var(--accent); }
+.bw-chip.bw-offer .bw-new { box-shadow: none; }
+.bw-offer-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.bw-auto { align-self: center; margin: 0 4px 3px auto; color: var(--dim); }
+.bw-auto.on { color: var(--accent); background: none; }
+/* the line after the view switched to a new tab by itself */
+.bw-switched { flex: none; display: flex; align-items: center; gap: 8px; padding: 4px 6px 4px 10px; background: var(--accent-bg); border-bottom: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line)); font-size: 12.5px; }
+.bw-switched-t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bw-switched .btn { padding: 2px 10px; }
 .bw-pop { position: absolute; top: calc(100% + 4px); right: 6px; z-index: 40; min-width: 250px; max-width: calc(100% - 12px); padding: 5px; border: 1px solid var(--line2); border-radius: 10px; background: var(--panel); box-shadow: 0 8px 28px rgb(0 0 0 / .35); outline: none; }
 .bw-menu { display: flex; flex-direction: column; }
 .bw-mi { display: flex; align-items: center; gap: 10px; width: 100%; padding: 6px 8px; border: 0; border-radius: 7px; background: none; color: var(--text); text-align: left; cursor: pointer; font: inherit; }
