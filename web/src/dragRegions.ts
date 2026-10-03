@@ -17,11 +17,8 @@ export function dragBoxAt(boxes: DragBox[], x: number, y: number): DragBox | nul
 export type DragProblem = { what: string; rect: [number, number, number, number]; region: string; problem: string };
 export type DragReport = { boxes: number; controls: number; problems: DragProblem[] };
 
-// Lists each visible control whose top edge is within `px` of the top of the page and reports a problem when:
-// - its computed -webkit-app-region is not no-drag, or
-// - a point of it (center, or a corner 2 px inside) that it would get a click at is in the drag area that dragBoxAt
-//   computes, or is covered by a pseudo-element of body.
-export function dragRegionReport(boxAt: typeof dragBoxAt, px = 40): DragReport {
+// The drag and no-drag boxes of the page, in document order, as Electron reads them.
+export function dragBoxes(): DragBox[] {
   const label = (el: Element) => {
     const c = typeof el.className === 'string' ? el.className.trim().split(/\s+/).filter(Boolean).slice(0, 3).join('.') : '';
     const t = (el.getAttribute('aria-label') || el.getAttribute('title') || el.textContent || '').trim().slice(0, 30);
@@ -51,6 +48,22 @@ export function dragRegionReport(boxAt: typeof dragBoxAt, px = 40): DragReport {
     pseudo(el, '::after');
   };
   walk(document.body);
+  return boxes;
+}
+
+// boxesOf is dragBoxes (passed in, so the function runs in a page from its source).
+// Lists each visible control whose top edge is within `px` of the top of the page and reports a problem when:
+// - its computed -webkit-app-region is not no-drag, or
+// - a point of it (center, or a corner 2 px inside) that it would get a click at is in the drag area that dragBoxAt
+//   computes, or is covered by a pseudo-element of body.
+export function dragRegionReport(boxAt: typeof dragBoxAt, boxesOf: typeof dragBoxes, px = 40): DragReport {
+  const label = (el: Element) => {
+    const c = typeof el.className === 'string' ? el.className.trim().split(/\s+/).filter(Boolean).slice(0, 3).join('.') : '';
+    const t = (el.getAttribute('aria-label') || el.getAttribute('title') || el.textContent || '').trim().slice(0, 30);
+    return `${el.tagName.toLowerCase()}${c ? '.' + c : ''}${t ? ` "${t}"` : ''}`;
+  };
+  const region = (s: CSSStyleDeclaration) => s.getPropertyValue('-webkit-app-region') || (s as unknown as { webkitAppRegion?: string }).webkitAppRegion || 'none';
+  const boxes = boxesOf();
 
   const CONTROLS = 'button, a[href], input:not([type="hidden"]), select, textarea, label, summary, [role="button"], [role="tab"], [tabindex]:not([tabindex="-1"]), [contenteditable="true"]';
   const problems: DragProblem[] = [];
@@ -80,4 +93,54 @@ export function dragRegionReport(boxAt: typeof dragBoxAt, px = 40): DragReport {
     }
   }
   return { boxes: boxes.length, controls, problems };
+}
+
+export type HeaderItem = { what: string; region: string; control: boolean; problem: string };
+export type HeaderReport = { items: HeaderItem[]; samples: number; problems: string[] };
+
+// The header of a window without a title bar (the pop-out browser window: .bw-window-h) and the view below it.
+// - the header itself has -webkit-app-region: drag
+// - each element in the header is listed; a control in it must be no-drag
+// - points along the middle of the header, every 16 px: a point on a control is outside the drag area, every other
+//   point (the text and the empty part) is inside it
+// - points over the view, every 48 px: none is inside the drag area, so clicks and drags reach the page
+export function headerRegionReport(boxAt: typeof dragBoxAt, boxesOf: typeof dragBoxes, headerSel: string, viewSel: string): HeaderReport {
+  const label = (el: Element) => {
+    const c = typeof el.className === 'string' ? el.className.trim().split(/\s+/).filter(Boolean).slice(0, 3).join('.') : '';
+    const t = (el.getAttribute('aria-label') || el.getAttribute('title') || el.textContent || '').trim().slice(0, 30);
+    return `${el.tagName.toLowerCase()}${c ? '.' + c : ''}${t ? ` "${t}"` : ''}`;
+  };
+  const region = (el: Element) => { const s = getComputedStyle(el); return s.getPropertyValue('-webkit-app-region') || (s as unknown as { webkitAppRegion?: string }).webkitAppRegion || 'none'; };
+  const CONTROLS = 'button, a[href], input:not([type="hidden"]), select, textarea, label, summary, [role="button"], [role="tab"], [tabindex]:not([tabindex="-1"]), [contenteditable="true"]';
+  const problems: string[] = [], items: HeaderItem[] = [];
+  const header = document.querySelector(headerSel), view = document.querySelector(viewSel);
+  if (!header) return { items, samples: 0, problems: [`no ${headerSel}`] };
+  if (!view) return { items, samples: 0, problems: [`no ${viewSel}`] };
+  const boxes = boxesOf();
+  const hr = region(header);
+  items.push({ what: label(header), region: hr, control: false, problem: hr === 'drag' ? '' : 'the header is not drag' });
+  for (const el of header.querySelectorAll('*')) {
+    const control = el.matches(CONTROLS), r = region(el);
+    items.push({ what: label(el), region: r, control, problem: control && r !== 'no-drag' ? 'a control in the header is not no-drag' : '' });
+  }
+  for (const i of items) if (i.problem) problems.push(`${i.what}: ${i.problem} (${i.region})`);
+  let samples = 0;
+  const h = header.getBoundingClientRect(), y = (h.top + h.bottom) / 2;
+  for (let x = h.left + 2; x < h.right - 1; x += 16) {
+    const front = document.elementFromPoint(x, y);
+    if (!front || !header.contains(front)) continue;
+    samples++;
+    const onControl = !!front.closest(CONTROLS) && header.contains(front.closest(CONTROLS));
+    const d = boxAt(boxes, x, y);
+    if (onControl && d) problems.push(`the control ${label(front.closest(CONTROLS)!)} at ${Math.round(x)},${Math.round(y)} is in the drag area of ${d.what}`);
+    if (!onControl && !d) problems.push(`the point ${Math.round(x)},${Math.round(y)} on ${label(front)} in the header is not in the drag area`);
+  }
+  const v = view.getBoundingClientRect();
+  if (region(view) === 'drag') problems.push(`${label(view)} is drag`);
+  for (let vy = v.top + 2; vy < v.bottom - 1; vy += 48) for (let vx = v.left + 2; vx < v.right - 1; vx += 48) {
+    samples++;
+    const d = boxAt(boxes, vx, vy);
+    if (d) { problems.push(`the point ${Math.round(vx)},${Math.round(vy)} in the view is in the drag area of ${d.what}`); break; }
+  }
+  return { items, samples, problems };
 }

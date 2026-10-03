@@ -4,6 +4,7 @@
 //
 //   node --import tsx scripts/check-drag-regions.mjs <Taskboard URL>            headless Chrome, the page acts as the app
 //   node --import tsx scripts/check-drag-regions.mjs <Taskboard URL> --cdp 9396 a running test app (TASKBOARD_APP_DEBUG_PORT)
+//   ... --browser-window                                                         only the pop-out browser window
 //
 // Use a test Taskboard (pnpm sandbox), never the real one: the check opens the controller and changes saved view
 // settings of that page (header folded or open, transparency).
@@ -12,11 +13,12 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import WebSocket from 'ws';
-import { dragBoxAt, dragRegionReport } from '../web/src/dragRegions.ts';
+import { dragBoxAt, dragBoxes, dragRegionReport, headerRegionReport } from '../web/src/dragRegions.ts';
 
 const args = process.argv.slice(2);
 const url = args.find(a => /^https?:/.test(a));
 const cdpPort = args.includes('--cdp') ? Number(args[args.indexOf('--cdp') + 1]) : 0;
+const onlyBrowserWindow = args.includes('--browser-window');
 if (!url) { console.error('usage: node --import tsx scripts/check-drag-regions.mjs <Taskboard URL> [--cdp <port>]'); process.exit(2); }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -53,19 +55,20 @@ const run = async expr => {
 };
 
 // tsx may wrap named functions in __name(); the page gets a no-op copy so the source runs there
-const report = `(() => { var __name = f => f; return (${dragRegionReport.toString()})((${dragBoxAt.toString()}), 40); })()`;
+const report = (px = 40) => `(() => { var __name = f => f; return (${dragRegionReport.toString()})((${dragBoxAt.toString()}), (${dragBoxes.toString()}), ${px}); })()`;
+const header = `(() => { var __name = f => f; return (${headerRegionReport.toString()})((${dragBoxAt.toString()}), (${dragBoxes.toString()}), '.bw-window-h', '.bw-window > :last-child'); })()`;
 const width = w => cdpPort ? Promise.resolve() : send('Emulation.setDeviceMetricsOverride', { width: w, height: 900, deviceScaleFactor: 1, mobile: false });
 await send('Page.enable');
 if (!cdpPort) await send('Page.addScriptToEvaluateOnNewDocument', { source: 'window.taskboardApp = { isApp: true, newWindow() {} };' });
-const load = async u => { await send('Page.navigate', { url: u }); for (let i = 0; i < 60; i++) { await sleep(150); if (await run('!!document.querySelector(".app")').catch(() => false)) break; } await sleep(600); };
+const load = async u => { await send('Page.navigate', { url: u }); for (let i = 0; i < 60; i++) { await sleep(150); if (await run('!!document.querySelector(".app, .bw-window")').catch(() => false)) break; } await sleep(600); };
 const openCtl = () => run(`(async () => { if (!document.querySelector('.drawer.ctl-view')) document.querySelector('.ctl-item')?.click(); for (let i = 0; i < 40 && !document.querySelector('.drawer.ctl-view'); i++) await new Promise(r => setTimeout(r, 100)); return !!document.querySelector('.drawer.ctl-view'); })()`);
 const setLs = (k, v) => run(`localStorage.setItem(${JSON.stringify(k)}, ${JSON.stringify(v)})`);
 
 const states = [];
 let failed = 0;
-async function check(name) {
+async function check(name, px = 40) {
   await sleep(350);
-  const r = await run(report);
+  const r = await run(report(px));
   const inApp = await run('document.body.classList.contains("in-app")');
   states.push(name);
   if (!inApp) { failed++; console.log(`FAIL ${name}: the page did not mark itself as the app (body.in-app)`); return; }
@@ -78,21 +81,31 @@ try {
   for (const w of cdpPort ? [0] : [1600, 900]) {
     await width(w);
     const at = w ? ` at ${w} px` : '';
-    for (const view of ['list', 'board', 'graph', 'canvas:live', 'waiting', 'settings']) {
-      await load(`${base}#${view}`); await check(`${view}${at}`);
-    }
-    // the controller drawer over each view, folded and open, with and without the see-through terminal
-    for (const view of ['list', 'board', 'canvas:live', 'settings']) {
-      for (const [head, glass] of [['collapsed', 0], ['open', 0], ['collapsed', 85], ['open', 95]]) {
-        await setLs('tb-ctl-header', head); await setLs('tb-ctl-see', JSON.stringify({ see: glass, blur: 10 }));
-        await load(`${base}#${view}`);
-        if (!(await openCtl())) { failed++; console.log(`FAIL ${view}${at}: the controller drawer did not open`); continue; }
-        await check(`controller drawer over ${view}, header ${head}, see-through ${glass}%${at}`);
-        if (head === 'collapsed' && glass) { await run(`document.querySelector('.dr-bar .glass-btn')?.click()`); await check(`see-through popover over ${view}${at}`); }
+    if (!onlyBrowserWindow) {
+      for (const view of ['list', 'board', 'graph', 'canvas:live', 'waiting', 'settings']) {
+        await load(`${base}#${view}`); await check(`${view}${at}`);
       }
+      // the controller drawer over each view, folded and open, with and without the see-through terminal
+      for (const view of ['list', 'board', 'canvas:live', 'settings']) {
+        for (const [head, glass] of [['collapsed', 0], ['open', 0], ['collapsed', 85], ['open', 95]]) {
+          await setLs('tb-ctl-header', head); await setLs('tb-ctl-see', JSON.stringify({ see: glass, blur: 10 }));
+          await load(`${base}#${view}`);
+          if (!(await openCtl())) { failed++; console.log(`FAIL ${view}${at}: the controller drawer did not open`); continue; }
+          await check(`controller drawer over ${view}, header ${head}, see-through ${glass}%${at}`);
+          if (head === 'collapsed' && glass) { await run(`document.querySelector('.dr-bar .glass-btn')?.click()`); await check(`see-through popover over ${view}${at}`); }
+        }
+      }
+      // a pop-out canvas window has no top bar: its own toolbar is at the top edge
+      await load(`${base}?solo=1#canvas:live`); await check(`pop-out canvas window${at}`);
     }
-    // a pop-out canvas window has no top bar: its own toolbar is at the top edge
-    await load(`${base}?solo=1#canvas:live`); await check(`pop-out canvas window${at}`);
+    // the pop-out browser window has no title bar: its header moves the window, the view below gets every click.
+    // Its toolbars are below the header, so the controls are checked down to 160 px.
+    await load(`${base}?browser=template&title=Template%20browser&sub=check`); await check(`pop-out browser window${at}`, 160);
+    const h = await run(header);
+    states.push(`pop-out browser window header${at}`);
+    for (const i of h.items) console.log(`     ${i.what}: ${i.region}${i.control ? ' (control)' : ''}`);
+    if (h.problems.length) { failed++; console.log(`FAIL pop-out browser window header${at}:`); for (const p of h.problems) console.log(`  ${p}`); }
+    else console.log(`ok   pop-out browser window header${at}: header drag, ${h.samples} points checked`);
   }
   await setLs('tb-ctl-header', 'collapsed'); await setLs('tb-ctl-see', JSON.stringify({ see: 0 }));
 } finally { ws.close(); cleanup(); }

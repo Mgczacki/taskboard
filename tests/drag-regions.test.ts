@@ -37,9 +37,12 @@ test('the app rules: the strip lets the pointer through, every control and the d
   assert.match(css, /body\.in-app \.drawer \.dr-bar \.tabs-sp \{ -webkit-app-region: drag; \}/);
   // the spacer fills the free space of the bar, so it is a visible empty place to move the window from
   assert.match(css, /\.dr-bar \.tabs-sp \{ flex: 1 1 24px; min-width: 24px; align-self: stretch; \}/);
-  // only .top, .brand, the strip and the bar spacer are drag areas
+  // only .top, .brand, the strip, the bar spacer and the header of the pop-out browser window are drag areas
   const drags = [...css.matchAll(/([^{}]+)\{[^}]*-webkit-app-region: drag/g)].map(m => m[1].trim().split('\n').pop()!.trim());
-  assert.deepEqual(drags, ['body.in-app::before', 'body.in-app .top, body.in-app .brand', 'body.in-app .drawer .dr-bar .tabs-sp']);
+  assert.deepEqual(drags, ['body.in-app::before', 'body.in-app .top, body.in-app .brand', 'body.in-app .drawer .dr-bar .tabs-sp', 'body.in-app .bw-window-h']);
+  // the browser view below that header and every floating window are no-drag
+  assert.match(css, /body\.in-app \.bw-window > :not\(\.bw-window-h\) \{ -webkit-app-region: no-drag; \}/);
+  assert.match(css, /body\.in-app \.floatwin \{ -webkit-app-region: no-drag; \}/);
   for (const f of ['web/src/mockup.css', 'web/src/review.css', 'web/src/mail.css', 'web/src/links.css', 'web/src/graph.css']) assert.doesNotMatch(readFileSync(f, 'utf8'), /app-region:\s*drag/, f);
 });
 
@@ -55,4 +58,22 @@ test('the window buttons at the top left can not overlap the drawer', () => {
 test('the browser check: no control within 40 px of the top is in the drag area', { skip: !process.env.TASKBOARD_TEST_URL && 'set TASKBOARD_TEST_URL to a test Taskboard (pnpm sandbox) to run it' }, () => {
   const out = execFileSync(process.execPath, ['--import', 'tsx', 'scripts/check-drag-regions.mjs', process.env.TASKBOARD_TEST_URL!], { encoding: 'utf8', timeout: 300_000 });
   assert.match(out, /All \d+ states pass\./);
+});
+
+test('the pop-out browser window: the page marks itself as the app, the header leaves room for the window buttons', () => {
+  const page = readFileSync('web/src/components/TaskBrowser.tsx', 'utf8'), app = readFileSync('web/src/App.tsx', 'utf8'), css = readFileSync('web/src/app.css', 'utf8');
+  // BrowserWindowPage is the whole page of its window (main.tsx renders it instead of App), so it sets body.in-app itself
+  assert.match(page, /export function BrowserWindowPage\(\) \{[^]*?useAppWindow\(\);/);
+  assert.match(app, /useAppWindow\(\);/);
+  const pad = Number(css.match(/body\.in-app \.bw-window-h \{[^}]*padding-left: (\d+)px/)?.[1]);
+  const x = Number(readFileSync('desktop/main.cjs', 'utf8').match(/trafficLightPosition: \{ x: (\d+)/)?.[1]);
+  assert.ok(x + 3 * 14 + 2 * 6 + 8 <= pad, `the window buttons end at ${x + 54} px, the header text starts at ${pad} px`);
+  // the buttons are about 14 px high from y 14: the header is at least 40 px high
+  assert.match(css, /body\.in-app \.bw-window-h \{[^}]*min-height: 40px;/);
+});
+
+test('the desktop app opens a pop-out browser window where the last one was', () => {
+  const main = readFileSync('desktop/main.cjs', 'utf8');
+  assert.match(main, /const b = saved\?\.bounds \|\| \(browser && browserBounds\(\)\) \|\|/);
+  assert.match(main, /settings\.browserBounds = w\.getBounds\(\)/);
 });
