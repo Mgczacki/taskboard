@@ -1002,11 +1002,11 @@ table.procs tr.proc-group td { padding-top: 10px; }
 .bw { --bw-agent: #7a4ff0; --bw-ask: #c76a00; }
 .bw-agentline { display: flex; align-items: center; gap: 10px; min-height: 30px; padding: 3px 8px 3px 10px; border-bottom: 1px solid var(--line); background: color-mix(in srgb, var(--bw-agent) 10%, var(--panel)); font-size: 12px; flex-wrap: wrap; }
 .bw-agentline.both { background: color-mix(in srgb, var(--accent) 12%, var(--panel)); }
-.bw-agentline.ask { background: color-mix(in srgb, var(--bw-ask) 16%, var(--panel)); }
+.bw-agentline.asking { background: color-mix(in srgb, var(--bw-ask) 16%, var(--panel)); }
 .bw-agentline .bw-who { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; white-space: nowrap; }
 .bw-agentline .bw-who i { width: 8px; height: 8px; border-radius: 50%; background: var(--bw-agent); }
 .bw-agentline.both .bw-who i { background: var(--accent); }
-.bw-agentline.ask .bw-who i { background: var(--bw-ask); }
+.bw-agentline.asking .bw-who i { background: var(--bw-ask); }
 .bw-agentline .bw-what { color: var(--muted); min-width: 0; flex: 1 1 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .bw-agentline .bw-note { flex: 1 1 200px; min-width: 0; height: 24px; border: 1px solid var(--line2); border-radius: 6px; background: var(--bg); color: var(--text); padding: 0 8px; font: inherit; }
 .bw-apointer { position: absolute; width: 0; height: 0; pointer-events: none; z-index: 2; }

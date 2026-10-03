@@ -938,7 +938,7 @@ function AgentStrip({ evt, ask, note, setNote, userAt, onDone, onWindow }: { evt
   const live = !!evt && Date.now() - evt.seen < STRIP_MS;
   useEffect(() => { if (!live && !ask) return; const t = setInterval(() => tick(n => n + 1), 1000); return () => clearInterval(t); }, [live, !!ask, evt?.seen]);
   if (ask) return (
-    <div className="bw-agentline ask" role="status">
+    <div className="bw-agentline asking" role="status">
       <span className="bw-who"><i />The agent asks you</span>
       <span className="bw-what" title={ask.reason}>“{ask.reason}”</span>
       <input className="bw-note" value={note} onChange={e => setNote(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') onDone(); }} placeholder="Note for the agent (optional)" aria-label="Note for the agent" />
