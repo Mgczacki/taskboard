@@ -201,6 +201,8 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, 
   const [ask, setAsk] = useState<{ reason: string; at: string } | null>(null);
   const [askNote, setAskNote] = useState('');
   const userAt = useRef(0);
+  // the pixels for each point of the running browser (scale) and the ones that a start would use now (wantScale)
+  const [scale, setScale] = useState({ now: 1, want: 1 });
   const [autoSwitch, setAutoSwitch] = useState({ on: true, own: false });
   const [sharing, reloadSharing] = useSharing(id, isTemplate || archived, running);
   const setShared = (on: boolean) => api.signinShared(id, on).then(() => { reloadSharing(); setTold(on ? 'This browser gets shared sign-ins again.' : 'This browser gets no shared sign-ins now. It keeps the sign-ins it has: Reset gives an empty profile.'); }).catch(e => setErr(String(e.message || e)));
@@ -295,7 +297,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, 
         // the server sends the tabs every second: an unchanged list keeps the old array, so the view does not draw again
         else if (m.type === 'agent') setAgentEvt({ ...m, seen: Date.now() });
         else if (m.type === 'ask') setAsk(m.ask || null);
-        else if (m.type === 'tabs') { setAsk(prev => JSON.stringify(prev) === JSON.stringify(m.ask || null) ? prev : m.ask || null); setTabs(prev => JSON.stringify(prev) === JSON.stringify(m.tabs) ? prev : m.tabs); setRunning(true); setAgents(m.agents || 0); setMuted(m.muted ?? null); setErr(''); setAutoSwitch(prev => prev.on === (m.autoSwitch !== false) && prev.own === !!m.autoSwitchOwn ? prev : { on: m.autoSwitch !== false, own: !!m.autoSwitchOwn }); }
+        else if (m.type === 'tabs') { if (typeof m.scale === 'number') setScale(prev => prev.now === m.scale && prev.want === m.wantScale ? prev : { now: m.scale, want: m.wantScale || 1 }); setAsk(prev => JSON.stringify(prev) === JSON.stringify(m.ask || null) ? prev : m.ask || null); setTabs(prev => JSON.stringify(prev) === JSON.stringify(m.tabs) ? prev : m.tabs); setRunning(true); setAgents(m.agents || 0); setMuted(m.muted ?? null); setErr(''); setAutoSwitch(prev => prev.on === (m.autoSwitch !== false) && prev.own === !!m.autoSwitchOwn ? prev : { on: m.autoSwitch !== false, own: !!m.autoSwitchOwn }); }
         else if (m.type === 'active') onActive.current(m.id, m.auto);
         else if (m.type === 'offer') setOffers(prev => [...prev.filter(x => x !== m.id), m.id]);
         else if (m.type === 'cursor') setCursor(CURSORS.has(m.cursor) ? m.cursor : 'default');
@@ -309,7 +311,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, 
         else if (m.type === 'state') { setRunning(m.running); setState(m); setMuted(m.muted ?? null); if (!m.running) { setTabs([]); setActive(''); setFramed(false); clearFrames(); } }
         else if (m.type === 'error') setErr(m.message);
       };
-      s.onopen = () => { send({ type: 'hello', acks: true }); send({ type: 'visible', on: shown.current }); sendSize(); };
+      s.onopen = () => { send({ type: 'hello', acks: true, dpr: devicePixelRatio }); send({ type: 'visible', on: shown.current }); sendSize(); };
       s.onclose = () => { if (!closed) retry = setTimeout(connect, 2000); };
     };
     connect();
@@ -580,6 +582,9 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, 
     {autoNote.reason !== 'back' && fromTab && <button className="btn ghost" onClick={goBack} title={`Show ${tabName(fromTab)} again`}>Go back</button>}
     <button className="bw-ib" onClick={() => setAutoNote(null)} aria-label="Hide this line" title="Hide this line"><Icon d={I.close} size={13} /></button>
   </div>;
+  // a restart gives a sharp picture when the browser runs with fewer pixels than this screen has (the pages reopen)
+  const rescale = Math.abs(scale.want - scale.now) > 0.1 && !isTemplate;
+  const restartScale = () => { setPop(null); send({ type: 'restartScale' }); };
   const autoSwitchItem = <button className="bw-mi" role="menuitemcheckbox" aria-checked={autoSwitch.on} onClick={() => { setPop(null); send({ type: 'autoSwitch', on: !autoSwitch.on }); }}>
     <Icon d={autoSwitch.on ? I.popout : I.close} size={15} /><span>Switch to new tabs and popups: {autoSwitch.on ? 'on' : 'off'}<small>{autoSwitch.own ? 'Set for this browser. Click to change.' : 'From Settings. Click to change for this browser.'}</small></span>
   </button>;
@@ -610,6 +615,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, 
             <button className="bw-mi" role="menuitem" onClick={popOut}><Icon d={I.popout} size={15} /><span>Pop out<small>Show the browser in its own window</small></span></button>
             {onCanvas && <button className="bw-mi" role="menuitem" onClick={() => { setPop(null); onCanvas(); }}><Icon d={I.canvas} size={15} /><span>Show on Canvas<small>Above the terminal of this task</small></span></button>}
             {autoSwitchItem}
+            {rescale && <button className="bw-mi" role="menuitem" onClick={restartScale}><Icon d={I.reload} size={15} /><span>Restart for a sharp picture<small>The browser runs with {scale.now} pixel{scale.now === 1 ? '' : 's'} for each point; this screen wants {scale.want}. The pages open again.</small></span></button>}
             <div className="bw-msep" />
             {!isTemplate && !archived && <>
               {!sharing?.noShared && <button className="bw-mi" role="menuitem" onClick={() => { setPop(null); setSignin('sync'); }}><Icon d={I.reload} size={15} /><span>Sync sign-ins from the template<small>Adds its cookies for the sites you choose</small></span></button>}
@@ -648,6 +654,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, 
             {remote && <span className="bw-chip" title="The Chrome of this task runs on the other machine. Its picture and your input go through this Taskboard.">On {remote}</span>}
             {agents > 0 && <span className="bw-chip agent" title="An agent is connected to this browser through its task-browser tools"><i />Agent</span>}
             {!isTemplate && !remote && <BrowserMemory id={id} />}
+            {rescale && <button className="bw-chip" onClick={restartScale} title={`The browser runs with ${scale.now} pixel(s) for each point; this screen wants ${scale.want}. A restart opens the pages again.`}>Restart for a sharp picture</button>}
             {sound}
             {!floating && <button className="bw-ib" onClick={popOut} aria-label="Pop out" title="Show the browser in its own window"><Icon d={I.popout} /></button>}
             {stopButton}

@@ -174,6 +174,26 @@ test('the sharp view streams frames twice the size of the page', { skip, timeout
   assert.equal((await browser.status('b4')).sharp, false);
 });
 
+// Settings → Task browsers → Picture, 'screen': a view reports the device pixel ratio of its screen ('hello' with dpr),
+// and a browser that starts later uses it, also when no view is open then (browsers/screen.json).
+test('a browser starts with the pixel density of the screen that a view reported', { skip, timeout: 60000 }, async () => {
+  machine.update({ browserScale: 'screen' });
+  const client = Object.assign(new EventEmitter(), { readyState: WebSocket.OPEN, bufferedAmount: 0, send: () => {} });
+  browser.attachViewer(client as unknown as WebSocket, 'b6', false);
+  client.emit('message', JSON.stringify({ type: 'hello', acks: true, dpr: 2.2 }));
+  client.emit('close');
+  assert.equal(browser.startScale(), 2.25, 'the ratio is kept in steps of 0.25');
+  machine.update({ browserScale: 'one' });
+  assert.equal(browser.startScale(), 1);
+  machine.update({ browserScale: 'screen' });
+  try {
+    await browser.ensure('b6');
+    const st = await browser.status('b6');
+    assert.equal(st.sharp, true);
+    assert.equal(browser.readMeta('b6').scale, 2.25);
+  } finally { browser.noteScreen(1); await browser.stop('b6'); }
+});
+
 // A view that sends 'hello' with acks (the dashboard): the server sends at most two frames that the view did not
 // report as drawn, and about one each second after that (HELD_MS). Reports let the frames flow again. A hidden view
 // ('visible' false) gets no frames, and gets a frame soon after it shows again. A mouse move over a link gives the

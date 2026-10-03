@@ -29,7 +29,7 @@ const ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,120}$/;
 // started with --mute-audio because the sound extension did not load (see muteTabs).
 // error: why the last start failed or why Chrome ended by itself (exited), with the useful lines of chrome.log
 // (errorLines) and the time (errorAt). The next start that works removes them.
-export interface Meta { pid?: number; port?: number; started?: string; startMs?: number; tabs?: string[]; suspended?: boolean; idleStopped?: boolean; stoppedAt?: string; error?: string; errorLines?: string[]; errorAt?: string; exited?: boolean; copiedFromTemplate?: string; sound?: boolean; muted?: boolean; muteFlag?: boolean; sharp?: boolean;
+export interface Meta { pid?: number; port?: number; started?: string; startMs?: number; tabs?: string[]; suspended?: boolean; idleStopped?: boolean; stoppedAt?: string; error?: string; errorLines?: string[]; errorAt?: string; exited?: boolean; copiedFromTemplate?: string; sound?: boolean; muted?: boolean; muteFlag?: boolean; sharp?: boolean; scale?: number;
   // sign-in sharing (browser-signins.ts): noShared is the opt-out of this task browser, syncedAt the last sync from the
   // template, clearSites the sites whose cookies the next start deletes (sign out of all), liveSyncAt the last live sync.
   // headed: the template runs in a normal Chrome window (openTemplateWindow). savedFrom: the task whose profile became the template.
@@ -217,7 +217,7 @@ async function start(id: string, t0: number): Promise<Meta & { ws: string }> {
   mkdirSync(profileDir(id), { recursive: true });
   const portFile = join(profileDir(id), 'DevToolsActivePort');
   const urls = (meta.tabs || []).filter(u => /^(https?|file):/.test(u)).slice(0, 20);
-  const sharp = !!machine.get().browser?.sharp;
+  const scale = startScale(), sharp = scale > 1;
   // A Chrome that holds the profile but did not answer live() (a busy computer answers slowly) gets the full time.
   // When it answers, it is the browser. When it does not, it is ended before a new Chrome starts.
   let b: { pid: number; port: number; ws: string; child?: ChildProcess } | null = null;
@@ -235,8 +235,8 @@ async function start(id: string, t0: number): Promise<Meta & { ws: string }> {
       // some Chrome versions allow Extensions.loadUnpacked (the sound extension, muteTabs) only with this flag
       '--enable-unsafe-extension-debugging',
       ...(muteFlag ? ['--mute-audio'] : []),
-      // Settings → Task browsers → Sharp view: only this start flag makes screencast frames larger than the CSS size
-      ...(sharp ? ['--force-device-scale-factor=2'] : []),
+      // Settings → Task browsers → Picture: only this start flag makes screencast frames larger than the CSS size
+      ...(sharp ? [`--force-device-scale-factor=${scale}`] : []),
       'about:blank']; // headless Chrome takes one start page; the saved pages open below
     const offset = logSize(id), began = Date.now();
     const log = openSync(join(folder(id), 'chrome.log'), 'a');
@@ -268,7 +268,7 @@ async function start(id: string, t0: number): Promise<Meta & { ws: string }> {
     if (muted && !muteFlag) { await closeChrome(b.ws, b.pid); b = await launch(muteFlag = true); }
   }
   const port = b.port;
-  const next: Meta = { ...meta, pid: b.pid, port, started: new Date().toISOString(), muted, muteFlag: muteFlag || undefined, sharp: (reused ? meta.sharp : sharp) || undefined, suspended: undefined, idleStopped: undefined, error: undefined, errorLines: undefined, errorAt: undefined, exited: undefined, stoppedAt: undefined };
+  const next: Meta = { ...meta, pid: b.pid, port, started: new Date().toISOString(), muted, muteFlag: muteFlag || undefined, sharp: (reused ? meta.sharp : sharp) || undefined, scale: (reused ? meta.scale : sharp ? scale : undefined), suspended: undefined, idleStopped: undefined, error: undefined, errorLines: undefined, errorAt: undefined, exited: undefined, stoppedAt: undefined };
   const v = { webSocketDebuggerUrl: b.ws };
   if (urls.length) await openSaved(port, v.webSocketDebuggerUrl, urls);
   next.startMs = Date.now() - t0;
@@ -279,6 +279,27 @@ async function start(id: string, t0: number): Promise<Meta & { ws: string }> {
   // sign-in sharing: the deferred sign-out and the live cookies reach the browser before an agent uses it
   for (const fn of started) { try { await Promise.race([fn(id, v.webSocketDebuggerUrl), new Promise(r => setTimeout(r, 10000))]); } catch (e) { console.error(`task browser ${id}: sign-in sharing at the start failed: ${(e as Error).message}`); } }
   return { ...readMeta(id), ws: v.webSocketDebuggerUrl };
+}
+
+// ---------- the pixel density of a task browser ----------
+// A browser view reports the device pixel ratio of its screen ('hello' with dpr). The last one is kept in
+// browsers/screen.json, so a browser that an agent starts later gets it too. startScale() gives the factor for
+// --force-device-scale-factor at a start: the screen's ratio ('screen'), 1 ('one') or 2 ('two'), from 1 to 3, in steps
+// of 0.25. A running browser keeps its factor until its next start (the view offers a restart when they differ).
+const screenFile = () => join(DIR, 'screen.json');
+let screenDpr: number | undefined;
+export function noteScreen(dpr: unknown) {
+  const n = Math.round(Math.min(3, Math.max(1, Number(dpr) || 1)) * 4) / 4;
+  if (n === screenDpr) return;
+  screenDpr = n;
+  try { mkdirSync(DIR, { recursive: true }); writeFileSync(screenFile(), JSON.stringify({ dpr: n, at: new Date().toISOString() })); } catch { /* read-only */ }
+}
+export function startScale(): number {
+  const s = machine.get().browser?.scale ?? (machine.get().browser?.sharp ? 'two' : 'screen');
+  if (s === 'one') return 1;
+  if (s === 'two') return 2;
+  if (screenDpr === undefined) { try { screenDpr = Number(JSON.parse(readFileSync(screenFile(), 'utf8')).dpr) || 1; } catch { screenDpr = 1; } }
+  return screenDpr;
 }
 
 // ---------- a Chrome that ends by itself after its start ----------
@@ -1082,7 +1103,7 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     // the first list after the view or the browser started: these tabs are not new
     if (!seeded) { sw.seed(list.map(t => t.id)); seeded = true; } else sw.listed(list, asked);
     const meta = readMeta(id);
-    send({ type: 'tabs', tabs: list, active, agents: agentCount(id), muted: mutedNow(meta, true), autoSwitch: autoSwitchOn(id), autoSwitchOwn: meta.autoSwitch !== undefined, ask: askOf(id) });
+    send({ type: 'tabs', tabs: list, active, agents: agentCount(id), muted: mutedNow(meta, true), autoSwitch: autoSwitchOn(id), autoSwitchOwn: meta.autoSwitch !== undefined, ask: askOf(id), scale: meta.scale || 1, wantScale: startScale() });
     // the first tab when the view shows none; a shown tab that closed is handled by the switch (sw.destroyed)
     const target = active && list.some(t => t.id === active) ? active : sw.back() || list[0]?.id || '';
     if (target && target !== opening && (target !== active || !page)) await open(target);
@@ -1106,7 +1127,9 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     let m: any; try { m = JSON.parse(d.toString()); } catch { return; }
     try {
       // a failed start shows in the state that poll() sends (status().error), not as a second message
-      if (m.type === 'hello') acks = !!m.acks;
+      if (m.type === 'hello') { acks = !!m.acks; if (m.dpr) noteScreen(m.dpr); }
+      // a restart at the screen's pixel density (the view offers it when the running factor differs): the pages reopen
+      else if (m.type === 'restartScale') { await stop(id); void ensure(id).then(() => poll(), () => poll()); await poll(); }
       // a view that shows again gets a frame at once: Chrome sends one at each start of a screencast
       else if (m.type === 'visible') { const on = !!m.on; if (on !== visible) { visible = on; if (page) cast(page, on ? QUALITY_STILL : null); } }
       else if (m.type === 'drawn') { undrawn = Math.max(0, undrawn - 1); drain(); }
