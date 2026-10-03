@@ -2,6 +2,7 @@
 import { useEffect, useState } from 'react';
 import type { Group, Task } from '../api';
 import { AGENT_NAME, STATUS_LABEL, api, fmtWait, linkedTaskId, shortPath } from '../api';
+import { QueueActions, queueLabel, queueReason } from './QueuedMessage';
 import { AgentChip, ByController, Dot, MachineChip, ThreeLines, WhereChip } from './ui';
 import { Terminal } from './Terminal';
 import { PendingMarker } from './PendingCard';
@@ -277,12 +278,10 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
 // Messages that Taskboard could not type into this agent yet, with the reason (server/message-queue.ts), and inbox
 // notices that the agent was not told about yet (server/inbox-delivery.ts).
 function QueueList({ t, act }: { t: Task; act: (p: Promise<unknown>) => Promise<unknown> }) {
-  const what = { message: 'Message', review: 'Review feedback', permit: 'Permit result', inbox: 'Inbox notice' };
   return <div className="dr-scopes">{t.queue!.map(q => <div key={q.kind + q.id} className="scope-row" title={q.text}>
-    <span className={`chip${q.state === 'failed' ? ' failed' : ''}`}>{q.state === 'failed' ? 'Not delivered' : 'Queued'} · {what[q.kind]} from {q.from}</span>
-    <span>{q.reason}</span>
-    {q.kind !== 'inbox' && q.state === 'failed' && <button className="btn ghost" title="Wait for an empty input box again, then type the message" onClick={() => void act(api.queueAction(t.id, q.id, 'retry'))}>Type again</button>}
-    {q.kind !== 'inbox' && <button className="btn ghost" title="Remove the message. It is not typed." onClick={() => void act(api.queueAction(t.id, q.id, 'remove'))}>Remove</button>}
+    <span className={`chip${q.state === 'failed' ? ' failed' : q.late ? ' warn' : ''}`}>{queueLabel(q)}</span>
+    <span>{queueReason(q)}</span>
+    <QueueActions t={t} q={q} act={act} />
   </div>)}</div>;
 }
 

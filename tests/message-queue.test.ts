@@ -44,8 +44,18 @@ test('Claude Code 2.1.287 screens: which ones take a message', () => {
     ['claude-idle-question-words-above.txt', 'empty'], // idle; the agent's own reply above the box asks "Do you want to ..."
     ['claude-permission.txt', 'question'], // the permission question replaces the box
     ['claude-draft.ansi', 'draft'], // a person typed "my draft"
+    // Claude Code 2.1.288 as the controller (claude --name): the name is in the upper rule. The box and footer rows are
+    // from a capture of the real controller on 2026-10-03; the rows above the box and the machine name are replaced.
+    ['claude-controller-named.ansi', 'empty'],
+    // the same rows while it works, with Claude Code's own queued-message hint in the box (rows composed, not captured)
+    ['claude-controller-named-busy.ansi', 'empty'],
   ];
   for (const [file, want] of cases) assert.equal(boxState(screenFile(file)), want, file);
+  // the cause of task 217: the old rule pattern did not match the upper rule with the name, so every check of the
+  // controller found no input box ("Claude Code in #0 does not show its input box"), idle or busy
+  const upper = plainText(screenFile('claude-controller-named.ansi')).split('\n').find(l => l.includes('Taskboard controller'))!;
+  assert.doesNotMatch(upper, /^─{10,}\s*$/);
+  assert.equal(boxState(screenFile('claude-controller-named.ansi').replace(upper, '─'.repeat(upper.length))), 'empty');
   // the cause of the refusal: the old check searched the whole screen (and deliverText the bottom 15 rows) for question
   // words, and found them in the agent's earlier reply above an empty box
   const idle = screenFile('claude-idle-question-words-above.txt');
@@ -135,7 +145,7 @@ test('a permission question: nothing is typed, the message is queued, and it is 
     await until(() => submitted(t).includes('PERMISSION_ANSWERED'));
     await tick();
     assert.ok(await until(() => submitted(t).includes('Wait for the answer')));
-    assert.ok(await until(() => queue.list(t.id).length === 0));
+    assert.ok(await until(() => queue.list(t.id).every(q => q.state === 'delivered')));
     assert.match(store.get(t.id)!.statusSource || '', /from the queue/);
   } finally { await tmux.killSession(t.session); }
 });
@@ -169,7 +179,7 @@ test('queued messages keep their order, and a new message waits behind them', { 
     assert.equal((await queue.send(t, 'First', { from: 'controller', kind: 'message' })).state, 'queued');
     const second = await queue.send(t, 'Second', { from: 'controller', kind: 'message' });
     assert.equal(second.state, 'queued');
-    assert.match(second.reason!, /1 earlier message for #\d+ waits to be typed first/);
+    assert.match(second.reason!, /1 earlier message for #\d+ waits to be delivered first/);
     await tmux.tmux('send-keys', '-t', `=${t.session}:`, 'BSpace');
     await pause(300);
     await tick(); await tick();
@@ -178,27 +188,47 @@ test('queued messages keep their order, and a new message waits behind them', { 
   } finally { await tmux.killSession(t.session); }
 });
 
-test('a message that is not typed within the set time fails, stays visible, and can be typed again', { timeout: 60000 }, async () => {
+test('a queued message does not expire: each screen check is counted and says what it saw', { timeout: 60000 }, async () => {
   const t = await liveTask();
   try {
     fakeState(t, { permission: true });
     await pause(300);
-    const r = await queue.send(t, 'Too late', { from: 'controller', kind: 'message' });
+    const r = await queue.send(t, 'Still waiting', { from: 'controller', kind: 'message' });
+    assert.equal(r.state, 'queued');
+    // a message from an older version, with the 60 minutes expiry in the past
     const items = queue.list(t.id); items[0].expires = new Date(Date.now() - 1000).toISOString();
     writeFileSync(join(store.taskDir(t.id), 'message-queue.json'), JSON.stringify(items));
-    await tick();
-    const failed = queue.list(t.id)[0];
-    assert.equal(failed.state, 'failed');
-    assert.match(failed.reason, /^Not typed within 60 minutes\. Last reason: .*asks a question/);
-    assert.equal(queue.forView(t.id)[0].state, 'failed');
+    for (let i = 0; i < 3; i++) await tick();
+    const q = queue.list(t.id)[0];
+    assert.equal(q.state, 'queued', 'no expiry');
+    assert.equal(q.checks, 3);
+    assert.equal(q.tries, 1, 'tries counts typing tries only');
+    assert.equal(q.seen, 'The agent was working and the agent showed a question or dialog.');
+    const view = queue.forView(t.id)[0] as { checks: number; seen: string; late: boolean };
+    assert.equal(view.checks, 3);
+    assert.equal(view.late, false);
     fakeState(t, {});
     await pause(300);
     await tick();
-    assert.deepEqual(submitted(t), [], 'a failed message is not typed without the user');
-    queue.retry(t.id, r.id!);
-    assert.ok(await until(() => submitted(t).includes('Too late')));
-    assert.ok(await until(() => queue.list(t.id).length === 0));
+    assert.ok(await until(() => submitted(t).includes('Still waiting')));
+    const done = queue.list(t.id).find(x => x.id === r.id)!;
+    assert.equal(done.state, 'delivered');
+    assert.equal(done.deliveredBy, 'typed into the input box');
+    assert.equal(queue.forView(t.id).length, 0, 'a delivered message is not shown as waiting');
   } finally { await tmux.killSession(t.session); }
+});
+
+test('a message that was typed only in part fails, stays visible, and can be typed again', async () => {
+  const n = ++num;
+  const t = store.create({ id: `failed-${n}`, num: n, title: 'Failed fixture', agent: 'claude', status: 'idle', cwd: root, folder: root, session: `task-${n}`, sessionId: `fixture-${n}`, desc: '' });
+  mkdirSync(store.taskDir(t.id), { recursive: true });
+  writeFileSync(join(store.taskDir(t.id), 'message-queue.json'), JSON.stringify([{ id: 'part1', text: 'Half', kind: 'message', from: 'controller', queued: new Date().toISOString(), state: 'failed', reason: 'Enter was not pressed.', tries: 2 }]));
+  assert.equal(queue.forView(t.id).length, 0, 'the server has not seen this file yet');
+  queue.start(); queue.stop();
+  assert.equal(queue.forView(t.id)[0].state, 'failed');
+  assert.equal(queue.takeForHook(t.id, 'PostToolUse'), null, 'a hook does not deliver a failed message');
+  assert.equal(queue.retry(t.id, 'part1')?.state, 'queued');
+  assert.match(queue.takeForHook(t.id, 'PostToolUse') || '', /Half/);
 });
 
 test('the controller: queued while it does not run, typed when it runs and its box is empty', { timeout: 60000 }, async () => {
@@ -210,11 +240,12 @@ test('the controller: queued while it does not run, typed when it runs and its b
   await tmux.newSession(t.session, root, { TASK_DIR: store.taskDir(t.id), FAKE_AGENT: 'claude' }, [join(bin, 'claude')], async () => {});
   try {
     await until(async () => /for shortcuts/.test(await tmux.capture(t.session, 0)), 4000);
-    fakeState(t, { busy: true });
+    // as Claude Code 2.1.288 draws the controller: its name in the upper rule, a status line below the box
+    fakeState(t, { busy: true, name: 'Taskboard controller · test-machine', footer: ['  Sonnet 5.5 · 5h 8% · week 38%'] });
     await pause(300);
     await tick();
     assert.ok(await until(async () => /❯ Worktree request from #165/.test(await tmux.capture(t.session, 0))));
-    assert.ok(await until(() => queue.list(t.id).length === 0));
+    assert.ok(await until(() => queue.list(t.id).every(q => q.state === 'delivered')));
   } finally { await tmux.killSession(t.session); }
 });
 

@@ -437,7 +437,7 @@ switch (cmd) {
     const t = await task(rest[0]); const r = await call('POST', `/api/tasks/${t.id}/send`, { text });
     if (r?.approved) break;
     // delivered: typed and Enter pressed. queued: nothing typed yet, the reason says why (failed exits in call)
-    if (r?.state === 'queued') console.log(`Queued for #${t.num}, not typed yet: ${r.reason} Taskboard types it when the input box is empty, for up to 60 minutes. The dashboard shows it on the task.`);
+    if (r?.state === 'queued') console.log(`Queued for #${t.num}, not typed yet: ${r.reason} ${r.next || 'Taskboard types it when the input box is empty.'} The dashboard shows it on the task.`);
     else console.log(`Delivered to #${t.num}: typed into its input box, and Enter was pressed.${r?.warning ? ` ${r.warning}` : ''}`);
     break;
   }

@@ -15,6 +15,7 @@
 //     messages". When busy ends, the queued messages are submitted.
 //   permission: the permission question in place of the box. "1" answers it. Other keys do nothing.
 //   history: rows of earlier output above the box. notice: a background task notice above the box.
+//   name: the session name in the upper rule, as claude --name draws it. footer: rows below the box (a status line).
 //   drawing: only the history rows and no box, as a screen that the agent has not finished drawing.
 //   An empty box shows its hint dim (SGR 2), as Claude Code and Codex do: Claude Code "Try ..." when hint is set, Codex
 //   "Ask Codex to do anything".
@@ -83,7 +84,9 @@ function draw() {
       ...queued.flatMap(q => [`${mark} ${q.slice(0, 60)}`, '  ctrl+x ctrl+s to send now']), ...(state.busy ? ['✻ Beaming… (8s · ↓ 231 tokens)'] : [])];
     // Claude Code draws its rules grey ("ESC[38;5;244m"), so a screen with colors always has escape codes
     const rule = '\x1b[38;5;244m' + RULE + '\x1b[39m';
-    lines = agent === 'codex' ? ['OpenAI Codex (fake)', '', ...past, ...above, '', ...box, '', '  ? for shortcuts'] : ['Fake agent', ...past, ...above, '', rule, ...box, rule, state.busy ? '  ⏸ manual mode on · esc to interrupt' : '  ? for shortcuts'];
+    // claude --name draws the session name in the upper rule (Claude Code 2.1.288, observed on the controller)
+    const upper = state.name ? '\x1b[38;5;244m' + '─'.repeat(60) + ` ${state.name} ─` + '\x1b[39m' : rule;
+    lines = agent === 'codex' ? ['OpenAI Codex (fake)', '', ...past, ...above, '', ...box, '', '  ? for shortcuts'] : ['Fake agent', ...past, ...above, '', upper, ...box, rule, ...(state.footer || []), state.busy ? '  ⏸ manual mode on · esc to interrupt' : '  ? for shortcuts'];
   }
   process.stdout.write('\x1b[2J\x1b[H' + lines.join('\r\n'));
 }
