@@ -24,6 +24,8 @@ type Row = { id: string; at: string; taskId?: string; agent?: Agent; title: stri
 type View = 'all' | 'questions' | 'messages' | 'permits' | 'git' | 'answered' | 'dismissed';
 const VIEWS: [View, string][] = [['all', 'All'], ['questions', 'Agent questions'], ['messages', 'Messages'], ['permits', 'Permits'], ['git', 'Push and release'], ['answered', 'Answered'], ['dismissed', 'Dismissed']];
 const GIT = ['git-push', 'git-merge', 'release', 'restart'];
+// the kind chip of a decided approval card in the Answered view
+const KIND_OF_ACTION: Record<string, string> = { permit: 'Permit', 'git-push': 'Git push', 'git-merge': 'Merge', release: 'Release', restart: 'Restart', scope: 'Scope' };
 const minutesSince = (iso: string) => Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
 
 // quiet: the tasks whose waiting item the user dismissed (dismiss.ts quietTaskIds). They get no task row.
@@ -69,7 +71,7 @@ export function WaitingPage({ tasks, allTasks, openTask, openController, toast }
   }, []);
   const done: Row[] = [...answered.map(i => ({ id: `p:${i.id}`, at: i.answer?.at || i.createdAt, taskId: i.taskId, agent: i.agent, title: `#${i.taskNum} ${i.taskTitle}`, question: i.question, kind: KIND_LABEL[i.kind], item: i, done: true })),
     // decided Message cards, with their result: sent, failed with the reason, rejected, or sent back
-    ...approvals.filter(a => isMessage(a) && ['approved', 'failed', 'denied', 'returned'].includes(a.state)).map(a => { const t = tasks.find(x => x.id === a.actor); return { id: `a:${a.id}`, at: a.created, taskId: t?.id, agent: t?.agent, title: a.actor === 'controller' ? 'The controller' : t ? `#${t.num} ${t.title}` : a.actor, question: a.summary, kind: 'Message', approval: a, done: true }; })]
+    ...approvals.filter(a => (isMessage(a) || a.action !== 'tool-refusal') && ['approved', 'failed', 'denied', 'returned', ...(isMessage(a) ? [] : ['expired', 'unknown'])].includes(a.state)).map(a => { const t = tasks.find(x => x.id === a.actor); return { id: `a:${a.id}`, at: a.decidedBy?.at || a.created, taskId: t?.id, agent: t?.agent, title: a.actor === 'controller' ? 'The controller' : t ? `#${t.num} ${t.title}` : a.actor, question: a.summary, kind: isMessage(a) ? 'Message' : KIND_OF_ACTION[a.action] || 'Approval', approval: a, done: true }; })]
     .sort((x, y) => y.at.localeCompare(x.at));
   const test: Record<View, (r: Row) => boolean> = {
     all: () => true, questions: r => !!r.item, answered: () => true, messages: r => r.kind === 'Message',
@@ -104,7 +106,7 @@ export function WaitingPage({ tasks, allTasks, openTask, openController, toast }
         <span className={`dot ${r.done ? 'idle' : r.kind === 'Stopped' ? 'stopped' : r.kind === 'Review' ? 'review' : 'needs-you'}`} />
         <span className="t">{r.title}</span><span className="a">{fmtWait(minutesSince(r.at))}</span>
         <span className="q">{r.question}</span>
-        <span className="k">{r.agent && <AgentChip a={r.agent} />}<span className="chip">{r.kind}</span>{r.risky && <span className="chip warn">risky option</span>}{r.screen && <span className="chip">screen</span>}{r.late && <span className="chip warn" title="Nobody approved this draft for a long time. It is not sent.">reminder</span>}{r.done && r.approval && <span className="chip">{r.approval.state === 'approved' ? 'done' : r.approval.state}</span>}{r.dismissal && <span className="chip">dismissed{r.dismissal.until ? ' for 10 min' : ''}</span>}{r.done && !r.dismissal && r.item?.state && <span className="chip">{r.item.state === 'answered' ? `answered by ${r.item.answer?.by === 'controller' ? 'the controller' : 'you'}` : r.item.state}</span>}</span>
+        <span className="k">{r.agent && <AgentChip a={r.agent} />}<span className="chip">{r.kind}</span>{r.risky && <span className="chip warn">risky option</span>}{r.screen && <span className="chip">screen</span>}{r.late && <span className="chip warn" title="Nobody approved this draft for a long time. It is not sent.">reminder</span>}{r.done && r.approval && <span className="chip">{r.approval.state === 'approved' ? r.approval.decidedBy?.by === 'controller' ? 'approved by the controller' : 'done' : r.approval.state}</span>}{r.dismissal && <span className="chip">dismissed{r.dismissal.until ? ' for 10 min' : ''}</span>}{r.done && !r.dismissal && r.item?.state && <span className="chip">{r.item.state === 'answered' ? `answered by ${r.item.answer?.by === 'controller' ? 'the controller' : 'you'}` : r.item.state}</span>}</span>
       </button>) : <div className="wt-empty">Nothing here.</div>}</div>
       <div className="wt-detail">{cur ? <>
         {cur.dismissal && <div className="pcard"><div className="pc-h"><b>{cur.title}</b>{cur.agent && <AgentChip a={cur.agent} />}<span className="chip">{cur.kind}</span><span className="pc-sp" /><span className="pc-age">dismissed at {new Date(cur.dismissal.at).toLocaleTimeString()}</span></div>

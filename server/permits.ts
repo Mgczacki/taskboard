@@ -211,10 +211,13 @@ export function explicitControllerRequest(transcript: string | undefined, agent:
 }
 // True when one user message in the controller transcript is exactly these words. Text that a tool returned, a task
 // log or a mail is not a user message, so it does not count.
-export function userWrote(transcript: string | undefined, agent: string, words: string): boolean {
-  if (!transcript || !words.trim() || words.length > 2000) return false;
+export const userWrote = (transcript: string | undefined, agent: string, words: string): boolean => userWroteCount(transcript, agent, words) > 0;
+// How many user messages in the controller transcript are exactly these words.
+export function userWroteCount(transcript: string | undefined, agent: string, words: string): number {
+  if (!transcript || !words.trim() || words.length > 2000) return 0;
   let content = '';
-  try { content = readFileSync(transcript, 'utf8').slice(-4 * 1024 * 1024); } catch { return false; }
+  let count = 0;
+  try { content = readFileSync(transcript, 'utf8').slice(-4 * 1024 * 1024); } catch { return 0; }
   for (const line of content.split('\n')) {
     let row: any; try { row = JSON.parse(line); } catch { continue; }
     let message = '';
@@ -226,9 +229,9 @@ export function userWrote(transcript: string | undefined, agent: string, words: 
     } else if (agent === 'antigravity' && row.type === 'USER_INPUT') {
       message = typeof row.content === 'string' ? row.content : Array.isArray(row.content) ? row.content.filter((x: any) => x.type === 'text').map((x: any) => x.text).join('\n') : '';
     }
-    if (message.trim() === words.trim()) return true;
+    if (message.trim() === words.trim()) count++;
   }
-  return false;
+  return count;
 }
 export function notice(p: Permit): string {
   const comment = p.decisionComment ? ` User comment: ${p.decisionComment}.` : '';

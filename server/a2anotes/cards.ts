@@ -122,15 +122,16 @@ export function a2aCards(deps: CardDeps) {
   }
 
   // Sends an approved draft. A failure goes to the card result and to the task, in plain words.
-  async function send(m: any, hash: string) {
+  async function send(m: any, hash: string, d: approvals.Decider = { by: 'user' }) {
+    const who = d.by === 'controller' ? 'The controller, on the user\'s request in its chat,' : 'The user';
     try { await deps.call('a2anotes_send', { id: m.id, expected_hash: hash, request_id: `card-${m.id}-${hash.slice(0, 16)}` }); }
     catch (e) {
       const why = explainSendError(e instanceof A2AError ? e.code : 'error', (e as Error).message);
-      await tellWriter(m, 'not-sent', `The user approved your draft to ${deps.name(m)} at ${clock()}, but it was not sent. ${why}`,
+      await tellWriter(m, 'not-sent', `${who} approved your draft to ${deps.name(m)} at ${clock()}, but it was not sent. ${why}`,
         'The user can send it again from the card on the dashboard. Do not write a new draft unless the user asks.');
       throw new Error(`Approved, but not sent. ${why}`);
     }
-    await tellWriter(m, 'sent', `The user approved your draft to ${deps.name(m)}, and Taskboard sent it at ${clock()}.`, 'The draft is sent. Nothing else is needed for it.');
+    await tellWriter(m, 'sent', `${who} approved your draft to ${deps.name(m)}, and Taskboard sent it at ${clock()}.`, 'The draft is sent. Nothing else is needed for it.');
     return `Approved and sent to ${deps.name(m)} at ${clock()}.`;
   }
 
@@ -146,20 +147,21 @@ export function a2aCards(deps: CardDeps) {
     const current = async () => { const x = await deps.call('a2anotes_get_message', { id }); if (!x || x.hash !== hash) throw new Error('The message changed. Read the new version on its card.'); return x; };
     // after a decision, sync again at once: a failed send gets its Send again card without a wait for the next check
     const later = () => { setTimeout(() => { void sync(); }, 50).unref?.(); };
-    const card = approvals.request({ actor, action: m.direction === 'in' ? 'mail-in' : 'mail-out', summary, detail: detail(m, stage), payload: payloadOf(m, stage, proposal) }, () => decide().finally(later), {
+    const card = approvals.request({ actor, action: m.direction === 'in' ? 'mail-in' : 'mail-out', summary, detail: detail(m, stage), payload: payloadOf(m, stage, proposal) }, d => decide(d).finally(later), {
       onDeny: () => { deny().catch(() => {}).finally(later); },
       giveBack: comment => giveBack(comment).finally(later),
     });
     open.set(id, { approval: card.id, key });
 
-    async function decide() {
+    async function decide(d: approvals.Decider) {
+      const context = d.by === 'controller' ? `Approved by the controller on the user's request: "${d.userRequest || ''}"`.slice(0, 2000) : 'Approved on the dashboard card.';
       let x = await current();
       if (stage === 'checking' || stage === 'held') throw new Error(stage === 'held' ? 'The safety check holds this draft. Nobody can approve it.' : 'The checks have not finished. Run the check again, or wait.');
       if (x.direction === 'out') {
-        if (x.state === 'draft') x = await deps.call('a2anotes_approve', { id, expected_hash: hash, decision: 'approve', review_context: 'Approved on the dashboard card.' });
-        return send(x, hash);
+        if (x.state === 'draft') x = await deps.call('a2anotes_approve', { id, expected_hash: hash, decision: 'approve', review_context: context });
+        return send(x, hash, d);
       }
-      if (x.state === 'held') x = await deps.call('a2anotes_approve', { id, expected_hash: hash, decision: 'approve', review_context: 'Approved on the dashboard card.' });
+      if (x.state === 'held') x = await deps.call('a2anotes_approve', { id, expected_hash: hash, decision: 'approve', review_context: context });
       if (proposal?.task && x.audience !== 'person') { const r = await deps.route(id, proposal.task); return `Approved and given to ${taskName(r.task)}.`; }
       return x.audience === 'person' && proposal?.task ? 'Approved. A message for a person does not go to a task.' : 'Approved.';
     }
