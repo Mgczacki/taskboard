@@ -1017,3 +1017,8 @@ table.procs tr.proc-group td { padding-top: 10px; }
 @media (prefers-reduced-motion: reduce) { .bw-apointer .bw-aring { animation: none; opacity: .6; } }
 .chip.bw-askchip { background: color-mix(in srgb, #c76a00 16%, transparent); color: #c76a00; font-weight: 600; }
 .chip.bw-askchip i { display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: #c76a00; margin-right: 5px; }
+/* a task browser in its own window (TaskBrowser.tsx): the frames stay dim behind a card */
+.bw-screen.inwin canvas { opacity: .35; }
+.bw-wincover { position: absolute; inset: 0; display: grid; place-items: center; z-index: 3; cursor: default; }
+.bw-wincover .bw-card { max-width: 440px; background: var(--panel); border: 1px solid var(--line2); border-radius: 10px; padding: 18px 20px; box-shadow: 0 8px 30px rgba(0,0,0,.18); text-align: center; }
+.bw-wincover .bw-card p { color: var(--muted); }

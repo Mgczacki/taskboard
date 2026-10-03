@@ -203,6 +203,13 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, 
   const userAt = useRef(0);
   // the pixels for each point of the running browser (scale) and the ones that a start would use now (wantScale)
   const [scale, setScale] = useState({ now: 1, want: 1 });
+  // Open in a window (server/task-browser.ts setWindow): inWindow while the browser is a normal Chrome window on this
+  // computer; switching while a change runs; unsent when the pages have text that a change would lose (the view asks).
+  const [inWindow, setInWindow] = useState(false);
+  const [switching, setSwitching] = useState<boolean | null>(null);
+  const [unsent, setUnsent] = useState<{ on: boolean; fields: number } | null>(null);
+  const windowable = !remote && !isTemplate && !archived;
+  const toWindow = (on: boolean, force = false) => { setPop(null); setUnsent(null); send({ type: 'window', on, force }); };
   const [autoSwitch, setAutoSwitch] = useState({ on: true, own: false });
   const [sharing, reloadSharing] = useSharing(id, isTemplate || archived, running);
   const setShared = (on: boolean) => api.signinShared(id, on).then(() => { reloadSharing(); setTold(on ? 'This browser gets shared sign-ins again.' : 'This browser gets no shared sign-ins now. It keeps the sign-ins it has: Reset gives an empty profile.'); }).catch(e => setErr(String(e.message || e)));
@@ -297,7 +304,9 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, 
         // the server sends the tabs every second: an unchanged list keeps the old array, so the view does not draw again
         else if (m.type === 'agent') setAgentEvt({ ...m, seen: Date.now() });
         else if (m.type === 'ask') setAsk(m.ask || null);
-        else if (m.type === 'tabs') { if (typeof m.scale === 'number') setScale(prev => prev.now === m.scale && prev.want === m.wantScale ? prev : { now: m.scale, want: m.wantScale || 1 }); setAsk(prev => JSON.stringify(prev) === JSON.stringify(m.ask || null) ? prev : m.ask || null); setTabs(prev => JSON.stringify(prev) === JSON.stringify(m.tabs) ? prev : m.tabs); setRunning(true); setAgents(m.agents || 0); setMuted(m.muted ?? null); setErr(''); setAutoSwitch(prev => prev.on === (m.autoSwitch !== false) && prev.own === !!m.autoSwitchOwn ? prev : { on: m.autoSwitch !== false, own: !!m.autoSwitchOwn }); }
+        else if (m.type === 'windowUnsent') setUnsent({ on: !!m.on, fields: m.fields || 0 });
+        else if (m.type === 'windowSwitching') { setSwitching(!!m.on); setTimeout(() => setSwitching(null), 20000); }
+        else if (m.type === 'tabs') { setInWindow(prev => { const w = !!m.window; if (w !== prev) setSwitching(null); return w; }); if (typeof m.scale === 'number') setScale(prev => prev.now === m.scale && prev.want === m.wantScale ? prev : { now: m.scale, want: m.wantScale || 1 }); setAsk(prev => JSON.stringify(prev) === JSON.stringify(m.ask || null) ? prev : m.ask || null); setTabs(prev => JSON.stringify(prev) === JSON.stringify(m.tabs) ? prev : m.tabs); setRunning(true); setAgents(m.agents || 0); setMuted(m.muted ?? null); setErr(''); setAutoSwitch(prev => prev.on === (m.autoSwitch !== false) && prev.own === !!m.autoSwitchOwn ? prev : { on: m.autoSwitch !== false, own: !!m.autoSwitchOwn }); }
         else if (m.type === 'active') onActive.current(m.id, m.auto);
         else if (m.type === 'offer') setOffers(prev => [...prev.filter(x => x !== m.id), m.id]);
         else if (m.type === 'cursor') setCursor(CURSORS.has(m.cursor) ? m.cursor : 'default');
@@ -575,7 +584,13 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, 
   </button>;
   const noteTab = autoNote && tabs.find(t => t.id === autoNote.id);
   const fromTab = autoNote && tabs.find(t => t.id === autoNote.from);
-  const agentLine = <AgentStrip evt={agentEvt} ask={ask} note={askNote} setNote={setAskNote} userAt={userAt}
+  const windowLine = (unsent || switching !== null) && <div className="bw-agentline both" role="status">
+    {switching !== null ? <span className="bw-what"><span className="bw-spin" /> {switching ? 'Opening the browser in its own window. The pages load again.' : 'Moving the browser back here. The pages load again.'}</span>
+      : <><span className="bw-what">{unsent!.fields} {unsent!.fields === 1 ? 'field has' : 'fields have'} text that is not sent yet. The pages load again, and that text is lost.</span>
+        <button className="btn" onClick={() => toWindow(unsent!.on, true)}>{unsent!.on ? 'Open in a window anyway' : 'Move back anyway'}</button>
+        <button className="btn ghost" onClick={() => setUnsent(null)}>Cancel</button></>}
+  </div>;
+  const agentLine = <AgentStrip evt={agentEvt} ask={ask} note={askNote} setNote={setAskNote} userAt={userAt} onWindow={windowable && !inWindow ? () => toWindow(true) : undefined}
     onDone={() => { send({ type: 'askDone', note: askNote.trim() }); setAsk(null); setAskNote(''); note('The agent got your answer'); }} />;
   const switchedLine = autoNote && autoNote.id === active && <div className="bw-switched" role="status">
     <span className="bw-switched-t">{autoNote.reason === 'back' ? <>The tab closed. Back to <b>{noteTab ? tabName(noteTab) : 'the earlier tab'}</b>.</> : <>Switched to the new tab: <b>{noteTab ? tabName(noteTab) : 'loading…'}</b></>}</span>
@@ -615,6 +630,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, 
             <button className="bw-mi" role="menuitem" onClick={popOut}><Icon d={I.popout} size={15} /><span>Pop out<small>Show the browser in its own window</small></span></button>
             {onCanvas && <button className="bw-mi" role="menuitem" onClick={() => { setPop(null); onCanvas(); }}><Icon d={I.canvas} size={15} /><span>Show on Canvas<small>Above the terminal of this task</small></span></button>}
             {autoSwitchItem}
+            {windowable && !inWindow && <button className="bw-mi" role="menuitem" onClick={() => toWindow(true)}><Icon d={I.popout} size={15} /><span>Open in a window<small>A normal Chrome window on this computer, with the same profile and tabs. For passkeys, password managers and hard sign-ins. The pages load again.</small></span></button>}
             {rescale && <button className="bw-mi" role="menuitem" onClick={restartScale}><Icon d={I.reload} size={15} /><span>Restart for a sharp picture<small>The browser runs with {scale.now} pixel{scale.now === 1 ? '' : 's'} for each point; this screen wants {scale.want}. The pages open again.</small></span></button>}
             <div className="bw-msep" />
             {!isTemplate && !archived && <>
@@ -656,6 +672,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, 
             {!isTemplate && !remote && <BrowserMemory id={id} />}
             {rescale && <button className="bw-chip" onClick={restartScale} title={`The browser runs with ${scale.now} pixel(s) for each point; this screen wants ${scale.want}. A restart opens the pages again.`}>Restart for a sharp picture</button>}
             {sound}
+            {windowable && !inWindow && <button className="btn ghost" onClick={() => toWindow(true)} title="A normal Chrome window on this computer, with the same profile and tabs. For passkeys, password managers and hard sign-ins. The pages load again.">Open in a window</button>}
             {!floating && <button className="bw-ib" onClick={popOut} aria-label="Pop out" title="Show the browser in its own window"><Icon d={I.popout} /></button>}
             {stopButton}
           </div>
@@ -663,6 +680,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, 
         </div>
       </>}
       {switchedLine}
+      {windowLine}
       {agentLine}
       {dialog && <div className="bw-dialog" role="alertdialog" aria-label="The page waits for an answer">
         <i className="bw-ask in" />
@@ -673,7 +691,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, 
       </div>}
       {err && <div className="banner">{err} <button className="btn ghost" onClick={() => setErr('')}>OK</button></div>}
       {signinParts}
-      <div className={`bw-screen ${framed ? 'framed' : ''}`} ref={screenRef} tabIndex={0}
+      <div className={`bw-screen ${framed ? 'framed' : ''} ${inWindow ? 'inwin' : ''}`} ref={screenRef} tabIndex={0}
         onFocus={e => { if (e.target === e.currentTarget) kb.current?.focus({ preventScroll: true }); }}
         onMouseDown={e => { e.preventDefault(); kb.current?.focus({ preventScroll: true }); moveKb(e); mouse('mousePressed', e, e.detail || 1); }}
         onMouseUp={e => { mouse('mouseReleased', e, e.detail || 1); peek(); }}
@@ -684,6 +702,11 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, 
         onCopy={e => copy(e, false)} onCut={e => copy(e, true)}>
         <canvas ref={canvas} />
         {agentEvt && <AgentPointer evt={agentEvt} frame={frameSize.current} active={active} />}
+        {inWindow && <div className="bw-wincover" onMouseDown={e => e.stopPropagation()} onWheel={e => e.stopPropagation()}><div className="bw-card">
+          <h3>The browser is in its own window</h3>
+          <p>Use it there, on this computer. The agent works in the same window. Back to the panel, or closing the window, brings the browser back here with the same tabs and sign-ins.</p>
+          <div className="bw-actions"><button className="btn" onClick={() => send({ type: 'showWindow' })}>Show the window</button><button className="btn primary" onClick={() => toWindow(false)}>Back to the panel</button></div>
+        </div></div>}
         <textarea ref={kb} className="bw-kb" style={{ left: kbAt.x, top: kbAt.y }} aria-label="Keyboard input for the page" autoComplete="off" autoCorrect="off" autoCapitalize="off" spellCheck={false} tabIndex={-1}
           onCompositionStart={() => { composing.current = true; }}
           onCompositionUpdate={e => send({ type: 'ime', text: e.data || '' })}
@@ -796,7 +819,7 @@ const ago = (ms: number) => ms < 1500 ? 'now' : ms < 60000 ? `${Math.round(ms / 
 // The strip under the address row: the agent's request for help (orange, with a note field and Done), or else the
 // agent's last action for STRIP_MS after it. When the user also acted within BOTH_MS, it says that both use the page.
 // It blocks nothing: the user and the agent can act at any time.
-function AgentStrip({ evt, ask, note, setNote, userAt, onDone }: { evt: AgentEvt | null; ask: { reason: string; at: string } | null; note: string; setNote: (v: string) => void; userAt: React.MutableRefObject<number>; onDone: () => void }) {
+function AgentStrip({ evt, ask, note, setNote, userAt, onDone, onWindow }: { evt: AgentEvt | null; ask: { reason: string; at: string } | null; note: string; setNote: (v: string) => void; userAt: React.MutableRefObject<number>; onDone: () => void; onWindow?: () => void }) {
   const [, tick] = useState(0);
   const live = !!evt && Date.now() - evt.seen < STRIP_MS;
   useEffect(() => { if (!live && !ask) return; const t = setInterval(() => tick(n => n + 1), 1000); return () => clearInterval(t); }, [live, !!ask, evt?.seen]);
@@ -806,6 +829,7 @@ function AgentStrip({ evt, ask, note, setNote, userAt, onDone }: { evt: AgentEvt
       <span className="bw-what" title={ask.reason}>“{ask.reason}”</span>
       <input className="bw-note" value={note} onChange={e => setNote(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') onDone(); }} placeholder="Note for the agent (optional)" aria-label="Note for the agent" />
       <button className="btn primary" onClick={onDone} title="Tell the agent that you are done. Your note goes with it.">Done</button>
+      {onWindow && <button className="btn" onClick={onWindow} title="A normal Chrome window on this computer, with the same profile and tabs. For passkeys, password managers and hard sign-ins. The pages load again.">Open in a window</button>}
     </div>
   );
   if (!live) return null;

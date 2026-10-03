@@ -36,6 +36,9 @@ export interface Meta { pid?: number; port?: number; started?: string; startMs?:
   noShared?: boolean; syncedAt?: string; clearSites?: string[]; liveSyncAt?: string; headed?: boolean; savedFrom?: { task: string; at: string };
   // ask: the agent asked the user for help in this browser (tb browser ask), until the user answers with Done
   ask?: Ask;
+  // window: the task browser runs as a normal Chrome window on this computer (Open in a window, setWindow), with its
+  // debugging port, so the agent keeps working in the window that the user sees
+  window?: boolean;
   // autoSwitch: the dashboard view switches to a new tab or popup (tab-switch.ts); unset follows the Settings choice
   autoSwitch?: boolean }
 export interface Ask { reason: string; at: string }
@@ -217,7 +220,9 @@ async function start(id: string, t0: number): Promise<Meta & { ws: string }> {
   mkdirSync(profileDir(id), { recursive: true });
   const portFile = join(profileDir(id), 'DevToolsActivePort');
   const urls = (meta.tabs || []).filter(u => /^(https?|file):/.test(u)).slice(0, 20);
-  const scale = startScale(), sharp = scale > 1;
+  // a task browser in a window draws at the screen's own pixel density, so it gets no scale flag
+  const windowed = !!meta.window && id !== TEMPLATE;
+  const scale = windowed ? 1 : startScale(), sharp = scale > 1;
   // A Chrome that holds the profile but did not answer live() (a busy computer answers slowly) gets the full time.
   // When it answers, it is the browser. When it does not, it is ended before a new Chrome starts.
   let b: { pid: number; port: number; ws: string; child?: ChildProcess } | null = null;
@@ -230,8 +235,11 @@ async function start(id: string, t0: number): Promise<Meta & { ws: string }> {
   }
   const launch = async (muteFlag: boolean) => {
     rmSync(portFile, { force: true });
-    const args = ['--headless=new', `--user-data-dir=${profileDir(id)}`, '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1',
-      '--no-first-run', '--no-default-browser-check', '--hide-crash-restore-bubble', '--window-size=1280,800', '--disable-features=Translate,MediaRouter',
+    // A window (meta.window) is a normal Chrome with the same profile and the debugging port. Chrome sets
+    // navigator.webdriver to true when the debugging port is open, and sign-in pages (Google among them) refuse such a
+    // browser. AutomationControlled off makes it false again (observed with Chrome 154 on 3 October 2026).
+    const args = [...(windowed ? ['--disable-blink-features=AutomationControlled', '--window-size=1280,900'] : ['--headless=new', '--window-size=1280,800']), `--user-data-dir=${profileDir(id)}`, '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1',
+      '--no-first-run', '--no-default-browser-check', '--hide-crash-restore-bubble', '--disable-features=Translate,MediaRouter',
       // some Chrome versions allow Extensions.loadUnpacked (the sound extension, muteTabs) only with this flag
       '--enable-unsafe-extension-debugging',
       ...(muteFlag ? ['--mute-audio'] : []),
@@ -326,6 +334,8 @@ function watchExit(id: string, pid: number, child?: ChildProcess) {
 }
 function markExited(id: string, pid: number, how: string, offset = Math.max(0, logSize(id) - 16384)) {
   const m = readMeta(id);
+  // the user quit the Chrome of a task browser in a window: the browser goes back to the panel with its pages
+  if (m.window && m.pid === pid && !stopping.has(id) && !starting.has(id)) { writeMeta(id, { ...m, pid: undefined, port: undefined, window: undefined, tabs: windowTabs.get(id) || m.tabs, stoppedAt: new Date().toISOString() }); windowTabs.delete(id); changed(id); return; }
   // the user closed the template's Chrome window: that is not a failure
   if (m.headed && m.pid === pid) { writeMeta(id, { ...m, pid: undefined, headed: undefined, stoppedAt: new Date().toISOString() }); changed(id); return; }
   // a stop or a start of this browser ended this process on purpose, or browser.json names another process now
@@ -398,7 +408,7 @@ export function once(wsUrl: string, method: string, params: object = {}, timeout
 // idle suspend of the task: resume starts the browser again. idle marks a stop by stopIdle(): the next use starts it.
 // A start that comes while a stop runs waits for the stop (ensure() reads this map).
 const stopping = new Map<string, Promise<boolean>>();
-export function stop(id: string, opts: { suspended?: boolean; idle?: boolean } = {}): Promise<boolean> {
+export function stop(id: string, opts: { suspended?: boolean; idle?: boolean; keepTabs?: boolean } = {}): Promise<boolean> {
   const pending = stopping.get(id);
   if (pending) return pending;
   const p = stopNow(id, opts);
@@ -406,7 +416,7 @@ export function stop(id: string, opts: { suspended?: boolean; idle?: boolean } =
   p.finally(() => { if (stopping.get(id) === p) stopping.delete(id); }).catch(() => {});
   return p;
 }
-async function stopNow(id: string, opts: { suspended?: boolean; idle?: boolean }): Promise<boolean> {
+async function stopNow(id: string, opts: { suspended?: boolean; idle?: boolean; keepTabs?: boolean }): Promise<boolean> {
   // a start that runs ends first, so a stop (for example the archive of the task) does not leave its Chrome running
   await starting.get(id)?.catch(() => {});
   const m = readMeta(id);
@@ -424,7 +434,8 @@ async function stopNow(id: string, opts: { suspended?: boolean; idle?: boolean }
   const running = await live(id);
   // a busy Chrome can answer slowly: wait up to 5 s, and keep the saved pages when it does not answer
   const listed = running ? await pageList(running.port!, 5000) : null;
-  const open = listed ? listed.map(t => t.url).filter(u => /^(https?|file):/.test(u)) : m.tabs;
+  // keepTabs: the saved pages stay (a window that the user closed has no pages left)
+  const open = listed && !opts.keepTabs ? listed.map(t => t.url).filter(u => /^(https?|file):/.test(u)) : m.tabs;
   // The template waits up to 30 s: new task browsers copy its cookies. On a busy Mac (load average 140 on 10 cores,
   // 2 October 2026) Chrome took more than 10 s to close, and the end of the wait lost cookies that it had not written.
   await closeChrome(running?.ws, m.pid || holder, id === TEMPLATE ? 30000 : 10000);
@@ -588,6 +599,67 @@ export async function openTemplateWindow(url = 'https://accounts.google.com/') {
   changed(TEMPLATE);
 }
 
+// ---------- a task browser in a normal Chrome window (Open in a window) ----------
+// Chrome cannot change between headless and a window while it runs, and two Chrome processes cannot use one profile.
+// So setWindow() stops the browser (its pages are saved, Browser.close writes the cookies) and starts it again in the
+// other mode with the same profile and pages. Each change reloads the pages: text that the user typed and did not send
+// is lost, so the view asks first when unsent() finds such text. The agent's connection closes at the change, and
+// chrome-devtools-mcp connects again at its next tool call. While the window is open, watchWindow() keeps the page
+// addresses: when the user closes the last tab or quits that Chrome, the browser goes back to the panel with them.
+const windowTabs = new Map<string, string[]>();
+const windowWatch = new Map<string, NodeJS.Timeout>();
+export async function setWindow(id: string, on: boolean) {
+  if (id === TEMPLATE) throw new Error('The template opens in a window from the Settings page.');
+  if (!!readMeta(id).window === on && await isRunning(id)) { if (on) await showWindow(id); return; }
+  await stop(id);
+  updateMeta(id, { window: on || undefined });
+  await ensure(id);
+  if (on) { watchWindow(id); await showWindow(id); }
+  else { windowTabs.delete(id); clearInterval(windowWatch.get(id)); windowWatch.delete(id); }
+}
+// Bring the window of a task browser to the front (Show the window).
+export async function showWindow(id: string) {
+  const m = await live(id); if (!m || !readMeta(id).window) return;
+  const page = (await pageList(m.port!))?.[0]; if (!page) return;
+  const r = await once(m.ws, 'Browser.getWindowForTarget', { targetId: page.id }).catch(() => null);
+  if (r?.windowId) await once(m.ws, 'Browser.setWindowBounds', { windowId: r.windowId, bounds: { windowState: 'normal' } }).catch(() => {});
+  const t = (await (await fetch(`http://127.0.0.1:${m.port}/json/list`)).json() as { id: string; webSocketDebuggerUrl: string }[]).find(x => x.id === page.id);
+  if (t) await once(t.webSocketDebuggerUrl, 'Page.bringToFront').catch(() => {});
+}
+function watchWindow(id: string) {
+  clearInterval(windowWatch.get(id));
+  const timer = setInterval(async () => {
+    const m = readMeta(id);
+    if (!m.window || stopping.has(id) || starting.has(id)) { if (!m.window) { clearInterval(timer); windowWatch.delete(id); } return; }
+    const r = await live(id); if (!r) return; // a Chrome that quit: markExited() handles it
+    const list = await pageList(r.port!); if (!list) return;
+    const urls = list.map(t => t.url).filter(u => /^(https?|file):/.test(u));
+    if (urls.length) { windowTabs.set(id, urls); return; }
+    if (list.length) return; // only blank tabs: the window is still open
+    // the user closed the window (Chrome on macOS keeps running without one): back to the panel with the pages
+    clearInterval(timer); windowWatch.delete(id);
+    updateMeta(id, { tabs: windowTabs.get(id) || m.tabs, window: undefined });
+    windowTabs.delete(id);
+    await stop(id, { keepTabs: true }).catch(() => {});
+    void ensure(id).catch(() => {});
+  }, 2000);
+  timer.unref();
+  windowWatch.set(id, timer);
+}
+// The number of text fields on the open pages with text that is not sent yet (value changed from the page's own), so
+// the view can ask before a change of mode reloads them. Passwords count; their text is never read here.
+const UNSENT = `[...document.querySelectorAll('input, textarea')].filter(e => !['hidden', 'submit', 'button', 'checkbox', 'radio', 'file', 'image', 'reset', 'range', 'color'].includes(e.type) && e.value !== e.defaultValue).length + [...document.querySelectorAll('[contenteditable=""], [contenteditable="true"]')].filter(e => e.textContent.trim()).length`;
+export async function unsent(id: string): Promise<number> {
+  const m = await live(id); if (!m) return 0;
+  const list = await (await fetch(`http://127.0.0.1:${m.port}/json/list`)).json() as { type: string; webSocketDebuggerUrl: string }[];
+  let n = 0;
+  for (const t of list.filter(x => x.type === 'page').slice(0, 20)) {
+    const r = await once(t.webSocketDebuggerUrl, 'Runtime.evaluate', { expression: UNSENT, returnByValue: true }, 2000).catch(() => null);
+    n += Number(r?.result?.value) || 0;
+  }
+  return n;
+}
+
 // The task was removed from Taskboard: stop its browser and delete its profile (it holds copied sign-ins).
 export async function remove(id: string) { await stop(id).catch(() => {}); rmSync(folder(id), { recursive: true, force: true }); }
 
@@ -596,7 +668,7 @@ export async function remove(id: string) { await stop(id).catch(() => {}); rmSyn
 export interface Status { id: string; running: boolean; port?: number; tabs: Tab[]; profile: boolean; copiedFromTemplate?: string; suspended?: boolean; idleStopped?: boolean; idleStopMinutes: number; startMs?: number; started?: string; stoppedAt?: string; error?: string; errorLines?: string[]; errorAt?: string; exited?: boolean; starting?: { seconds: number; limitSeconds: number; pid?: number }; systemMemory?: memory.SystemMemory | null; memMb?: number | null; rssMb?: number | null; agents: number; viewers: number; chrome: string | null; sound: boolean; muted: boolean; sharp: boolean;
   // sign-in sharing: noShared (opt-out), syncedAt, headed (the template in a Chrome window), and from statusExtra:
   // templateSites, the number of sites with cookies in the template (null: unknown)
-  noShared: boolean; syncedAt?: string; headed?: boolean; templateSites?: number | null }
+  noShared: boolean; syncedAt?: string; headed?: boolean; templateSites?: number | null; window?: boolean }
 // More status fields from another module (browser-signins.ts adds templateSites).
 let statusExtra: (id: string) => Promise<Partial<Status>> = async () => ({});
 export const setStatusExtra = (fn: (id: string) => Promise<Partial<Status>>) => { statusExtra = fn; };
@@ -614,7 +686,7 @@ export async function status(id: string): Promise<Status> {
     starting: startingNow(id), systemMemory: running ? undefined : await memory.systemMemory(),
     // memMb is the footprint of the browser's processes (memory.ts). rssMb has the same value for older callers.
     memMb: mem, rssMb: mem, agents: agentCount(id), viewers: viewers.get(id) || 0, chrome: chromePath(), sound: !!m.sound, muted: mutedNow(m, !!running), sharp: !!(running && m.sharp),
-    noShared: !!m.noShared, syncedAt: m.syncedAt, headed: id === TEMPLATE && templateWindowOpen() ? true : undefined, ...(await statusExtra(id).catch(() => ({}))) };
+    noShared: !!m.noShared, syncedAt: m.syncedAt, headed: id === TEMPLATE && templateWindowOpen() ? true : undefined, window: m.window || undefined, ...(await statusExtra(id).catch(() => ({}))) };
 }
 
 export async function openTab(id: string, url: string): Promise<Tab> {
@@ -681,10 +753,11 @@ export async function stopIdle(now = Date.now()): Promise<string[]> {
     const m = readMeta(id);
     // a Chrome that ended while this server did not watch it (watchExit), and a Chrome that this server did not start
     if (m.pid && !pidAlive(m.pid)) markExited(id, m.pid, '');
-    else if (m.pid && !starting.has(id)) watchExit(id, m.pid);
+    else if (m.pid && !starting.has(id)) { watchExit(id, m.pid); if (m.window && !windowWatch.has(id)) watchWindow(id); }
     if (id === TEMPLATE || !ms) continue;
     if (!m.pid || !pidAlive(m.pid)) { lastUse.delete(id); continue; }
-    if (viewed(id) || starting.has(id) || stopping.has(id)) { lastUse.set(id, now); continue; }
+    // a browser in a window is in the user's hands: it stops only when the user closes the window
+    if (viewed(id) || starting.has(id) || stopping.has(id) || m.window) { lastUse.set(id, now); continue; }
     const conns = [...(agentConnections.get(id) || [])];
     const since = Math.max(lastUse.get(id) || 0, Date.parse(m.started || '') || 0, loadedAt, ...conns.map(c => c.last));
     if (now - since < ms) continue;
@@ -994,7 +1067,8 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
   // deviceScaleFactor 0 keeps the factor that Chrome started with. An emulated factor does not change the size of a
   // screencast frame; only the start flag --force-device-scale-factor does (Sharp view). With the flag and a factor of
   // 1 here, the page would draw at 1x and the frame would only stretch it.
-  const viewport = () => call('Emulation.setDeviceMetricsOverride', { width: size.w, height: size.h, deviceScaleFactor: 0, mobile: false });
+  // A browser in a window keeps the size of its window: the view does not change it.
+  const viewport = () => readMeta(id).window ? call('Emulation.clearDeviceMetricsOverride') : call('Emulation.setDeviceMetricsOverride', { width: size.w, height: size.h, deviceScaleFactor: 0, mobile: false });
   // Show this tab. auto: the view switched by itself (tab-switch.ts). A later open() wins over one that still runs.
   async function open(target: string, auto?: { from: string; reason: string }) {
     const seq = ++openSeq;
@@ -1103,7 +1177,7 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     // the first list after the view or the browser started: these tabs are not new
     if (!seeded) { sw.seed(list.map(t => t.id)); seeded = true; } else sw.listed(list, asked);
     const meta = readMeta(id);
-    send({ type: 'tabs', tabs: list, active, agents: agentCount(id), muted: mutedNow(meta, true), autoSwitch: autoSwitchOn(id), autoSwitchOwn: meta.autoSwitch !== undefined, ask: askOf(id), scale: meta.scale || 1, wantScale: startScale() });
+    send({ type: 'tabs', tabs: list, active, agents: agentCount(id), muted: mutedNow(meta, true), autoSwitch: autoSwitchOn(id), autoSwitchOwn: meta.autoSwitch !== undefined, ask: askOf(id), scale: meta.scale || 1, wantScale: meta.window ? 1 : startScale(), window: !!meta.window });
     // the first tab when the view shows none; a shown tab that closed is handled by the switch (sw.destroyed)
     const target = active && list.some(t => t.id === active) ? active : sw.back() || list[0]?.id || '';
     if (target && target !== opening && (target !== active || !page)) await open(target);
@@ -1150,6 +1224,15 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
       // an IME or a dead key composes text in the view: the page shows the same composition, and 'text' commits it
       else if (m.type === 'ime' && typeof m.text === 'string') { const text = m.text.slice(0, 1000); await call('Input.imeSetComposition', { text, selectionStart: text.length, selectionEnd: text.length }); }
       else if (m.type === 'paste') await paste(m);
+      // Open in a window, or back to the panel. Without force, the view first learns how many fields have unsent text.
+      else if (m.type === 'window') {
+        const on = !!m.on;
+        if (!m.force) { const n = await unsent(id); if (n) { send({ type: 'windowUnsent', on, fields: n }); return; } }
+        send({ type: 'windowSwitching', on });
+        await setWindow(id, on);
+        await poll();
+      }
+      else if (m.type === 'showWindow') await showWindow(id);
       // Done on the agent's request for help, with the user's note
       else if (m.type === 'askDone') answerAsk(id, typeof m.note === 'string' ? m.note : '');
       else if (m.type === 'copy') {
