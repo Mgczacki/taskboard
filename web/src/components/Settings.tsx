@@ -420,7 +420,15 @@ function TaskBrowserSettings({ info, busy, save }: { info: MachineInfo | null; b
             ? <button className="btn" onClick={() => void api.browserTemplateAction('stop').then(setTpl).catch(e => setTplErr(String(e.message || e)))}>Close the Chrome window</button>
             : <button className="btn" onClick={() => { setOpen(false); void api.templateWindow().then(setTpl).catch(e => setTplErr(String(e.message || e))); }} title="Opens the template profile in a normal Chrome window, without headless mode and without the debugging port">Sign in with a normal Chrome window</button>}
         </div>
-        <div className="sub">Google and some other sites refuse a sign-in in a browser that a program controls. The task browsers run headless with a debugging port, so they report HeadlessChrome and navigator.webdriver. The normal Chrome window has neither. Taskboard does not see or control that window.</div>
+        <div className="sub">Google and some other sites refuse a sign-in in a browser that a program controls. Google then shows "Error 500" or "Couldn't sign you in". The task browsers run headless with a debugging port, so they report HeadlessChrome and navigator.webdriver. The normal Chrome window has neither. Taskboard does not see or control that window.</div>
+        <div className="sub">To sign in to Google once for all task browsers:</div>
+        <ol className="sub si-steps">
+          <li>Click Sign in with a normal Chrome window. A Chrome window opens on the Google sign-in page.</li>
+          <li>Sign in there with your account.</li>
+          <li>Quit that Chrome (Chrome menu, Quit Google Chrome). Closing the tab is not enough.</li>
+          <li>New task browsers copy the sign-in. For a task browser that exists now, click Sync sign-ins from the template in its More menu (the ... button).</li>
+        </ol>
+        <div className="sub">A task browser on a Google sign-in page also shows a Sign in in a normal window button. It opens the same window, and after you quit it, that task browser gets the sign-in.</div>
         {tplErr && <div className="banner">{tplErr}</div>}
         {open && !tpl?.headed && <div className="tpl-browser"><BrowserView id="template" title="Template browser" isTemplate /></div>}
       </SettingItem>

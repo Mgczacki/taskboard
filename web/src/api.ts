@@ -73,7 +73,10 @@ export interface BrowserTab { id: string; title: string; url: string; faviconUrl
 export interface BrowserStatus { id: string; running: boolean; port?: number; tabs: BrowserTab[]; profile: boolean; copiedFromTemplate?: string; suspended?: boolean; idleStopped?: boolean; idleStopMinutes: number; startMs?: number; started?: string; stoppedAt?: string; error?: string; errorLines?: string[]; errorAt?: string; exited?: boolean; starting?: { seconds: number; limitSeconds: number; pid?: number }; systemMemory?: { totalMb: number; availableMb: number; availablePct: number; low: boolean } | null; memMb?: number | null; rssMb?: number | null; agents: number; viewers: number; chrome: string | null; sound: boolean; muted: boolean; sharp?: boolean; check?: { chrome: string | null; node: string | null; mcp: boolean };
   // shared sign-ins (server/browser-signins.ts): noShared is the opt-out of this task browser, templateSites the number of
   // sites with cookies in the template (null: unknown), headed: the template is open in a normal Chrome window
-  noShared?: boolean; syncedAt?: string; headed?: boolean; templateSites?: number | null }
+  noShared?: boolean; syncedAt?: string; headed?: boolean; templateSites?: number | null;
+  // the last sign-in for this task browser in the template's normal Chrome window (server/browser-signins.ts signinWindow)
+  signinWindow?: SigninWindow }
+export interface SigninWindow { sites: string[]; at: string; state: 'open' | 'copying' | 'done' | 'failed'; cookies?: number; error?: string }
 // A site with cookies in a browser: the name and the count only, never a value.
 export interface SigninSite { site: string; cookies: number; lastUsed?: string }
 export interface SigninBrowser { id: string; num?: number; title?: string; status?: string; running: boolean; noShared: boolean; copiedFromTemplate?: string; syncedAt?: string; liveSyncAt?: string; agents: number }
@@ -387,6 +390,7 @@ export const api = {
   signinSites: (id: string) => call<{ sites: SigninSite[] | null }>('POST', `/api/tasks/${encodeURIComponent(id)}/browser/signins/sites`, {}),
   signinSaveTemplate: (id: string) => call<{ sites: SigninSite[] }>('POST', `/api/tasks/${encodeURIComponent(id)}/browser/signins/save-template`, {}),
   signinSync: (id: string, sites: string[]) => call<{ sites: string[]; cookies: number }>('POST', `/api/tasks/${encodeURIComponent(id)}/browser/signins/sync`, { sites }),
+  signinWindow: (id: string, url: string) => call<SigninWindow>('POST', `/api/tasks/${encodeURIComponent(id)}/browser/signins/window`, { url }),
   signinShared: (id: string, on: boolean) => call<BrowserStatus>('POST', `/api/tasks/${encodeURIComponent(id)}/browser/signins/shared`, { on }),
   signinOverview: () => call<SigninOverview>('POST', '/api/browser-signins/overview', {}),
   signinRemove: (site: string) => call<SigninOverview>('POST', '/api/browser-signins/remove', { site }),

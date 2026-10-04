@@ -30,7 +30,7 @@ import { mb } from '../runtimeText';
 import { countMessage } from '../perfStats';
 import { hit, keyLabel, keysText, useKeymap } from '../keys';
 import { wheelBatch } from '../browserWheel';
-import { SigninDialog, SigninNote, useSharing, type SigninMode } from './BrowserSignins';
+import { SigninDialog, SigninNote, SigninWindowNote, useSharing, type SigninMode } from './BrowserSignins';
 import { isApp, useAppWindow } from '../appWindow';
 import { clampFloat, keepOnScreen, startFloatDrag } from '../floatWindow';
 
@@ -777,6 +777,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, 
       </div>}
       {err && <div className="banner">{err} <button className="btn ghost" onClick={() => setErr('')}>OK</button></div>}
       {signinParts}
+      {!isTemplate && !archived && !remote && !inWindow && <SigninWindowNote id={id} tab={activeTab} status={sharing} reload={reloadSharing} onGo={url => send({ type: 'nav', action: 'go', url })} />}
       <div className={`bw-screen ${framed ? 'framed' : ''} ${inWindow ? 'inwin' : ''} ${dropping ? 'dropping' : ''}`} ref={screenRef} tabIndex={0}
         onFocus={e => { if (e.target === e.currentTarget) kb.current?.focus({ preventScroll: true }); }}
         onMouseDown={e => { e.preventDefault(); kb.current?.focus({ preventScroll: true }); moveKb(e); mouse('mousePressed', e, e.detail || 1); }}

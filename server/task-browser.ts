@@ -40,7 +40,12 @@ export interface Meta { pid?: number; port?: number; started?: string; startMs?:
   // debugging port, so the agent keeps working in the window that the user sees
   window?: boolean;
   // autoSwitch: the dashboard view switches to a new tab or popup (tab-switch.ts); unset follows the Settings choice
-  autoSwitch?: boolean }
+  autoSwitch?: boolean;
+  // signinWindow: the user signs in for this task browser in the template's normal Chrome window (browser-signins.ts
+  // signinWindow). state 'open' while that window is open, 'copying' while the cookies move after it closed, then 'done'
+  // (cookies of sites copied) or 'failed' (error).
+  signinWindow?: SigninWindow }
+export interface SigninWindow { sites: string[]; at: string; state: 'open' | 'copying' | 'done' | 'failed'; cookies?: number; error?: string }
 export interface Ask { reason: string; at: string }
 export interface Tab { id: string; title: string; url: string; faviconUrl?: string; dialog?: Dialog }
 // A box that a page opened with alert(), confirm(), prompt() or onbeforeunload. Headless Chrome draws no box, and the
@@ -206,6 +211,27 @@ export function ensure(id: string): Promise<Meta & { ws: string }> {
   p.finally(() => starting.delete(id)).catch(() => {});
   return p;
 }
+// The start flags of a task browser. A window (windowed, Open in a window) is a normal Chrome with the same profile and
+// the debugging port. Chrome sets navigator.webdriver to true when the debugging port is open, and sign-in pages
+// (Google among them) refuse such a browser. AutomationControlled off makes it false again in a window (observed with
+// Chrome 154 on 3 October 2026). Headless Chrome keeps navigator.webdriver true with that flag (observed with the same
+// Chrome) and names itself HeadlessChrome in its user agent. Taskboard does not change these values: a site sees a
+// headless task browser as what it is. For a sign-in that a site refuses there, the user signs in in the template's
+// normal Chrome window (openTemplateWindow, templateWindowArgs), and the cookies go to the task browsers.
+export function launchArgs(o: { profile: string; windowed: boolean; muteFlag?: boolean; scale?: number }): string[] {
+  return [...(o.windowed ? ['--disable-blink-features=AutomationControlled', '--window-size=1280,900'] : ['--headless=new', '--window-size=1280,800']), `--user-data-dir=${o.profile}`, '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1',
+    '--no-first-run', '--no-default-browser-check', '--hide-crash-restore-bubble', '--disable-features=Translate,MediaRouter',
+    // some Chrome versions allow Extensions.loadUnpacked (the sound extension, muteTabs) only with this flag
+    '--enable-unsafe-extension-debugging',
+    ...(o.muteFlag ? ['--mute-audio'] : []),
+    // Settings → Task browsers → Picture: only this start flag makes screencast frames larger than the CSS size
+    ...(o.scale && o.scale > 1 ? [`--force-device-scale-factor=${o.scale}`] : []),
+    'about:blank']; // headless Chrome takes one start page; the saved pages open below
+}
+// The start flags of the template in a normal Chrome window: no headless mode, no debugging port, no automation flag.
+export function templateWindowArgs(profile: string, url: string): string[] {
+  return [`--user-data-dir=${profile}`, '--no-first-run', '--no-default-browser-check', /^https:\/\//.test(url) ? url : 'about:blank'];
+}
 async function start(id: string, t0: number): Promise<Meta & { ws: string }> {
   const bin = chromePath();
   if (!bin) throw new Error('No Chrome found. Install Google Chrome, or set the Chrome path on the Settings page.');
@@ -236,17 +262,7 @@ async function start(id: string, t0: number): Promise<Meta & { ws: string }> {
   }
   const launch = async (muteFlag: boolean) => {
     rmSync(portFile, { force: true });
-    // A window (meta.window) is a normal Chrome with the same profile and the debugging port. Chrome sets
-    // navigator.webdriver to true when the debugging port is open, and sign-in pages (Google among them) refuse such a
-    // browser. AutomationControlled off makes it false again (observed with Chrome 154 on 3 October 2026).
-    const args = [...(windowed ? ['--disable-blink-features=AutomationControlled', '--window-size=1280,900'] : ['--headless=new', '--window-size=1280,800']), `--user-data-dir=${profileDir(id)}`, '--remote-debugging-port=0', '--remote-debugging-address=127.0.0.1',
-      '--no-first-run', '--no-default-browser-check', '--hide-crash-restore-bubble', '--disable-features=Translate,MediaRouter',
-      // some Chrome versions allow Extensions.loadUnpacked (the sound extension, muteTabs) only with this flag
-      '--enable-unsafe-extension-debugging',
-      ...(muteFlag ? ['--mute-audio'] : []),
-      // Settings → Task browsers → Picture: only this start flag makes screencast frames larger than the CSS size
-      ...(sharp ? [`--force-device-scale-factor=${scale}`] : []),
-      'about:blank']; // headless Chrome takes one start page; the saved pages open below
+    const args = launchArgs({ profile: profileDir(id), windowed, muteFlag, scale: sharp ? scale : undefined });
     const offset = logSize(id), began = Date.now();
     const log = openSync(join(folder(id), 'chrome.log'), 'a');
     const child = spawn(bin, args, { detached: true, stdio: ['ignore', log, log] });
@@ -338,7 +354,7 @@ function markExited(id: string, pid: number, how: string, offset = Math.max(0, l
   // the user quit the Chrome of a task browser in a window: the browser goes back to the panel with its pages
   if (m.window && m.pid === pid && !stopping.has(id) && !starting.has(id)) { writeMeta(id, { ...m, pid: undefined, port: undefined, window: undefined, tabs: windowTabs.get(id) || m.tabs, stoppedAt: new Date().toISOString() }); windowTabs.delete(id); changed(id); return; }
   // the user closed the template's Chrome window: that is not a failure
-  if (m.headed && m.pid === pid) { writeMeta(id, { ...m, pid: undefined, headed: undefined, stoppedAt: new Date().toISOString() }); changed(id); return; }
+  if (m.headed && m.pid === pid) { writeMeta(id, { ...m, pid: undefined, headed: undefined, stoppedAt: new Date().toISOString() }); changed(id); windowEnded(); return; }
   // a stop or a start of this browser ended this process on purpose, or browser.json names another process now
   if (m.pid !== pid || stopping.has(id) || starting.has(id)) return;
   const lines = usefulLines(logSince(id, offset));
@@ -355,6 +371,12 @@ function markExited(id: string, pid: number, how: string, offset = Math.max(0, l
 // Listeners that run after each start, before ensure() returns (browser-signins.ts).
 const started = new Set<(id: string, ws: string) => Promise<void> | void>();
 export const onStarted = (fn: (id: string, ws: string) => Promise<void> | void) => { started.add(fn); };
+// Listeners for the end of the template's normal Chrome window (browser-signins.ts copies the new sign-ins then).
+const windowClosed = new Set<() => void>();
+export const onTemplateWindowClosed = (fn: () => void) => { windowClosed.add(fn); };
+// markExited (the user quit the window) and stop (Close the Chrome window in Settings) both call this; a listener that
+// has nothing left to do returns at once
+const windowEnded = () => { for (const fn of windowClosed) try { fn(); } catch { /* listener failed */ } };
 const problems = new Set<(id: string, message: string, lines: string[]) => void>();
 export const onProblem = (fn: (id: string, message: string, lines: string[]) => void) => { problems.add(fn); };
 const problem = (id: string, message: string, lines: string[]) => { for (const fn of problems) try { fn(id, message, lines); } catch { /* listener failed */ } };
@@ -427,6 +449,7 @@ async function stopNow(id: string, opts: { suspended?: boolean; idle?: boolean; 
     await closeChrome(undefined, m.pid, 30000);
     writeMeta(id, { ...readMeta(id), pid: undefined, headed: undefined, stoppedAt: new Date().toISOString() });
     changed(id);
+    windowEnded();
     return true;
   }
   // a Chrome that holds the profile but is not in browser.json (a start that failed before this version lost it)
@@ -591,7 +614,7 @@ export async function openTemplateWindow(url = 'https://accounts.google.com/') {
   await templateUse?.catch(() => {});
   mkdirSync(profileDir(TEMPLATE), { recursive: true });
   const log = openSync(join(folder(TEMPLATE), 'chrome.log'), 'a');
-  const child = spawn(bin, [`--user-data-dir=${profileDir(TEMPLATE)}`, '--no-first-run', '--no-default-browser-check', /^https?:\/\//.test(url) ? url : 'about:blank'], { detached: true, stdio: ['ignore', log, log] });
+  const child = spawn(bin, templateWindowArgs(profileDir(TEMPLATE), url), { detached: true, stdio: ['ignore', log, log] });
   closeSync(log);
   child.unref();
   if (!child.pid) throw new Error('Chrome did not start.');
@@ -669,7 +692,9 @@ export async function remove(id: string) { await stop(id).catch(() => {}); rmSyn
 export interface Status { id: string; running: boolean; port?: number; tabs: Tab[]; profile: boolean; copiedFromTemplate?: string; suspended?: boolean; idleStopped?: boolean; idleStopMinutes: number; startMs?: number; started?: string; stoppedAt?: string; error?: string; errorLines?: string[]; errorAt?: string; exited?: boolean; starting?: { seconds: number; limitSeconds: number; pid?: number }; systemMemory?: memory.SystemMemory | null; memMb?: number | null; rssMb?: number | null; agents: number; viewers: number; chrome: string | null; sound: boolean; muted: boolean; sharp: boolean;
   // sign-in sharing: noShared (opt-out), syncedAt, headed (the template in a Chrome window), and from statusExtra:
   // templateSites, the number of sites with cookies in the template (null: unknown)
-  noShared: boolean; syncedAt?: string; headed?: boolean; templateSites?: number | null; window?: boolean }
+  noShared: boolean; syncedAt?: string; headed?: boolean; templateSites?: number | null; window?: boolean;
+  // signinWindow: the last sign-in in the template's Chrome window for this task browser (an 'open' one only while that window is open)
+  signinWindow?: SigninWindow }
 // More status fields from another module (browser-signins.ts adds templateSites).
 let statusExtra: (id: string) => Promise<Partial<Status>> = async () => ({});
 export const setStatusExtra = (fn: (id: string) => Promise<Partial<Status>>) => { statusExtra = fn; };
@@ -687,7 +712,8 @@ export async function status(id: string): Promise<Status> {
     starting: startingNow(id), systemMemory: running ? undefined : await memory.systemMemory(),
     // memMb is the footprint of the browser's processes (memory.ts). rssMb has the same value for older callers.
     memMb: mem, rssMb: mem, agents: agentCount(id), viewers: viewers.get(id) || 0, chrome: chromePath(), sound: !!m.sound, muted: mutedNow(m, !!running), sharp: !!(running && m.sharp),
-    noShared: !!m.noShared, syncedAt: m.syncedAt, headed: id === TEMPLATE && templateWindowOpen() ? true : undefined, window: m.window || undefined, ...(await statusExtra(id).catch(() => ({}))) };
+    noShared: !!m.noShared, syncedAt: m.syncedAt, headed: id === TEMPLATE && templateWindowOpen() ? true : undefined, window: m.window || undefined,
+    signinWindow: m.signinWindow && (m.signinWindow.state !== 'open' || templateWindowOpen()) ? m.signinWindow : undefined, ...(await statusExtra(id).catch(() => ({}))) };
 }
 
 export async function openTab(id: string, url: string): Promise<Tab> {

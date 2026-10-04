@@ -1,12 +1,15 @@
 // Shared sign-ins of task browsers (server/browser-signins.ts) on the dashboard:
 // - SigninNote: one line on the task browser panel when the template has no sign-ins, or when this browser opted out
+// - SigninWindowNote: one line on a sign-in page (signinPages.ts) that offers the template's normal Chrome window for
+//   the sign-in, and then reports the copy of that sign-in into this browser
 // - SigninDialog: save this browser as the template, sync sign-ins from the template, and reset from the template
 // - SigninSettings: the Settings list of the template's sites, live sharing, sign out of all, the task browsers
 //   that hold shared sign-ins, and SendSignins (send the template's sign-ins to another machine)
 // The server sends site names, counts and dates. No cookie value reaches the dashboard.
-import { useEffect, useState } from 'react';
-import type { BrowserStatus, SigninOverview, SigninSite } from '../api';
+import { useCallback, useEffect, useState } from 'react';
+import type { BrowserStatus, BrowserTab, SigninOverview, SigninSite } from '../api';
 import { api, useStoreValue } from '../api';
+import { signinPage } from '../signinPages';
 
 const openSettings = () => dispatchEvent(new CustomEvent('taskboard:open', { detail: { settings: 'taskBrowsers' } }));
 const when = (iso?: string) => iso ? new Date(iso).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
@@ -17,7 +20,7 @@ export function useSharing(id: string, skip: boolean, running: boolean | null): 
   const [s, setS] = useState<BrowserStatus | null>(null);
   const [n, setN] = useState(0);
   useEffect(() => { if (!skip) api.browser(id).then(setS).catch(() => {}); }, [id, skip, n, running]);
-  return [s, () => setN(x => x + 1)];
+  return [s, useCallback(() => setN(x => x + 1), [])];
 }
 
 export type SigninMode = 'save' | 'sync' | 'reset';
@@ -33,6 +36,47 @@ export function SigninNote({ status, onMode, onShared }: { status: BrowserStatus
     <div className="banner bw-signins">No saved sign-ins. Sign in in Settings, or save this browser's sign-ins for new tasks.
       <button className="btn ghost" onClick={openSettings}>Settings</button>
       {status.profile && <button className="btn ghost" onClick={() => onMode('save')}>Use this browser's sign-ins for new tasks</button>}
+    </div>
+  );
+}
+
+// The task browser is headless Chrome with a debugging port, and Google and some other sites refuse a sign-in there. On a
+// sign-in page this line offers the template's normal Chrome window (server/browser-signins.ts signinWindow). While that
+// window is open, the line says what to do and reads the status every 2 s. When the user quits the window, the server
+// copies the site's cookies into this browser, and the line offers to open the page again.
+export function SigninWindowNote({ id, tab, status, reload, onGo }: { id: string; tab: BrowserTab | undefined; status: BrowserStatus | null; reload: () => void; onGo: (url: string) => void }) {
+  const [hidden, setHidden] = useState('');
+  const [seen, setSeen] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const page = tab ? signinPage(tab.url, tab.title) : null;
+  const sw = status?.signinWindow;
+  const open = sw?.state === 'open' || sw?.state === 'copying' || busy;
+  useEffect(() => { if (!open) return; const t = setInterval(reload, 2000); return () => clearInterval(t); }, [open, reload]);
+  const start = async () => {
+    if (!page) return;
+    setBusy(true); setErr('');
+    try { await api.signinWindow(id, page.target); reload(); } catch (e) { setErr(msg(e)); } finally { setBusy(false); }
+  };
+  const sites = sw?.sites.join(', ') || '';
+  if (sw?.state === 'open') return (
+    <div className="banner bw-signins" role="status">Sign in to {sites} in the Chrome window that opened. Then quit that Chrome (Chrome menu, Quit Google Chrome). This browser gets the sign-in after that.</div>
+  );
+  if (sw?.state === 'copying') return <div className="banner bw-signins" role="status">The Chrome window closed. Copying the sign-in to {sites} into this browser…</div>;
+  if (sw && seen !== sw.at && Date.now() - Date.parse(sw.at) < 10 * 60_000) return (
+    <div className="banner bw-signins" role="status">
+      {sw.state === 'done' ? `This browser got the sign-in to ${sites} from the normal Chrome window (${sw.cookies ?? 0} cookie(s)). New task browsers get it too.` : `The sign-in to ${sites} did not reach this browser: ${sw.error || 'unknown error'}`}
+      {sw.state === 'done' && page && <button className="btn ghost" onClick={() => { setSeen(sw.at); onGo(page.target); }}>Open the page again</button>}
+      <button className="btn ghost" onClick={() => setSeen(sw.at)}>OK</button>
+    </div>
+  );
+  if (!page || hidden === tab?.url || status?.noShared) return null;
+  return (
+    <div className={`banner bw-signins ${page.refused ? 'bw-warn' : ''}`} role="status">
+      {page.refused ? 'Google refused the sign-in in this task browser.' : `If ${page.site} refuses the sign-in in this task browser, sign in in a normal Chrome window.`} You sign in there, then quit that Chrome. This browser and new task browsers get the sign-in.
+      <button className="btn" disabled={busy} onClick={() => void start()} title="Opens the template profile in a normal Chrome window, without headless mode and without the debugging port">Sign in in a normal window</button>
+      <button className="btn ghost" onClick={() => setHidden(tab?.url || '')}>Hide</button>
+      {err && <span className="bw-err"> {err}</span>}
     </div>
   );
 }

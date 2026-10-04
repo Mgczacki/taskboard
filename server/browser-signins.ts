@@ -159,6 +159,51 @@ export async function syncFromTemplate(id: string, chosen: string[]): Promise<{ 
   return { sites: [...want], cookies: list.length };
 }
 
+// ---------- sign in for one task browser in a normal Chrome window ----------
+// Google and some other sites refuse a sign-in in a task browser: it is headless Chrome with a debugging port, and it
+// reports HeadlessChrome and navigator.webdriver. signinWindow() opens the page in the template's normal Chrome window
+// (browser.openTemplateWindow: no headless mode, no debugging port), where the user signs in. When the user quits that
+// window, the template's cookies of the page's site go into each task browser that asked (syncFromTemplate). New task
+// browsers copy the template, so they get the sign-in too. The list of waiting task browsers is kept in memory only: after a
+// restart of Taskboard, the user syncs with Sync sign-ins.
+const waiting = new Map<string, Set<string>>();
+export async function signinWindow(id: string, url: string): Promise<browser.SigninWindow> {
+  if (id === TEMPLATE) throw new Error('This is the template.');
+  if (browser.readMeta(id).noShared) throw new Error('This task browser does not get shared sign-ins. Turn that on first, or use Open in a window.');
+  let u: URL;
+  try { u = new URL(url); } catch { throw new Error('This is not a web address.'); }
+  if (u.protocol !== 'https:') throw new Error('Only an https page opens in the sign-in window.');
+  const site = siteOf(u.hostname);
+  if (!validSite(site)) throw new Error('This address has no site name.');
+  const sites = waiting.get(id) || new Set<string>();
+  sites.add(site);
+  waiting.set(id, sites);
+  const state: browser.SigninWindow = { sites: [...sites], at: new Date().toISOString(), state: 'open' };
+  browser.updateMeta(id, { signinWindow: state });
+  try { await browser.openTemplateWindow(u.href); }
+  catch (e) { waiting.delete(id); browser.updateMeta(id, { signinWindow: { ...state, state: 'failed', error: (e as Error).message } }); throw e; }
+  return state;
+}
+async function afterWindow() {
+  const list = [...waiting];
+  waiting.clear();
+  forgetCount();
+  // the view reads the status every 2 s while the state is 'open' or 'copying', so it sees the result
+  for (const [id, sites] of list) browser.updateMeta(id, { signinWindow: { sites: [...sites], at: new Date().toISOString(), state: 'copying' } });
+  for (const [id, sites] of list) {
+    const at = new Date().toISOString();
+    try {
+      const r = await syncFromTemplate(id, [...sites]);
+      browser.updateMeta(id, { signinWindow: { sites: [...sites], at, state: 'done', cookies: r.cookies } });
+      console.log(`${at} sign-ins: after the sign-in window, task browser ${id} got ${r.cookies} cookie(s) of ${[...sites].join(', ')}`);
+    } catch (e) {
+      browser.updateMeta(id, { signinWindow: { sites: [...sites], at, state: 'failed', error: (e as Error).message } });
+      console.error(`${at} sign-ins: after the sign-in window, the copy to task browser ${id} failed: ${(e as Error).message}`);
+    }
+  }
+}
+browser.onTemplateWindowClosed(() => { if (waiting.size) void afterWindow(); });
+
 // ---------- send sign-ins to another machine ----------
 // The template's cookies of the chosen sites (exportSites) go to another machine's Taskboard over the paired machine
 // link (runtime-routes.ts), which writes them into its template (importCookies). New task browsers there copy them,
