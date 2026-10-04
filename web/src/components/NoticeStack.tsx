@@ -4,9 +4,12 @@
 // The stack is the only place outside the Waiting page that shows a question card in full. Canvas windows and the task
 // panel show a one-line marker, and its button (showInStack in stack.ts) brings that task's card to the front here, also
 // when the stack is hidden.
+// A front card that closes without a decision (for example a permit that expired) stays in front, greyed and without
+// buttons, for CLOSED_MS or until the next click (closedNotice in stack.ts). A closed card is never in the count.
 import { useEffect, useRef, useState } from 'react';
 import type { Approval, PendingItem, Task } from '../api';
-import { entryForTask, frontIndex, SHOW_EVENT, stackEntries } from '../stack';
+import { useStore } from '../api';
+import { CLOSED_MS, closedNotice, entryForTask, frontIndex, SHOW_EVENT, stackEntries, type StackEntry } from '../stack';
 import { ApprovalCard } from './ApprovalCard';
 import { PendingCard } from './PendingCard';
 
@@ -23,6 +26,28 @@ export function NoticeStack({ approvals, pending, allTasks, setOpenId, openContr
   const index = frontIndex(entries, frontId, frontTask.current);
   const front = entries[index];
   const shown = useRef<string | undefined>(undefined);
+  // the closed front card: the full lists hold its final state
+  const { approvals: allApprovals, answered } = useStore();
+  const [closed, setClosed] = useState<{ id: string; title: string; state: string; text: string } | null>(null);
+  const lastFront = useRef<StackEntry | undefined>(undefined);
+  const ids = entries.map(e => e.id).join(',');
+  useEffect(() => {
+    const prev = lastFront.current;
+    lastFront.current = front;
+    if (!prev || hidden || entries.some(e => e.id === prev.id)) return;
+    // a screen card that got a new id is the same question: no notice
+    if (prev.item && entries.some(e => e.item?.taskId === prev.item!.taskId)) return;
+    const n = closedNotice(prev, allApprovals, answered);
+    if (n) setClosed({ id: prev.id, ...n });
+  }, [ids, allApprovals, answered]);
+  useEffect(() => {
+    if (!closed) return;
+    const end = () => setClosed(null);
+    const t = setTimeout(end, CLOSED_MS);
+    // the next click anywhere removes it; the listener starts after this render, so the click that caused it is over
+    const on = setTimeout(() => addEventListener('pointerdown', end, { capture: true, once: true }), 0);
+    return () => { clearTimeout(t); clearTimeout(on); removeEventListener('pointerdown', end, { capture: true }); };
+  }, [closed?.id]);
   // keep the front card when others arrive; move on to the next oldest when it closes
   useEffect(() => {
     frontTask.current = front?.item?.taskId;
@@ -46,7 +71,8 @@ export function NoticeStack({ approvals, pending, allTasks, setOpenId, openContr
     return () => window.removeEventListener(SHOW_EVENT, on);
   }, []);
   useEffect(() => { if (scrollTo && frontEl.current) { frontEl.current.scrollTop = 0; frontEl.current.scrollIntoView({ block: 'nearest' }); } }, [scrollTo]);
-  if (!entries.length) return null;
+  const closedCard = closed && <div className="pcard gone ns-closed" aria-live="polite"><div className="pc-h"><b>{closed.state}</b><span className="pc-sp" /><span className="pc-age">not waiting</span></div><p className="pc-q">{closed.title}</p><div className="pc-note info">{closed.text}</div></div>;
+  if (!entries.length) return closedCard ? <div className="ns" role="region" aria-label="Cards that wait on you"><div className="ns-bar"><b>Nothing waits on you</b></div><div className="ns-front">{closedCard}</div></div> : null;
   if (hidden) return <button className="btn ns-pill" onClick={() => hide(false)} title="Show the cards that wait on you, oldest first">{entries.length} waiting on you</button>;
   const go = (d: number) => setFrontId(entries[(index + d + entries.length) % entries.length].id);
   return <div className="ns" role="region" aria-label="Cards that wait on you">
@@ -57,8 +83,9 @@ export function NoticeStack({ approvals, pending, allTasks, setOpenId, openContr
       <button className="btn ghost" onClick={() => hide(true)}>Hide</button>
     </div>
     <div ref={frontEl} className={`ns-front ${guard ? 'guard' : ''}`}>
-      {front.approval && <ApprovalCard key={front.id} a={front.approval} allTasks={allTasks} setOpenId={setOpenId} openController={openController} toast={toast} />}
-      {front.item && <PendingCard key={front.id} item={front.item} compact openTask={setOpenId} toast={toast} />}
+      {closedCard}
+      {!closedCard && front.approval && <ApprovalCard key={front.id} a={front.approval} allTasks={allTasks} setOpenId={setOpenId} openController={openController} toast={toast} />}
+      {!closedCard && front.item && <PendingCard key={front.id} item={front.item} compact openTask={setOpenId} toast={toast} />}
     </div>
     {entries.length > 1 && <div className="ns-edge" />}{entries.length > 2 && <div className="ns-edge two" />}
   </div>;

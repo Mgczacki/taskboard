@@ -15,7 +15,7 @@ import { dismissedList } from '../dismissRules';
 import { backAt, bringBack, DISMISS_TITLE, dismissItem, dismissTask, quietTaskIds, SET_ASIDE_TITLE } from '../dismiss';
 import type { Toast } from '../groupActions';
 import { hit, keyLabel, keysText, useKeymap } from '../keys';
-import { SHOW_EVENT } from '../stack';
+import { liveApprovals, SHOW_EVENT } from '../stack';
 import { ApprovalCard } from './ApprovalCard';
 import { LATE_KIND, lateMessages, QueueActions, queueLabel, queueReason } from './QueuedMessage';
 import { KIND_LABEL, PendingCard } from './PendingCard';
@@ -34,7 +34,7 @@ const minutesSince = (iso: string) => Math.max(0, Math.round((Date.now() - Date.
 // quiet: the tasks whose waiting item the user dismissed (dismiss.ts quietTaskIds). They get no task row.
 // withController: the tasks and the controller, whose undelivered messages get a row each.
 export function waitingRows(tasks: Task[], approvals: Approval[], pending: PendingItem[], quiet: Set<string> = new Set(), withController: Task[] = tasks): Row[] {
-  const live = approvals.filter(a => a.state === 'pending' || (a.action === 'permit' && a.state === 'running'));
+  const live = liveApprovals(approvals);
   const numOf = (id: string) => tasks.find(t => t.id === id);
   const rows: Row[] = [
     ...pending.map(i => ({ id: `p:${i.id}`, at: i.createdAt, taskId: i.taskId, agent: i.agent, title: `#${i.taskNum} ${i.taskTitle}`, question: i.question, kind: KIND_LABEL[i.kind], risky: i.options.some(o => o.risk), screen: i.source === 'screen', item: i })),

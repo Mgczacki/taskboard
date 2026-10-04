@@ -53,6 +53,7 @@ import * as taskRepair from './task-repair.ts';
 import * as push from './push.ts';
 import * as restart from './restart.ts';
 import * as permits from './permits.ts';
+import { archivedResult, cardsToCloseOnArchive, permitCardClose, statusAfterCards } from './card-close.ts';
 import * as scopeRestart from './scope-restart.ts';
 import * as pending from './pending.ts';
 import * as dismiss from './dismiss.ts';
@@ -105,11 +106,16 @@ for (const p of push.allPushes()) if (p.state === 'pending' && p.approvalId) {
 }
 const permitNotices = new Set<string>();
 permits.onChange(p => {
+  // the card closes with the permit, whichever code expired it (server/card-close.ts)
+  const card = p.approvalId ? approvals.get(p.approvalId) : undefined;
+  const close = permitCardClose(p, card);
+  if (card && close) approvals.close(card.id, close.state, close.result);
   if (!['succeeded', 'failed', 'denied', 'expired', 'unknown'].includes(p.state) || permitNotices.has(p.id)) return;
   permitNotices.add(p.id);
   if (permitNotices.size > 1000) permitNotices.delete(permitNotices.values().next().value!);
   const task = store.get(p.taskId);
-  if (!task) return;
+  // an archived task gets no notice: a status change would take it out of the archive
+  if (!task || task.status === 'archived') return;
   const lines = [`# Permit ${p.id}`, '', `Task: #${p.taskNum}`, `Result: ${p.state}`, `Approved by: ${p.approvedBy || 'Nobody'}`, `Rule: ${p.approvalRule || 'none'}`, `Comment: ${p.decisionComment || 'none'}`, '', ...p.steps.flatMap((s, i) => [`${i + 1}. ${s.state}: ${s.command}`, `Exit code: ${s.exitCode ?? 'none'}`, `Signal: ${s.signal || 'none'}`, 'Output:', '```text', s.outputTail || '', '```']), '', `Read the full record with \`tb permit result ${p.id}\`.`];
   try { docs.uploadSystem(task.id, `permit-${p.id}.md`, lines.join('\n') + '\n'); } catch (e) { console.error('could not send permit result', e); }
   const wasIdle = ['idle', 'unread', 'suspended', 'needs-you'].includes(task.status);
@@ -119,10 +125,8 @@ permits.onChange(p => {
     .catch(e => console.error('could not wake task for permit result', e));
 });
 setInterval(() => {
-  for (const p of permits.all()) if (p.state === 'pending' && permits.expire(p)) {
-    const card = p.approvalId ? approvals.get(p.approvalId) : undefined;
-    if (card) approvals.close(card.id, 'expired', 'The permit expired.');
-  }
+  // permits.onChange closes the card of an expired permit
+  for (const p of permits.all()) if (p.state === 'pending') permits.expire(p);
   for (const p of push.allPushes()) if (p.state === 'pending' && p.approvalId) {
     const card = approvals.get(p.approvalId);
     if (card?.state === 'pending' && push.pushExpired(card.created)) {
@@ -564,7 +568,7 @@ app.post('/api/permits/:id/decide', async (req, res) => {
   const p = permits.get(req.params.id); const task = p && store.get(p.taskId);
   if (!p || !task) return res.status(404).end();
   const card = p.approvalId ? approvals.get(p.approvalId) : undefined;
-  if (permits.expire(p)) { if (card) approvals.close(card.id, 'expired', 'The permit expired.'); return res.json(p); }
+  if (permits.expire(p)) return res.json(p);
   if (p.state !== 'pending') return res.json(p);
   const comment = String(req.body.comment || '');
   if (comment.length > 2000) return res.status(400).json({ error: 'Keep the comment under 2000 characters.' });
@@ -1715,14 +1719,24 @@ try {
   });
   watcher.on('error', e => console.error('watch', e));
 } catch (e) { console.error('watch', e); }
-approvals.onApprovalsChange(() => {
+// A task that waits on cards that are all closed waits no more (server/card-close.ts). This runs after each card change,
+// and once at start: approvals.ts closes the cards that were pending at the restart when it loads, without an event.
+function settleCardStatus() {
   for (const t of store.all()) {
-    if (!approvals.pendingFor(t.id).length && t.status === 'needs-you' && t.ask?.startsWith('Approve:'))
-      store.update(t.id, { status: 'working', ask: '', statusSource: 'Your decision was sent back to the task.' });
-    if (!approvals.pendingFor(t.id).length && t.status === 'needs-you' && t.statusSource?.includes('auto mode refused') &&
-      approvals.all().some(a => a.actor === t.id && a.action === 'tool-refusal' && a.state === 'denied'))
-      store.update(t.id, { status: 'unread', ask: '', statusSource: 'The user denied the refused command.' });
+    // an Antigravity screen prompt also sets "Approve: <tool>" (events.ts), without a card
+    if (t.status !== 'needs-you' || t.statusSource?.startsWith(events.SCREEN_SOURCE)) continue;
+    const mine = approvals.all().filter(a => a.actor === t.id);
+    const patch = statusAfterCards(t, {
+      open: approvals.pendingFor(t.id).length + approvals.running().filter(a => a.actor === t.id).length,
+      last: mine.filter(a => a.state !== 'pending' && a.state !== 'running').sort((a, b) => b.created.localeCompare(a.created))[0],
+      refusalDenied: mine.some(a => a.action === 'tool-refusal' && a.state === 'denied'),
+    });
+    if (patch) store.update(t.id, patch);
   }
+}
+settleCardStatus();
+approvals.onApprovalsChange(() => {
+  settleCardStatus();
   const msg = JSON.stringify({ type: 'approvals', approvals: approvals.all() });
   for (const c of eventClients) sendEvent(c, msg);
 });
@@ -1759,6 +1773,18 @@ canvasOrder.onCanvasOrderChange(() => {
 // the last task message sent for each task, without its `updated` time: a change that the page does not see (the same
 // values written again, or an inbox or outbox write that leaves the counts as they were) sends nothing
 const lastTaskView = new Map<string, string>();
+// An archived task cannot act on a decision: its open cards close, and the permit or push behind a card ends.
+function closeCardsOfArchived(t: store.Task) {
+  const why = archivedResult(t.num);
+  for (const a of cardsToCloseOnArchive(approvals.pendingFor(t.id))) {
+    const payload = a.payload as { permitId?: string; pushId?: string } | undefined;
+    const p = a.action === 'permit' ? permits.get(payload?.permitId || '') : undefined;
+    if (p) permits.cancel(p, why);
+    const record = a.action === 'git-push' ? push.allPushes().find(x => x.id === payload?.pushId && x.state === 'pending') : undefined;
+    if (record) push.finishPush(record, 'expired', why);
+    approvals.close(a.id, 'expired', why);
+  }
+}
 store.onTaskRemoved(id => {
   allowRules.removeForTask(id, 'the task was removed');
   events.forgetTask(id);
@@ -1767,7 +1793,7 @@ store.onTaskRemoved(id => {
   for (const c of eventClients) sendEvent(c, msg);
 });
 store.onTaskChange(t => {
-  if (t.status === 'archived') { events.forgetTask(t.id); store.launchedAt.delete(t.id); allowRules.removeForTask(t.id, `#${t.num} was archived`); }
+  if (t.status === 'archived') { events.forgetTask(t.id); store.launchedAt.delete(t.id); allowRules.removeForTask(t.id, `#${t.num} was archived`); closeCardsOfArchived(t); }
   const v = view(t), same = JSON.stringify({ ...v, updated: undefined });
   if (lastTaskView.get(t.id) === same) return;
   lastTaskView.set(t.id, same);
