@@ -2,7 +2,7 @@
 // process group, a child that left the group (setsid), suspend and resume, and the port read from the log.
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test, { after } from 'node:test';
@@ -109,4 +109,16 @@ test('names and folders are checked', async () => {
   const o = owner('t6');
   assert.throws(() => procs.start(o, { name: '../x', command: 'true', cwd: root, startedBy: 'user' }), /process name/);
   assert.throws(() => procs.start(o, { name: 'x', command: 'true', cwd: join(root, 'missing'), startedBy: 'user' }), /does not exist/);
+});
+
+test('a process starts in its folder when the tmux server runs from a deleted folder', async () => {
+  // the state of 4 October 2026: the tmux server started in a release folder that a later release removed
+  try { execFileSync('tmux', ['-L', socket, 'kill-server'], { stdio: 'ignore' }); } catch { /* no server */ }
+  const gone = join(root, 'gone'); mkdirSync(gone);
+  execFileSync('tmux', ['-L', socket, 'new-session', '-d', '-s', 'old', 'sleep 60'], { cwd: gone });
+  rmSync(gone, { recursive: true });
+  const o = owner('t-gone'), dir = join(root, 'work'); mkdirSync(dir);
+  await procs.start(o, { name: 'where', command: 'pwd -P > where.txt', cwd: dir, startedBy: 'agent' });
+  assert.ok(await until(() => existsSync(join(dir, 'where.txt'))), 'the process wrote where.txt in its folder');
+  assert.equal(readFileSync(join(dir, 'where.txt'), 'utf8').trim(), dir);
 });

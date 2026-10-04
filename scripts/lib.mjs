@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync,
 import { createServer } from 'node:net';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { planPrune, processFolders, releasesInUse } from './cwd-check.mjs';
 
 export const TB_DIR = join(homedir(), '.taskboard');          // the real Taskboard (production)
 export const RELEASES = join(TB_DIR, 'releases');
@@ -98,12 +99,26 @@ export function switchTo(dir) {
   renameSync(tmp, APP);
 }
 
-export function releases() {
-  if (!existsSync(RELEASES)) return [];
-  return readdirSync(RELEASES).map(id => ({ id, dir: join(RELEASES, id), meta: readJson(join(RELEASES, id, 'RELEASE.json'), null) }))
+export function releases() { return releasesIn(RELEASES); }
+export function releasesIn(root) {
+  if (!existsSync(root)) return [];
+  return readdirSync(root).map(id => ({ id, dir: join(root, id), meta: readJson(join(root, id, 'RELEASE.json'), null) }))
     .filter(r => r.meta).sort((a, b) => a.meta.created.localeCompare(b.meta.created));
 }
 export function currentRelease() { try { return readdirSync(RELEASES).find(id => join(RELEASES, id) === execFileSync('readlink', [APP], { encoding: 'utf8' }).trim()); } catch { return undefined; } }
+
+// Remove old releases. Keeps the newest `newest`, the current one, the previous one (for pnpm rollback) and every
+// release folder that a running process uses as its working directory or program file (see scripts/cwd-check.mjs).
+// When the process list cannot be read, it removes nothing. Prints each kept and removed release with the reason.
+// files: a process list for tests; by default the real one (lsof).
+export async function pruneReleases({ root = RELEASES, current, previous, newest = 5, files, print = log } = {}) {
+  const ids = releasesIn(root).map(r => r.id);
+  const list = files === undefined ? await processFolders() : files;
+  const plan = planPrune({ ids, current, previous, newest, inUse: list ? releasesInUse(list, root) : null });
+  for (const k of plan.keep) print(`Kept release ${k.id}: ${k.reasons.join('; ')}.`);
+  for (const id of plan.remove) { rmSync(join(root, id), { recursive: true, force: true }); print(`Removed old release ${id}.`); }
+  return plan;
+}
 
 export function ensureDir(d) { mkdirSync(d, { recursive: true }); return d; }
 export function writeJson(f, v) { writeFileSync(f, JSON.stringify(v, null, 2)); }

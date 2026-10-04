@@ -11,7 +11,7 @@ import { promisify } from 'node:util';
 import { basename, join } from 'node:path';
 import { WebSocketServer } from 'ws';
 import * as agents from './agents.ts';
-import { HOME, HOST, machineId, PORT, ROOT, TB_DIR, TOKEN, URL_BASE } from './config.ts';
+import { HOME, HOST, machineId, PORT, ROOT, STABLE_DIR, TB_DIR, TOKEN, URL_BASE } from './config.ts';
 import * as docs from './docs.ts';
 import * as releasePermit from './release-permit.ts';
 import * as events from './events.ts';
@@ -62,6 +62,7 @@ import { EVENT_LIMITS, TERMINAL_LIMITS, clientOrigin, sendChecked } from './slow
 import * as allowRules from './allow-rules.ts';
 import { controllerMailToken, isControllerToken } from './a2anotes/auth.ts';
 import * as tmux from './tmux.ts';
+import * as tmuxHealth from './tmux-health.ts';
 import * as transfer from './transfer.ts';
 const MACHINE_ID = machineId();
 import { sampleResources } from './resource-log.ts';
@@ -76,6 +77,10 @@ const execFileP = promisify(execFile);
 // a development checkout never runs as the real Taskboard, and a sandbox never uses the real one's port, folders or tmux
 const refused = refuseReason();
 if (refused) { console.error(refused); process.exit(1); }
+// Work from the home folder (STABLE_DIR), not from the start folder. launchd and scripts/lib.mjs start the server in
+// ~/.taskboard/app, which the operating system resolves to the release folder, and a later release can remove that
+// folder. The programs that the server starts inherit this folder. Paths in the code come from ROOT, not from it.
+try { process.chdir(STABLE_DIR); process.env.PWD = STABLE_DIR; } catch (e) { console.error(`Could not change to ${STABLE_DIR}: ${(e as Error).message}`); }
 // Bind the port before doing anything else. The kernel lets only one process hold it and frees it when that process
 // dies, so a second server stops here, before it has touched a task file, tmux or the controller.
 const app = express();
@@ -136,6 +141,7 @@ installRuntimeFiles();
 agents.writeClaudeSettings();
 await agents.installAgyPlugin();
 await agents.configureIfRunning();
+tmuxHealth.start();
 
 // A new task can carry pasted images (agents.MAX_IMAGES of at most agents.MAX_IMAGE_BYTES each, as base64).
 app.use('/api/tasks', express.json({ limit: '150mb' }));
@@ -944,7 +950,13 @@ const info = () => {
   const c = store.get('controller');
   return { role: ROLE, root: ROOT, machine: machine.get().name, machineId: MACHINE_ID, host: hostname(), url: URL_BASE, pid: process.pid, settings: machine.get(),
     controller: c ? { agent: c.agent, agentName: agents.agentName(c.agent), account: c.account || accounts.defaultFor(c.agent).id, skipPermissions: !!machine.get().controller.skipPermissions[c.agent], status: c.status, remoteUrl: c.agent === 'claude' && machine.get().controller.remoteControl ? c.remoteUrl : undefined, label: machine.controllerLabel() } : null,
-    tasks: store.all().filter(t => t.role !== 'controller' && t.status !== 'archived').length };
+    tasks: store.all().filter(t => t.role !== 'controller' && t.status !== 'archived').length, tmuxProblem: tmuxProblem() };
+};
+// The tmux server runs from a deleted folder (tmux-health.ts): the text, the restart command and the tasks it would end
+const tmuxProblem = () => {
+  const h = tmuxHealth.current(); if (!h) return null;
+  const tasks = store.all().filter(t => h.sessions.includes(t.session)).map(t => t.role === 'controller' ? 'the controller' : `#${t.num} ${t.title}`);
+  return { pid: h.pid, cwd: h.cwd, text: h.problem, command: h.command, tasks, checkedAt: h.checkedAt };
 };
 app.get('/api/info', (_req, res) => res.json(info()));
 // When and why this server started, its earlier starts and how each ended (server-life.ts)

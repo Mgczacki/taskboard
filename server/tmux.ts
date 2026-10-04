@@ -1,20 +1,25 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { rmSync, writeFileSync } from 'node:fs';
-import { join } from 'node:path';
-import { TB_DIR, TMUX_SOCKET } from './config.ts';
+import { join, resolve } from 'node:path';
+import { STABLE_DIR, TB_DIR, TMUX_SOCKET } from './config.ts';
 
 const exec = promisify(execFile);
 export const TMUX_BIN = process.env.TASKBOARD_TMUX || 'tmux';
 
 // tmux rewrites tabs and other characters in its output when the locale is not UTF-8 (as under launchd, which sets
 // no locale). Always run it with a UTF-8 locale; the list below also uses a separator tmux never rewrites.
-const TMUX_ENV = { ...process.env, LANG: process.env.LANG?.includes('UTF-8') ? process.env.LANG : 'en_US.UTF-8', LC_CTYPE: 'en_US.UTF-8' };
+// PWD is left out: the first tmux command starts the tmux server, which keeps PWD in its global environment.
+const { PWD: _pwd, ...ENV } = process.env;
+const TMUX_ENV = { ...ENV, LANG: process.env.LANG?.includes('UTF-8') ? process.env.LANG : 'en_US.UTF-8', LC_CTYPE: 'en_US.UTF-8' };
+// Every tmux command runs from STABLE_DIR (the home folder). The first command starts the tmux server, and the tmux
+// server keeps the working directory of that command for its whole life. On 4 October 2026 it was a release folder;
+// a later release removed it, and from then on tmux 3.7c started each new pane in the deleted folder, even with -c.
 // A failed command throws an error whose message names the tmux command and its answer, not the whole command line
 // (a start command holds the task instructions and the first prompt, more than 10 KB).
 export async function tmux(...args: string[]): Promise<string> {
   try {
-    const { stdout } = await exec(TMUX_BIN, ['-L', TMUX_SOCKET, ...args], { maxBuffer: 16 * 1024 * 1024, env: TMUX_ENV });
+    const { stdout } = await exec(TMUX_BIN, ['-L', TMUX_SOCKET, ...args], { maxBuffer: 16 * 1024 * 1024, env: TMUX_ENV, cwd: STABLE_DIR });
     return stdout;
   } catch (e) {
     const stderr = String((e as { stderr?: string }).stderr || '').trim();
@@ -27,7 +32,12 @@ export async function tmux(...args: string[]): Promise<string> {
 export const MAX_COMMAND_BYTES = 16_000;
 export const commandBytes = (args: string[]) => args.reduce((n, a) => n + Buffer.byteLength(a) + 1, 0);
 export const newSessionArgs = (name: string, cwd: string, env: Record<string, string>, command: string[]) =>
-  ['new-session', '-d', '-s', name, '-c', cwd, '-x', '200', '-y', '50', ...Object.entries(env).flatMap(([k, v]) => ['-e', `${k}=${v}`]), ...command];
+  ['new-session', '-d', '-s', name, '-c', cwd, '-x', '200', '-y', '50', ...Object.entries(env).flatMap(([k, v]) => ['-e', `${k}=${v}`]), ...inFolder(cwd, command)];
+// The command changes to its folder itself before it runs. A tmux server whose own working directory was deleted
+// ignores -c (observed with tmux 3.7c): the pane then starts in the deleted folder, and Claude Code stops with "The
+// current working directory was deleted". With this, a task still starts on such a tmux server.
+export const inFolder = (cwd: string, command: string[]) =>
+  command.length ? ['/bin/sh', '-c', 'cd "$0" && exec "$@"', resolve(cwd), ...command] : command;
 
 async function tmuxQuiet(...args: string[]): Promise<string | null> {
   try { return await tmux(...args); } catch { return null; }

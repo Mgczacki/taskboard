@@ -13,7 +13,7 @@ import { execFileSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { APP, RELEASES, alive, currentRelease, ensureDir, freePort, log, releases, restartProduction, startServer, staysUp, switchTo, waitForInfo, writeJson } from './lib.mjs';
+import { APP, RELEASES, alive, currentRelease, ensureDir, freePort, log, pruneReleases, restartProduction, startServer, staysUp, switchTo, waitForInfo, writeJson } from './lib.mjs';
 
 const args = process.argv.slice(2);
 const ref = args.includes('--ref') ? args[args.indexOf('--ref') + 1] : null;
@@ -79,7 +79,7 @@ if (info && info.root && info.root.includes(id) && (log(`Release ${id} answers (
   process.exit(1);
 }
 
-// 8. keep the newest 5 releases (and whatever is current)
-const all = releases(), keep = new Set(all.slice(-5).map(r => r.id)); keep.add(id);
-for (const r of all) if (!keep.has(r.id)) { rmSync(r.dir, { recursive: true, force: true }); log(`Removed old release ${r.id}.`); }
+// 8. remove old releases: keeps the newest 5, the current and the previous release, and every release folder that a
+// running process uses (a tmux server once ran from a removed release folder, and then no task could start)
+await pruneReleases({ current: id, previous });
 void APP;

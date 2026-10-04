@@ -21,6 +21,10 @@ export const TMUX_SOCKET = process.env.TASKBOARD_TMUX_SOCKET || 'taskboard';
 
 for (const d of [VAULT, TASKS_DIR, DOCS_DIR, TB_DIR]) mkdirSync(d, { recursive: true });
 
+// The folder that the server works from (server/index.ts changes to it) and runs tmux from (tmux.ts). A release never
+// removes it. Same value as STABLE_DIR in scripts/cwd-check.mjs.
+export const STABLE_DIR = HOME;
+
 // Hook scripts send this token so only processes on this machine that can read ~/.taskboard can post events.
 const tokenFile = join(TB_DIR, 'token');
 if (!existsSync(tokenFile)) writeFileSync(tokenFile, randomBytes(24).toString('hex'), { mode: 0o600 });

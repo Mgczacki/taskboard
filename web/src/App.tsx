@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
-import type { Group, SpinOffExchange, Task } from './api';
+import type { Group, MachineInfo, SpinOffExchange, Task } from './api';
 import { AGENT_NAME, ATTN, api, dismissBanner, fmtWait, setViewing, useStore } from './api';
 import { awayBanner, linkText } from './serverStatus';
 import { ACTIONS, CTX_NAME, fmtCombo, hit, hitIn, inBrowser, keyLabel, keysOf, keysText, useKeymap } from './keys';
@@ -105,6 +105,14 @@ export function App() {
   const [machineName, setMachineName] = useState('');
   const [role, setRole] = useState('production');
   useEffect(() => { api.info().then(i => { setMachineName(i.machine); setRole(i.role || 'production'); document.title = `Taskboard · ${i.machine}`; }).catch(() => {}); }, [connected]);
+  // The tmux server runs from a deleted folder (server/tmux-health.ts checks every minute). Close hides it for that
+  // tmux server process only.
+  const [tmuxProblem, setTmuxProblem] = useState<MachineInfo['tmuxProblem']>(null);
+  const [tmuxClosed, setTmuxClosed] = useState(0);
+  useEffect(() => {
+    const read = () => api.info().then(i => setTmuxProblem(i.tmuxProblem || null)).catch(() => {});
+    read(); const timer = setInterval(read, 60000); return () => clearInterval(timer);
+  }, [connected]);
   // the controller agent is reached with ⌃⌥K and the sidebar; it is not one of the tasks on the board
   const controller = allTasks.find(t => t.role === 'controller');
   const tasks = useMemo(() => allTasks.filter(t => t.role !== 'controller'), [allTasks]);
@@ -317,6 +325,14 @@ export function App() {
       {groupPrompt && <GroupPrompt ids={groupPrompt} close={() => setGroupPrompt(null)} done={(g, openWin) => { setGroupPrompt(null); setSelected(new Set()); toast(`Group “${g.name}” created`); if (openWin) openInWindow('g:' + g.id); else { setView('g:' + g.id); go('canvas'); } }} />}
       {role === 'sandbox' && <div className="sandbox-bar" title={`This is a sandbox: a separate test copy of Taskboard (${machineName}). Its agents and tasks are not your real ones.`}>Sandbox · {machineName} · not your real Taskboard</div>}
       {(away || banner) && <div className={`server-bar ${away ? 'away' : ''}`} role="status">{away || banner?.text}{!away && <button className="btn ghost" onClick={dismissBanner}>Close</button>}</div>}
+      {tmuxProblem && tmuxProblem.pid !== tmuxClosed && <div className="server-bar away tmux-bar" role="alert">
+        <div>
+          {tmuxProblem.text}
+          <div className="tmux-bar-cmd">Command: <code>{tmuxProblem.command}</code></div>
+          {tmuxProblem.tasks.length > 0 && <details><summary>It ends these sessions ({tmuxProblem.tasks.length})</summary><ul>{tmuxProblem.tasks.map(t => <li key={t}>{t}</li>)}</ul></details>}
+        </div>
+        <button className="btn ghost" onClick={() => setTmuxClosed(tmuxProblem.pid)}>Close</button>
+      </div>}
       {updateReady && <div className="update-bar">A new version of Taskboard is ready. <button className="btn primary" onClick={() => location.reload()}>Reload</button><button className="btn ghost" onClick={() => setUpdateReady(false)}>Later</button></div>}
       {keysHelp && <KeysHelp close={() => setKeysHelp(false)} settings={() => { setKeysHelp(false); go('settings'); location.hash = 'settings:keys'; }} />}
       {addMachine && <AddMachine close={() => setAddMachine(false)} />}

@@ -548,6 +548,10 @@ body.in-app.app-buttons .app:not(:has(.rail)) .top { padding-left: 84px; }
 /* Taskboard was updated and automatic reload is off */
 .server-bar { position: fixed; left: 50%; top: 10px; transform: translateX(-50%); z-index: 61; display: flex; gap: 10px; align-items: center; max-width: min(760px, calc(100vw - 32px)); padding: 8px 12px; border-radius: 10px; background: var(--bg2); border: 1px solid var(--accent); box-shadow: 0 6px 24px rgba(0,0,0,.4); font-size: 13px; }
 .server-bar.away { border-color: var(--st-needs); }
+.tmux-bar { top: 56px; align-items: flex-start; }
+.tmux-bar-cmd { margin-top: 6px; }
+.tmux-bar code { user-select: all; }
+.tmux-bar ul { margin: 4px 0 0; padding-left: 18px; }
 .update-bar { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); z-index: 60; display: flex; gap: 10px; align-items: center; padding: 8px 12px; border-radius: 10px; background: var(--bg2); border: 1px solid var(--accent); box-shadow: 0 6px 24px rgba(0,0,0,.4); font-size: 13px; }
 /* Settings: keyboard shortcuts */
 table.keyset td { vertical-align: middle; }

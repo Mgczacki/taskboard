@@ -3,8 +3,11 @@
 //   pnpm doctor --repair   runs the repair that the state offers (install the login service, or restart it).
 //                          Only the user runs it: it refuses inside a Taskboard task for the real service.
 //   pnpm doctor --json     the facts and the state as JSON.
+// It also checks the working directory of the tmux server of the agents (TASKBOARD_TMUX_SOCKET, default taskboard):
+// when that folder was deleted, new task sessions fail (scripts/cwd-check.mjs). It only reads; it never restarts tmux.
 // The Taskboard app shows the same check on its waiting page, with a Start server button.
 import { createRequire } from 'node:module';
+import { tmuxFolderProblem, tmuxServerFolder } from './cwd-check.mjs';
 
 const doctor = createRequire(import.meta.url)('../desktop/doctor.cjs');
 const args = process.argv.slice(2);
@@ -23,7 +26,11 @@ if (args.includes('--repair')) {
 }
 
 const c = await doctor.check(cfg);
-if (args.includes('--json')) { console.log(JSON.stringify(c, null, 2)); process.exit(c.ok ? 0 : 1); }
+const socket = process.env.TASKBOARD_TMUX_SOCKET || 'taskboard', tmuxBin = process.env.TASKBOARD_TMUX || 'tmux';
+const tmux = await tmuxServerFolder(socket, tmuxBin).catch(() => null);
+const tmuxProblem = tmuxFolderProblem(tmux, socket, tmuxBin);
+const ok = c.ok && !tmuxProblem;
+if (args.includes('--json')) { console.log(JSON.stringify({ ...c, tmux: tmux && { socket, ...tmux, problem: tmuxProblem } }, null, 2)); process.exit(ok ? 0 : 1); }
 const f = c.facts;
 console.log(`${c.ok ? 'OK' : 'Problem'}: ${c.title}.`);
 console.log(c.reason);
@@ -36,5 +43,13 @@ if (f.platform === 'darwin') {
   console.log(`Program: ${f.program || 'unknown'}. Release: ${f.release || 'none'}.`);
   if (f.lastInstall) console.log(`Last install ${f.lastInstall.at}: ${f.lastInstall.line}`);
 }
+console.log('');
+if (!tmux) console.log(`tmux server ${socket}: not running.`);
+else if (tmuxProblem) console.log(`Problem: ${tmuxProblem}`);
+else {
+  console.log(`tmux server ${socket}: process ${tmux.pid}, working directory ${tmux.cwd ?? 'unknown'}.`);
+  // a tmux server from before this change; the release prune keeps a folder that a process uses (scripts/lib.mjs)
+  if (tmux.cwd?.includes('/.taskboard/releases/')) console.log('Note: this is a release folder. A release does not remove it while the tmux server runs. A restart of the tmux server moves it to the home folder.');
+}
 if (c.logTail?.length) { console.log(`\nLast lines of ${f.log}:`); for (const l of c.logTail) console.log(`  ${l}`); }
-process.exit(c.ok ? 0 : 1);
+process.exit(ok ? 0 : 1);
