@@ -21,6 +21,7 @@ import { AccountsPage } from './components/Accounts';
 import { SettingsPage } from './components/Settings';
 import { PermitsPage } from './components/Permits';
 import { NoticeStack } from './components/NoticeStack';
+import { liveApprovals } from './stack';
 import { WaitingPage, waitingRows } from './components/Waiting';
 import { quietTaskIds } from './dismiss';
 import { StatsPage } from './components/Stats';
@@ -338,7 +339,7 @@ export function App() {
       {addMachine && <AddMachine close={() => setAddMachine(false)} />}
       {linked && <LinkedWork q={linked} tasks={tasks} close={() => setLinked(null)} onGo={id => setOpenId(id)} />}
       {triage && <Triage queue={queue} tasks={tasks} close={() => setTriage(false)} open={id => { setTriage(false); setOpenId(id); }} />}
-      {page !== 'waiting' && <NoticeStack approvals={approvals.filter(a => (page !== 'permits' || a.action !== 'permit') && (a.state === 'pending' || (a.action === 'permit' && a.state === 'running')))} pending={pending} allTasks={allTasks} setOpenId={setOpenId} openController={openController} toast={toast} showAll={() => go('waiting')} />}
+      {page !== 'waiting' && <NoticeStack approvals={liveApprovals(approvals).filter(a => page !== 'permits' || a.action !== 'permit')} pending={pending} allTasks={allTasks} setOpenId={setOpenId} openController={openController} toast={toast} showAll={() => go('waiting')} />}
       <PerfMonitor />
       <div className="toasts"><HoldCard tasks={allTasks} />{toasts.map(t => <ToastNotice key={t.id} toast={t} dismiss={() => setToasts(x => x.filter(y => y.id !== t.id))} />)}</div>
     </div>

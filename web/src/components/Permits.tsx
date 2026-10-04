@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { api, type Permit } from '../api';
+import { permitHeadline, stepWord } from '../permitText';
 
 export function PermitDetails({ id, decision = false, openTask }: { id: string; decision?: boolean; openTask?: (id: string) => void }) {
   const [permit, setPermit] = useState<Permit | null>(null);
@@ -17,17 +18,18 @@ export function PermitDetails({ id, decision = false, openTask }: { id: string; 
     setBusy(false);
   };
   if (!permit) return <div className="approval">{error || 'Loading permit…'}</div>;
+  const head = permitHeadline(permit);
   return <div className={`approval permit-${permit.state}`}>
-    <div className="ap-h"><span className={`dot ${permit.state === 'pending' ? 'needs-you' : permit.state === 'succeeded' ? 'unread' : 'stopped'}`} /><b>Task #{permit.taskNum} · {permit.state}</b><span className="sub">Permit {permit.id.slice(0, 8)}</span></div>
+    <div className="ap-h"><span className={`dot ${permit.state === 'pending' ? 'needs-you' : permit.state === 'succeeded' ? 'unread' : 'stopped'}`} /><b>Task #{permit.taskNum} · {head.state}</b><span className="sub">Permit {permit.id.slice(0, 8)}</span></div>
     <p>{permit.reason}</p>
     {permit.statedRisk && <p>Risk: {permit.statedRisk}</p>}
-    <div className="sub">Risk class: {permit.riskClass || 'unknown'} · Expires {new Date(permit.expiresAt).toLocaleString()} · {permit.riskFlags.length ? permit.riskFlags.join(' · ') : 'No risk flags'}</div>
-    <ol>{permit.steps.map((step, i) => <li key={i}><b>{step.state}</b><pre className="ap-d"><code>{step.command}</code></pre><div className="sub">Folder: {step.cwd} · {step.timeoutSeconds} s · Network: {step.network ? 'Yes' : 'No'}</div>{step.exitCode !== undefined && <div>Exit code: {step.exitCode ?? 'none'}</div>}{step.error && <div className="banner">{step.error}</div>}{step.outputTail && <pre className="ap-d">{step.outputTail}</pre>}</li>)}</ol>
+    <div className="sub">Risk class: {permit.riskClass || 'unknown'}{head.when ? ` · ${head.when}` : ''} · {permit.riskFlags.length ? permit.riskFlags.join(' · ') : 'No risk flags'}</div>
+    <ol>{permit.steps.map((step, i) => <li key={i}><b>{stepWord(step.state)}</b><pre className="ap-d"><code>{step.command}</code></pre><div className="sub">Folder: {step.cwd} · {step.timeoutSeconds} s · Network: {step.network ? 'Yes' : 'No'}</div>{step.exitCode !== undefined && <div>Exit code: {step.exitCode ?? 'none'}</div>}{step.error && <div className="banner">{step.error}</div>}{step.outputTail && <pre className="ap-d">{step.outputTail}</pre>}</li>)}</ol>
     {permit.approvedBy && <div className="sub">Approved by {permit.approvedBy} · Rule: {permit.approvalRule || 'none'}{permit.controllerRequestText ? ` · User request: ${permit.controllerRequestText}` : ''}</div>}
     {permit.decisionComment && <div className="sub">Comment: {permit.decisionComment}</div>}
-    {permit.error && <div className="banner">{permit.error}</div>}
+    {head.note ? <div className="pc-note info">{head.note}</div> : permit.error && <div className="banner">{permit.error}</div>}
     {error && <div className="banner">{error}</div>}
-    {decision && permit.state === 'pending' && <><textarea className="routing-rule" rows={2} aria-label="Permit decision comment" placeholder="Optional comment for the task" value={comment} onChange={e => setComment(e.target.value)} /><div className="ap-a"><button className="btn primary" disabled={busy} onClick={() => void decide(true)}>Run</button><button className="btn" onClick={() => void navigator.clipboard.writeText(permit.steps.map(s => s.command).join('\n'))}>Copy</button><button className="btn" disabled={busy} onClick={() => void decide(false)}>Deny</button>{openTask && <button className="btn ghost" onClick={() => openTask(permit.taskId)}>Open task</button>}</div></>}
+    {decision && head.open && <><textarea className="routing-rule" rows={2} aria-label="Permit decision comment" placeholder="Optional comment for the task" value={comment} onChange={e => setComment(e.target.value)} /><div className="ap-a"><button className="btn primary" disabled={busy} onClick={() => void decide(true)}>Run</button><button className="btn" onClick={() => void navigator.clipboard.writeText(permit.steps.map(s => s.command).join('\n'))}>Copy</button><button className="btn" disabled={busy} onClick={() => void decide(false)}>Deny</button>{openTask && <button className="btn ghost" onClick={() => openTask(permit.taskId)}>Open task</button>}</div></>}
   </div>;
 }
 

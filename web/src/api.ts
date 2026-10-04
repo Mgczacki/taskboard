@@ -97,7 +97,7 @@ export interface MessagePayload {
   files: string[]; agentFile?: string; check: { verdict: string; reason: string; summary: string }; notes: MessageNote[];
   approver: string; since: string; remindAfterMin: number; error?: string; proposal?: { task: string | null; title?: string };
 }
-export interface Permit { id: string; taskId: string; taskNum: number; agent: Agent; reason: string; statedRisk?: string; createdAt: string; expiresAt: string; state: string; approvedBy?: string; approvalRule?: string; riskClass?: 'low' | 'high'; controllerRequestText?: string; decisionComment?: string; error?: string; riskFlags: string[]; steps: { command: string; cwd: string; timeoutSeconds: number; network: boolean; state: string; exitCode?: number | null; outputTail?: string; error?: string }[] }
+export interface Permit { id: string; taskId: string; taskNum: number; agent: Agent; reason: string; statedRisk?: string; createdAt: string; expiresAt: string; decidedAt?: string; finishedAt?: string; state: string; approvedBy?: string; approvalRule?: string; riskClass?: 'low' | 'high'; controllerRequestText?: string; decisionComment?: string; error?: string; riskFlags: string[]; steps: { command: string; cwd: string; timeoutSeconds: number; network: boolean; state: string; exitCode?: number | null; outputTail?: string; error?: string }[] }
 // A question or dialog that a task waits on (server/pending.ts): the Waiting page, the notification stack, the task panel
 export type PendingRisk = 'wide-access' | 'installs' | 'spends' | 'exits';
 // Settings > Controller approvals: the card kinds that the controller may approve when the user asks in its chat
