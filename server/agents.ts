@@ -386,7 +386,7 @@ export async function startController(opts: { prompt?: string } = {}): Promise<T
       c = namedCommand(t, controllerCommand(t, null, resume, []));
       pendingPrompt.set(t.id, opts.prompt);
     }
-    await tmux.newSession(t.session, CONTROLLER_DIR, baseEnv(t), c, async () => { await ensureTmuxConfigured(); });
+    await tmux.newSession(t.session, CONTROLLER_DIR, baseEnv(t), c, configureNewTmuxServer);
     await ensureTmuxConfigured();
   } finally { launching.delete(t.id); }
   return store.update(t.id, { status: 'idle', launchedAs: controllerLaunchKey(t.agent), statusSource: resume ? 'Controller resumed.' : 'Controller started. Ask it anything about your agents.' })!;
@@ -828,6 +828,9 @@ async function ensureTmuxConfigured() {
   await tmux.configureServer(hook);
   tmuxConfigured = true;
 }
+// newSession calls this when its command started a new tmux server (for example after tmux kill-server): that server
+// has none of the options yet, so they are set again.
+const configureNewTmuxServer = async () => { tmuxConfigured = false; await ensureTmuxConfigured(); };
 export async function configureIfRunning() { if ((await tmux.listSessions())?.length) await ensureTmuxConfigured(); }
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'task';
@@ -1043,7 +1046,7 @@ async function launchInner(t: Task, prompt: string | null, resume: boolean) {
     cmd = namedCommand(t, command(t, null, resume, codexTrust));
     pendingPrompt.set(t.id, text);
   }
-  await tmux.newSession(t.session, t.cwd, env, cmd, async () => { await ensureTmuxConfigured(); });
+  await tmux.newSession(t.session, t.cwd, env, cmd, configureNewTmuxServer);
   await ensureTmuxConfigured();
   await tmux.pipeToFile(t.session, store.terminalLog(t.id));
 }
@@ -1216,7 +1219,7 @@ export async function utilSession(kind: 'login' | 'reset', a: accounts.Account):
   const cwd = join(TB_DIR); mkdirSync(cwd, { recursive: true });
   // agy signs in when it starts without a session; the user exits it with /exit afterwards
   const cmd = kind === 'login' ? (a.agent === 'claude' ? ['claude', 'auth', 'login'] : a.agent === 'codex' ? ['codex', 'login'] : [agyBin()]) : ['claude'];
-  await tmux.newSession(name, cwd, env, cmd, async () => { await ensureTmuxConfigured(); });
+  await tmux.newSession(name, cwd, env, cmd, configureNewTmuxServer);
   if (kind === 'reset') {
     // Claude may first ask to trust this folder (Taskboard's own folder): accept it, then type the command.
     for (let i = 0; i < 20; i++) {

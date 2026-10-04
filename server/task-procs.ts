@@ -7,7 +7,7 @@
 // child that leaves the process group of its tmux pane (setsid) can still be found with `ps` and stopped.
 import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, openSync, readFileSync, readSync, closeSync, statSync, writeFileSync, rmSync, fstatSync } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import * as store from './store.ts';
 import { tmux, quote } from './tmux.ts';
@@ -149,6 +149,8 @@ async function launch(o: Owner, p: Proc) {
   const env = { ...o.env, ...(p.path ? { PATH: p.path } : {}), TB_PROC_OWNER: ownerTag(o), TB_PROC_NAME: p.name };
   const run = join(o.dir, 'procs', `.${p.name}.sh`);
   writeFileSync(run, [
+    // tmux ignores -c when its own working directory was deleted (see inFolder in tmux.ts), so the script changes folder
+    `cd ${quote(resolve(p.cwd))} || exit 1`,
     ...Object.entries(env).filter(([k]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k)).map(([k, v]) => `export ${k}=${quote(v)}`),
     `i=0; while [ ! -e ${quote(ready)} ] && [ $i -lt 100 ]; do sleep 0.05; i=$((i+1)); done; rm -f ${quote(ready)}`,
     `exec /bin/sh -c ${quote(p.command)}`, '',
