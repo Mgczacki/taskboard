@@ -6,7 +6,8 @@
 // floating panel keep two rows: the tab strip and the address bar with its chips.
 // A tab whose page waits for an answer (tab.dialog: alert, confirm, prompt, beforeunload) has an orange dot. Headless
 // Chrome draws no box for it, so the view shows the question of the shown tab in a bar with OK and Cancel.
-// The sound switch (SoundSwitch) is in both views: a browser starts muted until the user turns its sound on.
+// The sound switch (SoundSwitch) is in both views: a browser starts muted until the user turns its sound on. It shows
+// the state that the server read back from Chrome (soundState): muted and confirmed, sound on, or mute not confirmed.
 // The server sends the shown tab's loading state and history ("nav"), so back, forward and reload work like Chrome's.
 // New tabs and popups (server/tab-switch.ts): the server switches the view to a popup or a tab that an agent opened, and
 // says so ('active' with auto). The view then shows one line with a Go back button, moves the keys and the mouse to
@@ -123,7 +124,7 @@ const I = {
   back: 'M15 6l-6 6 6 6', forward: 'M9 6l6 6-6 6', reload: 'M20 11a8 8 0 1 0-2.3 5.7M20 5v6h-6', stop: 'M6 6l12 12M18 6L6 18',
   plus: 'M12 5v14M5 12h14', close: 'M7 7l10 10M17 7L7 17', lock: 'M7 11V8a5 5 0 0 1 10 0v3M6 11h12v9H6z', info: 'M12 8h.01M11 12h1v5h1M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18z',
   globe: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM3 12h18M12 3c2.5 2.6 3.8 5.6 3.8 9s-1.3 6.4-3.8 9M12 3C9.5 5.6 8.2 8.6 8.2 12s1.3 6.4 3.8 9',
-  sound: 'M5 9v6h4l5 4V5L9 9H5zM17 9a4 4 0 0 1 0 6M19.5 6.5a8 8 0 0 1 0 11', muted: 'M5 9v6h4l5 4V5L9 9H5zM17 9l5 6M22 9l-5 6',
+  sound: 'M5 9v6h4l5 4V5L9 9H5zM17 9a4 4 0 0 1 0 6M19.5 6.5a8 8 0 0 1 0 11', muted: 'M5 9v6h4l5 4V5L9 9H5zM17 9l5 6M22 9l-5 6', unverified: 'M5 9v6h4l5 4V5L9 9H5zM19 6v8M19 18h.01',
   popout: 'M14 4h6v6M20 4l-8 8M18 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h5', power: 'M12 3v8M7.1 6.3a7 7 0 1 0 9.8 0',
   more: 'M5 12h.5M12 12h.5M19 12h.5', down: 'M6 9l6 6 6-6', canvas: 'M4 5h16v14H4zM4 13h16',
   grow: 'M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5', shrink: 'M9 4v5H4M15 4v5h5M9 20v-5H4M15 20v-5h5', copy: 'M9 9h10v11H9zM5 15V4h10',
@@ -181,6 +182,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, 
   const [running, setRunning] = useState<boolean | null>(null);
   const [agents, setAgents] = useState(0);
   const [muted, setMuted] = useState<boolean | null>(null);
+  const [soundCheck, setSoundCheck] = useState<SoundCheck>({ state: null });
   const [nav, setNav] = useState({ loading: false, canBack: false, canForward: false });
   const [err, setErr] = useState('');
   const [flash, setFlash] = useState('');
@@ -325,7 +327,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, 
         else if (m.type === 'download') setDownloads(prev => [...prev.filter(d => d.guid !== m.guid), m].slice(-20));
         else if (m.type === 'windowUnsent') setUnsent({ on: !!m.on, fields: m.fields || 0 });
         else if (m.type === 'windowSwitching') { setSwitching(!!m.on); setTimeout(() => setSwitching(null), 20000); }
-        else if (m.type === 'tabs') { setInWindow(prev => { const w = !!m.window; if (w !== prev) setSwitching(null); return w; }); if (typeof m.scale === 'number') setScale(prev => prev.now === m.scale && prev.want === m.wantScale ? prev : { now: m.scale, want: m.wantScale || 1 }); setAsk(prev => JSON.stringify(prev) === JSON.stringify(m.ask || null) ? prev : m.ask || null); setTabs(prev => JSON.stringify(prev) === JSON.stringify(m.tabs) ? prev : m.tabs); setRunning(true); setAgents(m.agents || 0); setMuted(m.muted ?? null); setErr(''); setAutoSwitch(prev => prev.on === (m.autoSwitch !== false) && prev.own === !!m.autoSwitchOwn ? prev : { on: m.autoSwitch !== false, own: !!m.autoSwitchOwn }); }
+        else if (m.type === 'tabs') { setInWindow(prev => { const w = !!m.window; if (w !== prev) setSwitching(null); return w; }); if (typeof m.scale === 'number') setScale(prev => prev.now === m.scale && prev.want === m.wantScale ? prev : { now: m.scale, want: m.wantScale || 1 }); setAsk(prev => JSON.stringify(prev) === JSON.stringify(m.ask || null) ? prev : m.ask || null); setTabs(prev => JSON.stringify(prev) === JSON.stringify(m.tabs) ? prev : m.tabs); setRunning(true); setAgents(m.agents || 0); setMuted(m.muted ?? null); setSoundCheck(prev => prev.state === (m.soundState ?? null) && prev.reason === m.soundReason ? prev : { state: m.soundState ?? null, reason: m.soundReason }); setErr(''); setAutoSwitch(prev => prev.on === (m.autoSwitch !== false) && prev.own === !!m.autoSwitchOwn ? prev : { on: m.autoSwitch !== false, own: !!m.autoSwitchOwn }); }
         else if (m.type === 'active') onActive.current(m.id, m.auto);
         else if (m.type === 'offer') setOffers(prev => [...prev.filter(x => x !== m.id), m.id]);
         else if (m.type === 'title') setTip(m.title ? { text: m.title, x: m.x, y: m.y, at: Date.now() } : null);
@@ -337,7 +339,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, 
           if (!m.peek && text && text !== selection.current) navigator.clipboard?.writeText(text).then(() => note('Copied'), () => {});
           selection.current = text;
         }
-        else if (m.type === 'state') { setRunning(m.running); setState(m); setMuted(m.muted ?? null); if (!m.running) { setTabs([]); setActive(''); setFramed(false); clearFrames(); } }
+        else if (m.type === 'state') { setRunning(m.running); setState(m); setMuted(m.muted ?? null); setSoundCheck({ state: m.soundState ?? null, reason: m.soundReason }); if (!m.running) { setTabs([]); setActive(''); setFramed(false); clearFrames(); } }
         else if (m.type === 'error') setErr(m.message);
       };
       s.onopen = () => { send({ type: 'hello', acks: true, dpr: devicePixelRatio }); send({ type: 'visible', on: shown.current }); sendSize(); };
@@ -593,7 +595,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, 
         : 'Opening this tab does not start it. It starts when the agent uses it, or when you start it.'}</p>
       {!archived && <div className="bw-actions">
         <button className="btn primary" onClick={startNow}>{failed && !state?.exited ? 'Retry' : isTemplate ? 'Open the template browser' : 'Start the browser'}</button>
-        <SoundSwitch id={id} muted={muted} labeled onChange={setMuted} onDone={s => { setState(s); setMuted(s.muted); }} onError={setErr} />
+        <SoundSwitch id={id} muted={muted} check={soundCheck} labeled onChange={setMuted} onDone={s => { setState(s); setMuted(s.muted); setSoundCheck({ state: s.soundState ?? null, reason: s.soundReason }); }} onError={setErr} />
       </div>}
       {!!state?.tabs.length && <div className="bw-saved">
         <div className="bw-saved-h">Opens at the next start</div>
@@ -646,7 +648,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, 
   );
   const popOut = () => { setPop(null); popOutBrowser(id, title || (isTemplate ? 'Template browser' : 'Task browser'), isTemplate ? 'Sign in here. New task browsers copy this profile.' : ''); };
   const stopButton = <button className="bw-ib danger" onClick={() => send({ type: 'stop' })} aria-label={isTemplate ? 'Close the template browser' : 'Stop the browser'} title={isTemplate ? 'Close the template browser. New task browsers can copy it only when it is closed.' : 'Stop the browser. Its pages open again at the next start.'}><Icon d={I.power} /></button>;
-  const sound = <SoundSwitch id={id} muted={muted} onChange={setMuted} onDone={s => setMuted(s.muted)} onError={setErr} />;
+  const sound = <SoundSwitch id={id} muted={muted} check={soundCheck} onChange={setMuted} onDone={s => { setMuted(s.muted); setSoundCheck({ state: s.soundState ?? null, reason: s.soundReason }); }} onError={setErr} />;
   // new tabs that did not take the view: a button that shows the newest one, with the number of them
   const offered = offers.filter(o => o !== active && tabs.some(t => t.id === o));
   const newest = tabs.find(t => t.id === offered[offered.length - 1]);
@@ -889,23 +891,30 @@ function BrowserMemory({ id, row = false }: { id: string; row?: boolean }) {
   return memMb === null ? null : <span className="bw-chip" title="Memory of all Chrome processes of this browser, counted like Activity Monitor does (footprint). The server reads it at most every 15 s.">{mb(memMb)}</span>;
 }
 
-// Sound on or off for this browser (setSound in server/task-browser.ts). A running browser changes at once and keeps
-// its tabs; a stopped browser gets the choice at its next start. The switch shows the new state at the click, and
-// the server's answer (or an error) sets the state it really has.
-function SoundSwitch({ id, muted, labeled = false, onChange, onDone, onError }: { id: string; muted: boolean | null; labeled?: boolean; onChange: (muted: boolean) => void; onDone: (s: BrowserStatus) => void; onError: (m: string) => void }) {
+// Sound on or off for this browser (setSound in server/task-browser.ts). A running browser changes at once (a browser
+// with the --mute-audio start flag restarts for the sound on); a stopped browser gets the choice at its next start.
+// The switch shows the new state at the click, and the server's answer (or an error) sets the state it really has.
+// check is the state that the server read back from Chrome (checkSound): with the switch off, 'unverified' shows a
+// warning icon instead of the muted icon, and a click mutes the browser again (the server restarts it with
+// --mute-audio when the tabs cannot be muted).
+type SoundCheck = { state: 'muted' | 'on' | 'unverified' | null; reason?: string };
+function SoundSwitch({ id, muted, check, labeled = false, onChange, onDone, onError }: { id: string; muted: boolean | null; check: SoundCheck; labeled?: boolean; onChange: (muted: boolean) => void; onDone: (s: BrowserStatus) => void; onError: (m: string) => void }) {
   const [busy, setBusy] = useState(false);
   if (muted === null) return null;
+  const unsure = muted && check.state === 'unverified';
   const toggle = async () => {
-    const on = muted; // the click turns the sound on when it is off
+    // the click turns the sound on when it is off, and mutes again when the mute is not confirmed
+    const on = muted && !unsure;
     onChange(!on); setBusy(true);
     try { onDone(await api.browserSound(id, on)); }
-    catch (e) { onChange(on); onError(String((e as Error).message || e)); } finally { setBusy(false); }
+    catch (e) { onChange(muted); onError(String((e as Error).message || e)); } finally { setBusy(false); }
   };
-  const title = muted ? 'Sound is off. Click to turn the sound on.' : 'Sound is on. Click to turn the sound off.';
-  const label = muted ? 'Sound off' : 'Sound on';
+  const title = unsure ? `The sound switch is off, but Taskboard could not confirm that this browser is muted. ${check.reason || ''} Click to mute it again.`
+    : muted ? `Sound is off.${check.state === 'muted' ? ' Taskboard checked that the browser is muted.' : ''} Click to turn the sound on.` : 'Sound is on. Click to turn the sound off.';
+  const label = unsure ? 'Mute not confirmed' : muted ? 'Sound off' : 'Sound on';
   return (
-    <button className={`${labeled ? 'btn' : 'bw-ib'} bw-sound ${muted ? '' : 'on'}`} onClick={toggle} disabled={busy} aria-pressed={!muted} aria-label={label} title={title}>
-      <Icon d={muted ? I.muted : I.sound} />{labeled && <span>{label}</span>}
+    <button className={`${labeled ? 'btn' : 'bw-ib'} bw-sound ${muted ? '' : 'on'} ${unsure ? 'unsure' : ''}`} onClick={toggle} disabled={busy} aria-pressed={!muted} aria-label={label} title={title}>
+      <Icon d={unsure ? I.unverified : muted ? I.muted : I.sound} />{labeled && <span>{label}</span>}
     </button>
   );
 }

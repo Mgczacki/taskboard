@@ -74,6 +74,7 @@ export function watchResume() {
 // A start that failed and a Chrome that ended by itself also go into the task log, with the useful lines of chrome.log.
 export const watchBrowserIdle = () => {
   browser.watchIdle();
+  browser.watchSounds();
   browser.onProblem((id, message, lines) => {
     if (!store.get(id)) return; // the template browser has no task
     try { store.appendLog(id, { did: `Task browser: ${message}${lines.length ? ` Chrome log: ${lines.slice(-3).join(' | ')}` : ''}`, next: 'The browser starts again at the next tool call, or with Start the browser (Retry) in the Browser tab.' }); } catch { /* the task folder is gone */ }

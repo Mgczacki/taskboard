@@ -598,6 +598,8 @@ table.keyset .keycell { text-align: right; white-space: normal; }
 .bw-ib.danger:hover:not(:disabled) { color: var(--st-stopped); background: color-mix(in srgb, var(--st-stopped) 14%, transparent); }
 .bw-sound.on { color: var(--accent); }
 .btn.bw-sound.on { border-color: color-mix(in srgb, var(--accent) 60%, var(--line2)); }
+.bw-sound.unsure { color: var(--st-needs); }
+.btn.bw-sound.unsure { border-color: color-mix(in srgb, var(--st-needs) 60%, var(--line2)); }
 
 .bw-tabs { flex: none; display: flex; align-items: flex-end; gap: 0; height: 40px; padding: 6px 8px 0; background: var(--bg2); border-bottom: 1px solid var(--line); overflow-x: auto; scrollbar-width: none; }
 .bw-tabs::-webkit-scrollbar { display: none; }

@@ -1,9 +1,9 @@
 // The sound switch of a task browser (setSound and muteTabs in server/task-browser.ts) with a real headless Chrome in a
 // temporary Taskboard folder. The test reads the mute state of each tab from Chrome (chrome.tabs in the sound
-// extension). Checks: a first start is muted; the switch changes a running browser at once, without a restart, with
-// its tabs and its agent connection; a new page, a reload, a popup and a new start of the extension keep the state;
-// the saved choice holds over a stop, a suspend and a resume; a Chrome that cannot load the extension starts with
-// --mute-audio. The route test runs a test server with its own port, folders and tmux socket. Skipped when Chrome is
+// extension). Checks: a first start is muted with --mute-audio; the sound on restarts that browser without the flag;
+// then the switch changes the running browser at once, without a restart, with its tabs and its agent connection; a
+// new page, a reload, a popup and a new start of the extension keep the state; the saved choice holds over a stop, a
+// suspend and a resume; a Chrome that cannot load the extension is muted with --mute-audio. The route test runs a test server with its own port, folders and tmux socket. Skipped when Chrome is
 // not installed.
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
@@ -54,6 +54,7 @@ async function connect(id: string) {
 // again first, as muteTabs does when Chrome stopped the idle service worker.
 const EXT_DIR = join(process.env.TASKBOARD_DIR!, 'browser-extension');
 async function mutes(id: string, reload = false): Promise<Record<string, boolean>> {
+  browser.writeExtension(); // a start with --mute-audio does not load the extension
   const c = await connect(id);
   try {
     const worker = async (ext: string) => (await c.call('Target.getTargets')).targetInfos.find((t: { type: string; url: string }) => t.type === 'service_worker' && t.url.startsWith(`chrome-extension://${ext}/`));
@@ -73,8 +74,11 @@ async function mutes(id: string, reload = false): Promise<Record<string, boolean
     }
   } finally { c.close(); }
 }
+// A browser with --mute-audio is muted as a whole: Chrome sends no sound out of any tab, whatever the tab mute says.
 const allMuted = async (id: string, want: boolean) => {
   let seen: Record<string, boolean> = {};
+  if (want && args(id).includes('--mute-audio')) return seen;
+  assert.equal(args(id).includes('--mute-audio'), false, 'a browser with the sound on runs without --mute-audio');
   return waitFor(async () => {
     seen = await mutes(id);
     return Object.keys(seen).length && Object.values(seen).every(v => v === want) ? seen : null;
@@ -105,16 +109,27 @@ test('a first start is muted, for a task browser and for the template', { skip, 
     await allMuted(browser.TEMPLATE, true);
   } finally { await browser.stop(browser.TEMPLATE).catch(() => {}); }
   await browser.ensure('s1');
-  assert.equal(args('s1').includes('--mute-audio'), false, 'the mute comes from the tabs, not from a start flag');
+  assert.ok(args('s1').includes('--mute-audio'), 'a browser with the sound off starts with --mute-audio');
   await allMuted('s1', true);
   const s = await browser.status('s1');
   assert.equal(s.muted, true); assert.equal(s.sound, false);
+  assert.equal(s.soundState, 'muted');
+  assert.equal(browser.readMeta('s1').soundCheck?.how, 'flag');
   assert.equal(browser.readMeta('s1').muted, true);
 });
 
-test('the switch changes a running browser at once: no restart, the tabs and the agent connection stay', { skip, timeout: 90000 }, async () => {
+test('the sound on restarts a browser with --mute-audio, then the switch changes it at once: no restart, the tabs and the agent connection stay', { skip, timeout: 120000 }, async () => {
   const kept = page('kept');
   await browser.openTab('s1', kept);
+  const flagged = browser.readMeta('s1').pid;
+  assert.equal((await browser.setSound('s1', true)).restarted, true, 'the flag goes away with a restart');
+  assert.notEqual(browser.readMeta('s1').pid, flagged);
+  assert.equal(args('s1').includes('--mute-audio'), false);
+  assert.ok((await browser.tabs('s1')).some(t => t.url === kept), 'the restart opens the same pages');
+  assert.equal((await browser.status('s1')).soundState, 'on');
+  await browser.setSound('s1', false);
+  assert.equal((await browser.status('s1')).soundState, 'muted');
+  assert.equal(browser.readMeta('s1').soundCheck?.how, 'tabs');
   const pid = browser.readMeta('s1').pid, before = await tabIds('s1');
 
   // a DevTools connection of an agent, through the Taskboard server's forwarding code
@@ -212,6 +227,7 @@ test('a Chrome that cannot load the extension starts with --mute-audio, and the 
     assert.equal((await browser.status('s3')).muted, false);
     assert.equal((await browser.setSound('s3', false)).restarted, true);
     assert.ok(args('s3').includes('--mute-audio'));
+    assert.equal((await browser.status('s3')).soundState, 'muted', 'the extension did not answer, so the browser restarted with the flag');
   } finally { await browser.stop('s3').catch(() => {}); machine.update({ chromePath: '' }); }
 });
 
