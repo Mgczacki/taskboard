@@ -7,13 +7,17 @@ import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 
 const FOCUSABLE = 'button:not([disabled]), [href], input, select, [tabindex]:not([tabindex="-1"])';
 
-export function PopMenu({ anchor, close, className = '', label, children }: { anchor: HTMLElement | null; close: () => void; className?: string; label: string; children: React.ReactNode }) {
+// align: 'right' (default) puts the right edge of the popup at the right edge of the button; 'left' puts its left edge
+// at the left edge of the button, moved left as far as needed to stay 8 px inside the window.
+export function PopMenu({ anchor, close, className = '', label, align = 'right', children }: { anchor: HTMLElement | null; close: () => void; className?: string; label: string; align?: 'left' | 'right'; children: React.ReactNode }) {
   const box = useRef<HTMLDivElement>(null);
   // placed on the first render, so the popup is visible when its first control takes the focus
   const where = () => {
     const r = anchor?.getBoundingClientRect(); if (!r) return null;
     const top = r.bottom + 4;
-    return { top, right: Math.max(8, innerWidth - r.right), maxHeight: Math.max(120, innerHeight - top - 12) };
+    const maxHeight = Math.max(120, innerHeight - top - 12);
+    if (align === 'left') return { top, left: Math.max(8, Math.min(r.left, innerWidth - 8 - (box.current?.offsetWidth || 0))), maxHeight };
+    return { top, right: Math.max(8, innerWidth - r.right), maxHeight };
   };
   const [pos, setPos] = useState(where);
   useLayoutEffect(() => {
@@ -41,7 +45,7 @@ export function PopMenu({ anchor, close, className = '', label, children }: { an
   };
   return (
     <div ref={box} className={`pop-menu ${className}`} role="group" aria-label={label} onKeyDown={onKey}
-      style={pos ? { top: pos.top, right: pos.right, maxHeight: pos.maxHeight } : { visibility: 'hidden' }}
+      style={pos ? { top: pos.top, left: 'left' in pos ? pos.left : undefined, right: 'right' in pos ? pos.right : undefined, maxHeight: pos.maxHeight } : { visibility: 'hidden' }}
       // a click in the menu is not a click on the window or the header under it (focus, drag, maximize)
       onPointerDown={e => e.stopPropagation()} onMouseDown={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()}>
       {children}

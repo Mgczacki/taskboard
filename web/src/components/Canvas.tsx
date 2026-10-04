@@ -25,7 +25,7 @@ import { linkOrder, showLinkedWork } from '../links';
 import { GROUP_HINT, HIDE_TITLE, canHide, hiddenHere, hide, unhide, type HiddenByView } from '../hideWindow';
 import { fitToolbar, sameFit, type Fit } from '../toolbarFit';
 import { PopMenu } from './PopMenu';
-import { ManagerBadge, ManagerBoard, ManagerChip } from './ManagerBoard';
+import { GroupNeeds, ManagerBadge, ManagerMark, ManagerScope, WaitLabel, useBoards } from './ManagerBoard';
 
 type Layout = 'columns' | 'grid' | 'rows';
 const MINW = 640;
@@ -67,6 +67,8 @@ interface Props {
 }
 
 export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTaskId, panelTab, selected, toggleSel, clearSel, solo, focusMode, setFocusMode, toast, newTask, newTaskToFocus, onNewTaskFocused, onSpinOff }: Props) {
+  // the boards of all groups: the ◆ need you chip of each group tab and the wait text of each window header
+  useBoards();
   const lk = (k: string) => `tb-cv-${view}-${k}`;
   const [layout, setLayout] = useState<Layout>(() => (localStorage.getItem(lk('layout')) as Layout) || 'columns');
   // Links: a task after the open tasks that block it (links.ts). Computed on each change and never saved as the order.
@@ -511,7 +513,7 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
           <div key={g.id} data-drop={'g:' + g.id} data-group-tab={g.id} className={`gtab ${view === 'g:' + g.id ? 'on' : ''} ${dropClass('g:' + g.id)} ${tabDrag?.id === g.id ? 'dragging' : ''} ${slotClass(i)}`} style={{ '--gc': g.color } as React.CSSProperties}
             onPointerDown={e => startTabDrag(e, g.id)}
             onClick={e => { if (!draggedTab.current && !(e.target as HTMLElement).closest('button,input')) setView('g:' + g.id); }} onDoubleClick={() => setMenu({ group: g.id })} title={dropTitle('g:' + g.id) ?? `Drag sideways to move this tab. Drop a window here to move it from the current group, or add it from another view. Double-click for options. Next / previous tab: ${keysText('nextView')} / ${keysText('prevView')}. Move this tab left / right: ${keysText('groupLeft')} / ${keysText('groupRight')}`}>
-            <span className="gdot" /><span className="gname">{g.name}</span><span className="gn">{l.length}</span>{w > 0 && <span className="gw">● {w}</span>}<ManagerChip manager={g.manager} tasks={tasks} open={id => openPanel(id)} />
+            <span className="gdot" /><span className="gname">{g.name}</span><span className="gn">{l.length}</span>{w > 0 && !g.manager && <span className="gw">● {w}</span>}<ManagerMark manager={g.manager} tasks={tasks} open={id => openPanel(id)} /><GroupNeeds group={g.id} open={id => openPanel(id)} toast={toast} />
             <span className="gact"><button title="Open in its own window" onClick={() => openInWindow('g:' + g.id)}>↗</button><button title="Rename, colour, delete" onClick={() => setMenu({ group: g.id })}>⋯</button></span>
           </div>); })}
         {(() => { const l = ungrouped.filter(id => live(tasks.find(t => t.id === id))); const w = waiting(l); return (
@@ -549,10 +551,9 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
         </PopMenu>}
       </div>
       {menu === 'new' && <NewGroupMenu tasks={tasks} onScreen={ids} selected={[...selected].filter(id => tasks.some(t => t.id === id))} close={() => setMenu(null)} done={g => { clearSel(); setMenu(null); setView('g:' + g.id); toast(`Group “${g.name}” created`); }} />}
-      {menu && typeof menu === 'object' && <GroupMenu g={groups.find(x => x.id === menu.group)!} archiveCount={(g => g ? archivePlan(g, groups, tasks).targets.length : 0)(groups.find(x => x.id === menu.group))} onArchiveAll={(g, deleteGroup) => { setMenu(null); setArchiving({ group: { ...g, tasks: [...g.tasks] }, deleteGroup }); }} close={() => setMenu(null)} onDeleted={g => { if (view === 'g:' + g.id) setView('live'); toast(`Deleted “${g.name}”. Its tasks keep running.`, { label: 'Undo', fn: () => { api.restoreGroup(g); setView('g:' + g.id); } }); }} />}
+      {menu && typeof menu === 'object' && <GroupMenu tasks={tasks} g={groups.find(x => x.id === menu.group)!} archiveCount={(g => g ? archivePlan(g, groups, tasks).targets.length : 0)(groups.find(x => x.id === menu.group))} onArchiveAll={(g, deleteGroup) => { setMenu(null); setArchiving({ group: { ...g, tasks: [...g.tasks] }, deleteGroup }); }} close={() => setMenu(null)} onDeleted={g => { if (view === 'g:' + g.id) setView('live'); toast(`Deleted “${g.name}”. Its tasks keep running.`, { label: 'Undo', fn: () => { api.restoreGroup(g); setView('g:' + g.id); } }); }} />}
       {archiving && <ArchiveAllPanel g={archiving.group} deleteGroup={archiving.deleteGroup} groups={groups} tasks={tasks} close={() => setArchiving(null)} onDeleted={() => { if (view === 'g:' + archiving.group.id) setView('live'); }} onRestored={() => setView('g:' + archiving.group.id)} onEnded={ids => { if (panelTaskId && ids.includes(panelTaskId)) openPanel(null); }} toast={toast} />}
       {runtimeOpen && <GroupRuntime tasks={runtimeTasks} group={group} onOpen={(id, tab) => openPanel(id, tab)} />}
-      {group && <ManagerBoard group={group.id} tasks={tasks} openTask={id => openPanel(id)} />}
       <div className="stage-grid" ref={stage} style={style}>
         {!wins.length && <div className="emptyview"><h2>{group ? `“${group.name}” is empty` : view === 'ungrouped' && !hiddenIds.length ? 'Every live task is in a group' : 'No windows'}</h2><p>Use <b>＋ New task</b> to start an agent here. Use <b>＋ Add window</b> to show a task that already exists.</p></div>}
         {/* renderOrder: the page keeps the windows in one fixed order and CSS order puts them in place, so a move does not remount a terminal */}
@@ -618,7 +619,7 @@ const CanvasWin = memo(function CanvasWin({ t, i, act, linkTasks, cls, span, end
     <div data-win={t.id} className={cls} style={{ order: i, ...(span ? { gridColumn: `span ${span}` } : {}) }} onMouseDown={() => { a().focus(t.id); if (t.status === 'unread') api.seen(t.id); }}>
       <div ref={head} className={`wh ${narrow ? 'narrow' : ''}`} onPointerDown={e => a().startDrag(e, t.id)} onDoubleClick={() => a().toggleMax(t.id)}>
         <span className="grip" title={`Drag to move this window between two others, or onto a group tab. Move it one place: ${keysText('windowEarlier')} / ${keysText('windowLater')}`}>⠿</span><span className="ix">{i + 1}</span><LinkPorts t={t} tasks={linkTasks} onGo={id => a().goTask(id)} side="left" /><Dot s={t.status} /><span className="n">#{t.num}</span><span className="ti">{t.title}</span><ManagerBadge id={t.id} /><LinkPorts t={t} tasks={linkTasks} onGo={id => a().goTask(id)} side="right" />
-        <PendingMarker taskId={t.id} small><span className={`st st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span></PendingMarker>
+        <PendingMarker taskId={t.id} small><WaitLabel taskId={t.id}><span className={`st st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span></WaitLabel></PendingMarker>
         {!narrow && <><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} /><BrowserAskChip t={t} /><RuntimeButton t={t} small onOpen={tab => a().openPanel(t.id, tab)} /></>}
         {ending ? <><span className="sel-warn">End & archive?</span><button className="b" onClick={() => a().endTask(t)}>Yes, end it</button><button className="b" onClick={() => a().setEnding(null)}>Cancel</button></> : <>
         {(t.status === 'suspended' || t.openElsewhere) && <button className="b" onClick={() => a().openPanel(t.id)}>{t.openElsewhere ? 'Options…' : 'Resume…'}</button>}
@@ -665,7 +666,7 @@ function NewGroupMenu({ tasks, onScreen, selected, close, done }: { tasks: Task[
   );
 }
 
-function GroupMenu({ g, archiveCount, onArchiveAll, close, onDeleted }: { g: Group; archiveCount: number; onArchiveAll: (g: Group, deleteGroup: boolean) => void; close: () => void; onDeleted: (g: Group) => void }) {
+function GroupMenu({ g, tasks, archiveCount, onArchiveAll, close, onDeleted }: { g: Group; tasks: Task[]; archiveCount: number; onArchiveAll: (g: Group, deleteGroup: boolean) => void; close: () => void; onDeleted: (g: Group) => void }) {
   const [name, setName] = useState(g?.name || '');
   if (!g) return null;
   return (
@@ -674,6 +675,7 @@ function GroupMenu({ g, archiveCount, onArchiveAll, close, onDeleted }: { g: Gro
       <input type="text" value={name} onChange={e => setName(e.target.value)} onKeyDown={e => { if (e.key === 'Enter') { api.updateGroup(g.id, { name }); close(); } }} />
       <div style={{ color: 'var(--dim)', margin: '8px 0 2px' }}>Colour</div>
       <div className="colors">{GCOLORS.map(c => <i key={c} className={c === g.color ? 'on' : ''} style={{ background: c }} onClick={() => api.updateGroup(g.id, { color: c })} />)}</div>
+      <ManagerScope group={g.id} tasks={tasks} />
       <div className="mi" onClick={() => { openInWindow('g:' + g.id); close(); }}>↗ Open in its own window</div>
       <div className="mi" title="The state of every set of linked tasks that holds a task of this group" onClick={() => { showLinkedWork({ group: g.id }); close(); }}>Show linked work</div>
       <div className={`mi danger ${archiveCount ? '' : 'off'}`} title={archiveCount ? 'Ends every task in this group and archives it. You confirm first.' : 'No task in this group is left to archive'} onClick={() => { if (archiveCount) onArchiveAll(g, false); }}>Close and archive all ({archiveCount})</div>

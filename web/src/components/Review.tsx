@@ -6,6 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Task } from '../api';
 import { fmtWait } from '../api';
 import { fileUrl } from './Docs';
+import { ManagerBadge } from './ManagerBoard';
 import { AgentChip, Kbd } from './ui';
 import { hit, useKeymap } from '../keys';
 import { api } from '../api';
@@ -206,7 +207,7 @@ export function InboxPage({ tasks, open, documentLink }: { tasks: Task[]; open: 
 
       {item && <section className="rv-main">
         <header className="rv-head">
-          <div className="rv-title"><h2>{item.name}</h2><span className="chip">version {item.version}</span>{item.agent && <AgentChip a={item.agent} />}</div>
+          <div className="rv-title"><h2>{item.name}</h2><span className="chip">version {item.version}</span>{item.agent && <AgentChip a={item.agent} />}<ManagerBadge id={item.task} /></div>
           <div className="rv-sub">From #{item.taskNum} {item.taskTitle} · <code>{item.path.replace(/^\/Users\/[^/]+/, '~')}</code></div>
           <div className="rv-actions">
             <button className="btn" onClick={() => open(item.task, 'terminal')} disabled={!task}>Open agent terminal</button>

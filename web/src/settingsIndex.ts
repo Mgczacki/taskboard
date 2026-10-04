@@ -113,10 +113,6 @@ export const SECTIONS: SectionDef[] = [
     { id: 'canvas', title: 'Canvas', settings: [
       { id: 'confirmEnd', label: 'Ask before ⏻ in a window header ends and archives the task', words: 'end archive confirm power' },
     ] },
-    { id: 'managerBoard', title: 'Manager board', settings: [
-      { id: 'managerBoardOpen', label: 'Show the manager board of a group open at first', words: 'manager board fold collapse expand drop-down canvas group' },
-      { id: 'managerBoardAutoOpen', label: 'Open the manager board by itself when a task needs me', words: 'manager board needs you open automatic' },
-    ] },
     { id: 'controllerView', title: 'Controller view', settings: [
       { id: 'controllerGlass', label: 'See-through controller terminal', words: 'transparent transparency see-through glass ghost blur opacity background text strength shadow outline bold tint contrast slider presets' },
       { id: 'windowSee', label: 'Window see-through while the controller view is open', words: 'transparent translucent window desktop opacity see-through app' },

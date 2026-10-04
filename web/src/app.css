@@ -1053,62 +1053,35 @@ table.procs tr.proc-group td { padding-top: 10px; }
 .allow-rules { display: grid; gap: 6px; }
 .allow-rule { display: flex; gap: 10px; align-items: flex-start; justify-content: space-between; border: 1px solid var(--line); border-radius: 6px; padding: 8px; }
 .allow-rule > div { min-width: 0; }
-/* The manager board above the canvas windows of a group (ManagerBoard.tsx). Folded: one header row of at most 36 px.
-   Open: the rows below the header, at most 40% of the window high, with their own scroll and a resize handle.
-   The height moves with grid-template-rows 0fr -> 1fr, so the windows below do not jump. */
-.mboard { flex: none; margin: 0 10px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel); min-width: 0; }
-.mb-head { display: flex; align-items: center; gap: 8px; height: 34px; padding: 0 6px 0 2px; min-width: 0; }
-.mboard.none .mb-head { padding-left: 10px; }
-.mb-toggle { flex: 1; min-width: 0; height: 30px; display: flex; align-items: center; gap: 8px; padding: 0 6px; background: none; border: 0; border-radius: 6px; color: var(--text); cursor: pointer; text-align: left; font: inherit; }
-.mb-toggle:hover { background: var(--panel2); }
-.mb-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.mb-chev { flex: none; width: 12px; color: var(--dim); font-size: 11px; transition: transform .16s ease; }
-.mboard.open .mb-chev { transform: rotate(90deg); }
-.mb-name { flex: none; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 600; }
-.mb-name.dim { color: var(--dim); font-weight: 500; }
-.mb-chips { display: flex; gap: 5px; min-width: 0; overflow: hidden; }
-.mb-chip { flex: none; padding: 1px 7px; border-radius: 10px; font-size: 11px; line-height: 16px; white-space: nowrap; color: var(--muted); background: var(--panel2); border: 1px solid var(--line); }
-.mb-chip.zero { color: var(--dim); opacity: .7; }
-.mb-chip.hot { color: var(--st-needs); border-color: color-mix(in srgb, var(--st-needs) 55%, var(--line)); background: color-mix(in srgb, var(--st-needs) 12%, var(--panel2)); font-weight: 600; }
-.mb-chip.age { font-family: var(--mono); font-size: 10.5px; }
-.mb-beat { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--st-idle); }
-.mb-beat.ok { background: var(--st-working); }
-.mb-beat.pending { background: var(--st-needs); }
-.mb-beat.down { background: var(--st-stopped); box-shadow: 0 0 0 3px color-mix(in srgb, var(--st-stopped) 25%, transparent); }
-.mb-btn { flex: none; height: 24px; padding: 0 9px; font-size: 11.5px; white-space: nowrap; }
-.mgr-chip { flex: none; height: 20px; padding: 0 7px; border-radius: 10px; font: 10.5px var(--mono); white-space: nowrap; cursor: pointer; color: var(--accent); background: var(--accent-bg); border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--line)); }
-.mgr-chip:hover { border-color: var(--accent); }
-.mb-body { display: grid; grid-template-rows: 0fr; transition: grid-template-rows .16s ease; }
-.mboard.open .mb-body { grid-template-rows: 1fr; }
-.mb-inner { min-height: 0; overflow: hidden; }
-.mb-scroll { max-height: 40vh; min-height: 60px; overflow: auto; resize: vertical; padding: 0 10px 8px; border-top: 1px solid var(--line); }
-.mb-meta { display: flex; align-items: center; gap: 8px; height: 28px; font-size: 11.5px; }
-.mb-meta > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; }
-.mb-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 8px; }
-.mb-col { min-width: 0; }
-.mb-col h3 { display: flex; justify-content: space-between; margin: 0 0 3px; padding: 0 4px; font-size: 10.5px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--dim); }
-.mb-row { display: flex; align-items: center; gap: 6px; width: 100%; height: 28px; padding: 0 6px; background: var(--bg2); border: 1px solid var(--line); border-radius: 6px; margin: 0 0 3px; color: var(--text); font-size: 12px; text-align: left; cursor: pointer; min-width: 0; }
-.mb-row:hover { border-color: var(--line2); background: var(--panel2); }
-.mb-row .n { flex: none; font: 10.5px var(--mono); color: var(--dim); }
-.mb-row .t { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.mb-row .a { flex: none; font: 10.5px var(--mono); color: var(--dim); }
-.mb-empty { height: 28px; padding: 0 6px; display: flex; align-items: center; font-size: 11.5px; color: var(--dim); }
-.mboard .manager-scope { padding: 6px 0 8px; font-size: 12px; display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; }
-.mboard .manager-scope p, .mboard .manager-scope ul { margin: 0; }
-.mboard.none .manager-scope { padding: 0; }
-@media (prefers-reduced-motion: reduce) { .mb-body, .mb-chev { transition: none; } }
-/* "Manager" on a manager task, in every view (ManagerBadge) */
+/* Manager parts (ManagerBoard.tsx): the ◆ mark and the "need you" chip on a group tab, their drop-down,
+   the Manager badge of a manager task, and the wait text in a canvas window header */
+.mgr-mark { flex: none; padding: 0 3px; background: none; border: 0; color: var(--accent); font-size: 11px; line-height: 1; cursor: pointer; }
+.mgr-mark:hover { color: var(--text); }
+.need-chip { flex: none; height: 18px; padding: 0 7px; border-radius: 9px; font-size: 11px; white-space: nowrap; cursor: pointer; color: var(--dim); background: var(--panel2); border: 1px solid var(--line); }
+.need-chip.hot { color: var(--st-needs); font-weight: 600; border-color: color-mix(in srgb, var(--st-needs) 55%, var(--line)); background: color-mix(in srgb, var(--st-needs) 12%, var(--panel2)); }
+.need-chip.on, .need-chip:hover { border-color: var(--line2); }
+.need-chip:focus-visible, .mgr-mark:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.pop-menu.need-pop { padding: 0; width: min(600px, calc(100vw - 16px)); max-width: calc(100vw - 16px); max-height: min(420px, 70vh); white-space: normal; }
+.need-tabs { display: flex; gap: 2px; padding: 0 8px; border-bottom: 1px solid var(--line); }
+.need-tabs button { padding: 8px 10px; background: none; border: 0; border-bottom: 2px solid transparent; color: var(--muted); font: inherit; font-size: 12.5px; cursor: pointer; }
+.need-tabs button.on { color: var(--text); border-bottom-color: var(--accent); }
+.need-tabs button span { margin-left: 4px; font: 10.5px var(--mono); color: var(--dim); }
+.need-row { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 5px 12px; border-bottom: 1px solid var(--line); font-size: 12.5px; }
+.need-row.did { min-height: 32px; }
+.need-row .n, .need-row .a { flex: none; font: 10.5px var(--mono); color: var(--dim); }
+.need-txt { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.need-txt b, .need-txt small, .need-txt span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.need-txt b { font-weight: 600; }
+.need-txt small { color: var(--dim); font-size: 11.5px; }
+.need-acts { flex: none; display: flex; gap: 6px; }
+.need-acts .btn { height: 24px; padding: 0 9px; font-size: 11.5px; }
+.need-empty { padding: 14px 12px; color: var(--dim); font-size: 12.5px; }
+.need-foot { display: flex; align-items: center; gap: 4px; padding: 6px 12px; font-size: 11.5px; color: var(--dim); }
+.need-foot .btn { height: 22px; padding: 0 6px; font-size: 11.5px; }
+.st.wait-label { flex: none; max-width: 160px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); }
+.st.wait-label.needs-you { color: var(--st-needs); }
+.st.wait-label.stopped { color: var(--st-stopped); }
+.gmenu .manager-scope { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
+.gmenu .manager-scope label { display: flex; flex-direction: column; gap: 4px; }
+.gmenu .manager-scope select { max-width: 100%; }
 .chip.mgr-badge { flex: none; padding: 0 6px; font-size: 10px; line-height: 15px; font-weight: 600; color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); background: var(--accent-bg); cursor: help; }
-/* The full board: a wide drawer over the page */
-.mb-scrim { position: fixed; inset: 0; z-index: 85; background: rgb(0 0 0 / .45); display: flex; justify-content: flex-end; }
-.mb-drawer { width: min(1280px, calc(100vw - 32px)); height: 100%; overflow: auto; padding: 14px 18px 18px; background: var(--panel); border-left: 1px solid var(--line2); box-shadow: -18px 0 40px rgb(0 0 0 / .45); }
-.mb-dhead { display: flex; align-items: center; gap: 10px; }
-.mb-dhead h2 { margin: 0; font-size: 16px; }
-.mb-dsub { margin: 6px 0 12px; }
-.mb-drawer .manager-scope { margin: 0 0 12px; padding: 10px; border: 1px solid var(--line); border-radius: 8px; font-size: 12.5px; }
-.manager-columns { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
-.manager-column { min-width: 0; padding: 10px; background: var(--bg2); border: 1px solid var(--line); border-radius: 8px; }
-.manager-column h3 { display: flex; justify-content: space-between; margin: 0 0 8px; font-size: 13px; }
-.manager-column button { display: block; width: 100%; margin: 0 0 6px; padding: 8px; text-align: left; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--text); cursor: pointer; }
-.manager-column button:hover { border-color: var(--line2); }
-.manager-column small { display: block; margin-top: 4px; color: var(--dim); }

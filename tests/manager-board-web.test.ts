@@ -2,55 +2,14 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import {
-  AUTO_OPEN_KEY, DEFAULT_OPEN_KEY, badgeTitle, boardSummary, fmtAge, headerKey, heartbeatState, managerGroupsOf, openKey,
-  readAutoOpen, readDefaultOpen, readOpen, refreshManagerDetails, saveAutoOpen, saveDefaultOpen, saveOpen, setManagerGroups,
-  shouldAutoOpen, type Board, type ManagerInfo,
+  badgeTitle, boardOf, boardSummary, fmtAge, loadBoards, managerGroupsOf, needAction, refreshManagerDetails, rowOf, setManagerGroups, waitLabel,
+  type Board, type BoardRow, type FindCard, type ManagerInfo,
 } from '../web/src/managerBoard.ts';
 
-const memory = () => { const m = new Map<string, string>(); return { getItem: (k: string) => m.get(k) ?? null, setItem: (k: string, v: string) => void m.set(k, v), m }; };
-const broken = { getItem: () => { throw new Error('blocked'); }, setItem: () => { throw new Error('blocked'); } };
-const row = (num: number, ageMinutes: number) => ({ id: 't' + num, num, title: 'Task ' + num, ageMinutes, source: 'checked' });
-
-test('the board is folded by default, and each group keeps its own saved state', () => {
-  const s = memory();
-  assert.equal(readOpen('g1', s), false);
-  saveOpen('g1', true, s);
-  assert.equal(readOpen('g1', s), true);
-  assert.equal(readOpen('g2', s), false);
-  assert.equal(s.m.get(openKey('g1')), 'open');
-  saveOpen('g1', false, s);
-  assert.equal(readOpen('g1', s), false);
-});
-
-test('the global default applies only to groups without a saved state', () => {
-  const s = memory();
-  saveOpen('g1', false, s);
-  saveDefaultOpen(true, s);
-  assert.equal(s.m.get(DEFAULT_OPEN_KEY), 'open');
-  assert.equal(readDefaultOpen(s), true);
-  assert.equal(readOpen('g2', s), true);
-  assert.equal(readOpen('g1', s), false);
-});
-
-test('a storage that throws counts as empty and does not throw', () => {
-  assert.equal(readOpen('g1', broken), false);
-  assert.doesNotThrow(() => saveOpen('g1', true, broken));
-  assert.doesNotThrow(() => saveAutoOpen(true, broken));
-  assert.equal(readAutoOpen(broken), false);
-  assert.equal(readOpen('g1', null), false);
-});
-
-test('the board opens by itself only when the setting is on and Needs you goes up', () => {
-  const s = memory();
-  assert.equal(readAutoOpen(s), false);
-  saveAutoOpen(true, s);
-  assert.equal(s.m.get(AUTO_OPEN_KEY), 'on');
-  assert.equal(readAutoOpen(s), true);
-  assert.equal(shouldAutoOpen(0, 2, true), true);
-  assert.equal(shouldAutoOpen(2, 2, true), false);
-  assert.equal(shouldAutoOpen(3, 1, true), false);
-  assert.equal(shouldAutoOpen(0, 2, false), false);
-});
+const row = (num: number, ageMinutes: number, waitingOn?: Partial<NonNullable<BoardRow['waitingOn']>>): BoardRow =>
+  ({ id: 't' + num, num, title: 'Task ' + num, ageMinutes, source: 'checked', waitingOn: waitingOn && { on: 'user', target: '', needs: '', reason: '', card: '', unblocks: [], ...waitingOn } });
+const cards: FindCard = id => id === 'push1' ? { kind: 'approval', action: 'git-push', pushId: 'p1' } : id === 'merge1' ? { kind: 'approval', action: 'git-merge' }
+  : id === 'permit1' ? { kind: 'approval', action: 'permit', permitId: 'x' } : id === 'mail1' ? { kind: 'approval', action: 'mail-out' } : id === 'q1' ? { kind: 'question' } : undefined;
 
 test('the summary counts each column and shows the oldest wait only past one hour', () => {
   const b: Board = { group: { id: 'g1', name: 'G' }, columns: {
@@ -59,26 +18,48 @@ test('the summary counts each column and shows the oldest wait only past one hou
   assert.deepEqual(s.counts, { needsYou: 2, waitingOther: 3, running: 2, free: 1, blocked: 0 });
   // a Running row does not wait, so its 500 minutes do not count
   assert.equal(s.oldestMinutes, 190);
-  assert.equal(boardSummary({ group: { id: 'g', name: 'G' }, columns: { needsYou: [row(1, 59)], running: [row(2, 900)] } }).oldestMinutes, null);
   assert.deepEqual(boardSummary({ group: { id: 'g', name: 'G' }, columns: {} }).counts, { needsYou: 0, waitingOther: 0, running: 0, free: 0, blocked: 0 });
   assert.equal(fmtAge(45), '45 min');
   assert.equal(fmtAge(190), '3 h');
   assert.equal(fmtAge(3000), '2 d');
 });
 
-test('Enter and Space toggle the header, Escape closes an open board', () => {
-  assert.equal(headerKey('Enter', false), 'toggle');
-  assert.equal(headerKey(' ', true), 'toggle');
-  assert.equal(headerKey('Escape', true), 'close');
-  assert.equal(headerKey('Escape', false), null);
-  assert.equal(headerKey('a', true), null);
+test('the window header shows the wait in place of the status word', () => {
+  assert.equal(waitLabel(row(1, 5, { card: 'push1' }), 'needsYou', cards), 'Approve push');
+  assert.equal(waitLabel(row(1, 5, { card: 'merge1' }), 'needsYou', cards), 'Approve merge');
+  assert.equal(waitLabel(row(1, 5, { card: 'q1' }), 'needsYou', cards), 'Answer question');
+  assert.equal(waitLabel(row(1, 5, { reason: 'Review requested' }), 'needsYou', cards), 'Review');
+  assert.equal(waitLabel(row(1, 5, { reason: 'Choose a format' }), 'needsYou', cards), 'Needs you');
+  assert.equal(waitLabel(row(1, 5, { on: 'task', target: '302' }), 'waitingOther', cards), 'Waits on #302');
+  assert.equal(waitLabel(row(1, 5, { on: 'ci', target: 'PR 536' }), 'waitingOther', cards), 'Waits on CI PR 536');
+  assert.equal(waitLabel(row(1, 5, { on: 'person', target: 'Design team' }), 'waitingOther', cards), 'Waits on Design team');
+  assert.equal(waitLabel(row(1, 5), 'blocked', cards), 'Blocked');
+  // a task that does not wait keeps its status word
+  assert.equal(waitLabel(row(1, 5), 'running', cards), null);
+  assert.equal(waitLabel(row(1, 5), 'free', cards), null);
 });
 
-test('the heartbeat dot shows when the manager does not respond', () => {
-  assert.equal(heartbeatState(undefined).state, 'none');
-  assert.equal(heartbeatState({ pending: 0, lastTurn: null, notResponding: false }).state, 'ok');
-  assert.equal(heartbeatState({ pending: 2, lastTurn: null, notResponding: false }).state, 'pending');
-  assert.match(heartbeatState({ pending: 2, lastTurn: null, notResponding: true }).text, /does not respond/);
+test('a Need you row gets Approve and Deny only for a card that one click decides', () => {
+  assert.deepEqual(needAction(row(1, 5, { card: 'push1' }), cards), { kind: 'push', pushId: 'p1' });
+  assert.deepEqual(needAction(row(1, 5, { card: 'merge1' }), cards), { kind: 'decide', id: 'merge1' });
+  assert.deepEqual(needAction(row(1, 5, { card: 'permit1' }), cards), { kind: 'open' });
+  assert.deepEqual(needAction(row(1, 5, { card: 'mail1' }), cards), { kind: 'open' });
+  assert.deepEqual(needAction(row(1, 5, { card: 'q1' }), cards), { kind: 'open' });
+  assert.deepEqual(needAction(row(1, 5, { reason: 'Review requested' }), cards), { kind: 'review' });
+  assert.deepEqual(needAction(row(1, 5, { reason: 'Choose' }), cards), { kind: 'open' });
+});
+
+test('the boards of all groups load into one store, and a task row is found in them', async () => {
+  const list: Board[] = [{ group: { id: 'g1', name: 'A', manager: 't1' }, columns: { running: [row(1, 3)], waitingOther: [row(4, 9, { on: 'task', target: '2' })] } },
+    { group: { id: 'g2', name: 'B' }, columns: { free: [row(9, 1)] } }];
+  await loadBoards(async () => ({ json: async () => list }));
+  assert.equal(boardOf('g1')?.group.manager, 't1');
+  assert.deepEqual(rowOf('t4')?.column, 'waitingOther');
+  assert.equal(rowOf('t9', 'g1'), undefined);
+  assert.equal(rowOf('t9', 'g2')?.column, 'free');
+  // a failed read keeps the last boards
+  await loadBoards(async () => { throw new Error('offline'); });
+  assert.equal(boardOf('g2')?.group.name, 'B');
 });
 
 test('the badge knows each manager task and shows its caps and whether it may act now', async () => {
@@ -99,17 +80,17 @@ test('the badge knows each manager task and shows its caps and whether it may ac
   assert.deepEqual(managerGroupsOf('t1'), []);
 });
 
-test('the board header is a button with aria-expanded and aria-controls, and the Settings have both choices', () => {
+test('option J: no board above the canvas, the group tab has the ◆ mark and the need you chip, the review page has the badge', () => {
+  const canvas = readFileSync(new URL('../web/src/components/Canvas.tsx', import.meta.url), 'utf8');
+  assert.doesNotMatch(canvas, /<ManagerBoard\b/);
+  assert.match(canvas, /<ManagerMark manager=\{g\.manager\}/);
+  assert.match(canvas, /<GroupNeeds group=\{g\.id\}/);
+  assert.match(canvas, /<WaitLabel taskId=\{t\.id\}>/);
+  assert.match(canvas, /<ManagerScope group=\{g\.id\}/);
+  const review = readFileSync(new URL('../web/src/components/Review.tsx', import.meta.url), 'utf8');
+  assert.match(review, /<ManagerBadge id=\{item\.task\} \/>/);
   const src = readFileSync(new URL('../web/src/components/ManagerBoard.tsx', import.meta.url), 'utf8');
-  assert.match(src, /className="mb-toggle" aria-expanded=\{open\} aria-controls=\{panelId\}/);
-  assert.match(src, /id=\{panelId\}/);
-  assert.match(src, /No manager/);
-  assert.match(src, /Set a manager/);
-  assert.match(src, /Open full board/);
-  const css = readFileSync(new URL('../web/src/app.css', import.meta.url), 'utf8');
-  assert.match(css, /\.mb-scroll \{ max-height: 40vh;/);
-  assert.match(css, /prefers-reduced-motion: reduce\) \{ \.mb-body/);
-  const settings = readFileSync(new URL('../web/src/components/Settings.tsx', import.meta.url), 'utf8');
-  assert.match(settings, /<SettingItem id="managerBoardOpen">/);
-  assert.match(settings, /<SettingItem id="managerBoardAutoOpen">/);
+  assert.doesNotMatch(src, /Manager #\{/);
+  assert.doesNotMatch(src, /Open full board/);
+  assert.doesNotMatch(readFileSync(new URL('../web/src/components/Settings.tsx', import.meta.url), 'utf8'), /managerBoard/);
 });
