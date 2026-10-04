@@ -393,6 +393,9 @@ switch (cmd) {
     console.log(`Taskboard:   ${i.url} · process ${i.pid} · ${i.tasks} tasks`);
     if (i.controller) console.log(`Controller:  “${i.controller.label}” · ${i.controller.agentName || i.controller.agent} · account ${i.controller.account || 'default'} · ${i.controller.status}${i.controller.skipPermissions ? ' · permission prompts skipped' : ''}${i.controller.remoteUrl ? `\nRemote:      ${i.controller.remoteUrl}` : ''}`);
     else console.log('Controller:  not started');
+    // the Taskboard settings of the tmux server (server/tmux-health.ts, checked every minute)
+    const ts = i.tmuxSettings;
+    if (ts) console.log(`tmux server: ${ts.socket} · ${!ts.running ? 'not running' : ts.differ.length ? `settings differ: ${ts.differ.join(', ')} (pnpm doctor sets them again)` : `Taskboard settings set (version ${ts.version})`} · checked ${ts.checkedAt}`);
     if (i.tmuxProblem) {
       console.log(`\nProblem:     ${i.tmuxProblem.text}`);
       console.log(`Command:     ${i.tmuxProblem.command}`);
