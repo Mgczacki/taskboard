@@ -1,67 +1,95 @@
-// The manager board of a group (GET /api/board, server/waiting-board.ts) and the Manager badge of a manager task.
-// ManagerBoard.tsx draws them. This file holds the parts without React: the summary counts of the folded header,
-// the open or closed state saved in this browser, the keys of the header, and the text of the badge tooltip.
+// The manager parts of the dashboard without React (ManagerBoard.tsx draws them):
+// - the boards of all groups (GET /api/board?all=1, server/waiting-board.ts), read every 15 s while a view uses them
+// - which task manages which group, for the Manager badge and the ◆ mark on a group tab
+// - the caps of each manager and their use (GET /api/managers), for the badge tooltip
+// - the short wait text of a task ("Waits on #302", "Approve push") for its canvas window header
+// - which button a "Need you" row of the group drop-down gets
 
 export type BoardKey = 'needsYou' | 'waitingOther' | 'running' | 'free' | 'blocked';
-// [column key, column title, word after the count in the folded header]
-export const BOARD_COLUMNS: [BoardKey, string, string][] = [
-  ['needsYou', 'Needs you', 'need you'], ['waitingOther', 'Waiting on other', 'waiting'], ['running', 'Running', 'running'],
-  ['free', 'Free', 'free'], ['blocked', 'Blocked', 'blocked'],
-];
-export interface BoardRow { id: string; num: number; title: string; ageMinutes: number; source: string; now?: string; waitingOn?: { on: string; needs: string; reason: string; unblocks: string[] } }
-export interface Heartbeat { pending: number; lastTurn: string | null; notResponding: boolean }
-export interface Board { group: { id: string; name: string; manager?: string }; heartbeat?: Heartbeat; columns: Partial<Record<BoardKey, BoardRow[]>> }
-
-// The folded header shows the age of the oldest wait only when it is older than this
-export const OLD_WAIT_MINUTES = 60;
+export const BOARD_COLUMNS: [BoardKey, string][] = [['needsYou', 'Needs you'], ['waitingOther', 'Waiting on other'], ['running', 'Running'], ['free', 'Free'], ['blocked', 'Blocked']];
+export interface WaitingOn { on: string; target: string; needs: string; reason: string; card: string; unblocks: string[] }
+export interface BoardRow { id: string; num: number; title: string; ageMinutes: number; source: string; now?: string; waitingOn?: WaitingOn }
+export interface Board { group: { id: string; name: string; manager?: string }; columns: Partial<Record<BoardKey, BoardRow[]>> }
 
 export function boardSummary(b: Board) {
   const counts = Object.fromEntries(BOARD_COLUMNS.map(([k]) => [k, b.columns[k]?.length || 0])) as Record<BoardKey, number>;
   // Running and Free rows do not wait for anything, so only the other three columns count for the oldest wait
   const ages = (['needsYou', 'waitingOther', 'blocked'] as const).flatMap(k => (b.columns[k] || []).map(r => r.ageMinutes));
   const oldest = ages.length ? Math.max(...ages) : 0;
-  return { counts, oldestMinutes: oldest > OLD_WAIT_MINUTES ? oldest : null };
+  return { counts, oldestMinutes: oldest > 60 ? oldest : null };
 }
 
 export const fmtAge = (m: number) => m < 60 ? `${m} min` : m < 48 * 60 ? `${Math.floor(m / 60)} h` : `${Math.floor(m / 1440)} d`;
 
-// The dot next to the folded header: has the manager read its events?
-export function heartbeatState(h: Heartbeat | undefined): { state: 'ok' | 'pending' | 'down' | 'none'; text: string } {
-  if (!h) return { state: 'none', text: 'No manager heartbeat yet.' };
-  const last = h.lastTurn ? `Last manager update: ${new Date(h.lastTurn).toLocaleString()}.` : 'The manager has not updated yet.';
-  const events = `${h.pending} ${h.pending === 1 ? 'event waits' : 'events wait'} for the manager.`;
-  if (h.notResponding) return { state: 'down', text: `The manager does not respond. ${last} ${events}` };
-  return { state: h.pending ? 'pending' : 'ok', text: `${last} ${events}` };
+let version = 0;
+const listeners = new Set<() => void>();
+const changed = () => { version++; listeners.forEach(f => f()); };
+export const subscribeManagers = (fn: () => void) => { listeners.add(fn); return () => { listeners.delete(fn); }; };
+export const managersVersion = () => version;
+
+// The boards of all groups. watchBoards() starts the reads and returns the function that stops them;
+// the reads stop when the last view that watches them closes.
+let boards = new Map<string, Board>();
+let watchers = 0, timer: ReturnType<typeof setInterval> | null = null;
+type Get = (url: string) => Promise<{ json(): Promise<unknown> }>;
+const httpGet: Get = url => fetch(url);
+export async function loadBoards(get: Get = httpGet) {
+  try {
+    const list = await get('/api/board?all=1').then(r => r.json());
+    if (Array.isArray(list)) { boards = new Map((list as Board[]).map(b => [b.group.id, b])); changed(); }
+  } catch { /* keep the last boards */ }
+}
+export function watchBoards() {
+  if (!watchers++) { void loadBoards(); timer = setInterval(() => void loadBoards(), 15_000); }
+  return () => { if (!--watchers && timer) { clearInterval(timer); timer = null; } };
+}
+export const boardOf = (group: string | undefined) => group ? boards.get(group) : undefined;
+// The row of a task on the board of a group, and its column
+export function rowOf(taskId: string, group?: string): { row: BoardRow; column: BoardKey } | undefined {
+  for (const b of group ? [boards.get(group)].filter((x): x is Board => !!x) : boards.values())
+    for (const [k] of BOARD_COLUMNS) { const row = b.columns[k]?.find(r => r.id === taskId); if (row) return { row, column: k }; }
 }
 
-// Open or closed, saved in this browser: one value for each group, and a default for groups without a value.
-// A storage that throws (private mode, blocked site data) counts as empty.
-type KV = Pick<Storage, 'getItem' | 'setItem'>;
-const browserStorage = (): KV | null => { try { return globalThis.localStorage ?? null; } catch { return null; } };
-export const openKey = (group: string) => `tb-mboard-open:${group}`;
-export const DEFAULT_OPEN_KEY = 'tb-mboard-default';
-export const AUTO_OPEN_KEY = 'tb-mboard-auto-open';
-const read = (s: KV | null, k: string) => { try { return s?.getItem(k) ?? null; } catch { return null; } };
-const write = (s: KV | null, k: string, v: string) => { try { s?.setItem(k, v); } catch { /* storage off */ } };
+// The cards that the dashboard knows (approvals and questions in the store), found by the card id of a wait
+export interface CardRef { kind: 'approval'; action: string; pushId?: string; permitId?: string }
+export type FindCard = (id: string) => CardRef | { kind: 'question' } | undefined;
+const ACTION_WORD: Record<string, string> = {
+  'git-push': 'Approve push', 'git-merge': 'Approve merge', release: 'Approve release', restart: 'Approve restart', scope: 'Approve scope',
+  permit: 'Approve permit', external: 'Approve action', plan: 'Approve plan', new: 'Approve new task', send: 'Approve message',
+  'mail-in': 'Approve message', 'mail-out': 'Approve message', 'tool-refusal': 'Refused command',
+};
 
-export const readDefaultOpen = (s = browserStorage()) => read(s, DEFAULT_OPEN_KEY) === 'open';
-export const saveDefaultOpen = (open: boolean, s = browserStorage()) => write(s, DEFAULT_OPEN_KEY, open ? 'open' : 'closed');
-export function readOpen(group: string, s = browserStorage()) {
-  const v = read(s, openKey(group));
-  return v === 'open' ? true : v === 'closed' ? false : readDefaultOpen(s);
+// The text that replaces the status word in the window header of a task that waits. Null: show the status word.
+export function waitLabel(row: BoardRow, column: BoardKey, find: FindCard): string | null {
+  const w = row.waitingOn;
+  if (column === 'needsYou') {
+    const card = w?.card ? find(w.card) : undefined;
+    if (card?.kind === 'approval') return ACTION_WORD[card.action] || 'Approve';
+    if (card?.kind === 'question') return 'Answer question';
+    if (w?.reason === 'Review requested') return 'Review';
+    return 'Needs you';
+  }
+  if (column === 'blocked') return 'Blocked';
+  if (column !== 'waitingOther' || !w) return null;
+  if (w.on === 'task' && w.target) return `Waits on #${w.target.replace(/^#/, '')}`;
+  if (w.on === 'ci') return w.target ? `Waits on CI ${w.target}` : 'Waits on CI';
+  if (w.target) return `Waits on ${w.target}`;
+  return `Waits on ${w.on}`;
 }
-export const saveOpen = (group: string, open: boolean, s = browserStorage()) => write(s, openKey(group), open ? 'open' : 'closed');
-// Settings: open the folded board by itself when the count of Needs you rows goes up (off by default)
-export const readAutoOpen = (s = browserStorage()) => read(s, AUTO_OPEN_KEY) === 'on';
-export const saveAutoOpen = (on: boolean, s = browserStorage()) => write(s, AUTO_OPEN_KEY, on ? 'on' : 'off');
-export const shouldAutoOpen = (before: number, now: number, auto: boolean) => auto && now > before;
 
-// The keys of the header button. The page calls preventDefault for each key that returns an action,
-// so the browser does not also click the button.
-export function headerKey(key: string, open: boolean): 'toggle' | 'close' | null {
-  if (key === 'Enter' || key === ' ') return 'toggle';
-  if (key === 'Escape' && open) return 'close';
-  return null;
+// The buttons of a "Need you" row in the group drop-down. Approve and Deny only for the cards that the approval card
+// on the Waiting page also decides with one click; a permit, a refused command or a message needs its full card.
+export type NeedAction = { kind: 'push'; pushId: string } | { kind: 'decide'; id: string } | { kind: 'review' } | { kind: 'open' };
+const FULL_CARD = ['permit', 'external', 'tool-refusal', 'mail-in', 'mail-out', 'send'];
+export function needAction(row: BoardRow, find: FindCard): NeedAction {
+  const w = row.waitingOn;
+  const card = w?.card ? find(w.card) : undefined;
+  if (card?.kind === 'approval') {
+    if (card.action === 'git-push') return card.pushId ? { kind: 'push', pushId: card.pushId } : { kind: 'open' };
+    return FULL_CARD.includes(card.action) ? { kind: 'open' } : { kind: 'decide', id: w!.card };
+  }
+  if (w?.reason === 'Review requested') return { kind: 'review' };
+  return { kind: 'open' };
 }
 
 // Which tasks are managers. App.tsx calls setManagerGroups with each new group list. The badges read it.
@@ -70,11 +98,7 @@ export interface ManagerInfo { group: string; name: string; manager: string; num
 type GroupLike = { id: string; name: string; manager?: string };
 let roles = new Map<string, GroupLike[]>();
 let details = new Map<string, ManagerInfo>();
-let version = 0, fetchedAt = 0, loading: Promise<void> | null = null;
-const listeners = new Set<() => void>();
-const changed = () => { version++; listeners.forEach(f => f()); };
-export const subscribeManagers = (fn: () => void) => { listeners.add(fn); return () => { listeners.delete(fn); }; };
-export const managersVersion = () => version;
+let fetchedAt = 0, loading: Promise<void> | null = null;
 
 export function setManagerGroups(groups: GroupLike[]) {
   const next = new Map<string, GroupLike[]>();
@@ -86,7 +110,7 @@ export function setManagerGroups(groups: GroupLike[]) {
 export const managerGroupsOf = (taskId: string | undefined) => (taskId && roles.get(taskId)) || [];
 
 // The caps and their use, read at most every 30 s, when a badge is shown or hovered
-export function refreshManagerDetails(get: (url: string) => Promise<{ json(): Promise<unknown> }> = url => fetch(url)) {
+export function refreshManagerDetails(get: Get = httpGet) {
   if (!roles.size || loading || Date.now() - fetchedAt < 30_000) return loading;
   loading = get('/api/managers').then(r => r.json()).then(list => {
     if (Array.isArray(list)) details = new Map((list as ManagerInfo[]).map(x => [x.group, x]));

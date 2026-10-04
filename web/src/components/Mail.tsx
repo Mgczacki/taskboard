@@ -13,11 +13,13 @@ function focusFromHash(): { tab: 'inbox' | 'sent'; id: string } | undefined {
 }
 
 export function InboxPage(props: { tasks: Task[]; open: (id: string, tab?: 'terminal' | 'log' | 'docs') => void; documentLink?: DocumentLink | null }) {
-  const [tab, setTab] = useState<'inbox' | 'sent' | 'documents'>(props.documentLink ? 'documents' : focusFromHash()?.tab || 'inbox');
+  // #inbox:documents opens the documents to review (the Open review button of the group drop-down, ManagerBoard.tsx)
+  const docsHash = () => location.hash === '#inbox:documents';
+  const [tab, setTab] = useState<'inbox' | 'sent' | 'documents'>(props.documentLink || docsHash() ? 'documents' : focusFromHash()?.tab || 'inbox');
   const [focus, setFocus] = useState(() => focusFromHash()?.id || '');
   useEffect(() => { if (props.documentLink) setTab('documents'); }, [props.documentLink]);
   // "Open in the Inbox" on a Message card sets #inbox:<messages|sent>:<message id>
-  useEffect(() => { const on = () => { const f = focusFromHash(); if (f) { setTab(f.tab); setFocus(f.id); } }; addEventListener('hashchange', on); return () => removeEventListener('hashchange', on); }, []);
+  useEffect(() => { const on = () => { const f = focusFromHash(); if (f) { setTab(f.tab); setFocus(f.id); } else if (docsHash()) setTab('documents'); }; addEventListener('hashchange', on); return () => removeEventListener('hashchange', on); }, []);
   return <div className="account-mail">
     <nav className="mail-tabs" aria-label="Inbox sections">
       <button className="btn" onClick={() => setTab('inbox')} aria-pressed={tab === 'inbox'}>Messages</button>
