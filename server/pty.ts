@@ -6,6 +6,7 @@ import type { WebSocket } from 'ws';
 import { TMUX_SOCKET } from './config.ts';
 import { TMUX_BIN, loadCopyBindings, tmux } from './tmux.ts';
 import { spawnPty } from './pty-spawn.ts';
+import { TERMINAL_LIMITS, sendChecked } from './slow-client.ts';
 let bindingsLoaded = false;
 
 // Attaching or resizing makes Codex redraw, which looks like new output. Ignore activity for a moment after those.
@@ -160,10 +161,8 @@ export function attach(ws: WebSocket, session: string, cols: number, rows: numbe
   const w = watch;
   // coalesce output: one WebSocket message per 8 ms instead of one per read from the pseudo-terminal
   let buf = '', timer: NodeJS.Timeout | null = null;
-  const flush = () => { timer = null; if (buf && ws.readyState === ws.OPEN) {
-    if (ws.bufferedAmount > 1_048_576) ws.close(1013, 'terminal client is too slow');
-    else ws.send(buf);
-  } buf = ''; };
+  // a terminal that does not read its output is closed (server/slow-client.ts); it connects again and tmux draws its screen
+  const flush = () => { timer = null; if (buf) sendChecked(ws, buf, TERMINAL_LIMITS, 'terminal client is too slow', 'terminal output'); buf = ''; };
   const onData = p.onData(d => { me.lastOut = Date.now(); buf += d; if (buf.length > 65536) { if (timer) clearTimeout(timer); flush(); } else if (!timer) timer = setTimeout(flush, 8); });
   const onExit = p.onExit(() => {
     ended = true;

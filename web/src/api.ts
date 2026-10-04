@@ -1,6 +1,6 @@
 // Client state: the task list, kept current by the server's /ws/events stream.
 import { useSyncExternalStore } from 'react';
-import { restartBanner, retryDelay, type ServerHealth, type ServerLink } from './serverStatus';
+import { eventRetry, restartBanner, type ServerHealth, type ServerLink } from './serverStatus';
 import { countMessage } from './perfStats';
 
 export type Agent = 'claude' | 'codex' | 'antigravity';
@@ -16,6 +16,8 @@ export interface Task {
   cwd: string; folder: string; branch?: string; worktree?: boolean; session: string; sessionId?: string;
   created: string; updated: string; statusAt: string; statusSource?: string;
   goal?: string; now?: string; ask?: string; stopReason?: string; interrupted?: string; desc: string;
+  // the length of the whole description when desc has only its start (the /ws/events task list, server/index.ts listView)
+  descCut?: number;
   waitMin: number; waitSig?: string; attach: string; docs?: { inbox: number; outbox: number }; role?: 'controller'; parent?: string; links?: TaskLink[]; link?: LinkInfo; account?: string; model?: string; machine?: { id: string; name: string }; imported?: string; openElsewhere?: { pid: number; tty: string }; moveWhenDone?: boolean; remoteUrl?: string; restartWhenDone?: boolean; restartFor?: string; restartWait?: string; restartOverdue?: boolean; restartFailed?: string; newSessionWhenDone?: boolean; unscrollable?: boolean; tokenEstimate?: number | null;
   // the agent's open request for help in the task browser (tb browser ask)
   browserAsk?: string;
@@ -193,16 +195,18 @@ let viewingIds: string[] = [];
 function connect() {
   ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws/events`);
   ws.onopen = () => { connected = true; openedAt = Date.now(); link = { state: 'connected', since: Date.now() }; sendViewing(); loadMachines(); void loadConfirmRisk(); publish(); };
-  ws.onclose = () => {
+  ws.onclose = e => {
     connected = false;
-    // a connection that lasted 5 s or more starts the waits again at 250 ms
-    if (openedAt && Date.now() - openedAt >= 5000) attempt = 0;
+    const next = eventRetry(attempt, openedAt ? Date.now() - openedAt : null, e.code);
+    attempt = next.attempt;
+    // the server answered and closed this page with a reason (server/slow-client.ts): show the reason
+    const closed = openedAt && e.reason ? { code: e.code, reason: e.reason } : undefined;
     openedAt = 0;
     const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
     if (offline) link = { state: 'offline', since: Date.now() };
-    else if (link.state === 'connected' || link.state === 'offline') link = { state: 'down', since: Date.now() };
+    else if (link.state === 'connected' || link.state === 'offline') link = { state: 'down', since: Date.now(), closed };
     publish();
-    retryTimer = setTimeout(() => { retryTimer = undefined; connect(); }, retryDelay(attempt++));
+    retryTimer = setTimeout(() => { retryTimer = undefined; connect(); }, next.delay);
   };
   ws.onmessage = e => {
     countMessage(e.data);
@@ -296,6 +300,7 @@ export const api = {
   linkSuggestions: () => call<LinkSuggestion[]>('GET', '/api/links/suggestions'),
   dismissSuggestion: (s: LinkSuggestion) => call('POST', '/api/links/suggestions/dismiss', { from: s.from, to: s.to, kind: s.kind }),
   seen: (id: string) => call('POST', `/api/tasks/${id}/seen`, {}),
+  desc: (id: string) => call<{ desc: string }>('GET', `/api/tasks/${encodeURIComponent(id)}/desc`),
   resume: (id: string, force = false) => call<Task>('POST', `/api/tasks/${id}/resume`, { force }),
   importList: () => call<ImportCandidate[]>('GET', '/api/import'),
   importItems: (items: ImportCandidate[]) => call<{ made: Task[]; errors: string[] }>('POST', '/api/import', { items }),
