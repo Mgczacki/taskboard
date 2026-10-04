@@ -982,6 +982,7 @@ table.procs tr.proc-group td { padding-top: 10px; }
 /* ---------- shared sign-ins of task browsers (BrowserSignins.tsx) ---------- */
 .bw-signins { margin: 6px 8px 0; }
 .bw .bw-signins { margin: 4px 6px; }
+.bw-signins .bw-err { color: var(--st-needs); }
 .bw-signin-actions { flex-wrap: wrap; justify-content: flex-start; }
 .btn.ghost.danger, .bw-mi.danger { color: var(--st-stopped); }
 .bw-share { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); white-space: nowrap; }

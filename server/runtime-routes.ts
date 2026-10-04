@@ -235,6 +235,7 @@ export function mount(app: express.Express, fail: Fail) {
     try { transfer.peer(req); } catch (e) { return res.status(403).json({ error: (e as Error).message }); }
     try { res.json(await signins.importCookies(req.body?.cookies)); } catch (e) { fail(res, e); }
   });
+  signinRoute('/api/tasks/:id/browser/signins/window', async req => signins.signinWindow(taskId(req), String(req.body?.url || '')));
   signinRoute('/api/browser-template/window', async () => { await browser.openTemplateWindow(); return browser.status(browser.TEMPLATE); });
   app.post('/api/tasks/:id/browser/:action', async (req, res) => {
     const t = task(req, res); if (!t) return;
