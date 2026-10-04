@@ -43,6 +43,21 @@ export function check(actor: string, action: ManagerAction, target: string, grou
   return { ok: true, reason: '', group: g };
 }
 
+// What the manager used of each cap (DEFAULT_CAPS) and whether check() would allow each kind of action now.
+// The dashboard shows it in the tooltip of the Manager badge (GET /api/managers).
+export function usage(g: groups.Group) {
+  const actor = g.manager || '';
+  const status = store.get(actor)?.status;
+  const newToday = count(actor, 'new', 86400000);
+  const working = g.tasks.map(id => store.get(id)).filter(t => t?.status === 'working').length;
+  const stopsHour = count(actor, 'stop', 3600000);
+  const messagesHour = count(actor, 'send', 3600000) + count(actor, 'doc', 3600000) + stopsHour;
+  return { status, newToday, working, messagesHour, stopsHour,
+    mayNew: newToday < DEFAULT_CAPS.newPerDay && working < DEFAULT_CAPS.working,
+    mayMessage: messagesHour < DEFAULT_CAPS.messagesPerHour,
+    mayStop: messagesHour < DEFAULT_CAPS.messagesPerHour && stopsHour < DEFAULT_CAPS.stopsPerHour };
+}
+
 export function used(actor: string, group: groups.Group, action: ManagerAction, target: string, result = 'done') {
   return audit({ actor, group: group.id, action, target, result });
 }

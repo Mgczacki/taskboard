@@ -130,7 +130,7 @@ export interface PushRecord { id: string; at: string; taskId: string; branch: st
 export interface AskItem { q: string; a?: string; state: 'running' | 'done' | 'failed' | 'stopped'; steps: string[]; costUsd?: number; ms?: number; agent?: 'claude' | 'codex'; model: string; account: string; at: string }
 export interface AskThread { sessionId?: string; items: AskItem[] }
 export interface SpinOffExchange { sourceNum: number; question: string; answer: string }
-export interface Group { id: string; name: string; color: string; tasks: string[]; created: string; order?: number }
+export interface Group { id: string; name: string; color: string; tasks: string[]; created: string; order?: number; manager?: string }
 
 export const STATUS_LABEL: Record<Status, string> = {
   'needs-you': 'Needs you', stopped: 'Stopped', review: 'Needs review', working: 'Working', unread: 'Done · unread',

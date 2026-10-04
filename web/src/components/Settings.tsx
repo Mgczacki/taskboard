@@ -20,6 +20,7 @@ import { ACTIONS, CTX_NAME, comboOf, fmtCombo, isCustom, keysOf, resetKeys, setK
 import { filterSettings, matcher, settingText } from '../settingsIndex';
 import { SettingGroup, SettingItem, SettingSection, SettingsFilterProvider, SettingsNav, hashSection, sectionAnchor } from './SettingsLayout';
 import { Processes } from './Processes';
+import { readAutoOpen, readDefaultOpen, saveAutoOpen, saveDefaultOpen } from '../managerBoard';
 
 type StandingRule = { id: string; action: 'push' | 'deploy-dev' | 'catalog-stage'; actor: string; target: string; limitPerDay: number };
 function StandingRules({ tasks }: { tasks: Task[] }) {
@@ -50,6 +51,22 @@ function StandingRules({ tasks }: { tasks: Task[] }) {
     {error && <div className="banner">{error}</div>}
     {rules.map(rule => <div className="sub" key={rule.id}>{rule.action} · #{tasks.find(t => t.id === rule.actor)?.num || rule.actor} · {rule.target} · {rule.limitPerDay} uses each day <button className="btn ghost" onClick={() => void remove(rule.id)}>Remove</button></div>)}
   </div>;
+}
+
+// The manager board above the canvas windows of a group (ManagerBoard.tsx). Both choices are saved in this browser.
+function ManagerBoardSettings() {
+  const [open, setOpen] = useState(() => readDefaultOpen());
+  const [auto, setAuto] = useState(() => readAutoOpen());
+  return <>
+    <SettingItem id="managerBoardOpen">
+      <label className="opt" title="A group that you did not open or fold yourself shows its manager board open. Otherwise it shows one folded row with the counts"><input type="checkbox" checked={open} onChange={e => { saveDefaultOpen(e.target.checked); setOpen(e.target.checked); }} /> Show the manager board of a group open at first</label>
+      <div className="sub">Saved for this app or browser. Each group keeps the state that you last chose for it.</div>
+    </SettingItem>
+    <SettingItem id="managerBoardAutoOpen">
+      <label className="opt" title="When the count of Needs you on the board goes up, the board opens. The highlighted Needs you count shows it in both cases"><input type="checkbox" checked={auto} onChange={e => { saveAutoOpen(e.target.checked); setAuto(e.target.checked); }} /> Open the manager board by itself when a task needs me</label>
+      <div className="sub">Saved for this app or browser. Off at first: the highlighted Needs you count in the folded row shows it.</div>
+    </SettingItem>
+  </>;
 }
 
 // One checkbox for each risk kind of a card option (server/machine.ts confirmRisk).
@@ -276,6 +293,9 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
                   <label className="opt" title="The ⏻ button in a canvas window's header ends the tmux session and archives the task"><input type="checkbox" checked={askEnd} onChange={e => { setConfirmEnd(e.target.checked); setAskEnd(e.target.checked); }} /> Ask before ⏻ in a window header ends and archives the task</label>
                   <div className="sub">Saved for this app or browser. When it is off, ⏻ acts at once and a message offers Restore.</div>
                 </SettingItem>
+              </SettingGroup>
+              <SettingGroup section="browser" id="managerBoard" title="Manager board">
+                <ManagerBoardSettings />
               </SettingGroup>
               <SettingGroup section="browser" id="controllerView" title="Controller view">
                 <SettingItem id="controllerGlass">

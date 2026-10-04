@@ -18,6 +18,9 @@ export const SECTIONS: SectionDef[] = [
     { id: 'allowRules', title: 'Allow always rules', settings: [
       { id: 'allowRulesList', label: 'Tasks that may type into other tasks, or send documents to them, without a card', words: 'allow always rule revoke tb send tb doc send document message between tasks pair both directions any task rate limit' },
     ] },
+    { id: 'standingRules', title: 'Standing approvals', settings: [
+      { id: 'standingRulesList', label: 'Allow one action for one task and target, up to a daily limit', words: 'standing approval rule push deploy dev catalog stage daily limit manager' },
+    ] },
     { id: 'permits', title: 'Permit requests', settings: [
       { id: 'controllerApprovesPermits', label: 'The controller may approve low risk suggestions', words: 'permit approval risk' },
       { id: 'holdPermissionHook', label: 'Answer Claude Code permission questions on the Waiting page', words: 'waiting inbox question hook permission dialog' },
@@ -109,6 +112,10 @@ export const SECTIONS: SectionDef[] = [
   { id: 'browser', title: 'This app or browser', help: 'These choices are saved in this app or browser only.', groups: [
     { id: 'canvas', title: 'Canvas', settings: [
       { id: 'confirmEnd', label: 'Ask before ⏻ in a window header ends and archives the task', words: 'end archive confirm power' },
+    ] },
+    { id: 'managerBoard', title: 'Manager board', settings: [
+      { id: 'managerBoardOpen', label: 'Show the manager board of a group open at first', words: 'manager board fold collapse expand drop-down canvas group' },
+      { id: 'managerBoardAutoOpen', label: 'Open the manager board by itself when a task needs me', words: 'manager board needs you open automatic' },
     ] },
     { id: 'controllerView', title: 'Controller view', settings: [
       { id: 'controllerGlass', label: 'See-through controller terminal', words: 'transparent transparency see-through glass ghost blur opacity background text strength shadow outline bold tint contrast slider presets' },
