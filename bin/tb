@@ -27,7 +27,8 @@ async function call(method, path, body) {
   if (r.status === 202 && data.push) return data;
   // 202: the action waits for the user's approval on the Taskboard dashboard
   if (r.status === 202 && data.approval) {
-    console.log(`Waiting for the user to approve on the Taskboard dashboard: ${data.approval.summary}`);
+    console.log(`Waiting for the user to approve on the Taskboard dashboard: ${data.approval.summary} (card ${data.approval.id})`);
+    if (data.approval.action === 'release') console.log(`If this command stops before the decision, run tb release-result ${data.approval.id} --wait.`);
     for (;;) {
       await new Promise(res => setTimeout(res, 2000));
       let a;
@@ -151,7 +152,12 @@ const HELP = `tb — Taskboard command line
   tb mail                            messages with other people (A2A Notes over Slack) and notes to you: run for command help
   tb mail help                       the rules for reading, routing, approving and drafting messages, then the commands
   tb review <file>                   ask the user to review a document from your outbox
-  tb release-request                 ask the user to allow one Taskboard release on the dashboard
+  tb release-request [--ref <branch>] ask the user to allow one Taskboard release on the dashboard. Without --ref the
+                                     release copies the files of your checkout; with it, that branch, tag or commit
+  tb release-result ID [--wait] [--timeout 540]
+                                     the decision on that card. After the approval, run the approved command within
+                                     five minutes, alone on the command line: pnpm release, or pnpm release --ref <branch>
+                                     (--no-switch may be added). If the guard blocks it, stop and tell the user
   tb restart [--yes]                 the user: restart the installed Taskboard (no release); the controller: ask on the dashboard
   tb permit request --reason "text" --command "program args" [--cwd PATH] [--timeout 30] [--network]
   tb permit request --reason "text" --steps steps.json
@@ -594,7 +600,25 @@ switch (cmd) {
   }
   case 'release-request': {
     if (!process.env.TASK_ID) { console.error('tb release-request: run this inside a Taskboard task'); process.exit(1); }
-    await call('POST', '/api/release/request', {});
+    const ref = flag('--ref');
+    await call('POST', '/api/release/request', ref ? { ref } : {});
+    console.log('Run that command now, alone on the command line. If the guard blocks it, stop and tell the user what the guard said.');
+    break;
+  }
+  case 'release-result': {
+    // the state of a release card; --wait polls until the user decides (exit 2 after --timeout seconds, default 540)
+    const id = rest[0]; if (!id) { console.error('tb release-result: give the card ID that tb release-request printed'); process.exit(1); }
+    const wait = has('--wait'); const end = Date.now() + Number(flag('--timeout', '540')) * 1000;
+    for (;;) {
+      const a = await call('GET', `/api/approvals/${encodeURIComponent(id)}`);
+      if (a.action !== 'release') { console.error(`tb release-result: ${id} is not a release card`); process.exit(1); }
+      if (wait && ['pending', 'running'].includes(a.state) && Date.now() < end) { await sleep(2000); continue; }
+      if (a.state === 'approved') console.log(`Approved. ${a.result} Run that command now, alone on the command line. If the guard blocks it, stop and tell the user what the guard said.`);
+      else if (a.state === 'pending') console.log(`The card still waits for the user.${wait ? ' Run this command again to keep waiting.' : ''}`);
+      else console.log(`${a.state}: ${a.result || ''} Do not run the release. Tell the user.`);
+      if (a.state !== 'approved') process.exitCode = a.state === 'pending' ? 2 : 3;
+      break;
+    }
     break;
   }
   case 'restart': {
@@ -720,7 +744,7 @@ switch (cmd) {
       const result = await call('POST', '/api/permits', { reason, steps, risk });
       if (result.push) console.log(`${result.message} Push ${result.push.id}: ${result.push.state}. Read it with tb git push-result ${result.push.id} --wait.`);
       else if (result.permit) console.log(`Permit ${result.permit.id} waits on the dashboard. Read it with tb permit result ${result.permit.id} --wait.`);
-      else console.log('This needs a release request: run tb release-request. The release card was decided.');
+      else console.log('That command made a release card, and the user approved it. Run the command that the approval names, alone on the command line.');
     } else if (action === 'result') {
       const id = rest[1]; if (!id) { console.error('tb permit result: give an ID'); process.exit(1); }
       const wait = has('--wait');

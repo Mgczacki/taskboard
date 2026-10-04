@@ -573,6 +573,7 @@ export function taskInstructions(t: Task, inlineRules = true) {
     `Use tb suggest --steps <file> --why "<reason>" for an ordered sequence.`,
     `The server stops after the first failed step. Read the result with tb permit result <id> --wait.`,
     `Do not rerun an approved command yourself.`,
+    `If the Taskboard guard blocks a command, stop and tell the user what it said.`,
     `When a document in your outbox needs the user's review or approval, run: tb review <path>. Their comments arrive in your inbox.`,
     ...linkLines(t),
     ...processAndBrowserRules(t),

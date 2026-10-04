@@ -233,7 +233,7 @@ test('the controller approves dashboard cards only on the user\'s request in its
     assert.equal(r.status, 403); assert.match(r.data.error, /word release/);
     userSays('release 1');
     r = await approve(rel.id, 'release 1');
-    assert.equal(r.status, 200, JSON.stringify(r.data)); assert.match(r.data.said, /may run pnpm release once within two minutes/);
+    assert.equal(r.status, 200, JSON.stringify(r.data)); assert.match(r.data.said, /may run `pnpm release` once \(it may add --no-switch\), until \d\d:\d\d:\d\d/);
     assert.ok(existsSync(join(tbdir, 'release-permits', 't1.json')));
     const rel2 = (await post('/api/release/request', {}, as('t2'))).data.approval;
     userSays('release 2');

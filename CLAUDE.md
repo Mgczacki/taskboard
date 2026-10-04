@@ -24,8 +24,16 @@ Use `pnpm sandbox` (own port, folders and tmux socket, no controller; `pnpm sand
 
 When the user explicitly asks for a release or rebuild, the controller starts a task with `tb new`.
 The task prompt states that the user explicitly authorized the release. The controller never starts a release on its own.
-The task runs `tb release-request`. The user approves the release card on the dashboard.
-The task then runs `pnpm release` within two minutes. The approval allows one release command for that task.
+The task runs `tb release-request`, or `tb release-request --ref <branch>` to release a branch. The user approves the
+release card on the dashboard. A task cannot approve its own card. `tb release-request` waits for the decision. If it
+stops first, run `tb release-result <card> --wait`. The approval is valid for five minutes, for one command, for that
+task and that ref. Run the approved command alone on the command line:
+- `pnpm release` (the files of the checkout), or `pnpm release --ref <branch>`
+- either one with `--no-switch` (build and check only)
+
+The guard refuses `;`, `&&`, `||`, `|`, backticks, `$( )`, quotes, redirects and other script paths in that line.
+If the guard blocks a command, stop and tell the user what the guard said. Do not try another way to run it.
+Read the release and rollback scripts with the Read tool, or with `cat`, `head`, `tail` or `grep` alone or joined with `|`.
 Only the user runs `pnpm rollback`.
 
 The manual steps below start a test server with its own port, folders and tmux socket.
