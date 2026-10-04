@@ -58,6 +58,7 @@ import * as pending from './pending.ts';
 import * as dismiss from './dismiss.ts';
 import * as scopes from './scopes.ts';
 import * as controllerApprove from './controller-approve.ts';
+import { EVENT_LIMITS, TERMINAL_LIMITS, clientOrigin, sendChecked } from './slow-client.ts';
 import * as allowRules from './allow-rules.ts';
 import { controllerMailToken, isControllerToken } from './a2anotes/auth.ts';
 import * as tmux from './tmux.ts';
@@ -1020,6 +1021,12 @@ const fail = (res: express.Response, e: unknown) => res.status(400).json({ error
 // the dashboard's performance monitor (server/perf.ts); the page reads it only while the monitor is on
 app.get('/api/perf', async (_req, res) => res.json(await perf.snapshot()));
 app.get('/api/tasks', (_req, res) => res.json([...store.all().map(view), ...machines.remoteTasks()]));
+// The task list on /ws/events carries the first DESC_SHORT characters of each description and descCut, the length of
+// the whole text. The task panel reads the whole text here (web/src/components/TaskPanel.tsx). 240 tasks with their
+// whole descriptions made a task list of 0.99 MB on 2026-10-04.
+const DESC_SHORT = 1000;
+const listView = <T extends { desc: string }>(v: T): T & { descCut?: number } => v.desc && v.desc.length > DESC_SHORT ? { ...v, desc: v.desc.slice(0, DESC_SHORT), descCut: v.desc.length } : v;
+app.get('/api/tasks/:id/desc', (req, res) => { const t = store.get(req.params.id); if (!t) return res.status(404).end(); res.json({ desc: t.desc }); });
 // The few fields that the Mac app reads every 3 s for its Dock badge and menu-bar menu (desktop/main.cjs), for the
 // tasks that are not archived. The whole list was 540 KB with 185 tasks, parsed on the app's main thread.
 // dismissed: the user dismissed what this task waits on (dismiss.ts); the badge leaves it out
@@ -1593,15 +1600,21 @@ if (existsSync(dist)) {
 // that connected to an older build reloads itself after a release (see web/src/api.ts).
 const BUILD_ID = (() => { try { return createHash('sha1').update(readFileSync(join(ROOT, 'web', 'dist', 'index.html'))).digest('hex').slice(0, 12); } catch { return 'none'; } })();
 const wss = new WebSocketServer({ noServer: true, maxPayload: 1_048_576 });
+// /ws/events has its own server with per-message compression: its messages are JSON text, which deflate makes about
+// five to ten times smaller. The terminal and browser sockets stay without it (terminal output is small and must not
+// wait for zlib; browser frames are JPEG). threshold: messages under 1 KB are sent as they are.
+const eventsWss = new WebSocketServer({ noServer: true, maxPayload: 1_048_576, perMessageDeflate: { threshold: 1024 } });
 const eventClients = new Set<import('ws').WebSocket>();
 const responsive = new WeakSet<import('ws').WebSocket>();
-const sendEvent = (client: import('ws').WebSocket, message: string) => {
-  if (client.readyState !== client.OPEN) return;
-  if (client.bufferedAmount > 1_048_576) client.close(1013, 'event client is too slow');
-  else client.send(message);
+// the type of an event message, for the log line when a client is closed: every message starts with {"type":"<type>"
+const eventType = (message: string) => message.slice(9, message.indexOf('"', 9));
+// first: one of the messages that a new client receives right after it connects; these are sent without the check
+// (server/slow-client.ts), because a client that has not read its first task list yet is not slow
+const sendEvent = (client: import('ws').WebSocket, message: string, first = false) => {
+  sendChecked(client, message, EVENT_LIMITS, 'event client is too slow', eventType(message), first);
 };
 setInterval(() => {
-  for (const client of wss.clients) {
+  for (const client of [...wss.clients, ...eventsWss.clients]) {
     if (!responsive.has(client)) { client.terminate(); continue; }
     responsive.delete(client);
     client.ping();
@@ -1616,7 +1629,8 @@ server.on('upgrade', (req, socket, head) => {
   if (runtime.upgradeCdp(req, socket, head, url)) return;
   // the dashboard is identified by its origin; anything else (another Taskboard server) must present the token
   if (req.headers.origin ? !originOk(req.headers.origin) : (url.searchParams.get('token') !== TOKEN && req.headers['x-taskboard-token'] !== TOKEN)) return socket.destroy();
-  wss.handleUpgrade(req, socket, head, ws => {
+  (url.pathname === '/ws/events' ? eventsWss : wss).handleUpgrade(req, socket, head, ws => {
+    clientOrigin.set(ws, req.headers.origin || '');
     // ws emits 'error' for a message larger than maxPayload or with invalid UTF-8, and closes the socket itself
     ws.on('error', e => console.error(`${new Date().toISOString()} websocket ${url.pathname}: ${e.message}`));
     try { onSocket(ws, url); } catch (e) {
@@ -1632,14 +1646,14 @@ function onSocket(ws: import('ws').WebSocket, url: URL) {
     if (url.pathname === '/ws/events') {
       if (eventClients.size >= 64) return ws.close(1013, 'too many dashboard windows');
       eventClients.add(ws);
-      sendEvent(ws, JSON.stringify({ type: 'hello', build: BUILD_ID, server: life.health() }));
-      sendEvent(ws, JSON.stringify({ type: 'tasks', tasks: [...store.all().map(view), ...machines.remoteTasks()] }));
-      sendEvent(ws, JSON.stringify({ type: 'groups', groups: groups.all() }));
-      sendEvent(ws, JSON.stringify({ type: 'canvasOrder', orders: canvasOrder.all() }));
-      sendEvent(ws, JSON.stringify({ type: 'approvals', approvals: approvals.all() }));
-      sendEvent(ws, JSON.stringify({ type: 'pending', items: pending.list(), answered: pending.answeredList() }));
-      sendEvent(ws, JSON.stringify({ type: 'dismissed', entries: dismiss.all() }));
-      sendEvent(ws, JSON.stringify({ type: 'runtime', counts: runtime.runtimeCounts() }));
+      sendEvent(ws, JSON.stringify({ type: 'hello', build: BUILD_ID, server: life.health() }), true);
+      sendEvent(ws, JSON.stringify({ type: 'tasks', tasks: [...store.all().map(t => listView(view(t))), ...machines.remoteTasks()] }), true);
+      sendEvent(ws, JSON.stringify({ type: 'groups', groups: groups.all() }), true);
+      sendEvent(ws, JSON.stringify({ type: 'canvasOrder', orders: canvasOrder.all() }), true);
+      sendEvent(ws, JSON.stringify({ type: 'approvals', approvals: approvals.all() }), true);
+      sendEvent(ws, JSON.stringify({ type: 'pending', items: pending.list(), answered: pending.answeredList() }), true);
+      sendEvent(ws, JSON.stringify({ type: 'dismissed', entries: dismiss.all() }), true);
+      sendEvent(ws, JSON.stringify({ type: 'runtime', counts: runtime.runtimeCounts() }), true);
       const opened = new Set<string>();
       ws.on('message', m => {
         // the UI reports which tasks are open, so a finished turn in an open task goes straight to "idle"
@@ -1654,7 +1668,7 @@ function onSocket(ws: import('ws').WebSocket, url: URL) {
         const up = new WebSocket(`${mc.url.replace(/^http/, 'ws')}/ws/term?task=${encodeURIComponent(remote.id)}&cols=${url.searchParams.get('cols') || 120}&rows=${url.searchParams.get('rows') || 40}&token=${encodeURIComponent(mc.token)}`);
         const queue: string[] = [];
         up.on('open', () => { queue.forEach(q => up.send(q)); queue.length = 0; });
-        up.on('message', d => { if (ws.readyState === ws.OPEN) { if (ws.bufferedAmount > 1_048_576) ws.close(1013, 'terminal client is too slow'); else ws.send(d.toString()); } });
+        up.on('message', d => { sendChecked(ws, d.toString(), TERMINAL_LIMITS, 'terminal client is too slow', 'terminal output'); });
         up.on('close', () => ws.close()); up.on('error', () => ws.close(4502, 'machine unreachable'));
         ws.on('message', d => { const s = d.toString(); if (up.readyState === up.OPEN) up.send(s); else if (queue.length < 64 && s.length <= 65536) queue.push(s); else ws.close(1009, 'terminal queue full'); });
         ws.on('close', () => up.close());
@@ -1745,7 +1759,7 @@ store.onTaskChange(t => {
   const v = view(t), same = JSON.stringify({ ...v, updated: undefined });
   if (lastTaskView.get(t.id) === same) return;
   lastTaskView.set(t.id, same);
-  const msg = JSON.stringify({ type: 'task', task: v });
+  const msg = JSON.stringify({ type: 'task', task: listView(v) });
   for (const c of eventClients) sendEvent(c, msg);
 });
 

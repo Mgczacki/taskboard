@@ -77,6 +77,16 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
   const [compact, setCompactRaw] = useState(() => { try { return localStorage.getItem('tb-panel-compact') === '1'; } catch { return false; } });
   const setCompact = (f: (c: boolean) => boolean) => setCompactRaw(c => { const n = f(c); try { localStorage.setItem('tb-panel-compact', n ? '1' : '0'); } catch { /* storage off */ } return n; });
   useEffect(() => setBriefOpen(false), [t.id]);
+  // the task list has only the start of a long description (t.descCut, server/index.ts listView): read the whole text
+  // when the user opens it, and again when the start changes
+  const [fullDesc, setFullDesc] = useState<{ id: string; desc: string } | null>(null);
+  useEffect(() => {
+    if (!briefOpen || !t.descCut) return;
+    let on = true;
+    api.desc(t.id).then(r => { if (on) setFullDesc({ id: t.id, desc: r.desc }); }).catch(() => {});
+    return () => { on = false; };
+  }, [briefOpen, t.id, t.descCut, t.desc]);
+  const desc = t.descCut ? (briefOpen && fullDesc?.id === t.id ? fullDesc.desc : `${t.desc}…`) : t.desc;
   // The controller view (controllerView.ts): the header folds to a thin bar and the terminal gets the whole height.
   // Normal tasks get the same bar only when the setting on the Settings page is on. The terminal stays mounted when the
   // header folds or opens; its ResizeObserver refits it and tells tmux the new size.
@@ -264,7 +274,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
         {tab === 'terminal' && t.openElsewhere && <div className="empty" style={{ padding: 20 }}>The terminal for this session belongs to {t.openElsewhere?.tty}. Last message from the agent:<pre className="logtext" style={{ marginTop: 10 }}>{t.now || '—'}</pre></div>}
         {tab === 'terminal' && !t.openElsewhere && (t.status === 'suspended'
           ? <div className="empty" style={{ padding: 20 }}>Resuming with {t.agent === 'claude' ? 'claude --resume' : t.agent === 'codex' ? 'codex resume' : 'agy --conversation'} {t.sessionId}…</div>
-          : <div className="term-wrap">{!collapsed && <div className={`term-brief ${briefOpen ? 'open' : ''}`} onClick={() => setBriefOpen(o => !o)} title={briefOpen ? 'Click to show only the first lines' : 'Click to show the whole task description'}><b>Task</b><span>{t.desc}</span><i className="more">{briefOpen ? 'less' : 'more'}</i></div>}<Terminal taskId={t.id} autoFocus glass={see ? glassAlpha(see) : 1} tint={see ? see.tint : 'panel'} /></div>)}
+          : <div className="term-wrap">{!collapsed && <div className={`term-brief ${briefOpen ? 'open' : ''}`} onClick={() => setBriefOpen(o => !o)} title={briefOpen ? 'Click to show only the first lines' : 'Click to show the whole task description'}><b>Task</b><span>{desc}</span><i className="more">{briefOpen ? 'less' : 'more'}</i></div>}<Terminal taskId={t.id} autoFocus glass={see ? glassAlpha(see) : 1} tint={see ? see.tint : 'panel'} /></div>)}
         {tab === 'log' && <pre className="logtext">{log || 'No log entries yet.'}</pre>}
         {tab === 'browser' && <BrowserView key={t.id} id={t.id} title={`#${t.num} ${t.title}`} archived={t.status === 'archived'} remote={t.machine?.name} onCanvas={() => { openBrowserSplit(t.id); onCanvas(t.id); }} />}
         {tab === 'procs' && <ProcList key={t.id} scope="tasks" id={t.id} cwd={t.cwd} />}
