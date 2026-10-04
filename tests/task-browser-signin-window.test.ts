@@ -60,11 +60,14 @@ test('a task browser in a window turns off AutomationControlled and is not headl
   assert.ok(a.includes('--disable-blink-features=AutomationControlled'));
   assert.ok(!a.some(x => x.startsWith('--headless')));
   assert.ok(a.includes('--remote-debugging-port=0'));
+  assert.ok(browser.launchArgs({ profile: '/p', windowed: true, muteFlag: true }).includes('--mute-audio'), 'Open in a window with the sound off');
 });
 
-test('the template window has no headless mode, no debugging port and no automation flag', () => {
+test('the template window has no headless mode, no debugging port and no automation flag, and is muted', () => {
   const a = browser.templateWindowArgs('/t', 'https://accounts.google.com/');
-  assert.deepEqual(a, ['--user-data-dir=/t', '--no-first-run', '--no-default-browser-check', 'https://accounts.google.com/']);
+  assert.deepEqual(a, ['--user-data-dir=/t', '--no-first-run', '--no-default-browser-check', '--mute-audio', 'https://accounts.google.com/']);
+  // the template with its sound on opens without the flag
+  assert.ok(!browser.templateWindowArgs('/t', 'https://accounts.google.com/', false).includes('--mute-audio'));
   assert.ok(!a.some(x => /headless|remote-debugging|enable-automation|user-agent/.test(x)));
   assert.equal(browser.templateWindowArgs('/t', 'http://example.com/').at(-1), 'about:blank');
   assert.equal(browser.templateWindowArgs('/t', 'javascript:alert(1)').at(-1), 'about:blank');
@@ -103,7 +106,8 @@ test('after the sign-in window closes, the task browser that asked gets the cook
   assert.equal(r.state, 'open');
   assert.ok(browser.templateWindowOpen());
   assert.equal((await browser.status('w1')).signinWindow?.state, 'open');
-  assert.equal(readFileSync(join(root, 'window-args'), 'utf8').trim(), `--user-data-dir=${browser.profileDir('template')} --no-first-run --no-default-browser-check https://site-a.localhost/login`);
+  assert.equal(readFileSync(join(root, 'window-args'), 'utf8').trim(), `--user-data-dir=${browser.profileDir('template')} --no-first-run --no-default-browser-check --mute-audio https://site-a.localhost/login`);
+  assert.equal((await browser.status('template')).soundState, 'muted', 'the sign-in window is muted by its start flag');
   await waitFor(() => browser.readMeta('w1').signinWindow?.state === 'done', { description: 'the copy after the window closed', timeoutMs: 120000 });
   const got = await cookieNames('w1');
   assert.ok(got.includes('sid@site-a.localhost'), got.join(' '));
