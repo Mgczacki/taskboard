@@ -122,6 +122,11 @@ Agents that work on Taskboard itself run inside the real one, so the setup keeps
 
 - The real server runs a release copy, so editing, rebuilding or breaking `~/taskboard` changes nothing that runs.
 - Only you release, roll back or restart (the agents' guard blocks `pnpm release`, `pnpm rollback` and `tb restart`).
+  When you ask a task for a release, the task runs `tb release-request` (or `tb release-request --ref master`).
+  You approve the card on the dashboard. The approval writes a permit for that task and that ref, valid for five
+  minutes. The task then runs `pnpm release` (or `pnpm release --ref master`, also with `--no-switch`) alone on the
+  command line. The guard deletes the permit when it lets the command run, so one approval allows one command. A
+  task can read the release scripts with `cat`, `head`, `tail`, `grep` and similar commands that only read.
 - Every test copy is a sandbox with its own port, folders and tmux socket. A sandbox refuses to start on the real
   port, `~/.taskboard`, `~/AgentVault` or the `taskboard` tmux socket.
 - One server per `~/.taskboard` (an exclusive lock file). A second one exits with a message.

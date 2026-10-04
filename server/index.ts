@@ -13,6 +13,7 @@ import { WebSocketServer } from 'ws';
 import * as agents from './agents.ts';
 import { HOME, HOST, machineId, PORT, ROOT, TB_DIR, TOKEN, URL_BASE } from './config.ts';
 import * as docs from './docs.ts';
+import * as releasePermit from './release-permit.ts';
 import * as events from './events.ts';
 import * as groups from './groups.ts';
 import * as links from './links.ts';
@@ -505,8 +506,11 @@ app.post('/api/permits', (req, res) => {
       return res.status(400).json({ error: message, refusal: card.id });
     }
     if (/^(pnpm|npm|yarn)$/.test(argv[0] || '') && argv.includes('release')) {
-      const approval = createReleaseApproval(task);
-      return res.status(202).json({ approval, message: 'This needs a release request: run tb release-request.' });
+      const i = argv.indexOf('--ref');
+      let ref: string | null;
+      try { ref = releasePermit.checkRef(i < 0 ? null : argv[i + 1] ?? ''); } catch (e) { return fail(res, e); }
+      const approval = createReleaseApproval(task, ref);
+      return res.status(202).json({ approval, message: `A release needs a release card. The card for \`${releasePermit.releaseCommand(ref)}\` now waits on the dashboard. Read the decision with tb release-result ${approval.id} --wait.` });
     }
   }
   try {
@@ -596,8 +600,10 @@ app.post('/api/release/request', (req, res) => {
   const task = store.get(actor);
   if (!/^[a-zA-Z0-9_-]+$/.test(actor) || !task || task.role === 'controller')
     return res.status(403).json({ error: 'A Taskboard task must request the release.' });
-  const approval = createReleaseApproval(task);
-  res.status(202).json({ approval });
+  let ref: string | null;
+  try { ref = releasePermit.checkRef(req.body.ref); } catch (e) { return fail(res, e); }
+  const approval = createReleaseApproval(task, ref);
+  res.status(202).json({ approval, command: releasePermit.releaseCommand(ref) });
 });
 // ---------- restart (scripts/restart.mjs, server/restart.ts) ----------
 // Only the user restarts Taskboard: from the dashboard (POST /api/restart) or a terminal (tb restart runs the script).
@@ -646,14 +652,15 @@ app.post('/api/restart/request', async (req, res) => {
     res.status(202).json({ approval });
   } catch (e) { fail(res, e); }
 });
-function createReleaseApproval(task: store.Task) {
+// ref: the branch, tag or commit to release (pnpm release --ref <ref>), or null for the files of the task's checkout.
+// The permit records it, and the guard (server/hooks/guard.mjs) accepts only that ref.
+function createReleaseApproval(task: store.Task, ref: string | null = null) {
   const actor = task.id;
+  const command = releasePermit.releaseCommand(ref);
   const approval = approvals.request({ actor, action: 'release', summary: 'release Taskboard',
-    detail: `Task: #${task.num} ${task.title}\nCommand: pnpm release`, payload: {} }, async () => {
-    const dir = join(TB_DIR, 'release-permits');
-    mkdirSync(dir, { recursive: true });
-    writeFileSync(join(dir, actor + '.json'), JSON.stringify({ taskId: actor, expiresAt: Date.now() + 120_000 }), { mode: 0o600 });
-    return `Task #${task.num} may run pnpm release once within two minutes.`;
+    detail: `Task: #${task.num} ${task.title}\nCommand: ${command}${ref ? '' : ' (the files of the task\'s checkout, also changes that are not committed)'}`, payload: { ref } }, async () => {
+    const p = releasePermit.writePermit(TB_DIR, actor, ref);
+    return `Task #${task.num} may run \`${command}\` once (it may add --no-switch), until ${new Date(p.expiresAt).toTimeString().slice(0, 8)}.`;
   });
   store.update(actor, { status: 'needs-you', ask: 'Approve: release Taskboard', statusSource: 'Waiting for your approval on the dashboard.' });
   return approval;
