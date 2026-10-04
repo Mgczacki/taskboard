@@ -16,6 +16,7 @@ import type { Group, Status, Task } from '../api';
 import { AGENT_NAME, ATTN, ORDER, STATUS_LABEL, fmtWait } from '../api';
 import '../graph.css';
 import { Dot } from './ui';
+import { ManagerBadge } from './ManagerBoard';
 import { hit, inBrowser } from '../keys';
 import { Face, MessagePanel, type MailBrief, type MailGraph, type MailPerson } from './GraphMail';
 import type { LinkKind } from '../api';
@@ -573,7 +574,7 @@ function NodeCard({ n, groups, mode, sel, hl, onEnter, onLeave, onClick }: { n: 
   const shown = mode === 'group' ? others : gs;
   return (
     <div className={`gnode task ${t.status} ${cls}`} style={{ ...style, '--sc': `var(${STVAR[t.status]})` } as React.CSSProperties} onPointerEnter={onEnter} onPointerLeave={onLeave} onClick={onClick}>
-      <div className="r1"><Dot s={t.status} /><span className="num">#{t.num}</span>{attn && <span className="wait">waiting {fmtWait(t.waitMin)}</span>}<span className="ag">{t.agent === 'claude' ? 'Claude' : AGENT_NAME[t.agent]}</span></div>
+      <div className="r1"><Dot s={t.status} /><span className="num">#{t.num}</span><ManagerBadge id={t.id} />{attn && <span className="wait">waiting {fmtWait(t.waitMin)}</span>}<span className="ag">{t.agent === 'claude' ? 'Claude' : AGENT_NAME[t.agent]}</span></div>
       <div className={`ti ${t.link?.state === 'superseded' ? 'lk-strike' : ''}`}>{t.title}</div>
       <div className="ln">{t.link?.state === 'blocked' ? <><b className="lk-blk">Blocked</b> {line}</> : line}</div>
       <div className="ft">

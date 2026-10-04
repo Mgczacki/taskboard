@@ -25,7 +25,7 @@ import { linkOrder, showLinkedWork } from '../links';
 import { GROUP_HINT, HIDE_TITLE, canHide, hiddenHere, hide, unhide, type HiddenByView } from '../hideWindow';
 import { fitToolbar, sameFit, type Fit } from '../toolbarFit';
 import { PopMenu } from './PopMenu';
-import { ManagerBoard } from './ManagerBoard';
+import { ManagerBadge, ManagerBoard, ManagerChip } from './ManagerBoard';
 
 type Layout = 'columns' | 'grid' | 'rows';
 const MINW = 640;
@@ -511,7 +511,7 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
           <div key={g.id} data-drop={'g:' + g.id} data-group-tab={g.id} className={`gtab ${view === 'g:' + g.id ? 'on' : ''} ${dropClass('g:' + g.id)} ${tabDrag?.id === g.id ? 'dragging' : ''} ${slotClass(i)}`} style={{ '--gc': g.color } as React.CSSProperties}
             onPointerDown={e => startTabDrag(e, g.id)}
             onClick={e => { if (!draggedTab.current && !(e.target as HTMLElement).closest('button,input')) setView('g:' + g.id); }} onDoubleClick={() => setMenu({ group: g.id })} title={dropTitle('g:' + g.id) ?? `Drag sideways to move this tab. Drop a window here to move it from the current group, or add it from another view. Double-click for options. Next / previous tab: ${keysText('nextView')} / ${keysText('prevView')}. Move this tab left / right: ${keysText('groupLeft')} / ${keysText('groupRight')}`}>
-            <span className="gdot" /><span className="gname">{g.name}</span><span className="gn">{l.length}</span>{w > 0 && <span className="gw">● {w}</span>}
+            <span className="gdot" /><span className="gname">{g.name}</span><span className="gn">{l.length}</span>{w > 0 && <span className="gw">● {w}</span>}<ManagerChip manager={g.manager} tasks={tasks} open={id => openPanel(id)} />
             <span className="gact"><button title="Open in its own window" onClick={() => openInWindow('g:' + g.id)}>↗</button><button title="Rename, colour, delete" onClick={() => setMenu({ group: g.id })}>⋯</button></span>
           </div>); })}
         {(() => { const l = ungrouped.filter(id => live(tasks.find(t => t.id === id))); const w = waiting(l); return (
@@ -617,7 +617,7 @@ const CanvasWin = memo(function CanvasWin({ t, i, act, linkTasks, cls, span, end
   return (
     <div data-win={t.id} className={cls} style={{ order: i, ...(span ? { gridColumn: `span ${span}` } : {}) }} onMouseDown={() => { a().focus(t.id); if (t.status === 'unread') api.seen(t.id); }}>
       <div ref={head} className={`wh ${narrow ? 'narrow' : ''}`} onPointerDown={e => a().startDrag(e, t.id)} onDoubleClick={() => a().toggleMax(t.id)}>
-        <span className="grip" title={`Drag to move this window between two others, or onto a group tab. Move it one place: ${keysText('windowEarlier')} / ${keysText('windowLater')}`}>⠿</span><span className="ix">{i + 1}</span><LinkPorts t={t} tasks={linkTasks} onGo={id => a().goTask(id)} side="left" /><Dot s={t.status} /><span className="n">#{t.num}</span><span className="ti">{t.title}</span><LinkPorts t={t} tasks={linkTasks} onGo={id => a().goTask(id)} side="right" />
+        <span className="grip" title={`Drag to move this window between two others, or onto a group tab. Move it one place: ${keysText('windowEarlier')} / ${keysText('windowLater')}`}>⠿</span><span className="ix">{i + 1}</span><LinkPorts t={t} tasks={linkTasks} onGo={id => a().goTask(id)} side="left" /><Dot s={t.status} /><span className="n">#{t.num}</span><span className="ti">{t.title}</span><ManagerBadge id={t.id} /><LinkPorts t={t} tasks={linkTasks} onGo={id => a().goTask(id)} side="right" />
         <PendingMarker taskId={t.id} small><span className={`st st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span></PendingMarker>
         {!narrow && <><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} /><BrowserAskChip t={t} /><RuntimeButton t={t} small onOpen={tab => a().openPanel(t.id, tab)} /></>}
         {ending ? <><span className="sel-warn">End & archive?</span><button className="b" onClick={() => a().endTask(t)}>Yes, end it</button><button className="b" onClick={() => a().setEnding(null)}>Cancel</button></> : <>

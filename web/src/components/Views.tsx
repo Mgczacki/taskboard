@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { hasFiles, uploadAll } from '../drop';
 import type { Group, Task } from '../api';
 import { ATTN, ORDER, STATUS_LABEL, api, fmtWait, shortPath } from '../api';
+import { ManagerBadge } from './ManagerBoard';
 import { AgentChip, ByController, Dot, Kbd, MachineChip, ThreeLines, WhereChip, BrowserAskChip } from './ui';
 import { planGroupDrop, planUngroup, type DropPlan } from '../groupMove';
 import { runGroupChange, type Toast } from '../groupActions';
@@ -29,7 +30,7 @@ export function ListView({ tasks, groups, open, showArchived, selected, toggleSe
   const row = (t: Task, depth = 0, also: string[] = []) => (
               <tr className={`r ${selected.has(t.id) ? 'selected' : ''}`} key={t.id} onClick={e => { if ((e.target as HTMLElement).closest('input')) return; if (e.metaKey || e.shiftKey) toggleSel(t.id); else open(t.id); }}>
                 <td><input type="checkbox" className="selbox" checked={selected.has(t.id)} onChange={() => toggleSel(t.id)} title="Select, then group these or open them together in a new window" /></td>
-                <td className="title" style={depth ? { paddingLeft: 8 + depth * 18 } : undefined}>{depth > 0 && <span className="lk-indent">└ </span>}<LinkMarker t={t} tasks={tasks} /> <Dot s={t.status} /> <span className="n">#{t.num}</span><span className={isReplaced(t) ? 'lk-strike' : ''}>{t.title}</span> <GroupDots t={t} groups={groups} />{also.length > 0 && <span className="lk-st">also #{also.map(id => tasks.find(x => x.id === id)?.num).join(' #')}</span>}</td>
+                <td className="title" style={depth ? { paddingLeft: 8 + depth * 18 } : undefined}>{depth > 0 && <span className="lk-indent">└ </span>}<LinkMarker t={t} tasks={tasks} /> <Dot s={t.status} /> <span className="n">#{t.num}</span><span className={isReplaced(t) ? 'lk-strike' : ''}>{t.title}</span> <ManagerBadge id={t.id} /> <GroupDots t={t} groups={groups} />{also.length > 0 && <span className="lk-st">also #{also.map(id => tasks.find(x => x.id === id)?.num).join(' #')}</span>}</td>
                 <td><AgentChip a={t.agent} /></td>
                 <td className="mono"><MachineChip t={t} /><WhereChip t={t} /><BrowserAskChip t={t} /> {shortPath(t.cwd)}</td>
                 <td className="last">{by === 'sets' && <div style={{ marginBottom: 2 }}><LinkState t={t} tasks={tasks} /></div>}<ThreeLines t={t} /></td>
@@ -83,7 +84,7 @@ export function BoardView({ tasks, groups, open, openDocs, selected, toggleSel, 
       onDrop={e => { if (!hasFiles(e) || t.machine) return; e.preventDefault(); e.stopPropagation(); e.currentTarget.classList.remove('filedrop'); uploadAll(t.id, e.dataTransfer.files, toast); }}
       onClick={e => { if ((e.target as HTMLElement).closest('button')) return; if (e.metaKey || e.shiftKey) toggleSel(t.id); else open(t.id); }}>
       <div className="h"><Dot s={t.status} /><div className={`ti ${isReplaced(t) ? 'lk-strike' : ''}`}>{t.title}</div><LinkMarker t={t} tasks={tasks} /><span className="n">#{t.num}</span></div>
-      <div className="meta"><ByController t={t} /><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} /><BrowserAskChip t={t} /><span className="chip mono">{shortPath(t.cwd).replace('~/', '')}</span><GroupDots t={t} groups={groups} /></div>
+      <div className="meta"><ManagerBadge id={t.id} /><ByController t={t} /><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} /><BrowserAskChip t={t} /><span className="chip mono">{shortPath(t.cwd).replace('~/', '')}</span><GroupDots t={t} groups={groups} /></div>
       {['stopped', 'review'].includes(t.status) && <div className={`st-label ${t.status}`} style={{ marginTop: 6 }}>{STATUS_LABEL[t.status]}</div>}
       <ThreeLines t={t} />
       <div className="foot"><span className="sp" /><span className="io" onClick={e => { e.stopPropagation(); openDocs(t.id); }} title="Inbox and outbox">in {t.docs?.inbox || 0} · out {t.docs?.outbox || 0}</span></div>

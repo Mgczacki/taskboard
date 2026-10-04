@@ -12,6 +12,8 @@ import { StyleSwitcher } from './components/StyleSwitcher';
 import { TaskPanel } from './components/TaskPanel';
 import { Terminal } from './components/Terminal';
 import { AgentChip, Dot, StatusLabel, ThreeLines } from './components/ui';
+import { ManagerBadge } from './components/ManagerBoard';
+import { setManagerGroups } from './managerBoard';
 import { BoardView, ListView } from './components/Views';
 import { GraphView } from './components/Graph';
 import { LinkedWork, LinkMarker } from './components/Links';
@@ -164,6 +166,8 @@ export function App() {
   useEffect(() => { const on = (e: Event) => setLinked((e as CustomEvent<{ task?: string; group?: string }>).detail); addEventListener('tb-linked-work', on); return () => removeEventListener('tb-linked-work', on); }, []);
   // groups opened as a tree in the sidebar
   const [openGroups, setOpenGroups] = useState<string[]>(() => { try { return JSON.parse(localStorage.getItem('tb-rail-groups') || '[]'); } catch { return []; } });
+  // the Manager badges read which task manages which group (managerBoard.ts)
+  useEffect(() => setManagerGroups(groups), [groups]);
   const toggleGroup = (id: string) => setOpenGroups(l => { const n = l.includes(id) ? l.filter(x => x !== id) : [...l, id]; try { localStorage.setItem('tb-rail-groups', JSON.stringify(n)); } catch { /* storage off */ } return n; });
   const [railHidden, setRailHidden] = useState(() => SOLO || localStorage.getItem('tb-rail') === 'hidden');
   const [focusMode, setFocusMode] = useState(false);
@@ -245,7 +249,7 @@ export function App() {
     else if (view === 'needs' || (view === 'ungrouped' && groups.some(g => g.tasks.includes(id)))) setView('live');
     setOpenId(null); go('canvas');
   };
-  const item = (t: Task) => <div key={t.id} className="rail-item" onClick={() => setOpenId(t.id)}><Dot s={t.status} /><span className="t">{t.title}</span><LinkMarker t={t} tasks={tasks} /><span className="m">{t.agent === 'claude' ? 'CC' : t.agent === 'codex' ? 'CX' : 'AG'}</span></div>;
+  const item = (t: Task) => <div key={t.id} className="rail-item" onClick={() => setOpenId(t.id)}><Dot s={t.status} /><span className="t">{t.title}</span><ManagerBadge id={t.id} /><LinkMarker t={t} tasks={tasks} /><span className="m">{t.agent === 'claude' ? 'CC' : t.agent === 'codex' ? 'CX' : 'AG'}</span></div>;
   const hideChrome = focusMode && page === 'canvas';
   // pending reviews for the sidebar count
   const [reviewCount, setReviewCount] = useState(0);
@@ -445,7 +449,7 @@ function GroupTree({ g, tasks, open }: { g: Group; tasks: Task[]; open: (id: str
   const rows = treeDepth(linkOrder(showReplaced ? list : list.filter(t => !isReplaced(t)), tasks), tasks, 'deps');
   return <>
     {rows.map(({ t, depth, also }) => <div key={t.id} className="rail-item lk-child" style={{ '--depth': depth } as React.CSSProperties} onClick={() => open(t.id)} title={`#${t.num} ${t.title}${also.length ? ` · also blocked by ${also.map(id => '#' + tasks.find(x => x.id === id)?.num).join(' ')}` : ''}`}>
-      {depth > 0 && <span className="lk-indent">└</span>}<Dot s={t.status} /><span className="t">#{t.num} {t.title}</span><LinkMarker t={t} tasks={tasks} /></div>)}
+      {depth > 0 && <span className="lk-indent">└</span>}<Dot s={t.status} /><span className="t">#{t.num} {t.title}</span><ManagerBadge id={t.id} /><LinkMarker t={t} tasks={tasks} /></div>)}
     {replaced.length > 0 && <div className="rail-item lk-child" onClick={() => setShowReplaced(x => !x)} title={replaced.map(t => `#${t.num} ${t.title}`).join('\n')}><span className="lk-mk super">⤳</span><span className="t">{showReplaced ? 'Hide' : 'Show'} {replaced.length} replaced</span></div>}
     {!list.length && <div className="rail-empty lk-child">No live tasks</div>}
   </>;
@@ -514,7 +518,7 @@ function Triage({ queue: byWait, tasks, close, open }: { queue: Task[]; tasks: T
             {blockers.length > 0 && <><div className="tr-sec" title="These tasks do not wait for you, but other tasks wait on them">Blocks others, does not wait for you</div>
               {blockers.map(x => <div key={x.id} className="tq" onClick={() => open(x.id)}><Dot s={x.status} /><span className="t">#{x.num} {x.title}<span className="why">{x.link!.waitedOnBy!.map(id => '#' + tasks.find(y => y.id === id)?.num).join(' ')} wait{x.link!.waitedOnBy!.length === 1 ? 's' : ''} on it.</span></span><span className="m">{x.status}</span></div>)}</>}</div>
           <div className="tr-item">
-            <div className="tr-title"><Dot s={t.status} /><span className="num">#{t.num}</span><h3>{t.title}</h3><StatusLabel s={t.status} /><span className="waitchip">waiting {fmtWait(t.waitMin)}</span><AgentChip a={t.agent} /></div>
+            <div className="tr-title"><Dot s={t.status} /><span className="num">#{t.num}</span><h3>{t.title}</h3><ManagerBadge id={t.id} /><StatusLabel s={t.status} /><span className="waitchip">waiting {fmtWait(t.waitMin)}</span><AgentChip a={t.agent} /></div>
             <ThreeLines t={t} fixed />
             {order === 'links' && (w => <div className="tr-why"><b>Why this place</b><ol><li>{w.n ? `${w.n} open task${w.n === 1 ? '' : 's'} wait${w.n === 1 ? 's' : ''} on it.` : 'No task waits on it.'}</li><li>{w.blocked ? `It is also blocked by ${(t.link?.blockedBy || []).map(id => '#' + tasks.find(x => x.id === id)?.num).join(' ')}. Your answer does not finish it.` : 'Nothing else blocks it. Your answer lets it continue.'}</li><li>Waiting {fmtWait(t.waitMin)}.</li></ol></div>)(triageWhy(t, tasks))}
             <div className="tr-term"><Terminal key={t.id} taskId={t.id} autoFocus /></div>

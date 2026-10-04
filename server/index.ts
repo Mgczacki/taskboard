@@ -377,6 +377,9 @@ app.get('/api/board', (req, res) => {
   const g = all.find(x => x.id === req.query.group || x.name === req.query.group);
   return g ? res.json(waitingBoard.board(g)) : res.status(404).json({ error: 'No group with that name.' });
 });
+// Each group that has a live manager task, with its caps and their use, for the Manager badge on the dashboard
+app.get('/api/managers', (_req, res) => res.json(groups.all().filter(g => g.manager && managerRole.role(g.manager)?.id === g.id)
+  .map(g => ({ group: g.id, name: g.name, manager: g.manager, num: store.get(g.manager!)?.num, caps: managerRole.DEFAULT_CAPS, usage: managerRole.usage(g) }))));
 app.get('/api/manager/:group', (req, res) => {
   const g = groups.all().find(x => x.id === req.params.group || x.name === req.params.group);
   if (!g) return res.status(404).end();
