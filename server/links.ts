@@ -169,13 +169,13 @@ function tell(taskId: string, name: string, text: string) {
 export interface NewLink { kind: LinkKind; to: string; note?: string; folded?: boolean }
 
 // atStart: the link goes on a task that the caller starts now (tb new --after and the like), so a task may add it.
-export function add(fromRef: string, input: NewLink, by: LinkActor, opts: { atStart?: boolean } = {}): TaskLink {
+export function add(fromRef: string, input: NewLink, by: LinkActor, opts: { atStart?: boolean; manager?: boolean } = {}): TaskLink {
   const from = resolve(fromRef), to = resolve(input.to);
   const kind = input.kind;
   if (!KINDS.includes(kind)) throw new Error(`The link type must be one of: ${KINDS.join(', ')}.`);
   if (from.id === to.id) throw new Error('A task cannot have a link to itself.');
   if (by.actor === 'task') {
-    if (by.task !== from.id && !opts.atStart) throw new Error(`A task can add links only on itself. Ask the controller or the user to add a link on #${from.num}.`);
+    if (by.task !== from.id && !opts.atStart && !opts.manager) throw new Error(`A task can add links only on itself. Ask the controller or the user to add a link on #${from.num}.`);
     if (kind === 'replaces') throw new Error('A task cannot add a replaces link, because it parks the other task. Tell the user or the controller.');
   }
   if (input.folded && kind !== 'replaces') throw new Error('--folded goes only with a replaces link.');
@@ -204,22 +204,22 @@ export function add(fromRef: string, input: NewLink, by: LinkActor, opts: { atSt
   return link;
 }
 
-export function remove(fromRef: string, linkId: string, by: LinkActor): TaskLink {
+export function remove(fromRef: string, linkId: string, by: LinkActor, manager = false): TaskLink {
   const from = resolve(fromRef);
   const link = (from.links || []).find(l => l.id === linkId);
   if (!link) throw new Error(`#${from.num} has no link ${linkId}.`);
-  if (by.actor === 'task' && (by.task !== from.id || link.kind === 'replaces')) throw new Error('A task can remove only its own links, and not a replaces link.');
+  if (by.actor === 'task' && ((by.task !== from.id && !manager) || link.kind === 'replaces')) throw new Error('A task can remove only its own links, and not a replaces link.');
   store.update(from.id, { links: (from.links || []).filter(l => l.id !== linkId) });
   store.touch(link.to);
   return link;
 }
 
-export function markDone(fromRef: string, linkId: string, by: LinkActor, note?: string): TaskLink {
+export function markDone(fromRef: string, linkId: string, by: LinkActor, note?: string, manager = false): TaskLink {
   const from = resolve(fromRef);
   const link = (from.links || []).find(l => l.id === linkId);
   if (!link) throw new Error(`#${from.num} has no link ${linkId}.`);
   if (link.kind !== 'dependsOn') throw new Error('Only a dependsOn link can be marked done.');
-  if (by.actor === 'task' && by.task !== from.id) throw new Error('A task can mark only its own links as done.');
+  if (by.actor === 'task' && by.task !== from.id && !manager) throw new Error('A task can mark only its own links as done.');
   if (link.doneAt) return link;
   const before = state(from);
   const doneNote = cleanNote(note);

@@ -21,6 +21,37 @@ import { filterSettings, matcher, settingText } from '../settingsIndex';
 import { SettingGroup, SettingItem, SettingSection, SettingsFilterProvider, SettingsNav, hashSection, sectionAnchor } from './SettingsLayout';
 import { Processes } from './Processes';
 
+type StandingRule = { id: string; action: 'push' | 'deploy-dev' | 'catalog-stage'; actor: string; target: string; limitPerDay: number };
+function StandingRules({ tasks }: { tasks: Task[] }) {
+  const [rules, setRules] = useState<StandingRule[]>([]);
+  const [action, setAction] = useState<StandingRule['action']>('push');
+  const [actor, setActor] = useState('');
+  const [target, setTarget] = useState('');
+  const [limitPerDay, setLimit] = useState(1);
+  const [error, setError] = useState('');
+  const load = () => void fetch('/api/standing-approvals').then(r => r.json()).then(setRules).catch(() => {});
+  useEffect(load, []);
+  const add = async () => {
+    const r = await fetch('/api/standing-approvals', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ action, actor, target, limitPerDay }) });
+    const data = await r.json();
+    if (!r.ok) return setError(data.error || 'Could not save the rule.');
+    setError(''); setTarget(''); load();
+  };
+  const remove = async (id: string) => { await fetch(`/api/standing-approvals/${id}`, { method: 'DELETE' }); load(); };
+  return <div>
+    <div className="opt">Allow one action for one task and target, up to a daily limit.</div>
+    <div className="row2">
+      <label>Action <select value={action} onChange={e => setAction(e.target.value as StandingRule['action'])}><option value="push">Push to a branch</option><option value="deploy-dev">Deploy to Dev</option><option value="catalog-stage">Publish relay catalog draft to Stage</option></select></label>
+      <label>Task <select value={actor} onChange={e => setActor(e.target.value)}><option value="">Choose a task</option>{tasks.filter(t => t.role !== 'controller').map(t => <option value={t.id} key={t.id}>#{t.num} {t.title}</option>)}</select></label>
+      <label>Target <input value={target} onChange={e => setTarget(e.target.value)} placeholder={action === 'push' ? 'branch name' : action === 'deploy-dev' ? 'service@dev' : 'catalog@stage'} /></label>
+      <label>Uses each day <input type="number" min="1" max="20" value={limitPerDay} onChange={e => setLimit(Number(e.target.value))} /></label>
+    </div>
+    <button className="btn" disabled={!actor || !target} onClick={() => void add()}>Add rule</button>
+    {error && <div className="banner">{error}</div>}
+    {rules.map(rule => <div className="sub" key={rule.id}>{rule.action} · #{tasks.find(t => t.id === rule.actor)?.num || rule.actor} · {rule.target} · {rule.limitPerDay} uses each day <button className="btn ghost" onClick={() => void remove(rule.id)}>Remove</button></div>)}
+  </div>;
+}
+
 // One checkbox for each risk kind of a card option (server/machine.ts confirmRisk).
 const CONFIRM_RISK_ROWS: [keyof ConfirmRisk, string][] = [
   ['wideAccess', 'Gives wide access: the answer adds a rule, for example "always allow access to <folder>"'],
@@ -109,6 +140,9 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
               </SettingGroup>
               <SettingGroup section="approvals" id="allowRules" title="Allow always rules" help={<>You add a rule with Allow always on a card where one task asks to type into another task or to send it a document. Only you add or revoke rules, on this dashboard. <code>tb allow list</code> shows them to tasks and the controller.</>}>
                 <SettingItem id="allowRulesList"><AllowRules setErr={setErr} /></SettingItem>
+              </SettingGroup>
+              <SettingGroup section="approvals" id="standingRules" title="Standing approvals" help="Only you add these rules. Each use is saved with its rule and target.">
+                <SettingItem id="standingRulesList"><StandingRules tasks={tasks} /></SettingItem>
               </SettingGroup>
               <SettingGroup section="approvals" id="permits" title="Permit requests">
                 {p && <SettingItem id="controllerApprovesPermits">

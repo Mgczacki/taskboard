@@ -32,7 +32,7 @@ export const MAX_OPEN = 50; // messages that wait (queued or failed) for one tas
 export const MAX_BYTES = 500_000; // characters of text that wait for one task
 const KEEP_DELIVERED = 20; // delivered messages kept in the file, with the time and the path
 export const HOOK_ROOM = 9000; // characters for messages in one hook answer (Claude Code keeps 10,000 of hook context)
-export type Kind = 'message' | 'review' | 'permit';
+export type Kind = 'message' | 'review' | 'permit' | 'approval';
 export interface Queued {
   id: string; text: string; kind: Kind;
   from: string; // a task id, "you" (the dashboard) or "taskboard"
@@ -73,7 +73,7 @@ const minutes = (since: string) => Math.max(0, Math.round((Date.now() - Date.par
 // Antigravity gets text from the Stop hook (events.ts antigravityEvent); the controller on Codex has the Taskboard Codex
 // hooks (events.ts codexHookEvent). Codex tasks have no Taskboard hook that gives text to the model.
 export function hookEvents(t: Pick<Task, 'agent' | 'role'>): string | null {
-  if (t.agent === 'claude' || (t.agent === 'codex' && t.role === 'controller')) return 'a tool call ends, a prompt is sent or its turn ends';
+  if (t.agent === 'claude' || t.agent === 'codex') return 'a tool call ends, a prompt is sent or its turn ends';
   if (t.agent === 'antigravity') return 'its turn ends';
   return null;
 }

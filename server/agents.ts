@@ -10,6 +10,7 @@ import { hostname } from 'node:os';
 import { promisify } from 'node:util';
 import { GUARD_SCRIPT, STATUSLINE_SCRIPT, ROOT, TB_DIR, CLAUDE_SETTINGS_FILE, CODEX_NOTIFY_SCRIPT, HOME, HOOK_SCRIPT, TOKEN_FILE, URL_BASE, VAULT, DOCS_DIR, AGY_PLUGIN_DIR, agyBin } from './config.ts';
 import * as store from './store.ts';
+import * as taskToken from './task-token.ts';
 import type { Agent, Task } from './store.ts';
 import * as tmux from './tmux.ts';
 import * as accounts from './accounts.ts';
@@ -668,13 +669,14 @@ export function baseEnv(t: Task): Record<string, string> {
   const env: Record<string, string> = {
     TASK_ID: t.id, TASK_DIR: store.taskDir(t.id), TASK_NUM: String(t.num),
     ...(t.worktree ? { TASK_WORKTREE: t.cwd } : {}),
-    TB_URL: URL_BASE, TB_TOKEN_FILE: TOKEN_FILE, TASKBOARD_VAULT: VAULT,
+    TB_URL: URL_BASE, TB_TOKEN_FILE: t.id === 'controller' ? TOKEN_FILE : taskToken.fileFor(t.id), TASKBOARD_VAULT: VAULT,
     // the agy plugin "taskboard" runs its scripts from here (it is the same plugin for every Taskboard server)
     TB_HOOKS_DIR: join(TB_DIR, 'hooks'),
     // the tb command is on the agent's PATH
     PATH: `${join(TB_DIR, 'bin')}:${process.env.PATH || '/usr/bin:/bin'}`,
     ...accounts.envFor(accounts.get(t.account)),
   };
+  if (t.id !== 'controller') env.TB_TASK_TOKEN = taskToken.forTask(t.id);
   if (t.id === 'controller') env.TB_MAIL_CONTROLLER_TOKEN = controllerMailToken;
   // programs that open a page with $BROWSER (Python's webbrowser, Vite's --open) open it in the task browser
   if (browserMode(t) !== 'off') env.BROWSER = join(TB_DIR, 'bin', 'tb-open');
@@ -691,12 +693,12 @@ const codexHookSetting = () => `hooks.PreToolUse=[{matcher="^Bash$",hooks=[{type
 // reason (observed in test runs). hooks/list names them userPromptSubmit, postToolUse and stop.
 export const CODEX_CONTROLLER_HOOKS = ['UserPromptSubmit', 'PostToolUse', 'Stop'] as const;
 const codexControllerHookCommand = () => 'node "$TB_HOOKS_DIR/codex-hook.mjs"';
-const codexControllerHookSettings = (t: Pick<Task, 'role'>) => t.role === 'controller'
-  ? CODEX_CONTROLLER_HOOKS.map(e => `hooks.${e}=[{hooks=[{type="command",command=${JSON.stringify(codexControllerHookCommand())},timeout=10}]}]`) : [];
+const codexControllerHookSettings = (_t: Pick<Task, 'role'>) =>
+  CODEX_CONTROLLER_HOOKS.map(e => `hooks.${e}=[{hooks=[{type="command",command=${JSON.stringify(codexControllerHookCommand())},timeout=10}]}]`);
 // the hooks that Codex must trust, as hooks/list reports them
 function codexExpectedHooks(t: Pick<Task, 'role'>) {
   return [{ eventName: 'preToolUse', command: codexHookCommand() },
-    ...(t.role === 'controller' ? CODEX_CONTROLLER_HOOKS.map(e => ({ eventName: e[0].toLowerCase() + e.slice(1), command: codexControllerHookCommand() })) : [])];
+    ...CODEX_CONTROLLER_HOOKS.map(e => ({ eventName: e[0].toLowerCase() + e.slice(1), command: codexControllerHookCommand() }))];
 }
 async function codexHookTrust(t: Task): Promise<string[]> {
   if (t.agent !== 'codex') return [];

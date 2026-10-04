@@ -27,8 +27,6 @@ export interface Permit {
 }
 export interface StepInput { command: string; cwd?: string; timeoutSeconds?: number; network?: boolean; continueOnFailure?: boolean }
 const DIR = join(TB_DIR, 'permits');
-// how long a permit waits for a decision; TASKBOARD_PERMIT_TTL_MS sets a shorter time for tests
-const TTL_MS = Number(process.env.TASKBOARD_PERMIT_TTL_MS) || 600000;
 const records = new Map<string, Permit>();
 const listeners = new Set<(p: Permit) => void>();
 const now = () => new Date().toISOString();
@@ -50,7 +48,6 @@ export function load() {
     try {
       const p = JSON.parse(readFileSync(join(DIR, name), 'utf8')) as Permit;
       if (p.state === 'running') { p.state = 'unknown'; p.error = 'Taskboard restarted during execution. Check effects before asking again.'; p.finishedAt = now(); save(p); }
-      if (p.state === 'pending' && Date.parse(p.expiresAt) <= Date.now()) { p.state = 'expired'; p.steps.forEach(s => s.state = 'cancelled'); p.finishedAt = now(); save(p); }
       records.set(p.id, p);
     } catch { /* skip a damaged record */ }
   }
@@ -188,12 +185,11 @@ export function request(task: Task, reason: string, inputs: StepInput[], refusal
   const id = randomUUID();
   const stepHash = createHash('sha256').update(JSON.stringify({ taskId: task.id, steps: steps.map(s => [s.command, s.cwd, s.timeoutSeconds, s.network, s.scriptHash]) })).digest('hex');
   const p: Permit = { id, taskId: task.id, taskNum: task.num, agent: task.agent, reason: redactOutput(reason.trim()), refusalId,
-    createdAt: now(), expiresAt: new Date(Date.now() + TTL_MS).toISOString(), state: 'pending', stepHash, riskFlags, steps, statedRisk: redactOutput(statedRisk.trim()), riskClass: classify(steps, task) };
+    createdAt: now(), expiresAt: '', state: 'pending', stepHash, riskFlags, steps, statedRisk: redactOutput(statedRisk.trim()), riskClass: classify(steps, task) };
   records.set(id, p); save(p); return p;
 }
 export function expire(p: Permit) {
-  if (p.state !== 'pending' || Date.parse(p.expiresAt) > Date.now()) return false;
-  p.state = 'expired'; p.steps.forEach(s => s.state = 'cancelled'); p.finishedAt = now(); save(p); return true;
+  return false;
 }
 // End a pending permit without a decision, for example because its task was archived. Nothing runs.
 export function cancel(p: Permit, reason: string) {

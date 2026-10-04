@@ -28,7 +28,7 @@ type View = 'all' | 'questions' | 'messages' | 'permits' | 'git' | 'answered' | 
 const VIEWS: [View, string][] = [['all', 'All'], ['questions', 'Agent questions'], ['messages', 'Messages'], ['permits', 'Permits'], ['git', 'Push and release'], ['answered', 'Answered'], ['dismissed', 'Dismissed']];
 const GIT = ['git-push', 'git-merge', 'release', 'restart'];
 // the kind chip of a decided approval card in the Answered view
-const KIND_OF_ACTION: Record<string, string> = { permit: 'Permit', 'git-push': 'Git push', 'git-merge': 'Merge', release: 'Release', restart: 'Restart', scope: 'Scope' };
+const KIND_OF_ACTION: Record<string, string> = { permit: 'Permit', external: 'External action', plan: 'Plan', 'git-push': 'Push', 'git-merge': 'Merge', release: 'Release', restart: 'Restart', scope: 'Scope', new: 'New task', send: 'Message', 'mail-in': 'Message', 'mail-out': 'Message' };
 const minutesSince = (iso: string) => Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
 
 // quiet: the tasks whose waiting item the user dismissed (dismiss.ts quietTaskIds). They get no task row.
@@ -38,7 +38,7 @@ export function waitingRows(tasks: Task[], approvals: Approval[], pending: Pendi
   const numOf = (id: string) => tasks.find(t => t.id === id);
   const rows: Row[] = [
     ...pending.map(i => ({ id: `p:${i.id}`, at: i.createdAt, taskId: i.taskId, agent: i.agent, title: `#${i.taskNum} ${i.taskTitle}`, question: i.question, kind: KIND_LABEL[i.kind], risky: i.options.some(o => o.risk), screen: i.source === 'screen', item: i })),
-    ...live.map(a => { const t = numOf(a.actor); return { id: `a:${a.id}`, at: sortTime(a), taskId: t?.id, agent: t?.agent, title: a.actor === 'controller' ? 'The controller' : t ? `#${t.num} ${t.title}` : a.actor, question: a.summary, kind: isMessage(a) ? 'Message' : a.action === 'permit' ? 'Permit' : a.action === 'git-push' ? 'Git push' : a.action === 'release' ? 'Release' : a.action === 'tool-refusal' ? 'Refused command' : 'Approval', late: !!reminder(a), approval: a }; }),
+    ...live.map(a => { const t = numOf(a.actor); return { id: `a:${a.id}`, at: sortTime(a), taskId: t?.id, agent: t?.agent, title: a.actor === 'controller' ? 'The controller' : t ? `#${t.num} ${t.title}` : a.actor, question: a.summary, kind: isMessage(a) ? 'Message' : KIND_OF_ACTION[a.action] || 'Approval', late: !!reminder(a), approval: a }; }),
   ];
   for (const { t, q } of lateMessages(withController))
     rows.push({ id: `q:${t.id}:${q.id}`, at: q.queued, taskId: t.id, agent: t.agent, title: t.role === 'controller' ? 'The controller' : `#${t.num} ${t.title}`, question: `${queueLabel(q)}. ${q.state === 'failed' ? 'The agent did not read it.' : q.seen || q.reason}`, kind: LATE_KIND, late: true, queued: { t, q } });
@@ -85,6 +85,10 @@ export function WaitingPage({ tasks, allTasks, openTask, openController, toast }
     git: r => GIT.includes(r.approval?.action || ''), dismissed: () => true,
   };
   const rows = (view === 'answered' ? done : view === 'dismissed' ? gone : all.filter(test[view])).filter(r => agent === 'any' || r.agent === agent);
+  const displayRows = [...rows].sort((a, b) => Number(!!a.queued) - Number(!!b.queued) || (a.taskId || '').localeCompare(b.taskId || '') || a.at.localeCompare(b.at));
+  const userRows = all.filter(r => !r.queued);
+  const waitingTasks = new Set(userRows.map(r => r.taskId || r.id)).size;
+  const cardCount = userRows.filter(r => r.approval || r.item).length;
   const cur = rows.find(r => r.id === sel) || rows[0];
   // Dismiss for a question card or a task row; approval and Message cards have no Dismiss
   const dismiss = (r: Row | undefined) => {
@@ -100,7 +104,7 @@ export function WaitingPage({ tasks, allTasks, openTask, openController, toast }
   }, []);
   const risky = all.filter(r => r.risky).length, late = all.filter(r => r.late).length;
   return <div className="waiting">
-    <div className="wt-head"><div><div className="sub">{all.length ? `${all.length === 1 ? '1 item waits' : `${all.length} items wait`} on you · oldest first${risky ? ` · ${risky} with a risky option` : ''}${late ? ` · ${late === 1 ? '1 message draft waits' : `${late} message drafts wait`} too long` : ''}` : 'Nothing waits on you.'}</div></div>
+    <div className="wt-head"><div><div className="sub">{userRows.length ? `${waitingTasks} tasks wait on you (${cardCount} cards)${risky ? ` · ${risky} with a risky option` : ''}${late ? ` · ${late} late items` : ''}` : 'Nothing waits on you.'}</div></div>
       <span className="pc-sp" /><label className="opt"><input type="checkbox" checked={showTerm} onChange={e => setShowTerm(e.target.checked)} /> Show the terminal below the card</label></div>
     <div className="wt-tabs">{VIEWS.map(([v, label]) => <button key={v} className={`wt-tab ${view === v ? 'on' : ''}`} onClick={() => { setView(v); setSel(null); }}>{label}<span className="n">{v === 'answered' ? done.length : v === 'dismissed' ? gone.length : all.filter(test[v]).length}</span></button>)}</div>
     <div className="wt-filters">{(['any', 'claude', 'codex', 'antigravity'] as const).map(a => <button key={a} className={`chip wt-chip ${agent === a ? 'on' : ''}`} onClick={() => { setAgent(a); setSel(null); }}>{a === 'any' ? 'All agents' : AGENT_NAME[a]}</button>)}
@@ -108,12 +112,15 @@ export function WaitingPage({ tasks, allTasks, openTask, openController, toast }
       {view === 'dismissed' && <span className="sub">Items that you dismissed. Each one shows again by itself when something new happens for it.</span>}
       {view !== 'dismissed' && view !== 'answered' && keyLabel('waitingDismiss') && <span className="sub" title={`Dismiss the selected item: ${keysText('waitingDismiss')}`}>Dismiss the selected item: <kbd>{keyLabel('waitingDismiss')}</kbd></span>}</div>
     <div className="wt-split">
-      <div className="wt-list">{rows.length ? rows.map(r => <button key={r.id} className={`wt-row ${cur?.id === r.id ? 'on' : ''} ${r.done ? 'done' : ''}`} onClick={() => setSel(r.id)}>
+      <div className="wt-list">{displayRows.length ? displayRows.map((r, i) => <div key={r.id}>
+        {(i === 0 || !!displayRows[i - 1].queued !== !!r.queued) && <h3 className="wt-group-label">{r.queued ? 'Others' : 'You'}</h3>}
+        {(i === 0 || displayRows[i - 1].taskId !== r.taskId) && <div className="wt-task-label">{r.title}</div>}
+        <button className={`wt-row ${cur?.id === r.id ? 'on' : ''} ${r.done ? 'done' : ''}`} onClick={() => setSel(r.id)}>
         <span className={`dot ${r.done ? 'idle' : r.kind === 'Stopped' ? 'stopped' : r.kind === 'Review' ? 'review' : 'needs-you'}`} />
         <span className="t">{r.title}</span><span className="a">{fmtWait(minutesSince(r.at))}</span>
-        <span className="q">{r.question}</span>
+        <span className="q">{r.question}{r.approval && <small> · valid {r.approval.validUntil || 'until facts change'}{r.approval.unblocks?.length ? ` · unblocks ${r.approval.unblocks.join(', ')}` : ''}</small>}</span>
         <span className="k">{r.agent && <AgentChip a={r.agent} />}<span className="chip">{r.kind}</span>{r.risky && <span className="chip warn">risky option</span>}{r.screen && <span className="chip">screen</span>}{r.late && !r.queued && <span className="chip warn" title="Nobody approved this draft for a long time. It is not sent.">reminder</span>}{r.queued && <span className="chip warn" title="Taskboard could not give this message to the agent yet.">not delivered</span>}{r.done && r.approval && <span className="chip">{r.approval.state === 'approved' ? r.approval.decidedBy?.by === 'controller' ? 'approved by the controller' : 'done' : r.approval.state}</span>}{r.dismissal && <span className="chip">dismissed{r.dismissal.until ? ' for 10 min' : ''}</span>}{r.done && !r.dismissal && r.item?.state && <span className="chip">{r.item.state === 'answered' ? `answered by ${r.item.answer?.by === 'controller' ? 'the controller' : 'you'}` : r.item.state}</span>}</span>
-      </button>) : <div className="wt-empty">Nothing here.</div>}</div>
+        </button></div>) : <div className="wt-empty">Nothing here.</div>}</div>
       <div className="wt-detail">{cur ? <>
         {cur.dismissal && <div className="pcard"><div className="pc-h"><b>{cur.title}</b>{cur.agent && <AgentChip a={cur.agent} />}<span className="chip">{cur.kind}</span><span className="pc-sp" /><span className="pc-age">dismissed at {new Date(cur.dismissal.at).toLocaleTimeString()}</span></div>
           <p className="pc-q">{cur.question}</p>

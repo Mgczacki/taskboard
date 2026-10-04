@@ -25,6 +25,7 @@ import { linkOrder, showLinkedWork } from '../links';
 import { GROUP_HINT, HIDE_TITLE, canHide, hiddenHere, hide, unhide, type HiddenByView } from '../hideWindow';
 import { fitToolbar, sameFit, type Fit } from '../toolbarFit';
 import { PopMenu } from './PopMenu';
+import { ManagerBoard } from './ManagerBoard';
 
 type Layout = 'columns' | 'grid' | 'rows';
 const MINW = 640;
@@ -551,6 +552,7 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
       {menu && typeof menu === 'object' && <GroupMenu g={groups.find(x => x.id === menu.group)!} archiveCount={(g => g ? archivePlan(g, groups, tasks).targets.length : 0)(groups.find(x => x.id === menu.group))} onArchiveAll={(g, deleteGroup) => { setMenu(null); setArchiving({ group: { ...g, tasks: [...g.tasks] }, deleteGroup }); }} close={() => setMenu(null)} onDeleted={g => { if (view === 'g:' + g.id) setView('live'); toast(`Deleted “${g.name}”. Its tasks keep running.`, { label: 'Undo', fn: () => { api.restoreGroup(g); setView('g:' + g.id); } }); }} />}
       {archiving && <ArchiveAllPanel g={archiving.group} deleteGroup={archiving.deleteGroup} groups={groups} tasks={tasks} close={() => setArchiving(null)} onDeleted={() => { if (view === 'g:' + archiving.group.id) setView('live'); }} onRestored={() => setView('g:' + archiving.group.id)} onEnded={ids => { if (panelTaskId && ids.includes(panelTaskId)) openPanel(null); }} toast={toast} />}
       {runtimeOpen && <GroupRuntime tasks={runtimeTasks} group={group} onOpen={(id, tab) => openPanel(id, tab)} />}
+      {group && <ManagerBoard group={group.id} tasks={tasks} openTask={id => openPanel(id)} />}
       <div className="stage-grid" ref={stage} style={style}>
         {!wins.length && <div className="emptyview"><h2>{group ? `“${group.name}” is empty` : view === 'ungrouped' && !hiddenIds.length ? 'Every live task is in a group' : 'No windows'}</h2><p>Use <b>＋ New task</b> to start an agent here. Use <b>＋ Add window</b> to show a task that already exists.</p></div>}
         {/* renderOrder: the page keeps the windows in one fixed order and CSS order puts them in place, so a move does not remount a terminal */}

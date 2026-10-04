@@ -30,6 +30,7 @@ export interface Task {
   goal?: string;           // your words
   now?: string;            // where the agent is (last assistant message)
   ask?: string;            // what it waits for
+  waitingOn?: WaitingOn;
   stopReason?: string;
   seenAt?: string;         // when you last opened the task
   interrupted?: string;
@@ -61,6 +62,17 @@ export interface Task {
   scopeKey?: string;
   transfer?: { id: string; machine: string; task: string; direction: 'source' | 'target'; state: 'staged' | 'starting' | 'started' | 'failed'; worktreeCreated?: boolean; peerIdentity?: string };
   desc: string;
+}
+
+export interface WaitingOn {
+  on: 'user' | 'task' | 'ci' | 'gate' | 'person' | 'time' | 'nothing';
+  target: string;
+  reason: string;
+  needs: string;
+  since: string;
+  card: string;
+  unblocks: string[];
+  source: 'checked' | 'reported' | 'log';
 }
 
 // One link from a task to another task (server/links.ts). kind, read from the task that holds the link:
@@ -176,7 +188,7 @@ function emit(t: Task) { for (const fn of listeners) fn(t); }
 export function touch(id: string) { const t = tasks.get(id); if (t) emit(t); }
 
 export function appendLog(id: string, entry: { did: string; wait?: string; next?: string }) {
-  const stamp = new Date().toLocaleString('sv-SE').slice(0, 16);
+  const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
   appendFileSync(logFile(id), `\n## ${stamp}\n- Did: ${entry.did}\n- Waiting: ${entry.wait || 'Nothing.'}\n- Next: ${entry.next || '—'}\n`);
 }
 

@@ -29,7 +29,7 @@ import * as machines from './machines.ts';
 import * as browserForward from './browser-forward.ts';
 import * as machine from './machine.ts';
 import * as rules from './rules.ts';
-import { typeCommand } from './type-command.ts';
+import { boxState, typeCommand } from './type-command.ts';
 import { textError } from './deliver-text.ts';
 import * as trust from './trust.ts';
 import * as agyReview from './agy-review.ts';
@@ -73,6 +73,11 @@ import { trimTerminalLog } from './terminal-log.ts';
 import { idleSuspendMinutes, maySuspendIdleTask } from './idle-suspend.ts';
 import * as launchLimit from './launch-limit.ts';
 import * as perf from './perf.ts';
+import * as taskToken from './task-token.ts';
+import * as waitingBoard from './waiting-board.ts';
+import * as managerEvents from './manager-events.ts';
+import * as managerRole from './manager-role.ts';
+import * as standing from './standing-approvals.ts';
 
 const execFileP = promisify(execFile);
 // a development checkout never runs as the real Taskboard, and a sandbox never uses the real one's port, folders or tmux
@@ -137,6 +142,7 @@ setInterval(() => {
   }
 }, 5000).unref();
 groups.load();
+managerEvents.start();
 canvasOrder.load();
 // "open in another terminal" used to be a status; it is now only the openElsewhere field, and the status is read from the transcript
 for (const t of store.all()) if (t.openElsewhere && (t.status as string) === 'elsewhere' || t.openElsewhere && t.status === 'suspended')
@@ -153,9 +159,24 @@ app.use('/api/transfer/stage', express.json({ limit: '40mb' }));
 app.use('/api/browser-signins/import', express.json({ limit: '50mb' })); // at most 5000 cookies (browser-signins.ts)
 app.use(express.json({ limit: '2mb' }));
 
+// Resolve task identity before any route reads x-tb-actor. The caller's header is never trusted.
+app.use((req, res, next) => {
+  const claimed = req.get('x-tb-actor');
+  const taskKey = req.get('x-tb-task-token');
+  const actor = taskToken.actorFor(taskKey || req.get('x-taskboard-token'));
+  if (taskKey && !actor) return res.status(403).json({ error: 'Task token is not valid.' });
+  if (actor) req.headers['x-tb-actor'] = actor;
+  else if (claimed === 'controller' && isControllerToken(req.get('x-tb-mail-controller'))) req.headers['x-tb-actor'] = 'controller';
+  else delete req.headers['x-tb-actor'];
+  if (claimed && !req.headers['x-tb-actor']) return res.status(403).json({ error: 'Task identity requires its token.' });
+  if (actor && req.path.startsWith('/api/hooks/') && req.body?.taskId && req.body.taskId !== actor)
+    return res.status(403).json({ error: 'A task hook reports its own task only.' });
+  next();
+});
+
 const ALLOWED_ORIGINS = new Set([URL_BASE, `http://localhost:${PORT}`, 'http://localhost:5173', 'http://127.0.0.1:5173']);
 const originOk = (o?: string) => !o || ALLOWED_ORIGINS.has(o);
-const tokenOk = (req: express.Request) => req.get('x-taskboard-token') === TOKEN;
+const tokenOk = (req: express.Request) => req.get('x-taskboard-token') === TOKEN || !!taskToken.actorFor(req.get('x-taskboard-token'));
 
 // ---------- hooks (from agents) ----------
 // The PermissionRequest hook (server/hooks/claude-hook.mjs sends hold: true) waits here until the user answers the card
@@ -258,7 +279,26 @@ function needsCard(req: express.Request) {
 // rule did not cover this message.
 async function guarded(req: express.Request, res: express.Response, summary: string, detail: string, action: approvals.Approval['action'], run: () => Promise<unknown>, describe: (r: any) => string, extra: { allow?: allowRules.AllowOffer; note?: string } = {}) {
   const actor = req.get('x-tb-actor') || '';
-  if (!needsCard(req)) { try { res.json(await run()); } catch (e) { fail(res, e); } return; }
+  let forceCard = false;
+  const manager = managerRole.role(actor);
+  const managerAction = action === 'new' ? 'new' : action === 'send' ? 'send' : action === 'status' && req.body?.status === 'parked' ? 'park' : action === 'status' && req.body?.status === 'idle' ? 'resume' : undefined;
+  if (manager && ['status', 'move', 'kill', 'release', 'restart', 'git-merge'].includes(action) && !managerAction)
+    return res.status(403).json({ error: 'A group manager cannot take this action.' });
+  if (manager && managerAction) {
+    if (managerAction === 'new' && (req.body?.links || []).some((l: any) => l.kind === 'replaces')) return res.status(403).json({ error: 'A manager cannot start a task with --replaces.' });
+    if (managerAction === 'new' && (req.body?.links || []).some((l: any) => { try { return !manager.tasks.includes(links.resolve(String(l.to)).id); } catch { return true; } }))
+      return res.status(403).json({ error: 'A manager cannot link a new task to a task outside its group.' });
+    const target = managerAction === 'new' ? '' : String(req.params.id || '');
+    const check = managerRole.check(actor, managerAction, target, req.body?.group);
+    if (check.reason.includes('outside') || check.reason.includes('another group')) return res.status(403).json({ error: check.reason });
+    if (check.ok) {
+      try { const result = await run(); managerRole.used(actor, manager, managerAction, managerAction === 'new' ? String((result as any)?.id || '') : target); return res.json(result); }
+      catch (e) { return fail(res, e); }
+    }
+    extra.note = check.reason; forceCard = true;
+    managerEvents.record(actor, 'manager cap', check.reason, true);
+  }
+  if (!forceCard && !needsCard(req)) { try { res.json(await run()); } catch (e) { fail(res, e); } return; }
   const a = approvals.request({ actor, action, summary, detail: extra.note ? `${extra.note}\n\n${detail}` : detail, payload: req.body, ...(extra.allow ? { allow: extra.allow } : {}) }, async () => describe(await run()));
   if (store.get(actor)) store.update(actor, { status: 'needs-you', ask: `Approve: ${summary}`, statusSource: 'Waiting for your approval on the dashboard.' });
   res.status(202).json({ approval: a });
@@ -321,6 +361,118 @@ app.get('/api/stats', (req, res) => {
   try { res.json(stats.get(String(req.query.timeZone || 'UTC'))); } catch { res.status(400).json({ error: 'Invalid time zone.' }); }
 });
 app.get('/api/approvals/:id', (req, res) => { const a = approvals.get(req.params.id); a ? res.json(a) : res.status(404).end(); });
+app.post('/api/approvals/:id/notify', async (req, res) => {
+  if (!fromDashboard(req)) return res.status(403).json({ error: 'Only the dashboard marks a card for phone notice.' });
+  const card = approvals.setNotify(req.params.id, req.body.enabled === true);
+  if (!card) return res.status(404).end();
+  if (card.notifyMe) {
+    const controller = store.get('controller');
+    if (controller) void messageQueue.send(controller, `Card ${card.id}: ${card.summary}. The user marked Notify me. Send a short notice with Claude Code's PushNotification tool. The user approves this card through Remote Control.`, { from: 'taskboard', kind: 'approval' });
+  }
+  res.json(card);
+});
+app.get('/api/board', (req, res) => {
+  const all = groups.all();
+  if (req.query.all === '1') return res.json(all.map(waitingBoard.board));
+  const g = all.find(x => x.id === req.query.group || x.name === req.query.group);
+  return g ? res.json(waitingBoard.board(g)) : res.status(404).json({ error: 'No group with that name.' });
+});
+app.get('/api/manager/:group', (req, res) => {
+  const g = groups.all().find(x => x.id === req.params.group || x.name === req.params.group);
+  if (!g) return res.status(404).end();
+  res.json({ group: g, manager: g.manager ? store.get(g.manager) : null, caps: managerRole.DEFAULT_CAPS, actions: managerRole.actions(g.id) });
+});
+app.post('/api/manager/:group', (req, res) => {
+  const g = groups.all().find(x => x.id === req.params.group || x.name === req.params.group);
+  if (!g) return res.status(404).end();
+  const task = req.body.task ? store.all().find(x => x.id === String(req.body.task) || String(x.num) === String(req.body.task).replace(/^#/, '')) : undefined;
+  if (req.body.task && !task) return res.status(404).json({ error: 'The manager task does not exist.' });
+  const dashboard = fromDashboard(req);
+  const controller = isController(req);
+  if (!dashboard && !controller) return res.status(403).json({ error: 'Only the dashboard or controller on the user request sets a manager.' });
+  const words = String(req.body.userRequest || '').trim();
+  if (controller) {
+    const transcript = controllerTranscript();
+    const count = permits.userWroteCount(transcript.path, transcript.agent, words);
+    const used = managerRole.actions(g.id).filter(x => x.userRequest === words).length;
+    if (!words || !/\b(set|make|appoint|revoke|remove)\b/i.test(words) || /\b(no|not|don't|deny|cancel|wait)\b/i.test(words) || !words.includes(g.name) || (task && !new RegExp(`(?:#|task\\s*)${task.num}\\b`, 'i').test(words)) || count <= used)
+      return res.status(403).json({ error: 'Give one exact user message from the controller chat that names this task and group and asks for this role change.' });
+  }
+  try { res.json({ group: managerRole.set(g, task, dashboard ? 'user' : 'controller', controller ? words : undefined) }); }
+  catch (e) { fail(res, e); }
+});
+app.get('/api/standing-approvals', (_req, res) => res.json(standing.all()));
+app.post('/api/standing-approvals', (req, res) => {
+  if (!fromDashboard(req)) return res.status(403).json({ error: 'Only the dashboard sets standing approvals.' });
+  try { res.json(standing.add(req.body, machine.get().pushes.protectedBranches)); } catch (e) { fail(res, e); }
+});
+app.delete('/api/standing-approvals/:id', (req, res) => {
+  if (!fromDashboard(req)) return res.status(403).json({ error: 'Only the dashboard removes standing approvals.' });
+  res.json({ removed: standing.remove(req.params.id) });
+});
+app.post('/api/plan/request', (req, res) => {
+  const actor = req.get('x-tb-actor') || '';
+  if (!store.get(actor) || actor === 'controller') return res.status(403).json({ error: 'A task must request its own plan.' });
+  const steps = req.body.steps;
+  if (!Array.isArray(steps) || !steps.length || steps.length > 20 || steps.some((s: any) => !s.card || !approvals.get(String(s.card))))
+    return res.status(400).json({ error: 'Give 1 to 20 steps with existing card ids.' });
+  const id = randomUUID().slice(0, 8);
+  const detail = steps.map((s: any, i: number) => `${i + 1}. ${approvals.get(String(s.card))?.summary} (card ${s.card})${s.askAgain ? ' · ask again' : ''}`).join('\n');
+  const card = approvals.request({ actor, action: 'plan', target: id, summary: String(req.body.title || 'approve plan').slice(0, 200), detail,
+    payload: { steps }, plan: id, unblocks: Array.isArray(req.body.unblocks) ? req.body.unblocks.map(String) : [] }, async decider => {
+      const results: string[] = [];
+      for (const step of steps) {
+        const item = approvals.get(String(step.card));
+        if (!item || item.state !== 'pending') { results.push(`${step.card}: no longer pending`); continue; }
+        if (step.askAgain || /\bprod(?:uction)?\b/i.test(JSON.stringify(item.covers || {}))) { results.push(`${step.card}: asks again`); continue; }
+        const result = await approvals.decide(item.id, true, decider);
+        results.push(`${item.id}: ${result?.staleFacts ? `stale, ${result.staleFacts}` : result?.state}`);
+        if (result?.staleFacts || result?.state === 'failed') break;
+      }
+      return results.join('\n');
+    });
+  res.status(202).json({ approval: card });
+});
+app.post('/api/plan/:id/controller-approve', async (req, res) => {
+  if (!isController(req)) return res.status(403).json({ error: 'Only the controller on the user request approves a plan.' });
+  const card = approvals.get(req.params.id);
+  if (!card || card.action !== 'plan' || card.state !== 'pending') return res.status(404).json({ error: 'No pending plan card.' });
+  const words = String(req.body.userRequest || '').trim();
+  const transcript = controllerTranscript();
+  if (!words.includes(card.id) || !/\bapprove\s+plan\b/i.test(words) || /\b(no|not|don't|deny|cancel|wait)\b/i.test(words) || !permits.userWroteCount(transcript.path, transcript.agent, words))
+    return res.status(403).json({ error: 'Give one exact user message that says approve plan and names this plan id.' });
+  res.json(await approvals.decide(card.id, true, { by: 'controller', userRequest: words }));
+});
+app.post('/api/watch/ci', (req, res) => {
+  const actor = req.get('x-tb-actor') || '';
+  if (!store.get(actor)) return res.status(403).json({ error: 'A task must start its own CI watch.' });
+  try { res.json(managerEvents.watchCi(actor, String(req.body.repo || ''), Number(req.body.pr))); } catch (e) { fail(res, e); }
+});
+app.post('/api/tasks/:id/waiting', (req, res) => {
+  const t = store.get(req.params.id);
+  if (!t) return res.status(404).end();
+  const actor = req.get('x-tb-actor') || '';
+  const role = managerRole.role(actor);
+  const manager = role && managerRole.check(actor, 'waiting', t.id).ok;
+  if (actor !== t.id && !fromDashboard(req) && !manager) return res.status(403).json({ error: 'Only this task, its manager or the dashboard reports its wait.' });
+  if (manager) managerRole.used(actor, role!, 'waiting', t.id);
+  if (req.body.clear === true) { const next = store.update(t.id, { waitingOn: undefined }); managerEvents.record(t.id, 'waiting', 'The task cleared its reported wait.'); return res.json(next); }
+  const on = String(req.body.on || '');
+  if (!['user', 'task', 'ci', 'gate', 'person', 'time', 'nothing'].includes(on)) return res.status(400).json({ error: 'Choose user, task, ci, gate, person, time or nothing.' });
+  const waitingOn: store.WaitingOn = { on: on as store.WaitingOn['on'], target: String(req.body.target || '').slice(0, 200),
+    reason: String(req.body.reason || '').slice(0, 500), needs: String(req.body.needs || '').slice(0, 500),
+    since: new Date().toISOString(), card: '', unblocks: Array.isArray(req.body.unblocks) ? req.body.unblocks.map(String).slice(0, 20) : [], source: 'reported' };
+  const next = store.update(t.id, { waitingOn }); managerEvents.record(t.id, 'waiting', `${on}: ${waitingOn.reason || waitingOn.needs}`); return res.json(next);
+});
+app.post('/api/tasks/:id/log-entry', (req, res) => {
+  const t = store.get(req.params.id);
+  if (!t) return res.status(404).end();
+  if (req.get('x-tb-actor') !== t.id && !fromDashboard(req)) return res.status(403).json({ error: 'Only this task or the dashboard writes its log.' });
+  const did = String(req.body.did || '').trim();
+  if (!did || did.length > 2000) return res.status(400).json({ error: 'Give a Did line under 2000 characters.' });
+  store.appendLog(t.id, { did, wait: String(req.body.wait || ''), next: String(req.body.next || '') });
+  res.json({ ok: true });
+});
 app.post('/api/approvals/:id/:decision', async (req, res, next) => {
   // any other word (return) is a different route; it must never count as Deny
   if (!['approve', 'deny'].includes(req.params.decision)) return next();
@@ -480,12 +632,12 @@ app.post('/api/approvals/:id/controller-approve', async (req, res) => {
   res.status(x.state === 'approved' ? 200 : 409).json({ approval: x, said, ...(x.state === 'approved' ? {} : { error: said }) });
 });
 const scopeHintText = taskGit.scopeHint;
-function createPermit(task: store.Task, reason: string, steps: permits.StepInput[], refusalId?: string, statedRisk = '') {
+function createPermit(task: store.Task, reason: string, steps: permits.StepInput[], refusalId?: string, statedRisk = '', externalAction?: { action: 'deploy' | 'catalog-release'; covers: Record<string, string>; target: string }) {
     const actor = task.id;
     const p = permits.request(task, reason, steps, refusalId, statedRisk);
-    const card = approvals.request({ actor, action: 'permit', summary: `run ${p.steps.length} approved step${p.steps.length === 1 ? '' : 's'}`,
+    const card = approvals.request({ actor, action: externalAction ? 'external' : 'permit', summary: externalAction ? `${externalAction.action} ${externalAction.target}` : `run ${p.steps.length} approved step${p.steps.length === 1 ? '' : 's'}`,
       detail: `Task: #${task.num} ${task.title}\nReason: ${p.reason}\n${p.steps.map((s, i) => `${i + 1}. ${s.command}\n   ${s.cwd} · ${s.timeoutSeconds} s · Network: ${s.network ? 'Yes' : 'No'}`).join('\n')}`,
-      payload: { permitId: p.id } }, async () => {
+      payload: { permitId: p.id }, ...(externalAction ? { target: externalAction.target, covers: externalAction.covers } : {}) }, async () => {
         const result = await permits.run(p, task, 'user', p.decisionComment || '');
         if (result.state !== 'succeeded') throw new Error(result.error || result.state);
         return `Permit ${p.id} succeeded.`;
@@ -494,6 +646,27 @@ function createPermit(task: store.Task, reason: string, steps: permits.StepInput
     store.update(actor, { status: 'needs-you', ask: `Approve permit ${p.id}`, statusSource: 'Waiting for a permit decision on the dashboard.' });
     return p;
 }
+app.post('/api/external/request', async (req, res) => {
+  const task = store.get(req.get('x-tb-actor') || '');
+  if (!task || task.role === 'controller') return res.status(403).json({ error: 'A task must request its own external action.' });
+  if (managerRole.role(task.id)) return res.status(403).json({ error: 'A group manager cannot deploy or publish a catalog.' });
+  const action = String(req.body.action || ''), target = String(req.body.target || '');
+  if (!['deploy', 'catalog-release'].includes(action) || !target || !req.body.covers || typeof req.body.covers !== 'object') return res.status(400).json({ error: 'Give deploy or catalog-release, target and covers.' });
+  try {
+    const p = createPermit(task, String(req.body.reason || ''), req.body.steps, undefined, '', { action: action as 'deploy' | 'catalog-release', covers: req.body.covers, target });
+    const ruleKind = action === 'deploy' && target.endsWith('@dev') && req.body.covers.environment === 'dev' ? 'deploy-dev'
+      : action === 'catalog-release' && target.endsWith('@stage') && req.body.covers.environment === 'stage' && req.body.covers.kind === 'draft' ? 'catalog-stage' : undefined;
+    const rule = ruleKind && standing.match(ruleKind, task.id, target);
+    if (rule && p.approvalId) {
+      const result = await approvals.decide(p.approvalId, true);
+      if (result?.state === 'approved') {
+        standing.use(rule, target);
+        managerEvents.record(task.id, 'standing external action', `${action} ${target}: ${p.state}`, true);
+      }
+    }
+    res.status(p.approvalId && approvals.get(p.approvalId)?.state === 'approved' ? 200 : 202).json({ permit: p, approval: p.approvalId ? approvals.get(p.approvalId) : undefined });
+  } catch (e) { fail(res, e); }
+});
 app.post('/api/permits', (req, res) => {
   const actor = req.get('x-tb-actor') || '';
   const task = store.get(actor);
@@ -608,6 +781,7 @@ app.post('/api/permits/:id/controller-approve', async (req, res) => {
 // A release always needs a dashboard decision, even when other task actions run without approval.
 app.post('/api/release/request', (req, res) => {
   const actor = req.get('x-tb-actor') || '';
+  if (managerRole.role(actor)) return res.status(403).json({ error: 'A group manager cannot request a release.' });
   const task = store.get(actor);
   if (!/^[a-zA-Z0-9_-]+$/.test(actor) || !task || task.role === 'controller')
     return res.status(403).json({ error: 'A Taskboard task must request the release.' });
@@ -686,6 +860,14 @@ async function createPushRequest(task: store.Task, reason: string, options: { br
     const state = await push.inspectPush(task, reason, options);
     if (!state.fastForward && !state.forcePush) throw new Error(state.forceRefusal || 'The push is not a fast-forward, and Taskboard cannot offer a force push. Ask the user what to do.');
     const id = randomUUID();
+    const standingRule = !state.forcePush && !push.isProtectedBranch(state.branch, undefined, machine.get().pushes.protectedBranches)
+      ? standing.match('push', task.id, state.branch) : undefined;
+    if (standingRule) {
+      const record = push.recordPush(state, id);
+      try { const output = await push.runPush(task, state); push.finishPush(record, 'succeeded', output); pushNotice(task, record); standing.use(standingRule, state.branch); managerEvents.record(task.id, 'standing push', `${state.branch} ${state.newHead}`, true); }
+      catch (e) { push.finishPush(record, 'failed', String(e)); pushNotice(task, record); }
+      return { push: record };
+    }
     if (!state.needsCard && !state.forcePush) {
       const record = push.recordPush(state, id);
       try {
@@ -696,6 +878,7 @@ async function createPushRequest(task: store.Task, reason: string, options: { br
       return { push: record };
     }
     const detail = push.pushCardDetail(state);
+    const previous = approvals.pendingFor(task.id).find(a => a.action === 'git-push' && (a.target || a.summary) === `${state.forcePush ? 'force push' : 'push'} ${state.branch} to ${state.remote}`);
     const approval = approvals.request({ actor: task.id, action: 'git-push', summary: `${state.forcePush ? 'force push' : 'push'} ${state.branch} to ${state.remote}`, detail, payload: { pushId: id, state } }, async () => {
       try {
         const output = await push.runPush(task, state);
@@ -708,6 +891,10 @@ async function createPushRequest(task: store.Task, reason: string, options: { br
       return head === state.newHead ? undefined : `The branch ${state.branch} moved to ${head} after the card was made. The card pushes ${state.newHead}. Ask the task to run tb git push-request again.`;
     } });
     const record = push.recordPush(state, id, approval.id);
+    if (previous) {
+      const old = push.allPushes().find(p => p.approvalId === previous.id && p.id !== id && p.state === 'pending');
+      if (old) push.finishPush(old, 'expired', `Card ${approval.id} now covers the new branch facts.`);
+    }
     pushNotice(task, record);
     return { push: record, approval };
 }
@@ -757,6 +944,7 @@ app.post('/api/git/pushes/:id/decide', async (req, res) => {
 });
 app.post('/api/git/merge-request', async (req, res) => {
   const actor = req.get('x-tb-actor') || '';
+  if (managerRole.role(actor)) return res.status(403).json({ error: 'A group manager cannot request a merge.' });
   const actorTask = store.get(actor);
   if (!actorTask || actorTask.role === 'controller') return res.status(403).json({ error: 'A Taskboard task must request its own merge.' });
   try {
@@ -1090,7 +1278,7 @@ app.post('/api/tasks', async (req, res) => {
     const images = agents.checkImages(req.body.images);
     await guarded(req, res, `start “${title}” (${agent === 'auto' ? 'Auto' : agents.agentName(agent)})`, `Folder: ${folder} · worktree: ${worktree === false ? 'no' : worktree === true ? 'yes' : 'automatic'}${branch ? ` · branch ${branch}` : ''}\nAccount: ${account && account !== 'auto' ? account : 'automatic'}\nModel: ${model || 'agent default'}\nPrompt: ${prompt}${images.length ? `\nImages: ${images.length} attached` : ''}`, 'new',
       async () => {
-        const t = await agents.startTask({ title, desc: prompt, agent, folder, worktree, branch, parent, account, model, images });
+        const t = await agents.startTask({ title, desc: prompt, agent, folder, worktree, branch, parent: managerRole.role(req.get('x-tb-actor') || '') ? req.get('x-tb-actor') : parent, account, model, images });
         if (req.body.group) { const g = groups.all().find(x => x.name === req.body.group || x.id === req.body.group) || groups.create(String(req.body.group)); groups.update(g.id, { tasks: [...g.tasks, t.id] }); }
         const linkProblems = links.addAtStart(t.id, startLinks, startBy);
         return { ...view(store.get(t.id) || t), ...(linkProblems.length ? { linkProblems } : {}) };
@@ -1246,21 +1434,25 @@ app.post('/api/transfer/cancel', async (req, res) => {
 // ---------- groups ----------
 app.get('/api/groups', (_req, res) => res.json(groups.all()));
 app.post('/api/groups', (req, res) => {
+  if (!fromDashboard(req)) return res.status(403).json({ error: 'Only the dashboard creates groups.' });
   const name = String(req.body.name || '').trim(); if (!name) return fail(res, 'name is required');
   res.json(groups.create(name, req.body.tasks || []));
 });
 app.post('/api/groups/move', (req, res) => {
+  if (!fromDashboard(req)) return res.status(403).json({ error: 'Only the dashboard moves a task between groups.' });
   const { taskId, fromId, toId } = req.body;
   if (![taskId, fromId, toId].every(x => typeof x === 'string' && x)) return fail(res, 'taskId, fromId and toId are required');
   try { res.json(groups.moveTask(taskId, fromId, toId)); } catch (e) { fail(res, e); }
 });
 app.post('/api/groups/order', (req, res) => {
+  if (!fromDashboard(req)) return res.status(403).json({ error: 'Only the dashboard orders groups.' });
   const { ids } = req.body;
   if (!Array.isArray(ids) || !ids.every(x => typeof x === 'string' && x)) return fail(res, 'ids must be a list of group ids');
   try { res.json(groups.reorder(ids)); } catch (e) { fail(res, e); }
 });
 // the order of the terminals in a group view on the Canvas page; only the order inside the group changes
 app.post('/api/groups/:id/order', (req, res) => {
+  if (!fromDashboard(req)) return res.status(403).json({ error: 'Only the dashboard orders group tasks.' });
   const { ids } = req.body;
   if (!Array.isArray(ids) || !ids.every(x => typeof x === 'string' && x)) return fail(res, 'ids must be a list of task ids');
   if (!groups.get(req.params.id)) return res.status(404).json({ error: 'The group no longer exists.' });
@@ -1276,12 +1468,20 @@ app.post('/api/canvas/order', (req, res) => {
 });
 app.patch('/api/groups/:id', (req, res) => {
   const { name, color, tasks, add, remove } = req.body; const g = groups.get(req.params.id); if (!g) return res.status(404).end();
+  if (!fromDashboard(req)) {
+    const actor = req.get('x-tb-actor') || '';
+    const ids = Array.isArray(add) ? add.map(String) : add ? [String(add)] : [];
+    if (name || color || tasks || remove || !ids.length || managerRole.role(actor)?.id !== g.id || ids.some(id => !managerRole.check(actor, 'group-add', id, g.id).ok))
+      return res.status(403).json({ error: 'A manager may add only its own new tasks to its group.' });
+    for (const id of ids) managerRole.used(actor, g, 'group-add', id);
+  }
   let list = tasks ?? g.tasks;
   if (add) list = [...list, ...[].concat(add)];
   if (remove) list = list.filter((t: string) => ![].concat(remove).includes(t as never));
   res.json(groups.update(g.id, { ...(name ? { name } : {}), ...(color ? { color } : {}), tasks: list }));
 });
 app.delete('/api/groups/:id', async (req, res) => {
+  if (!fromDashboard(req)) return res.status(403).json({ error: 'Only the dashboard removes groups.' });
   const g = groups.get(req.params.id);
   if (!g) return res.status(404).end();
   if (req.query.requireArchived === '1') {
@@ -1290,7 +1490,7 @@ app.delete('/api/groups/:id', async (req, res) => {
   }
   res.json(groups.remove(g.id));
 });
-app.post('/api/groups/restore', (req, res) => { groups.restore(req.body); res.json({}); });
+app.post('/api/groups/restore', (req, res) => { if (!fromDashboard(req)) return res.status(403).json({ error: 'Only the dashboard restores groups.' }); groups.restore(req.body); res.json({}); });
 
 app.get('/api/import', async (_req, res) => {
   try { res.json(await importer.candidates(new Set(store.all().flatMap(t => [t.sessionId, ...(t.pastSessions || [])]).filter(Boolean) as string[]))); } catch (e) { fail(res, e); }
@@ -1302,16 +1502,44 @@ app.post('/api/import', (req, res) => {
 });
 app.post('/api/tasks/:id/send', async (req, res) => {
   const t = store.get(req.params.id); if (!t) return res.status(404).end();
-  const text = String(req.body.text || '');
+  const text = String(req.body.text || '').replace(/\[Taskboard event digest[^\]]*\]/gi, '[task text]');
   const empty = textError(text); if (empty) return fail(res, empty);
   // The result is delivered (typed, Enter pressed), queued (nothing typed yet, with the reason; message-queue.ts types
   // it when the input box is empty) or an error (failed, with the reason).
   const from = req.get('origin') ? 'you' : req.get('x-tb-actor') || 'you';
+  const manager = managerRole.role(from);
+  if (manager && !manager.tasks.includes(t.id)) return res.status(403).json({ error: 'The target is outside the manager group.' });
+  if (manager && req.body.priority === 'stop') {
+    const stopAndSend = async () => {
+      const state = boxState(await tmux.captureStyled(t.session), t.agent);
+      if (state === 'question' || state === 'draft') throw new Error(`Stop was refused because the input box has a ${state}.`);
+      await tmux.tmux('send-keys', '-t', '=' + t.session + ':', 'Escape');
+      let empty = false;
+      for (let i = 0; i < 20; i++) {
+        if (boxState(await tmux.captureStyled(t.session), t.agent) === 'empty') { empty = true; break; }
+        await new Promise(r => setTimeout(r, 250));
+      }
+      if (!empty) throw new Error('Stop was refused because the input box did not become empty.');
+      const result = await messageQueue.send(t, `[Stopped by manager #${store.get(from)?.num}] ${text}`, { from, kind: 'message' });
+      managerRole.used(from, manager, 'stop', t.id);
+      managerEvents.record(t.id, 'manager stop', `Stopped by #${store.get(from)?.num}`, true);
+      return result;
+    };
+    const check = managerRole.check(from, 'stop', t.id);
+    if (!check.ok) { managerEvents.record(from, 'manager cap', check.reason, true); return res.status(202).json({ approval: approvals.request({ actor: from, action: 'send', summary: `stop #${t.num} and send a message`, detail: text, payload: req.body }, async () => {
+      return sendText(t, await stopAndSend());
+    }) }); }
+    try { return res.json(await stopAndSend()); } catch (e) { return fail(res, e); }
+  }
   const sendIt = async () => {
     const r = await messageQueue.send(store.get(t.id)!, text, { from, kind: 'message' });
     if (r.state === 'failed') throw new Error(`Not delivered to #${t.num}: ${r.reason}${r.id ? ' The message is kept on the task in the dashboard.' : ''}`);
     return r.state === 'queued' ? { ...r, next: queuedNext(t) } : r;
   };
+  if (manager && req.body.priority !== 'stop') {
+    await guarded(req, res, `send to #${t.num} ${t.title}`, text, 'send', sendIt, (d: messageQueue.SendResult) => sendText(t, d));
+    return;
+  }
   if (t.role === 'controller') { try { res.json(await sendIt()); } catch (e) { fail(res, e); } return; }
   // An allow always rule of the user (allow-rules.ts) lets one task type into another without a card. The rule covers
   // only this message. The text gets a first line that says that it is data from another agent, not the user's approval.
@@ -1434,17 +1662,28 @@ app.get('/api/links/sets', (req, res) => {
   } catch (e) { fail(res, e); }
 });
 app.get('/api/tasks/:id/links', (req, res) => { try { res.json(links.detail(req.params.id)); } catch (e) { res.status(404).json({ error: e instanceof Error ? e.message : String(e) }); } });
+function managerLink(req: express.Request, from: string, to: string) {
+  const actor = req.get('x-tb-actor') || '';
+  const g = managerRole.role(actor);
+  if (!g) return false;
+  if (!g.tasks.includes(from) || !g.tasks.includes(to)) throw new Error('Both tasks must be in the manager group.');
+  return true;
+}
 app.post('/api/tasks/:id/links', (req, res) => {
   try {
     const { kind, to, note, folded } = req.body || {};
-    res.json(links.add(req.params.id, { kind, to: String(to ?? ''), note, folded: folded === true }, links.actorFrom(req.get('x-tb-actor'))));
+    const target = links.resolve(String(to ?? ''));
+    const manager = managerLink(req, req.params.id, target.id);
+    const result = links.add(req.params.id, { kind, to: String(to ?? ''), note, folded: folded === true }, links.actorFrom(req.get('x-tb-actor')), { manager });
+    if (manager) managerRole.used(req.get('x-tb-actor')!, managerRole.role(req.get('x-tb-actor')!)!, 'dep', `${req.params.id}:${target.id}`);
+    res.json(result);
   } catch (e) { fail(res, e); }
 });
 app.delete('/api/tasks/:id/links/:link', (req, res) => {
-  try { res.json(links.remove(req.params.id, req.params.link, links.actorFrom(req.get('x-tb-actor')))); } catch (e) { fail(res, e); }
+  try { const link = links.resolve(req.params.id).links?.find(x => x.id === req.params.link); const manager = managerLink(req, req.params.id, link?.to || ''); const result = links.remove(req.params.id, req.params.link, links.actorFrom(req.get('x-tb-actor')), manager); if (manager) managerRole.used(req.get('x-tb-actor')!, managerRole.role(req.get('x-tb-actor')!)!, 'dep', `${req.params.id}:${link?.to}`); res.json(result); } catch (e) { fail(res, e); }
 });
 app.post('/api/tasks/:id/links/:link/done', (req, res) => {
-  try { res.json(links.markDone(req.params.id, req.params.link, links.actorFrom(req.get('x-tb-actor')), req.body?.note)); } catch (e) { fail(res, e); }
+  try { const link = links.resolve(req.params.id).links?.find(x => x.id === req.params.link); const manager = managerLink(req, req.params.id, link?.to || ''); const result = links.markDone(req.params.id, req.params.link, links.actorFrom(req.get('x-tb-actor')), req.body?.note, manager); if (manager) managerRole.used(req.get('x-tb-actor')!, managerRole.role(req.get('x-tb-actor')!)!, 'dep', `${req.params.id}:${link?.to}`); res.json(result); } catch (e) { fail(res, e); }
 });
 app.get('/api/docs/edges', (_req, res) => res.json(docs.edges()));
 app.get('/api/docs/all', (_req, res) => res.json(Object.fromEntries(store.all().map(t => [t.id, docs.docsFor(t.id).outbox.map(d => ({ name: d.name, path: d.path, kind: d.kind, mtime: d.mtime }))]))));
@@ -1461,7 +1700,18 @@ app.post('/api/docs/send', async (req, res) => {
     return { path, ...noticeResult(await inboxDelivery.deliver(to, basename(path))) };
   };
   const actor = req.get('x-tb-actor') || '';
-  if (dst.role === 'controller' || actor === dst.id || !needsCard(req)) { try { res.json(await sendIt()); } catch (e) { fail(res, e); } return; }
+  const manager = managerRole.role(actor);
+  if (manager) {
+    if (actor !== from || !manager.tasks.includes(to)) return res.status(403).json({ error: 'A manager sends documents only from itself to its group.' });
+    const check = managerRole.check(actor, 'doc', to);
+    if (check.ok) { try { const r = await sendIt(); managerRole.used(actor, manager, 'doc', to); return res.json(r); } catch (e) { return fail(res, e); } }
+    managerEvents.record(actor, 'manager cap', check.reason, true);
+    const card = approvals.request({ actor, action: 'send', target: to, summary: `send the document ${basename(name)} to #${dst.num} ${dst.title}`,
+      detail: `${check.reason}\n\nFrom the outbox of #${src.num} ${src.title}: ${basename(name)}`, payload: req.body },
+      async () => { const r = await sendIt(); return `Copied to ${r.path}.`; });
+    return res.status(202).json({ approval: card });
+  }
+  if (!manager && (dst.role === 'controller' || actor === dst.id || !needsCard(req))) { try { res.json(await sendIt()); } catch (e) { fail(res, e); } return; }
   const sender = store.get(actor);
   const rule = allowRules.match(allowRules.all(), 'doc', sender, dst);
   const limit = rule && allowRules.limited(rule);
@@ -1735,10 +1985,26 @@ function settleCardStatus() {
   }
 }
 settleCardStatus();
+const seenCardVersions = new Map(approvals.open().map(card => [card.id, card.version]));
 approvals.onApprovalsChange(() => {
+  for (const card of approvals.open()) {
+    if (seenCardVersions.get(card.id) === card.version) continue;
+    seenCardVersions.set(card.id, card.version);
+    managerEvents.record(card.actor, 'card requested', `${card.action} ${card.id}: ${card.summary}`);
+  }
   settleCardStatus();
   const msg = JSON.stringify({ type: 'approvals', approvals: approvals.all() });
   for (const c of eventClients) sendEvent(c, msg);
+});
+approvals.onDecision(card => {
+  const line = `Taskboard card ${card.id} version ${card.version || 'unknown'}: ${card.state}. ${card.result || ''}`.trim();
+  const requester = store.get(card.actor);
+  if (requester) void messageQueue.send(requester, line, { from: 'taskboard', kind: 'approval' }).catch(e => console.error('card result message', e));
+  for (const ref of card.unblocks || []) {
+    const task = store.all().find(t => t.id === ref || String(t.num) === ref.replace(/^#/, ''));
+    if (task && task.id !== card.actor) void messageQueue.send(task, line, { from: 'taskboard', kind: 'approval' }).catch(e => console.error('card unblock message', e));
+  }
+  managerEvents.record(card.actor, 'card', `${card.action} ${card.id} ${card.state}. ${card.result || ''}`, true);
 });
 dismiss.load(TB_DIR);
 // a dismiss changes the dismissed field of the question cards: send both lists

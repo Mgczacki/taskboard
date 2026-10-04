@@ -7,7 +7,7 @@ import { VAULT } from './config.ts';
 
 // order: the position of the tab on the Canvas page and of the column on the Board, set by reorder().
 // A group without order (written before reorder() existed) comes after the groups with one, oldest first.
-export interface Group { id: string; name: string; color: string; tasks: string[]; created: string; order?: number }
+export interface Group { id: string; name: string; color: string; tasks: string[]; created: string; order?: number; manager?: string }
 
 const DIR = join(VAULT, 'groups');
 mkdirSync(DIR, { recursive: true });
@@ -19,7 +19,7 @@ const emit = () => listeners.forEach(f => f());
 
 function write(g: Group) {
   const body = `# ${g.name}\n\n${g.tasks.map(t => `- [[${t}]]`).join('\n')}\n`;
-  const data = { id: g.id, name: g.name, color: g.color, tasks: g.tasks, created: g.created, ...(typeof g.order === 'number' ? { order: g.order } : {}) };
+  const data = { id: g.id, name: g.name, color: g.color, tasks: g.tasks, created: g.created, ...(typeof g.order === 'number' ? { order: g.order } : {}), ...(g.manager ? { manager: g.manager } : {}) };
   writeFileSync(join(DIR, g.id + '.md'), matter.stringify(body, data));
 }
 
@@ -45,7 +45,7 @@ export function create(name: string, tasks: string[] = []): Group {
   if (orders.length) g.order = Math.max(...orders) + 1;
   groups.set(id, g); write(g); emit(); return g;
 }
-export function update(id: string, patch: Partial<Pick<Group, 'name' | 'color' | 'tasks'>>): Group | undefined {
+export function update(id: string, patch: Partial<Pick<Group, 'name' | 'color' | 'tasks' | 'manager'>>): Group | undefined {
   const g = groups.get(id); if (!g) return;
   if (patch.tasks) patch.tasks = [...new Set(patch.tasks)];
   Object.assign(g, patch); write(g); emit(); return g;
