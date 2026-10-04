@@ -91,7 +91,7 @@ export interface PushRecord { id: string; at: string; doneAt?: string; taskId: s
 const recordFile = join(TB_DIR, 'pushes.json');
 const records: PushRecord[] = (() => { try { return JSON.parse(readFileSync(recordFile, 'utf8')); } catch { return []; } })();
 export const allPushes = () => records.slice().reverse();
-export const pushExpired = (created: string, now = Date.now()) => now - Date.parse(created) >= 600000;
+export const pushExpired = (_created: string, _now = Date.now()) => false;
 export function recordPush(state: PushState, id: string, approvalId?: string): PushRecord {
   const record: PushRecord = { id, at: new Date().toISOString(), taskId: state.taskId, branch: state.branch, remote: state.remote,
     remoteUrl: state.remoteUrl, oldHead: state.oldHead, newHead: state.newHead, state: 'pending', approvalId };

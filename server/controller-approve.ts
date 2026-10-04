@@ -36,6 +36,7 @@ export function kindOf(a: Approval): { kind: ControllerKind } | { userOnly: stri
     case 'restart': return { kind: 'restart' };
     case 'scope': return { kind: 'scope' };
     case 'permit': return { kind: 'permit' };
+    case 'external': return { kind: 'permit' };
     case 'mail-in': case 'mail-out': return { kind: 'mail' };
     case 'tool-refusal': return { userOnly: 'A refused tool call is decided by the user on the dashboard.' };
     case 'send': if (a.actor !== 'controller') return { userOnly: `A message or a document from one task to another is decided by the user on the dashboard.${a.allow ? ' The user can also choose Allow always there. Only the user adds or revokes an allow always rule.' : ''}` }; break;
@@ -63,7 +64,7 @@ export const sameHead = (given: string, head: string) => /^[0-9a-f]{7,64}$/i.tes
 // When a card stops being valid: a push card 10 minutes after the request (push.ts pushExpired), a permit at its own
 // expiresAt. Other cards do not expire while Taskboard runs. `expired` is the refusal text after that time.
 export function expiryOf(a: Approval, permitExpiresAt?: string, now = Date.now()): { expiresAt?: string; expired?: string } {
-  const at = a.action === 'git-push' ? Date.parse(a.created) + 600_000 : a.action === 'permit' ? Date.parse(permitExpiresAt || '') : NaN;
+  const at = a.validUntil && a.validUntil !== 'until the facts change' ? Date.parse(a.validUntil) : NaN;
   if (!Number.isFinite(at)) return {};
   return { expiresAt: new Date(at).toISOString(), ...(now >= at ? { expired: `This card expired at ${new Date(at).toTimeString().slice(0, 8)}. Nothing ran. Ask the task to request it again.` } : {}) };
 }
