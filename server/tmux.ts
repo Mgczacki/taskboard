@@ -1,8 +1,9 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { rmSync, writeFileSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
-import { STABLE_DIR, TB_DIR, TMUX_SOCKET } from './config.ts';
+import { STABLE_DIR, TB_DIR, TMUX_SOCKET, TOKEN_FILE, URL_BASE } from './config.ts';
+import * as settings from '../scripts/tmux-settings.mjs';
 
 const exec = promisify(execFile);
 export const TMUX_BIN = process.env.TASKBOARD_TMUX || 'tmux';
@@ -68,70 +69,49 @@ export async function hasSession(name: string): Promise<boolean | null> {
   catch (e) { return NO_SERVER.test(errText(e)) ? false : null; }
 }
 
-// Server-wide options. escape-time 0 keeps Esc instant (Claude Code and Codex use Esc to interrupt).
-// window-size latest lets the most recently active client decide the size when several windows attach.
-// Mouse selection for programs that do not read the mouse themselves (Codex; Claude Code handles its own):
-// tmux's defaults copy into its own buffer and drop the highlight the moment the mouse is released. These bindings
-// keep the selection highlighted and copy it to the macOS clipboard (pbcopy). A click clears the highlight without
-// leaving copy mode, so a drag can select older text. Esc leaves copy mode.
-// A click that moves a few pixels is a drag and puts the pane in copy mode, where typed keys are copy-mode commands.
-// So typing leaves copy mode: each printable key (and Space, Enter, BSpace, Tab) cancels it and goes on to the program.
-// Written to a file and loaded with source-file because the nested commands do not pass well as arguments.
-const keyArg = (k: string) => k === "'" ? `"'"` : `'${k}'`;
-const TYPED = Array.from({ length: 94 }, (_, i) => String.fromCharCode(33 + i)); // ! through ~
-export const COPY_BINDINGS = `
-set -g mouse on
-set -g set-clipboard on
-set -as terminal-features 'xterm*:clipboard'
-bind -T root DoubleClick1Pane select-pane -t = \\; if -F "#{||:#{pane_in_mode},#{mouse_any_flag}}" { send -M } { copy-mode -H ; send -X select-word ; send -X copy-pipe-no-clear "pbcopy" }
-bind -T root TripleClick1Pane select-pane -t = \\; if -F "#{||:#{pane_in_mode},#{mouse_any_flag}}" { send -M } { copy-mode -H ; send -X select-line ; send -X copy-pipe-no-clear "pbcopy" }
-${['copy-mode', 'copy-mode-vi'].map(t => `
-bind -T ${t} MouseDragEnd1Pane send -X copy-pipe-no-clear "pbcopy"
-bind -T ${t} DoubleClick1Pane select-pane \\; send -X select-word \\; send -X copy-pipe-no-clear "pbcopy"
-bind -T ${t} TripleClick1Pane select-pane \\; send -X select-line \\; send -X copy-pipe-no-clear "pbcopy"
-bind -T ${t} MouseDown1Pane select-pane \\; send -X clear-selection
-bind -T ${t} Escape send -X cancel
-${TYPED.map(k => `bind -T ${t} ${keyArg(k)} { send -X cancel ; send -l ${keyArg(k)} }`).join('\n')}
-${['Space', 'Enter', 'BSpace', 'Tab'].map(k => `bind -T ${t} ${k} { send -X cancel ; send ${k} }`).join('\n')}`).join('')}
-`;
+// The global options of the tmux server (status bar off, mouse on, remain-on-exit on, the bell hook, the copy-mode
+// bindings) are listed in scripts/tmux-settings.mjs, which pnpm doctor uses too. The tmux server carries the marker
+// option MARK with the settings version once they are set. ensureConfigured reads it and sets the options when it is
+// missing or old: after the tmux server ended and a new one started (tmux kill-server while Taskboard runs), or when
+// something other than newSession started the tmux server (a process window of task-procs.ts, or the user).
+const run = (args: string[]) => tmux(...args);
+const token = () => readFileSync(TOKEN_FILE, 'utf8').trim();
+export const loadCopyBindings = () => settings.loadBindings(run, settings.bindingsFileIn(TB_DIR));
 
-export async function loadCopyBindings() {
-  const f = join(TB_DIR, 'tmux-copy.conf');
-  writeFileSync(f, COPY_BINDINGS);
-  await tmuxQuiet('source-file', f);
+// Calls at the same time share one run, so two sessions that start together configure the tmux server once.
+// A second run from another process (pnpm doctor) sets the same values again, which changes nothing.
+let configuring: Promise<boolean> | null = null;
+// true when it set the options now; false when the marker matched or no tmux server runs
+export function ensureConfigured(): Promise<boolean> {
+  configuring ||= (async () => {
+    try {
+      const mark = await settings.readMark(run);
+      if (mark === null || mark === settings.SETTINGS_VERSION) return false;
+      await settings.applySettings(run, token(), URL_BASE, settings.bindingsFileIn(TB_DIR));
+      return true;
+    } finally { configuring = null; }
+  })();
+  return configuring;
 }
 
-export async function configureServer(bellHookCommand: string) {
-  const opts: string[][] = [
-    ['set-option', '-g', 'escape-time', '0'],
-    ['set-option', '-g', 'history-limit', '5000'],
-    ['set-option', '-g', 'status', 'off'],
-    ['set-option', '-g', 'window-size', 'latest'],
-    ['set-option', '-g', 'extended-keys', 'on'],
-    ['set-option', '-g', 'focus-events', 'on'],
-    ['set-option', '-g', 'default-terminal', 'tmux-256color'],
-    ['set-option', '-as', 'terminal-features', 'xterm*:extkeys:RGB'],
-    // mouse wheel: programs that ask for mouse events (Claude Code's full-screen view) scroll themselves; otherwise
-    // tmux scrolls its own history. A drag selection is copied to the browser clipboard through OSC 52.
-    ['set-option', '-g', 'mouse', 'on'],
-    ['set-option', '-g', 'set-clipboard', 'on'],
-    ['set-option', '-g', 'remain-on-exit', 'on'],
-    ['set-window-option', '-g', 'monitor-bell', 'on'],
-    ['set-option', '-g', 'bell-action', 'any'],
-    ['set-option', '-g', 'visual-bell', 'off'],
-    ['set-hook', '-g', 'alert-bell', bellHookCommand],
-  ];
-  for (const o of opts) await tmuxQuiet(...o);
-  await loadCopyBindings();
+// The settings that differ from the expected values: [] when they all match, null when no tmux server runs.
+export const compareSettings = () => settings.compareSettings(run, token(), URL_BASE);
+
+// At server start and every minute (tmux-health.ts): compare the live options with the expected ones and set them
+// when they differ. They are global options, so this changes no session. Returns the names that differed.
+export async function repairSettings(): Promise<string[] | null> {
+  const differ = await compareSettings();
+  if (!differ?.length) return differ;
+  await settings.applySettings(run, token(), URL_BASE, settings.bindingsFileIn(TB_DIR));
+  return differ;
 }
 
-export async function newSession(name: string, cwd: string, env: Record<string, string>, command: string[], onFirst: (hook: string) => Promise<void>) {
+export async function newSession(name: string, cwd: string, env: Record<string, string>, command: string[]) {
   const args = newSessionArgs(name, cwd, env, command);
   if (commandBytes(args) > MAX_COMMAND_BYTES) throw new Error(`The command that starts the agent has ${commandBytes(args)} bytes, and tmux accepts at most about ${MAX_COMMAND_BYTES}.`);
-  // The first session starts the tmux server; server options can only be set once it exists.
-  const running = (await tmuxQuiet('list-sessions')) !== null;
   await tmux(...args);
-  if (!running) await onFirst(name);
+  // the session may have started the tmux server; options can only be set once it exists
+  await ensureConfigured();
 }
 
 export async function killSession(name: string) { await tmuxQuiet('kill-session', '-t', '=' + name); }

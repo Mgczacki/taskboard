@@ -144,7 +144,7 @@ for (const t of store.all()) if (t.openElsewhere && (t.status as string) === 'el
 installRuntimeFiles();
 agents.writeClaudeSettings();
 await agents.installAgyPlugin();
-await agents.configureIfRunning();
+await tmuxHealth.repairAtStart();
 tmuxHealth.start();
 
 // A new task can carry pasted images (agents.MAX_IMAGES of at most agents.MAX_IMAGE_BYTES each, as base64).
@@ -954,7 +954,7 @@ const info = () => {
   const c = store.get('controller');
   return { role: ROLE, root: ROOT, machine: machine.get().name, machineId: MACHINE_ID, host: hostname(), url: URL_BASE, pid: process.pid, settings: machine.get(),
     controller: c ? { agent: c.agent, agentName: agents.agentName(c.agent), account: c.account || accounts.defaultFor(c.agent).id, skipPermissions: !!machine.get().controller.skipPermissions[c.agent], status: c.status, remoteUrl: c.agent === 'claude' && machine.get().controller.remoteControl ? c.remoteUrl : undefined, label: machine.controllerLabel() } : null,
-    tasks: store.all().filter(t => t.role !== 'controller' && t.status !== 'archived').length, tmuxProblem: tmuxProblem() };
+    tasks: store.all().filter(t => t.role !== 'controller' && t.status !== 'archived').length, tmuxProblem: tmuxProblem(), tmuxSettings: tmuxHealth.settings() };
 };
 // The tmux server runs from a deleted folder (tmux-health.ts): the text, the restart command and the tasks it would end
 const tmuxProblem = () => {

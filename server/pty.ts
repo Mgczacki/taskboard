@@ -4,10 +4,9 @@ import { execFileSync } from 'node:child_process';
 import type { IPty } from 'node-pty';
 import type { WebSocket } from 'ws';
 import { TMUX_SOCKET } from './config.ts';
-import { TMUX_BIN, loadCopyBindings, tmux } from './tmux.ts';
+import { TMUX_BIN, ensureConfigured, tmux } from './tmux.ts';
 import { spawnPty } from './pty-spawn.ts';
 import { TERMINAL_LIMITS, sendChecked } from './slow-client.ts';
-let bindingsLoaded = false;
 
 // Attaching or resizing makes Codex redraw, which looks like new output. Ignore activity for a moment after those.
 export const quietUntil = new Map<string, number>();
@@ -129,9 +128,9 @@ async function check(session: string, fields?: string[]) {
 
 export function attach(ws: WebSocket, session: string, cols: number, rows: number) {
   quiet(session);
-  // also set here: a tmux server started by an earlier Taskboard version lacks these
-  // mouse, clipboard and selection bindings (once per server process; the tmux server keeps them)
-  if (!bindingsLoaded) { bindingsLoaded = true; loadCopyBindings().catch(() => { bindingsLoaded = false; }); }
+  // also here: a tmux server that an earlier Taskboard version or another program started lacks the mouse, clipboard
+  // and selection settings (one tmux call when the marker on the tmux server matches; see ensureConfigured)
+  void ensureConfigured().catch(() => {});
   let p: IPty;
   try {
     p = spawnPty(TMUX_BIN, ['-L', TMUX_SOCKET, 'attach-session', '-t', '=' + session], {

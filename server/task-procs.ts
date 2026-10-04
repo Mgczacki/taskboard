@@ -10,7 +10,7 @@ import { existsSync, mkdirSync, openSync, readFileSync, readSync, closeSync, sta
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import * as store from './store.ts';
-import { tmux, quote } from './tmux.ts';
+import { ensureConfigured, tmux, quote } from './tmux.ts';
 
 const exec = promisify(execFile);
 
@@ -162,8 +162,10 @@ async function launch(o: Owner, p: Proc) {
     : await tmux('new-session', '-d', '-P', '-F', fmt, '-s', o.session, '-n', p.name, '-c', p.cwd, '-x', '200', '-y', '50', '/bin/sh', run);
   const [window, pid] = out.trim().split(SEP);
   p.window = window; p.pid = Number(pid);
-  // keep the window after the command exits, so its exit code can be read (the agents' tmux server sets this for all
-  // windows, but a process can start before any agent has configured the server)
+  // new-session may have started the tmux server: give it the Taskboard settings like an agent session does
+  if (!exists) await ensureConfigured().catch(() => {});
+  // keep the window after the command exits, so its exit code can be read (the global setting also does this, but
+  // a user or a program can change the global setting)
   await tmux('set-option', '-w', '-t', window, 'remain-on-exit', 'on').catch(() => {});
   await tmux('pipe-pane', '-o', '-t', window, `cat >> ${quote(log)}`).catch(() => {});
   writeFileSync(ready, '');
