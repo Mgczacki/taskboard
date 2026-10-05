@@ -574,6 +574,11 @@ export function taskInstructions(t: Task, inlineRules = true) {
     `The server stops after the first failed step. Read the result with tb permit result <id> --wait.`,
     `Do not rerun an approved command yourself.`,
     `If the Taskboard guard blocks a command, stop and tell the user what it said.`,
+    ...(t.agent === 'codex' ? [
+      'After the user approves a Taskboard release, run the approved command alone with `sandbox_permissions: "require_escalated"` on its first attempt.',
+      'Codex workspace-write cannot create the release folder. The Taskboard guard uses the dashboard permit when it admits the command.',
+      'If the tool rejects the escalated command, stop and report its reason. Do not retry that permit or use `tb suggest` for the release.',
+    ] : []),
     `When a document in your outbox needs the user's review or approval, run: tb review <path>. Their comments arrive in your inbox.`,
     ...linkLines(t),
     ...processAndBrowserRules(t),
