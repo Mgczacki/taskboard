@@ -118,7 +118,7 @@ function NeedsPanel({ group, rows, manager, open, toast }: { group: string; rows
 
 // Who manages the group, its preset, what the preset allows and the group manager rule (tasks 242 and 273), in the group menu.
 // It reads and changes the same manager scope as the manager item of a task menu (ManagerRoleButton).
-export function ManagerScope({ group, tasks }: { group: string; tasks: TaskRef[] }) {
+export function ManagerScope({ group, tasks }: { group: string; tasks: (TaskRef & { status?: string; role?: string })[] }) {
   const scope = useScope(group);
   const [error, setError] = useState('');
   const change = (body: { task: string | null; preset?: PresetKey }) => { setError(''); setManager(group, body).catch(e => setError(String((e as Error).message || e))); };
@@ -128,7 +128,7 @@ export function ManagerScope({ group, tasks }: { group: string; tasks: TaskRef[]
   const preset = scope.presets?.[key];
   return <div className="manager-scope">
     <label style={{ color: 'var(--dim)', margin: '8px 0 2px' }}>◆ Manager <select value={manager} onChange={e => change({ task: e.target.value || null })}>
-      <option value="">None</option>{tasks.filter(t => scope.group.tasks.includes(t.id)).map(t => <option key={t.id} value={t.id}>#{t.num} {t.title}</option>)}
+      <option value="">None</option>{tasks.filter(t => scope.group.tasks.includes(t.id) && (t.id === manager || canManage(t))).map(t => <option key={t.id} value={t.id}>#{t.num} {t.title}</option>)}
     </select></label>
     {preset && <>
       <label style={{ color: 'var(--dim)' }}>Preset <select value={key} disabled={!manager} title={manager ? 'What the manager may do without a card' : 'Choose a manager first. A new manager gets this default preset.'}
@@ -141,6 +141,10 @@ export function ManagerScope({ group, tasks }: { group: string; tasks: TaskRef[]
     <div className="sub">Limits: {Object.entries(scope.caps).map(([key, value]) => `${key} ${value}`).join(' · ')}</div>
   </div>;
 }
+
+// The server refuses the controller, an archived task and a task that is set aside (server/manager-role.ts set()),
+// so the Manager drop-down of the group menu lists only the other tasks of the group, and the current manager.
+const canManage = (t: { id: string; status?: string; role?: string }) => t.role !== 'controller' && t.id !== 'controller' && t.status !== 'archived' && t.status !== 'parked';
 
 // What a preset allows, with the group manager rule. The group menu and the confirm panel of a task menu show the same text.
 function PresetText({ scope, preset, who = 'the manager', rule = true }: { scope: Scope; preset: PresetKey; who?: string; rule?: boolean }) {

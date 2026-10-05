@@ -129,6 +129,8 @@ export function used(actor: string, group: groups.Group, action: ManagerAction, 
 export function set(group: groups.Group, task: store.Task | undefined, by: 'user' | 'controller', userRequest?: string, preset?: ManagerPreset) {
   if (task && (task.id === 'controller' || task.status === 'archived' || !group.tasks.includes(task.id)))
     throw new Error('Choose a live task in this group. The controller cannot manage a group.');
+  // a task that is set aside does not act, so it cannot take the role or change its preset (task 276). It can lose the role.
+  if (task?.status === 'parked') throw new Error('Bring this task back first. A task that is set aside cannot become a manager.');
   if (preset && !(preset in PRESETS)) throw new Error('Choose Watch only, Direct the group or Direct and create tasks.');
   // a new manager starts with the given preset or the default. The same manager keeps its preset unless one is given.
   const nextPreset = !task ? undefined : preset || (group.manager === task.id ? group.managerPreset : undefined) || DEFAULT_PRESET;
