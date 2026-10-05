@@ -110,7 +110,7 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
     addEventListener('hashchange', go);
     return () => { clearTimeout(timer); removeEventListener('hashchange', go); };
   }, []);
-  const save = async (p: { routingRules?: string; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; holdPermissionHook?: boolean; permitFolders?: string[]; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; checkPrivateNotes?: boolean; confirmLowerControl?: boolean; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; confirmRisk?: Partial<ConfirmRisk>; controllerApprovals?: Partial<ControllerApprovals> }) => {
+  const save = async (p: { routingRules?: string; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; holdPermissionHook?: boolean; permitFolders?: string[]; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; checkPrivateNotes?: boolean; confirmLowerControl?: boolean; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; confirmRisk?: Partial<ConfirmRisk>; controllerApprovals?: Partial<ControllerApprovals>; agentErrors?: Parameters<typeof api.updateInfo>[0]['agentErrors'] }) => {
     setBusy(true); try { setInfo(await api.updateInfo(p)); } catch (e) { setErr(String((e as Error).message || e)); } setBusy(false);
   };
   const ctl = tasks.find(t => t.role === 'controller');
@@ -258,6 +258,7 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
                   <div className="sub">Antigravity does not offer a verified read-only BTW process with MCP servers disabled.</div>
                 </>}
               </SettingGroup>
+              <AgentErrorSettings info={info} accts={accts} busy={busy} save={save} />
             </SettingSection>
 
             <SettingSection id="taskBrowsers">
@@ -573,4 +574,36 @@ function AllowRules({ setErr }: { setErr: (s: string) => void }) {
         : <div className="banner"><b>{data.rules.length === 1 ? 'Revoke the rule?' : `Revoke all ${data.rules.length} rules?`}</b> <span className="sub">Every message between tasks then waits for your card again.</span> <button className="btn primary" onClick={() => { setConfirmAll(false); act(api.revokeAllAllowRules()); }}>Revoke all</button><button className="btn" onClick={() => setConfirmAll(false)}>Cancel</button></div>)}
     </div>
   );
+}
+
+// Settings > Agent sessions > Model errors and auto-continue (server/agent-error-watch.ts, machine.ts agentErrors)
+function AgentErrorSettings({ info, accts, busy, save }: { info: MachineInfo | null; accts: Account[]; busy: boolean; save: (p: { agentErrors: NonNullable<Parameters<typeof api.updateInfo>[0]['agentErrors']> }) => Promise<void> }) {
+  const a = info?.settings.agentErrors;
+  const [message, setMessage] = useState('');
+  const [stall, setStall] = useState('');
+  useEffect(() => { setMessage(a?.message || 'continue'); }, [a?.message]);
+  useEffect(() => { setStall(String(a?.stallMinutes ?? 10)); }, [a?.stallMinutes]);
+  if (!a) return null;
+  return <SettingGroup section="sessions" id="agentErrors" title="Model errors and auto-continue" help={<>Taskboard shows when an agent stopped on a model error: the model is overloaded or at capacity, a rate limit, a server error or a lost connection. It reads the Claude Code StopFailure hook, the session file of the agent, and the screen. A task that the agent still retries shows "Retrying" and stays working.</>}>
+    <SettingItem id="autoContinue">
+      <label className="opt"><input type="checkbox" disabled={busy} checked={a.autoContinue} onChange={e => void save({ agentErrors: { autoContinue: e.target.checked } })} /> Auto-continue after a model error</label>
+      <div className="sub">On: when an agent stopped on a model error, Taskboard types the message below after 1, 2, 5, 10 and 10 minutes, at most 5 times for one error. It types only into an empty input box. It never types over your draft or into a dialog, and never for a task that waits on a card or a question. It never retries a usage limit, a credit problem, a sign-in problem, a conversation that is too long, or a stall. Each try is an ordinary turn of the agent and uses the same usage as when you type it. Each try is in the task log. Default: Off.</div>
+    </SettingItem>
+    <SettingItem id="autoContinueMessage">
+      <label className="opt" htmlFor="auto-continue-message">Auto-continue message</label>
+      <div><input id="auto-continue-message" maxLength={500} value={message} onChange={e => setMessage(e.target.value)} spellCheck={false} /> <button className="btn" disabled={busy || !message.trim() || message.trim() === a.message} onClick={() => void save({ agentErrors: { message: message.trim() } })}>Save</button></div>
+      <div className="sub">The Continue button of a stopped task types the same text. Default: continue.</div>
+    </SettingItem>
+    <SettingItem id="autoContinueAccounts">
+      <label className="opt">Auto-continue for each account</label>
+      <div className="ae-accounts">{accts.filter(x => x.agent !== 'antigravity').map(x => <label key={x.id} className="opt">{x.name} <select disabled={busy} value={a.accounts[x.id] || 'default'} onChange={e => void save({ agentErrors: { accounts: { [x.id]: e.target.value as 'on' | 'off' | 'default' } } })}>
+        <option value="default">Default ({a.autoContinue ? 'on' : 'off'})</option><option value="on">On</option><option value="off">Off</option></select></label>)}</div>
+      <div className="sub">A task can set its own value in its error banner. Antigravity tasks are not read for model errors yet.</div>
+    </SettingItem>
+    <SettingItem id="stallMinutes">
+      <label className="opt" htmlFor="stall-minutes">Show a working task as stalled after</label>
+      <div><input id="stall-minutes" type="number" min={0} max={240} step={1} style={{ width: '6em' }} value={stall} onChange={e => setStall(e.target.value)} /> minutes <button className="btn" disabled={busy || stall === '' || Number(stall) === a.stallMinutes} onClick={() => void save({ agentErrors: { stallMinutes: Number(stall) } })}>Save</button></div>
+      <div className="sub">A task stalls when it says it works, waits for the model, and neither its screen nor its transcript changed for this time. A running tool (a build, a test) never stalls. A stall is inferred, so auto-continue does not act on it. 0 means never. Default: 10.</div>
+    </SettingItem>
+  </SettingGroup>;
 }

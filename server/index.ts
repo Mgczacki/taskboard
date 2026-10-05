@@ -76,6 +76,7 @@ import * as perf from './perf.ts';
 import * as taskToken from './task-token.ts';
 import * as waitingBoard from './waiting-board.ts';
 import * as managerEvents from './manager-events.ts';
+import * as agentErrorWatch from './agent-error-watch.ts';
 import * as managerRole from './manager-role.ts';
 import * as standing from './standing-approvals.ts';
 
@@ -143,6 +144,8 @@ setInterval(() => {
 }, 5000).unref();
 groups.load();
 managerEvents.start();
+// several tasks of one account stop on an overloaded model: tell the controller once (agent-error-watch.ts health)
+agentErrorWatch.onOverload(text => { const c = store.get('controller'); if (c && c.status !== 'archived') void messageQueue.send(c, text, { from: 'taskboard', kind: 'message' }).catch(e => console.error('overload notice', e)); });
 canvasOrder.load();
 // "open in another terminal" used to be a status; it is now only the openElsewhere field, and the status is read from the transcript
 for (const t of store.all()) if (t.openElsewhere && (t.status as string) === 'elsewhere' || t.openElsewhere && t.status === 'suspended')
@@ -1166,7 +1169,7 @@ const info = () => {
   const c = store.get('controller');
   return { role: ROLE, root: ROOT, machine: machine.get().name, machineId: MACHINE_ID, host: hostname(), url: URL_BASE, pid: process.pid, settings: machine.get(),
     controller: c ? { agent: c.agent, agentName: agents.agentName(c.agent), account: c.account || accounts.defaultFor(c.agent).id, skipPermissions: !!machine.get().controller.skipPermissions[c.agent], status: c.status, remoteUrl: c.agent === 'claude' && machine.get().controller.remoteControl ? c.remoteUrl : undefined, label: machine.controllerLabel() } : null,
-    tasks: store.all().filter(t => t.role !== 'controller' && t.status !== 'archived').length, tmuxProblem: tmuxProblem(), tmuxSettings: tmuxHealth.settings() };
+    tasks: store.all().filter(t => t.role !== 'controller' && t.status !== 'archived').length, tmuxProblem: tmuxProblem(), tmuxSettings: tmuxHealth.settings(), accountHealth: agentErrorWatch.health() };
 };
 // The tmux server runs from a deleted folder (tmux-health.ts): the text, the restart command and the tasks it would end
 const tmuxProblem = () => {
@@ -1186,7 +1189,7 @@ app.get('/api/server', async (_req, res) => { const h = life.health(); res.json(
 app.patch('/api/info', async (req, res) => {
   if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Machine settings are changed on the dashboard.' });
   try {
-    const { name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerSkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, holdPermissionHook, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, confirmLowerControl, defaultMaxParallel, newTaskDefaultAgent, applyMaxParallelToAll, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp, browserScale, browserAutoSwitch, claudeInChromeTasks, claudeInChromeController, confirmRisk, a2aSlackClientId, a2aSlackTeamId, controllerApprovals } = req.body;
+    const { name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerSkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, holdPermissionHook, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, confirmLowerControl, defaultMaxParallel, newTaskDefaultAgent, applyMaxParallelToAll, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp, browserScale, browserAutoSwitch, claudeInChromeTasks, claudeInChromeController, confirmRisk, a2aSlackClientId, a2aSlackTeamId, controllerApprovals, agentErrors } = req.body;
     // Letting the controller approve permits gives the user less control. The page asks first and then sends confirmLowerControl.
     if (confirmLowerControl !== true && controllerCanApprovePermits === true && !machine.get().permissions.controllerCanApprovePermits)
       return res.status(400).json({ error: 'Confirm on the Settings page before you give the controller more control.' });
@@ -1197,7 +1200,7 @@ app.patch('/api/info', async (req, res) => {
       return res.status(400).json({ error: 'Pick a valid model for questions.' });
     if (reviewAccount && accounts.get(reviewAccount)?.agent !== 'claude') return res.status(400).json({ error: 'Pick a Claude Code account for auto review.' });
     if (defaultMaxParallel !== undefined) machine.checkMaxParallel(defaultMaxParallel); // refuse before anything is saved
-    machine.update({ name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerSkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, holdPermissionHook, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, defaultMaxParallel, newTaskDefaultAgent, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp, browserScale, browserAutoSwitch, claudeInChromeTasks, claudeInChromeController, confirmRisk, a2aSlackClientId, a2aSlackTeamId, controllerApprovals });
+    machine.update({ name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerSkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, trustWorkspaces, autoReview, controllerCanApprovePermits, holdPermissionHook, permitFolders, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, defaultMaxParallel, newTaskDefaultAgent, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp, browserScale, browserAutoSwitch, claudeInChromeTasks, claudeInChromeController, confirmRisk, a2aSlackClientId, a2aSlackTeamId, controllerApprovals, agentErrors });
     // the Settings page confirms first; running tasks keep running, only new starts check the new maximum
     if (applyMaxParallelToAll === true) accounts.setAllMaxParallel(machine.get().accounts.defaultMaxParallel);
     if (trustWorkspaces === false) trust.restore();
@@ -1230,7 +1233,7 @@ app.delete('/api/machines/:id', (req, res) => { machines.remove(req.params.id); 
 // waitSig: the signature of the task row on the Waiting page, for a dismiss (dismiss.ts taskSignature)
 const WAITS_ON_USER = ['needs-you', 'stopped', 'review'];
 const waitSig = (t: store.Task) => WAITS_ON_USER.includes(t.status) ? dismiss.taskSignature(t, t.status === 'review' ? pendingFor(t.id) : undefined) : undefined;
-const view = (t: store.Task) => ({ ...t, browserAsk: runtime.browserAsk(t.id), waitSig: waitSig(t), link: links.info(t), docs: docs.counts(t.id), queue: messageQueue.forView(t.id), waitMin: Math.round((Date.now() - Date.parse(t.statusAt)) / 60000), attach: `tmux -L taskboard attach -t ${t.session}`, ...(t.agent === 'antigravity' ? { tokenEstimate: stats.taskEstimate(t) } : {}) });
+const view = (t: store.Task) => ({ ...t, browserAsk: runtime.browserAsk(t.id), waitSig: waitSig(t), link: links.info(t), docs: docs.counts(t.id), queue: messageQueue.forView(t.id), waitMin: Math.round((Date.now() - Date.parse(t.statusAt)) / 60000), errorLabel: agentErrorWatch.errorLabel(t) || undefined, autoContinueOn: agentErrorWatch.autoContinueOn(t), attach: `tmux -L taskboard attach -t ${t.session}`, ...(t.agent === 'antigravity' ? { tokenEstimate: stats.taskEstimate(t) } : {}) });
 pending.setIo({
   capture: session => tmux.capture(session, 0),
   key: async (session, key, literal) => { await tmux.tmux('send-keys', '-t', '=' + session + ':', ...(literal ? ['-l', key] : [key])); },
@@ -1383,7 +1386,7 @@ inboxDelivery.start();
 messageQueue.start();
 
 // ---------- accounts ----------
-const acctView = async (a: accounts.Account, fresh = false) => ({ ...a, status: await accounts.status(a, fresh), usageStale: accounts.usageStale(a), usageStaleHours: accounts.USAGE_STALE_MS / 3600000, running: store.all().filter(t => (t.account || accounts.defaultFor(t.agent).id) === a.id && !['archived', 'parked', 'suspended'].includes(t.status)).length });
+const acctView = async (a: accounts.Account, fresh = false) => ({ ...a, health: agentErrorWatch.health().find(h => h.account === a.id)?.note, status: await accounts.status(a, fresh), usageStale: accounts.usageStale(a), usageStaleHours: accounts.USAGE_STALE_MS / 3600000, running: store.all().filter(t => (t.account || accounts.defaultFor(t.agent).id) === a.id && !['archived', 'parked', 'suspended'].includes(t.status)).length });
 app.get('/api/accounts', async (req, res) => res.json(await Promise.all(accounts.all().map(a => acctView(a, req.query.fresh === '1')))));
 app.post('/api/accounts', async (req, res) => { try { const { agent, name } = req.body; if (!['claude', 'codex', 'antigravity'].includes(agent) || !name) throw new Error('agent and name are required'); const a = await accounts.create(agent, String(name)); if (a.agent === 'antigravity') await agents.installAgyPlugin(a); res.json(await acctView(a)); } catch (e) { fail(res, e); } });
 // The maximum number of tasks protects an account's usage, so only the dashboard changes it (not tb, agents or the controller).
@@ -1523,6 +1526,25 @@ app.post('/api/import', (req, res) => {
   const made: unknown[] = [], errors: string[] = [];
   for (const c of req.body.items || []) { try { made.push(view(agents.importSession(c))); } catch (e) { errors.push(e instanceof Error ? e.message : String(e)); } }
   res.json({ made, errors });
+});
+// A task that stopped on a model error (agent-error-watch.ts). dismiss: the user saw it; the task shows idle, and the
+// same error record is not read again. Continue uses /send with the auto-continue message.
+app.post('/api/tasks/:id/agent-error/dismiss', (req, res) => {
+  const t = store.get(req.params.id); if (!t) return res.status(404).end();
+  if (!t.agentError) return res.json(view(t));
+  const e = t.agentError;
+  store.update(t.id, { agentError: undefined, errorSeenAt: e.at || new Date().toISOString(), ...(t.status === 'stopped' ? { status: 'idle' as const, stopReason: undefined } : {}), statusSource: `Error dismissed at ${new Date().toTimeString().slice(0, 5)}: ${e.text}`.slice(0, 300) });
+  store.appendLog(t.id, { did: `The user dismissed the error: ${e.text}`.slice(0, 300) });
+  res.json(view(store.get(t.id)!));
+});
+// auto-continue for one task: on, off, or default (the account setting, then Settings)
+app.post('/api/tasks/:id/auto-continue', (req, res) => {
+  if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Auto-continue is changed on the dashboard.' });
+  const t = store.get(req.params.id); if (!t) return res.status(404).end();
+  const v = req.body?.value;
+  if (!['on', 'off', 'default'].includes(v)) return res.status(400).json({ error: 'Give on, off or default.' });
+  store.update(t.id, { autoContinue: v === 'default' ? undefined : v });
+  res.json(view(store.get(t.id)!));
 });
 app.post('/api/tasks/:id/send', async (req, res) => {
   const t = store.get(req.params.id); if (!t) return res.status(404).end();
@@ -2129,6 +2151,7 @@ function closeCardsOfArchived(t: store.Task) {
   }
 }
 store.onTaskRemoved(id => {
+  agentErrorWatch.forget(id);
   allowRules.removeForTask(id, 'the task was removed');
   events.forgetTask(id);
   lastTaskView.delete(id);
@@ -2369,6 +2392,9 @@ async function reconcile(first = false) {
     if (!!t.unscrollable !== s.unscrollable) store.update(t.id, { unscrollable: s.unscrollable || undefined });
     // no credit, a billing problem, a usage limit or an expired sign-in, read from the screen or the Codex rollout file
     if (await launchLimit.check(t)) continue;
+    // a model or API error: a stop, a retry, or a stall (agent-error-watch.ts), then auto-continue when it is due
+    await agentErrorWatch.check(t, () => loopScreen(t.session, s.activity));
+    { const e = store.get(t.id)!; if (e.status === 'stopped' && e.agentError) void agentErrorWatch.autoContinue(e).catch(err => console.error(`auto-continue for #${e.num}:`, err)); }
     // Questions the CLIs ask before any hook can fire (trust this folder, sign in, update) are read from the screen:
     // during the first 90 s after the agent was launched, and afterwards for as long as such a question keeps the task
     // in "needs you". Only the bottom 15 non-empty lines of the visible screen count (where a question waiting for an

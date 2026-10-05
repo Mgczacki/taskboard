@@ -1132,3 +1132,21 @@ table.procs tr.proc-group td { padding-top: 10px; }
 .mgr-confirm .manager-preset ul { margin: 2px 0 6px; padding-left: 16px; }
 .mgr-confirm .row { display: flex; gap: 8px; justify-content: flex-end; }
 .chip.mgr-badge { flex: none; padding: 0 6px; font-size: 10px; line-height: 15px; font-weight: 600; color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); background: var(--accent-bg); cursor: help; }
+
+/* model and API errors of a task (server/agent-error-watch.ts, web/src/agentErrorText.ts). A stop uses the stopped
+   color; a retry that the agent still runs by itself uses the working color, so it does not read as an error. */
+.chip.errchip { font-weight: 600; }
+.chip.errchip.stopped { color: var(--st-stopped); border-color: color-mix(in srgb, var(--st-stopped) 45%, var(--line)); background: color-mix(in srgb, var(--st-stopped) 8%, transparent); }
+.chip.errchip.retrying { color: var(--st-working); border-color: color-mix(in srgb, var(--st-working) 40%, var(--line)); font-weight: 500; }
+.errmark { flex: none; display: inline-grid; place-items: center; width: 15px; height: 15px; border-radius: 50%; font-size: 10px; font-weight: 700; margin-left: 4px; }
+.errmark.stopped { color: var(--bg); background: var(--st-stopped); }
+.errmark.retrying { color: var(--st-working); border: 1px solid color-mix(in srgb, var(--st-working) 60%, transparent); }
+.banner.retrying { border-left-color: var(--st-working); }
+.banner.agent-error .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; width: 100%; }
+.banner.agent-error.inferred { border-left-style: dashed; }
+.banner.agent-error .ae-auto { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); }
+.server-bar.overload-bar { top: auto; bottom: 14px; border-color: var(--st-needs); }
+.ae-accounts { display: flex; flex-wrap: wrap; gap: 4px 16px; }
+.ae-health { color: var(--st-needs); }
+.chip.errchip { white-space: normal; max-width: 100%; }
+.errchip-row { margin-top: 4px; }

@@ -15,6 +15,8 @@ import * as store from './store.ts';
 import type { Task } from './store.ts';
 import * as messageQueue from './message-queue.ts';
 import { transcriptFor } from './importer.ts';
+import * as agentErrors from './agent-error-watch.ts';
+import { transcriptError } from './agent-errors.ts';
 
 const turnStart = new Map<string, number>();   // task id -> when the current turn began
 const blockedOnce = new Set<string>();          // Stop hook already asked for a log entry this turn
@@ -74,7 +76,7 @@ function clearedPatch(t: Task, newId: string | undefined, how: string): Partial<
     pastSessions: t.sessionId && t.sessionId !== newId ? [...(t.pastSessions || []), t.sessionId] : t.pastSessions,
     // a document waiting for review, or a parked task, keeps its status
     ...(['review', 'parked'].includes(t.status) ? {} : { status: 'idle' as const, ask: '' }),
-    now: undefined, stopReason: undefined, interrupted: undefined,
+    now: undefined, stopReason: undefined, interrupted: undefined, agentError: undefined,
     statusSource: `Conversation cleared (${how}) at ${clock()}.`,
   };
 }
@@ -97,7 +99,7 @@ export function claudeEvent(taskId: string, input: any): { output?: unknown } {
     case 'UserPromptSubmit':
       answerBeforeLog.delete(t.id); // a saved answer belongs to the previous turn only
       turnStart.set(t.id, Date.now()); blockedOnce.delete(t.id);
-      store.update(t.id, { status: 'working', ask: '', stopReason: undefined, interrupted: undefined, statusSource: `Claude Code UserPromptSubmit hook at ${clock()}.` });
+      store.update(t.id, { status: 'working', ask: '', stopReason: undefined, interrupted: undefined, ...agentErrors.promptSubmitted(t, input.prompt), statusSource: `Claude Code UserPromptSubmit hook at ${clock()}.` });
       {
         const notice = docs.takeInboxNotice(t.id);
         const usage = t.role === 'controller' ? controllerUsage() : '';
@@ -148,17 +150,23 @@ export function claudeEvent(taskId: string, input: any): { output?: unknown } {
       const refusal = t.role !== 'controller' && input.transcript_path ? lastRefusal(input.transcript_path, started) : null;
       if (refusal) {
         recordCommandRefusal(t, refusal, 'Claude Code auto mode');
-        store.update(t.id, { now: firstPara(msg) || t.now });
+        store.update(t.id, { now: firstPara(msg) || t.now, ...agentErrors.turnEnded(store.get(t.id)!) });
         break;
       }
-      store.update(t.id, { ...finishedStatus(t, msg), now: firstPara(msg) || t.now, statusSource: `Claude Code Stop hook at ${clock()}.` });
+      store.update(t.id, { ...finishedStatus(t, msg), now: firstPara(msg) || t.now, ...agentErrors.turnEnded(t), statusSource: `Claude Code Stop hook at ${clock()}.` });
       break;
     }
-    case 'StopFailure':
+    case 'StopFailure': {
+      // Claude Code 2.1.289 sends `error` (overloaded, rate_limit, server_error, authentication_failed, billing_error,
+      // ...) and last_assistant_message ("API Error: ..."); there is no error_type field. A model error goes to
+      // agent-error-watch.ts; a credit or usage limit marks the account, as before.
       answerBeforeLog.delete(t.id);
-      if (/rate|limit|quota|billing/i.test(String(input.error_type || input.error || ''))) accounts.markLimited(t.account || accounts.defaultFor(t.agent).id, `${input.error_type || 'limit'} on #${t.num}`);
-      store.update(t.id, { status: 'stopped', stopReason: input.error_type || input.error || 'API error', statusSource: `Claude Code StopFailure at ${clock()}: ${input.error_type || 'error'}.` });
+      if (t.role !== 'controller' && agentErrors.stopFailure(t, input)) break;
+      const error = String(input.error || 'API error'), text = String(input.last_assistant_message || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+      accounts.markLimited(t.account || accounts.defaultFor(t.agent).id, `${text || error} (on #${t.num})`);
+      store.update(t.id, { status: 'stopped', stopReason: text || error, statusSource: `Claude Code StopFailure at ${clock()}: ${error}.` });
       break;
+    }
   }
   return {};
 }
@@ -211,6 +219,9 @@ export function codexHookEvent(taskId: string, input: any): { output?: unknown }
 export function codexEvent(taskId: string, p: any) {
   const t = store.get(taskId); if (!t || t.status === 'archived' || !acceptsEvent(t, 'codex', p['thread-id'])) return;
   if (p.type !== 'agent-turn-complete') return;
+  // a turn that failed on a model error: the rollout file has the error (agent-error-watch.ts shows it)
+  const failed = t.role !== 'controller' && t.transcript ? transcriptError('codex', t.transcript) : null;
+  if (failed && !failed.limit) { agentErrors.stop(t, failed); lastCodexEvent.set(t.id, Date.now()); return; }
   accounts.clearLimited(t.account);
   const msg: string = p['last-assistant-message'] || '';
   const codexRefusal = t.role !== 'controller' && t.transcript ? lastCodexRefusal(t.transcript, lastCodexEvent.get(t.id) || store.launchedAt.get(t.id) || 0) : null;
@@ -229,7 +240,7 @@ export function codexEvent(taskId: string, p: any) {
   }
   // questions Codex asked during the turn can still be open on screen; codexQuestionCheck sets the status when they close
   const status = codexQuestionsOpen(store.get(t.id)!) ? {} : { ...finishedStatus(t, msg), statusSource: `Codex notify (agent-turn-complete) at ${clock()}.` };
-  store.update(t.id, { sessionId: p['thread-id'] || t.sessionId, ...status, now: firstPara(msg) || t.now });
+  store.update(t.id, { sessionId: p['thread-id'] || t.sessionId, ...status, ...agentErrors.turnEnded(store.get(t.id)!), now: firstPara(msg) || t.now });
   if (msg) store.appendLog(t.id, { did: logDid(msg), wait: endsWithQuestion(msg) ? lastSentence(msg) : 'Nothing.' });
   lastCodexEvent.set(t.id, Date.now());
 }

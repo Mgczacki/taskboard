@@ -4,7 +4,7 @@ import type { Group, Task } from '../api';
 import { AGENT_NAME, STATUS_LABEL, api, fmtWait, linkedTaskId, shortPath } from '../api';
 import { QueueActions, queueLabel, queueReason } from './QueuedMessage';
 import { ManagerBadge, ManagerRoleButton } from './ManagerBoard';
-import { AgentChip, ByController, Dot, MachineChip, ThreeLines, WhereChip, BrowserAskChip } from './ui';
+import { AgentChip, ByController, Dot, ErrorChip, useAutoMessage, MachineChip, ThreeLines, WhereChip, BrowserAskChip } from './ui';
 import { Terminal } from './Terminal';
 import { PendingMarker } from './PendingCard';
 import { DocsTab } from './Docs';
@@ -12,6 +12,7 @@ import { LinksSection } from './Links';
 import { hasFiles, uploadAll } from '../drop';
 import { loadAccounts, usageText, type Account } from './Accounts';
 import { formatTokens } from '../formatTokens';
+import { autoText, errorDetail } from '../agentErrorText';
 import type { DocumentLink } from '../documentLinks';
 import { planUngroup } from '../groupMove';
 import { runGroupChange, type Toast } from '../groupActions';
@@ -183,7 +184,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
             <option value="">＋ Add to group…</option>{groups.filter(g => !g.tasks.includes(t.id)).map(g => <option key={g.id} value={g.id}>{g.name}</option>)}<option value="__new">New group…</option>
           </select>
         </div>
-        <div className={`dr-status ${t.status}`}><Dot s={t.status} /><div title={t.statusSource}><span className={`st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span>{['needs-you', 'stopped', 'review'].includes(t.status) && <span className="waitchip">waiting {fmtWait(t.waitMin)}</span>} · {t.statusSource}</div>{!thin && <PendingMarker taskId={t.id} dismiss={toast} />}</div>
+        <div className={`dr-status ${t.status}`}><Dot s={t.status} /><div title={t.statusSource}><span className={`st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span> <ErrorChip t={t} />{['needs-you', 'stopped', 'review'].includes(t.status) && <span className="waitchip">waiting {fmtWait(t.waitMin)}</span>} · {t.statusSource}</div>{!thin && <PendingMarker taskId={t.id} dismiss={toast} />}</div>
         <div className="ctx"><ThreeLines t={t} fixed />
           {since && !since.first && (since.entries.length > 0 || since.files.length > 0 || since.commits.length > 0) && <div className="since">
             <div className="since-h" onClick={() => setSinceOpen(o => !o)} style={{ cursor: 'pointer' }}>Since you last looked <span>{fmtWait(Math.round((Date.now() - Date.parse(since.since)) / 60000))} ago · {sinceOpen ? 'hide' : 'show'}</span></div>
@@ -195,7 +196,9 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
           </div>}
         </div>
         {t.interrupted && t.status !== 'suspended' && <div className="banner"><b>Resumed.</b> {t.interrupted} <button className="btn" onClick={() => act(api.send(t.id, 'continue where you left off'))}>Continue</button></div>}
-        {t.status === 'stopped' && <div className="banner stopped"><b>{(t.stopReason || 'Stopped').replace(/\.$/, '')}.</b> {acct?.limited && !accountStop ? `${acct.name} has a limit mark (${acct.limited.note}). ` : ''}{accountStop && t.ask ? `${t.ask} ` : ''}The agent is not working. <button className="btn" onClick={() => act(api.send(t.id, 'continue'))}>Retry now</button>{t.role !== 'controller' && <button className="btn" onClick={() => setMoveOpen(true)}>Move account…</button>}<a className="btn ghost" href="#accounts">Accounts…</a></div>}
+        {t.status === 'stopped' && t.errorLabel && t.agentError && <AgentErrorBanner t={t} act={act} />}
+        {t.status === 'working' && t.errorLabel && t.agentError && <div className="banner retrying" role="status"><b>{t.errorLabel}.</b> {errorDetail(t.agentError)} {t.agentError.phase === 'retrying' ? 'The agent retries by itself. Nothing to do.' : 'Taskboard continued the agent after the error.'}</div>}
+        {t.status === 'stopped' && !(t.errorLabel && t.agentError) && <div className="banner stopped"><b>{(t.stopReason || 'Stopped').replace(/\.$/, '')}.</b> {acct?.limited && !accountStop ? `${acct.name} has a limit mark (${acct.limited.note}). ` : ''}{accountStop && t.ask ? `${t.ask} ` : ''}The agent is not working. <button className="btn" onClick={() => act(api.send(t.id, 'continue'))}>Retry now</button>{t.role !== 'controller' && <button className="btn" onClick={() => setMoveOpen(true)}>Move account…</button>}<a className="btn ghost" href="#accounts">Accounts…</a></div>}
         {moveOpen && t.role !== 'controller' && <div className="banner">
           <label htmlFor="move-account">Move to account</label>
           <select id="move-account" className="acct-sel" value={targetAccount} disabled={moving} onChange={e => setTargetAccount(e.target.value)}>
@@ -315,4 +318,23 @@ function ScopeList({ t, toast }: { t: Task; toast: Toast }) {
     <span className="mono" title={s.path}>{shortPath(s.path)}</span>
     <button className="btn ghost" title={s.reason} onClick={() => void remove(s.name, s.kind === 'worktree' ? `the worktree ${s.name}` : `read access to ${s.path}`)}>Remove</button>
   </div>)}</div>;
+}
+
+// A task that stopped on a model or API error (server/agent-error-watch.ts): what happened, when, where Taskboard read
+// it, and what auto-continue does. Continue types the auto-continue message now; Dismiss marks the error as seen.
+function AgentErrorBanner({ t, act }: { t: Task; act: (p: Promise<unknown>) => void }) {
+  const message = useAutoMessage();
+  const e = t.agentError!;
+  const auto = autoText(t, message);
+  return <div className={`banner stopped agent-error ${e.kind === 'stalled' ? 'inferred' : ''}`} role="alert">
+    <b>{t.errorLabel}.</b> {errorDetail(e)} {auto}
+    <div className="row">
+      <button className="btn" title={`Type "${message}" into the agent now, as you would by hand`} onClick={() => act(api.send(t.id, message))}>Continue</button>
+      <button className="btn ghost" title="Mark the error as seen. The task shows as idle; the same error is not shown again." onClick={() => act(api.dismissAgentError(t.id))}>Dismiss</button>
+      <label className="ae-auto" title="On: after a model error (overloaded, rate limit, server error, lost connection) Taskboard types the message after 1, 2, 5, 10 and 10 minutes, at most 5 times. Each try is an ordinary turn of the agent.">Auto-continue for this task
+        <select value={t.autoContinue || 'default'} onChange={ev => act(api.setAutoContinue(t.id, ev.target.value as 'on' | 'off' | 'default'))}>
+          <option value="default">{t.autoContinue ? 'Default (account or Settings)' : `Default (${t.autoContinueOn ? 'on' : 'off'})`}</option><option value="on">On</option><option value="off">Off</option>
+        </select></label>
+    </div>
+  </div>;
 }
