@@ -59,7 +59,7 @@ export interface MachineSettings {
   agentErrors: AgentErrorSettings;
 }
 export interface AgentErrorSettings { autoContinue: boolean; message: string; stallMinutes: number; accounts: Record<string, 'on' | 'off'> }
-export const DEFAULT_AGENT_ERRORS: AgentErrorSettings = { autoContinue: false, message: 'continue', stallMinutes: 10, accounts: {} };
+export const DEFAULT_AGENT_ERRORS: AgentErrorSettings = { autoContinue: false, message: 'continue', stallMinutes: 5, accounts: {} };
 export function readAgentErrors(saved: unknown): AgentErrorSettings {
   const s = (saved && typeof saved === 'object' ? saved : {}) as Partial<AgentErrorSettings>;
   const accounts = Object.fromEntries(Object.entries(s.accounts && typeof s.accounts === 'object' ? s.accounts : {}).filter(([, v]) => v === 'on' || v === 'off')) as Record<string, 'on' | 'off'>;

@@ -226,7 +226,7 @@ export function screenSignature(screen: string): string {
   }).join('\n');
 }
 
-export const DEFAULT_STALL_MINUTES = 10;
+export const DEFAULT_STALL_MINUTES = 5;
 export interface StallInput {
   status: string;              // the task status
   state?: 'finished' | 'tool' | 'busy' | 'aborted' | 'unknown'; // external.readState of the transcript

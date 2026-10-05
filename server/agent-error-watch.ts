@@ -9,7 +9,7 @@
 // 3. The screen: retries ("attempt 3/10", "Reconnecting... 2/5") of a working task, and the Codex "■" error line when
 //    the rollout file is not known. Read at most every SCREEN_MS for each working task.
 // 4. The stall rule: a working task that waits for the model and whose screen and transcript did not change for the
-//    stall time (Settings, default 10 minutes). This one is inferred, and the text says so.
+//    stall time (Settings, default 5 minutes). This one is inferred, and the text says so.
 // A stop sets the status "stopped" with Task.agentError; a retry keeps "working" and only sets Task.agentError. A turn
 // that ends without an error clears it (events.ts calls turnEnded).
 import { statSync } from 'node:fs';

@@ -582,7 +582,7 @@ function AgentErrorSettings({ info, accts, busy, save }: { info: MachineInfo | n
   const [message, setMessage] = useState('');
   const [stall, setStall] = useState('');
   useEffect(() => { setMessage(a?.message || 'continue'); }, [a?.message]);
-  useEffect(() => { setStall(String(a?.stallMinutes ?? 10)); }, [a?.stallMinutes]);
+  useEffect(() => { setStall(String(a?.stallMinutes ?? 5)); }, [a?.stallMinutes]);
   if (!a) return null;
   return <SettingGroup section="sessions" id="agentErrors" title="Model errors and auto-continue" help={<>Taskboard shows when an agent stopped on a model error: the model is overloaded or at capacity, a rate limit, a server error or a lost connection. It reads the Claude Code StopFailure hook, the session file of the agent, and the screen. A task that the agent still retries shows "Retrying" and stays working.</>}>
     <SettingItem id="autoContinue">
@@ -603,7 +603,7 @@ function AgentErrorSettings({ info, accts, busy, save }: { info: MachineInfo | n
     <SettingItem id="stallMinutes">
       <label className="opt" htmlFor="stall-minutes">Show a working task as stalled after</label>
       <div><input id="stall-minutes" type="number" min={0} max={240} step={1} style={{ width: '6em' }} value={stall} onChange={e => setStall(e.target.value)} /> minutes <button className="btn" disabled={busy || stall === '' || Number(stall) === a.stallMinutes} onClick={() => void save({ agentErrors: { stallMinutes: Number(stall) } })}>Save</button></div>
-      <div className="sub">A task stalls when it says it works, waits for the model, and neither its screen nor its transcript changed for this time. A running tool (a build, a test) never stalls. A stall is inferred, so auto-continue does not act on it. 0 means never. Default: 10.</div>
+      <div className="sub">A task stalls when it says it works, waits for the model, and neither its screen nor its transcript changed for this time. A running tool (a build, a test) never stalls. A stall is inferred, so auto-continue does not act on it. 0 means never. Default: 5.</div>
     </SettingItem>
   </SettingGroup>;
 }
