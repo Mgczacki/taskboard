@@ -16,10 +16,14 @@
 // pulses and shows the number of new cards, and the stack shows when the pointer leaves the pill.
 // The stack shows approval cards and question cards. The Waiting page also lists tasks that wait without a card and
 // messages that wait to be delivered. The pill and the All button say so.
+// An approved permit card shows "Running" for APPROVED_CARD_MS after this page first saw it running, and then leaves the
+// stack (stackApprovals in stack.ts). The task panel and the Permits page show the progress and the result. When a
+// permit that this page saw running ends 'failed' or 'unknown', a toast says so, with Open task. The task panel keeps an
+// error notice for it (taskNotices.ts).
 import { useEffect, useRef, useState } from 'react';
 import type { Approval, PendingItem, Task } from '../api';
 import { useStore } from '../api';
-import { arrivals, CLOSED_MS, closedNotice, entryForTask, frontAfterArrival, frontIndex, HIDDEN_KEY, readHidden, seenCards, SHOW_EVENT, stackEntries, type Seen, type StackEntry } from '../stack';
+import { APPROVED_CARD_MS, arrivals, CLOSED_MS, closedNotice, entryForTask, frontAfterArrival, frontIndex, HIDDEN_KEY, leavesStackAt, readHidden, seenCards, SHOW_EVENT, stackApprovals, stackEntries, trackRunning, type RunningSeen, type Seen, type StackEntry } from '../stack';
 import { ApprovalCard, UndoLine } from './ApprovalCard';
 import { ARM_MS } from '../clickGuard';
 import { PendingCard } from './PendingCard';
@@ -28,9 +32,29 @@ const GUARD_MS = ARM_MS;
 const PULSE_MS = 1600;
 const ALSO = 'The Waiting page (All) also lists tasks that wait on you without a card, and messages that wait to be delivered.';
 
-export function NoticeStack({ approvals, pending, allTasks, setOpenId, openController, toast, showAll }: {
-  approvals: Approval[]; pending: PendingItem[]; allTasks: Task[]; setOpenId: (id: string) => void; openController: () => void; toast: (s: string) => void; showAll: () => void;
+type ToastFn = (s: string, action?: { label: string; fn: () => void }) => void;
+
+export function NoticeStack({ approvals: live, pending, allTasks, setOpenId, openController, toast, showAll }: {
+  approvals: Approval[]; pending: PendingItem[]; allTasks: Task[]; setOpenId: (id: string) => void; openController: () => void; toast: ToastFn; showAll: () => void;
 }) {
+  // the full lists hold the final state of closed cards
+  const { approvals: allApprovals, answered, cardsLoaded } = useStore();
+  // running permit cards: shown for APPROVED_CARD_MS, then left out; a timer draws the stack again when one leaves
+  const runningSeen = useRef<RunningSeen>(new Map());
+  const [, redraw] = useState(0);
+  useEffect(() => {
+    const { failed, nextAt } = trackRunning(live, allApprovals, runningSeen.current);
+    for (const a of failed) {
+      const num = allTasks.find(t => t.id === a.actor)?.num;
+      const who = a.actor === 'controller' ? 'the controller' : `task #${num || a.actor}`;
+      toast(`Permit of ${who} ${a.state === 'failed' ? 'failed' : 'ended with an unknown result'}. ${a.result || ''} The task panel and the Permits page show the steps.`.trim(),
+        { label: 'Open task', fn: () => a.actor === 'controller' ? openController() : setOpenId(a.actor) });
+    }
+    if (nextAt === null) return;
+    const t = setTimeout(() => redraw(n => n + 1), Math.max(0, nextAt - Date.now()) + 20);
+    return () => clearTimeout(t);
+  }, [live, allApprovals]); // eslint-disable-line react-hooks/exhaustive-deps
+  const approvals = stackApprovals(live, runningSeen.current);
   const entries = stackEntries(approvals, pending);
   const [frontId, setFrontId] = useState<string | null>(null);
   // the cards that the stack showed when the user clicked Hide, or null when the stack shows
@@ -48,8 +72,6 @@ export function NoticeStack({ approvals, pending, allTasks, setOpenId, openContr
   const index = frontIndex(entries, frontId, frontTask.current);
   const front = entries[index];
   const shown = useRef<string | undefined>(undefined);
-  // the closed front card: the full lists hold its final state
-  const { approvals: allApprovals, answered, cardsLoaded } = useStore();
   const [closed, setClosed] = useState<{ id: string; title: string; state: string; text: string } | null>(null);
   const lastFront = useRef<StackEntry | undefined>(undefined);
   const ids = entries.map(e => e.id).join(',');
@@ -137,9 +159,21 @@ export function NoticeStack({ approvals, pending, allTasks, setOpenId, openContr
     <div ref={frontEl} className={`ns-front ${guard ? 'guard' : ''}`}>
       {closedCard}
       {!closedCard && front.approval && <ApprovalCard key={front.id} a={front.approval} allTasks={allTasks} setOpenId={setOpenId} openController={openController} toast={toast} from="stack" />}
+      {!closedCard && front.approval && <LeaveNote at={leavesStackAt(front.approval, runningSeen.current)} />}
       {!closedCard && front.item && <PendingCard key={front.id} item={front.item} compact openTask={setOpenId} toast={toast} />}
     </div>
     {entries.length > 1 && <div className="ns-edge" />}{entries.length > 2 && <div className="ns-edge two" />}
+  </div>;
+}
+
+// Under an approved permit card: the seconds until the card leaves the stack, and where the result shows
+function LeaveNote({ at }: { at?: number }) {
+  const [now, setNow] = useState(Date.now());
+  useEffect(() => { if (!at) return; const t = setInterval(() => setNow(Date.now()), 250); return () => clearInterval(t); }, [at]);
+  if (!at) return null;
+  const left = Math.max(0, Math.ceil((at - now) / 1000));
+  return <div className="pc-note info ns-leaves" aria-live="off">
+    Approved. This card leaves the stack in {left} s ({APPROVED_CARD_MS / 1000} s after approval). The task panel and the Permits page show the progress and the result.
   </div>;
 }
 
@@ -147,7 +181,7 @@ export function NoticeStack({ approvals, pending, allTasks, setOpenId, openContr
 const recentDenials = (approvals: Approval[], now = Date.now()) => approvals.filter(a => a.state === 'denied' && a.decidedBy?.by === 'user' && (a.undoUntil ? Date.parse(a.undoUntil) > now : now - Date.parse(a.decidedBy.at) < 60_000));
 const hasRecentDenial = (approvals: Approval[]) => recentDenials(approvals).length > 0;
 // One row for each recent denial: what was denied and Undo, or why Undo is not possible. The rows go away after a minute.
-function RecentDenials({ approvals, allTasks, toast }: { approvals: Approval[]; allTasks: Task[]; toast: (s: string) => void }) {
+function RecentDenials({ approvals, allTasks, toast }: { approvals: Approval[]; allTasks: Task[]; toast: ToastFn }) {
   const [, tick] = useState(0);
   const list = recentDenials(approvals);
   useEffect(() => { if (!list.length) return; const t = setInterval(() => tick(n => n + 1), 1000); return () => clearInterval(t); }, [list.length]);

@@ -11,7 +11,7 @@ import { queueReason } from './components/QueuedMessage';
 import { autoText, errorDetail } from './agentErrorText';
 
 export type NoticeLevel = 'error' | 'warn' | 'info';
-export type NoticeKind = 'agent-error' | 'message' | 'inbox' | 'question' | 'card' | 'stopped' | 'restart-failed' | 'resumed' | 'error' | 'hook-note' | 'drop' | 'imported';
+export type NoticeKind = 'agent-error' | 'message' | 'inbox' | 'question' | 'card' | 'stopped' | 'restart-failed' | 'resumed' | 'error' | 'hook-note' | 'drop' | 'imported' | 'permit';
 export interface TaskNotice {
   key: string; // stable: the same notice keeps its key while the task changes
   kind: NoticeKind; level: NoticeLevel;
@@ -36,14 +36,22 @@ export const isHookNote = (s?: string) => !!s && /queued messages? (was|were) gi
 export interface NoticeInput {
   t: Pick<Task, 'id' | 'num' | 'status' | 'statusAt' | 'statusSource' | 'stopReason' | 'queue' | 'interrupted' | 'restartFailed' | 'imported' | 'errorLabel' | 'agentError' | 'autoContinueOn'>;
   pending?: PendingItem[]; // question cards of this task
-  approvals?: Approval[]; // waiting approval cards of this task
+  approvals?: Approval[]; // waiting approval cards of this task (liveApprovals in stack.ts)
+  closed?: Approval[]; // closed approval cards of this task, for failed permits
   error?: string; // the last error of a panel button
   drop?: string; // the result of files dropped on the panel
   autoMessage?: string; // the auto-continue message (Settings), for the text of a model error
   now?: number;
 }
 
-export function taskNotices({ t, pending = [], approvals = [], error, drop, autoMessage = 'continue', now = Date.now() }: NoticeInput): TaskNotice[] {
+// A permit card that ended 'failed' or 'unknown' keeps an error notice for FAILED_PERMIT_MS after its decision, until
+// the user hides it. The notification stack shows an approved permit card only for a few seconds (stack.ts
+// APPROVED_CARD_MS), so this notice is where a failure stays in view. The Permits page and the Answered view of the
+// Waiting page also keep the result, and the task gets the result as a message.
+export const FAILED_PERMIT_MS = 60 * 60_000;
+const failedPermit = (a: Approval, now: number) => a.action === 'permit' && (a.state === 'failed' || a.state === 'unknown') && now - Date.parse(a.decidedBy?.at || a.created) < FAILED_PERMIT_MS;
+
+export function taskNotices({ t, pending = [], approvals = [], closed = [], error, drop, autoMessage = 'continue', now = Date.now() }: NoticeInput): TaskNotice[] {
   const out: TaskNotice[] = [];
   // queued and failed messages: one item for each state, kind and sender
   const groups = new Map<string, QueuedMessage[]>();
@@ -69,8 +77,16 @@ export function taskNotices({ t, pending = [], approvals = [], error, drop, auto
     out.push({ key: 'question', kind: 'question', level: 'warn', title: `Waits for your answer${pending.length > 1 ? ` ×${pending.length}` : ''}`, reason: q, full: pending.map(p => oneLine(p.question)).join('\n'), at: first.createdAt, count: pending.length, ids: pending.map(p => p.id) });
   }
   for (const a of approvals) {
+    if (a.action === 'permit' && a.state === 'running') {
+      out.push({ key: `a:${a.id}`, kind: 'permit', level: 'info', title: 'Permit running', reason: oneLine(`Approved${a.decidedBy ? ` at ${clock(a.decidedBy.at)}` : ''}. ${a.summary}`), full: `${a.detail || a.summary}\n\nThe Permits page shows each step and its output.`, at: a.created, count: 1, ids: [a.id] });
+      continue;
+    }
     const refused = a.action === 'tool-refusal';
     out.push({ key: `a:${a.id}`, kind: 'card', level: 'warn', title: refused ? 'Refused command' : 'Waits for your approval', reason: oneLine(a.summary), full: a.detail || a.summary, at: a.created, count: 1, ids: [a.id] });
+  }
+  for (const a of closed.filter(x => failedPermit(x, now))) {
+    const what = a.state === 'failed' ? 'Permit failed' : 'Permit result unknown';
+    out.push({ key: `permit:${a.id}:${a.state}`, kind: 'permit', level: 'error', title: what, reason: oneLine(a.result || a.summary), full: `${a.summary}\n\n${a.result || ''}\n\nThe Permits page shows each step and its output.`.trim(), at: a.decidedBy?.at || a.created, count: 1, ids: [a.id] });
   }
   // a model or API error (task 278): stopped needs you; working means the agent retries or Taskboard continued it
   const modelError = !!(t.errorLabel && t.agentError);

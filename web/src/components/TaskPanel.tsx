@@ -98,7 +98,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
   const pendingAll = useStoreValue(s => s.pending), approvalsAll = useStoreValue(s => s.approvals);
   const pending = pendingAll.filter(i => i.taskId === t.id);
   const autoMessage = useAutoMessage();
-  const notices = taskNotices({ t, pending, approvals: liveApprovals(approvalsAll).filter(a => a.actor === t.id), error: err, drop: dropMsg, autoMessage });
+  const notices = taskNotices({ t, pending, approvals: liveApprovals(approvalsAll).filter(a => a.actor === t.id), closed: approvalsAll.filter(a => a.actor === t.id), error: err, drop: dropMsg, autoMessage });
   const attention = ['needs-you', 'stopped', 'review'].includes(t.status);
   // The bar folds the info section to one row and the terminal gets the room. The terminal stays mounted when the
   // section folds or opens; its ResizeObserver refits it and tells tmux the new size.

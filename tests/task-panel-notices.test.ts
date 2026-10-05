@@ -222,3 +222,33 @@ test('the CSS leaves the terminal at least 60% of a 900 px panel with the info o
   // folded, a task shows only the bar and the tabs; the controller only the bar
   assert.match(css, /\.dr-head\.collapsed > :not\(\.dr-bar\):not\(\.glass-pop\):not\(\.tabs\), \.dr-head\.ctl\.collapsed > \.tabs \{ display: none; \}/);
 });
+
+// Permit cards in the task panel (task 300): the stack shows an approved permit card for a few seconds only, so the
+// panel shows the run as information and a failure as an error until the user hides it.
+type A = import('../web/src/api.ts').Approval;
+const permitCard = (id: string, state: string, decidedAt: string, result?: string) => ({ id, actor: 't216', action: 'permit', summary: 'run 1 approved step', detail: 'python3 x.py', created: ago(70), state, result, decidedBy: { by: 'user', at: decidedAt } }) as unknown as A;
+
+test('a running permit is an information notice with Open permits, not a card that waits', () => {
+  const list = N.taskNotices({ t: task({ statusSource: undefined }), approvals: [permitCard('a1', 'running', ago(1))], now });
+  const n = list.find(x => x.ids[0] === 'a1')!;
+  assert.equal(n.kind, 'permit');
+  assert.equal(n.level, 'info');
+  assert.equal(n.title, 'Permit running');
+  assert.doesNotMatch(`${n.title} ${n.reason}`, /wait/i);
+  const acts = noticeActions(n, { t: task(), act: p => p, toast: () => {}, clearError: () => {}, clearDrop: () => {}, hide: () => {} });
+  assert.deepEqual(acts.map(a => a.label), ['Open permits']);
+  void acts[0].run();
+  assert.equal(location.hash, '#permits');
+});
+
+test('a failed permit stays as an error notice for an hour, with Hide; an approved one gives no notice', () => {
+  const closed = [permitCard('f1', 'failed', ago(30), 'Permit abc failed: step 1 exited with 2.'), permitCard('u1', 'unknown', ago(5)), permitCard('old', 'failed', ago(61)), permitCard('ok', 'approved', ago(2))];
+  const list = N.taskNotices({ t: task({ statusSource: undefined }), closed, now }).filter(x => x.kind === 'permit');
+  assert.deepEqual(list.map(x => [x.ids[0], x.level, x.title]), [['f1', 'error', 'Permit failed'], ['u1', 'error', 'Permit result unknown']]);
+  assert.match(list[0].reason, /step 1 exited with 2/);
+  const hidden: string[] = [];
+  const acts = noticeActions(list[0], { t: task(), act: p => p, toast: () => {}, clearError: () => {}, clearDrop: () => {}, hide: k => hidden.push(k) });
+  assert.deepEqual(acts.map(a => a.label), ['Open permits', 'Hide']);
+  void acts[1].run();
+  assert.deepEqual(hidden, [list[0].key]);
+});

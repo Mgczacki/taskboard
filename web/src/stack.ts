@@ -9,6 +9,48 @@ import { sortTime } from './messageCard';
 // shows closed cards in its Answered view, without buttons.
 export const liveApprovals = (approvals: Approval[]) => approvals.filter(a => a.state === 'pending' || (a.action === 'permit' && a.state === 'running'));
 
+// ---------- Approved permit cards in the stack ----------
+// A permit card is 'running' from the approval until its last step ends (server/approvals.ts decide). Before, the stack
+// kept the card in front for that whole time, as a card that waits on the user, although nothing waited on the user.
+// Now the stack shows a running permit card for APPROVED_CARD_MS after this page first saw it running (the same time as
+// a toast, TOAST_DURATION in App.tsx), and then leaves it out. A pending card stays until someone decides it.
+// The task panel (taskNotices.ts) and the Permits page show the progress and the result.
+// runningSeen: approval id -> the time (Date.now() of this page) when the page first saw the card running. The time
+// of this page is used, not decidedBy.at, so a clock difference between the browser and the server cannot hide a
+// card at once or keep it longer. A reload of the page during a long run shows the card again for APPROVED_CARD_MS.
+export const APPROVED_CARD_MS = 5000;
+export type RunningSeen = Map<string, number>;
+const runningPermit = (a: Approval) => a.action === 'permit' && a.state === 'running';
+// the time when the card leaves the stack, or undefined for a card that is not a running permit
+export const leavesStackAt = (a: Approval, seen: RunningSeen, now = Date.now()) => runningPermit(a) ? (seen.get(a.id) ?? now) + APPROVED_CARD_MS : undefined;
+// the cards of `live` (liveApprovals) that the stack shows
+export const stackApprovals = (live: Approval[], seen: RunningSeen, now = Date.now()) => live.filter(a => (leavesStackAt(a, seen, now) ?? Infinity) > now);
+// Record the running permit cards of `live` in `seen`, and forget the cards that stopped running. failed: the cards
+// that this page saw running and that ended 'failed' or 'unknown' in `all` (the full list of the store). The stack
+// tells the user with a toast. The task panel keeps a notice for them (taskNotices.ts permitNotices).
+// nextAt: the next time when a card leaves the stack, for a timer, or null.
+export function trackRunning(live: Approval[], all: Approval[], seen: RunningSeen, now = Date.now()): { failed: Approval[]; nextAt: number | null } {
+  const running = new Set<string>();
+  let nextAt: number | null = null;
+  for (const a of live) {
+    if (!runningPermit(a)) continue;
+    running.add(a.id);
+    if (!seen.has(a.id)) seen.set(a.id, now);
+    const at = seen.get(a.id)! + APPROVED_CARD_MS;
+    if (at > now && (nextAt === null || at < nextAt)) nextAt = at;
+  }
+  const failed: Approval[] = [];
+  for (const id of [...seen.keys()]) {
+    if (running.has(id)) continue;
+    const a = all.find(x => x.id === id);
+    // still running, but not in `live` (the Permits page leaves permit cards out of the stack): keep the time
+    if (a && runningPermit(a)) continue;
+    seen.delete(id);
+    if (a && (a.state === 'failed' || a.state === 'unknown')) failed.push(a);
+  }
+  return { failed, nextAt };
+}
+
 export type StackEntry = { id: string; at: string; approval?: Approval; item?: PendingItem };
 
 // approval cards and question cards, oldest first
