@@ -71,6 +71,17 @@ test('a new task session receives the current task rules for each agent', () => 
   assert.doesNotMatch(agents.taskInstructions(task('claude', 901)), /user's rules/);
 });
 
+test('Codex release guidance keeps the dashboard permit and requests sandbox access on the first command', () => {
+  const codex = agents.taskInstructions(task('codex', 905));
+  assert.match(codex, /After the user approves a Taskboard release, run the approved command alone with `sandbox_permissions: "require_escalated"` on its first attempt\./);
+  assert.match(codex, /The Taskboard guard uses the dashboard permit when it admits the command\./);
+  assert.match(codex, /Do not retry that permit or use `tb suggest` for the release\./);
+  assert.doesNotMatch(agents.taskInstructions(task('claude', 906)), /sandbox_permissions: "require_escalated"/);
+  const command = agents.command(task('codex', 907), 'Do the work.', false);
+  assert.ok(command.includes('workspace-write'));
+  assert.doesNotMatch(command.join(' '), /sandbox_workspace_write\.writable_roots=.*\.taskboard\/releases/);
+});
+
 test('task rules at the maximum length fit, and a long prompt moves them into a copy in the task folder', { timeout: 30000 }, async () => {
   const t = task('claude', 904);
   try {
