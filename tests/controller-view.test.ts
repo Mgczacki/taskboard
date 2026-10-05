@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { ANSI_NAMES, buildTerminalTheme, contrast, parseHex, type RGBA } from '../web/src/terminalTheme.ts';
 import { THEMES } from '../web/src/themes.ts';
-import { GLASS_DEFAULT, GLASS_PRESETS, MIN_TEXT_CONTRAST, TEXT_LEVELS, cleanGlass, glassAlpha, glassSetting, headerCollapsed, onGlassChange, presetOf, readableNote, readableText, setGlass, setHeaderCollapsed, setPreset, setTaskThinBar, setWindowSee, stepGlass, taskThinBar, textContrast, toggleGlass, windowSee, windowSeeSupported, worstContrast } from '../web/src/controllerView.ts';
+import { GLASS_DEFAULT, GLASS_PRESETS, MIN_TEXT_CONTRAST, TEXT_LEVELS, cleanGlass, glassAlpha, glassSetting, headerCollapsed, onGlassChange, presetOf, readableNote, readableText, setGlass, setHeaderCollapsed, setPreset, setWindowSee, stepGlass, textContrast, toggleGlass, windowSee, windowSeeSupported, worstContrast } from '../web/src/controllerView.ts';
 
 // a localStorage and an event target for the browser functions of controllerView.ts
 function withBrowser(run: (store: Map<string, string>) => void) {
@@ -25,14 +25,6 @@ test('the controller header starts collapsed, and the choice is saved for the ne
   // the task header has its own saved choice
   setHeaderCollapsed('task', false);
   assert.equal(headerCollapsed('controller'), true);
-}));
-
-test('the thin bar for normal tasks is off until the user turns it on', () => withBrowser(() => {
-  assert.equal(taskThinBar(), false);
-  setTaskThinBar(true);
-  assert.equal(taskThinBar(), true);
-  setTaskThinBar(false);
-  assert.equal(taskThinBar(), false);
 }));
 
 test('without storage the header still collapses and the terminal is opaque', () => {

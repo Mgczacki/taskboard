@@ -126,7 +126,7 @@ export const SECTIONS: SectionDef[] = [
     { id: 'controllerView', title: 'Controller view', settings: [
       { id: 'controllerGlass', label: 'See-through controller terminal', words: 'transparent transparency see-through glass ghost blur opacity background text strength shadow outline bold tint contrast slider presets' },
       { id: 'windowSee', label: 'Window see-through while the controller view is open', words: 'transparent translucent window desktop opacity see-through app' },
-      { id: 'taskThinBar', label: 'Fold the header of normal tasks to a thin bar too', words: 'collapse collapsed header compact bar' },
+      { id: 'taskInfoDefault', label: 'Details of a task panel when you open it', words: 'collapse collapsed fold folded header compact bar details info notices task panel' },
     ] },
     { id: 'updates', title: 'Updates', settings: [
       { id: 'autoReload', label: 'Reload automatically when Taskboard is updated', words: 'release reload' },
