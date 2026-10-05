@@ -191,6 +191,8 @@ export async function send(t: Task, text: string, opts: { from: string; kind: Ki
 export function takeForHook(taskId: string, event: string, room = HOOK_ROOM): string | null {
   if (typing.has(taskId) || !known.has(taskId)) return null;
   const t = store.get(taskId); if (!t) return null;
+  // A stopped task can still run hooks in a live session. Keep its messages until its account can work again.
+  if (t.status === 'stopped') { try { agents.checkResumeAccount(t); } catch { return null; } }
   const items = list(taskId);
   const waiting = items.filter(q => q.state === 'queued');
   if (!waiting.length) return null;

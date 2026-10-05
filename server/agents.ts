@@ -980,6 +980,8 @@ export async function sendTaskText(t: Task, text: string, opts: { answer?: boole
   try {
     if (t.status === 'archived' || t.status === 'parked') throw new Error('This task is archived or set aside. Run tb resume <task>, then send again.');
     if (t.openElsewhere) throw new Error('This task is open in another terminal. Move it here before sending a message.');
+    // A stopped task can still have a live session. Do not type into it while its account is limited.
+    if (t.status === 'stopped') checkResumeAccount(t);
     const sessions = await tmux.listSessions();
     if (!sessions) throw new Error('Could not check the task session. Try again.');
     const session = sessions.find(s => s.name === t.session);
