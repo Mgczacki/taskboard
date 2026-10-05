@@ -1,5 +1,6 @@
 // The controller view (task #0 in the task panel): a header that folds to a thin bar, and an optional see-through
-// terminal. Both choices are saved in this browser. Normal tasks can use the same thin bar (a setting, off at first).
+// terminal. Both choices are saved in this browser. Normal tasks fold their header with their own saved state
+// (taskNotices.ts infoOpen).
 import { blend, contrast, type RGBA } from './terminalTheme';
 
 // The see-through terminal. see is the share of the page that shows through the terminal background, in percent
@@ -71,14 +72,11 @@ export const glassAlpha = (g: Glass) => 1 - g.see / 100;
 // Cmd+Alt are keyboard shortcuts (keys.ts), so they do not count. The panel reads it on each keydown and keyup.
 export const clickThroughHeld = (e: { altKey: boolean; ctrlKey: boolean; metaKey: boolean }) => e.altKey && !e.ctrlKey && !e.metaKey;
 
-// The header of the controller starts folded. The header of a normal task folds only when the setting below is on.
+// The header of the controller starts folded
 const HEAD_KEY = { controller: 'tb-ctl-header', task: 'tb-task-header' } as const;
-const THIN_KEY = 'tb-task-thin-bar';
 export type HeadKind = keyof typeof HEAD_KEY;
 export const headerCollapsed = (kind: HeadKind) => (read(HEAD_KEY[kind]) ?? 'collapsed') === 'collapsed';
 export const setHeaderCollapsed = (kind: HeadKind, collapsed: boolean) => write(HEAD_KEY[kind], collapsed ? 'collapsed' : 'open');
-export const taskThinBar = () => read(THIN_KEY) === 'on';
-export const setTaskThinBar = (on: boolean) => write(THIN_KEY, on ? 'on' : 'off');
 
 // The colour that the text is drawn on: the tint colour over the blurred page, at the given alpha.
 export const seenBackground = (termBg: RGBA, behind: RGBA, alpha: number) => blend(termBg, behind, alpha);

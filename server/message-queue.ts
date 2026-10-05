@@ -14,7 +14,10 @@
 // A queued message stays until it is delivered or the user removes it. Its sender (a task) is told through its inbox
 // when the message still waits after WARN_MS, when it fails, when the user removes it, and when it arrives after that
 // warning. A message that was typed only in part and could not be removed from the box fails: it is not
-// typed again without the user (dashboard "Type again").
+// typed again without the user (dashboard "Type again"). A hook does not deliver a failed message either.
+// A failed message closes by itself (state expired) after EXPIRE_MS, when the agent took a turn after the failure: a
+// later message reached it, or its status changed after the failure. A task keeps at most MAX_FAILED failed messages:
+// one more failure closes the oldest. The sender task is told in both cases.
 // Inbox notices have their own record (inbox-delivery.ts). The same loop tries them again when the box is empty.
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -32,7 +35,9 @@ export const TICK_MS = 2000;
 export const WARN_MS = 5 * 60_000; // a message that waits longer shows as a warning, and its sender is told
 export const MAX_OPEN = 50; // messages that wait (queued or failed) for one task
 export const MAX_BYTES = 500_000; // characters of text that wait for one task
-const KEEP_DELIVERED = 20; // delivered messages kept in the file, with the time and the path
+const KEEP_DELIVERED = 20; // delivered and expired messages kept in the file, with the time and the path
+export const EXPIRE_MS = 60 * 60_000; // a failed message closes after this, once the agent took a turn after the failure
+export const MAX_FAILED = 20; // failed messages kept open for one task
 export const HOOK_ROOM = 9000; // characters for messages in one hook answer (Claude Code keeps 10,000 of hook context)
 export const MAX_RETRIES = 5; // typing tries that did not arrive whole or were not submitted, before the message fails
 export const RESUME_MAX_MS = 30 * 60_000; // a task that stops at start is resumed after 1, 2, 4 ... minutes, at most this
@@ -42,7 +47,7 @@ export interface Queued {
   from: string; // a task id, "you" (the dashboard) or "taskboard"
   queued: string;
   expires?: string; // set by older versions, which failed a message after 60 minutes; not used now
-  state: 'queued' | 'failed' | 'delivered';
+  state: 'queued' | 'failed' | 'delivered' | 'expired';
   reason: string;
   tries: number; // typing attempts
   retries?: number; // typing tries that Taskboard removed from the box again (NotTyped 'retry'); MAX_RETRIES fail it
@@ -50,6 +55,7 @@ export interface Queued {
   checks?: number; checkedAt?: string; seen?: string; // screen checks of the 2 s loop, and what the last one saw
   via?: 'hook'; // the user chose "Deliver by hook": the typing loop leaves this message (and the ones after it) alone
   deliveredAt?: string; deliveredBy?: string;
+  closedAt?: string; // expired: when Taskboard closed the failed message
   warnedAt?: string; // the sender was told that the message still waits
 }
 export interface SendResult { state: 'delivered' | 'queued' | 'failed'; reason?: string; warning?: string; resumed?: boolean; id?: string }
@@ -58,12 +64,14 @@ const file = (taskId: string) => join(store.taskDir(taskId), 'message-queue.json
 export function list(taskId: string): Queued[] {
   try { return JSON.parse(readFileSync(file(taskId), 'utf8')) as Queued[]; } catch { return []; }
 }
-const open = (items: Queued[]) => items.filter(q => q.state !== 'delivered');
+// delivered and expired messages are closed: the dashboard does not show them
+const closed = (q: Queued) => q.state === 'delivered' || q.state === 'expired';
+const open = (items: Queued[]) => items.filter(q => !closed(q));
 const known = new Set<string>(); // tasks that may have a queue file, so the loop does not read every task folder
 // touch: the dashboard shows the queue on the task. A screen check that saw the same as before does not update it.
 function write(taskId: string, items: Queued[], touch = true) {
-  const done = items.filter(q => q.state === 'delivered').slice(-KEEP_DELIVERED);
-  items = items.filter(q => q.state !== 'delivered' || done.includes(q));
+  const done = items.filter(closed).slice(-KEEP_DELIVERED);
+  items = items.filter(q => !closed(q) || done.includes(q));
   if (items.length) { mkdirSync(store.taskDir(taskId), { recursive: true }); writeFileSync(file(taskId), JSON.stringify(items, null, 2)); known.add(taskId); }
   else { rmSync(file(taskId), { force: true }); known.delete(taskId); }
   if (touch) store.touch(taskId);
@@ -126,7 +134,7 @@ function delivered(t: Task, kind: Kind, from: string, later: boolean) {
 
 // Tells the task that sent a message what happened to it, with a file in its Taskboard inbox. The sender's hook or
 // prompt gives the file to the agent (inbox-delivery.ts). Messages from the dashboard or from Taskboard have no sender task.
-type News = 'waiting' | 'delivered' | 'failed' | 'removed';
+type News = 'waiting' | 'delivered' | 'failed' | 'removed' | 'expired';
 function tellSender(to: Task, q: Queued, news: News) {
   const from = store.get(q.from);
   if (!from || from.id === to.id || q.kind !== 'message') return;
@@ -137,6 +145,7 @@ function tellSender(to: Task, q: Queued, news: News) {
     ? `${head} is not delivered yet after ${minutes(q.queued)} minutes. #${to.num} did not read it. Last check: ${q.seen || q.reason}\n\nTaskboard keeps it in the queue until #${to.num} gets it or the user removes it. Do not send it again. The user sees it on the dashboard as a warning.`
     : news === 'delivered' ? `${head} was delivered at ${at(q.deliveredAt)} (${q.deliveredBy}).`
     : news === 'failed' ? `${head} failed at ${at(q.triedAt)}. #${to.num} did not read it. Reason: ${q.reason}\n\nThe user can type it again from the dashboard.`
+    : news === 'expired' ? `${head} failed and was not delivered. Taskboard closed it at ${at(q.closedAt)}. #${to.num} did not read it. Reason: ${q.reason}\n\nSend it again if #${to.num} still needs it.`
     : `${head} was removed by the user at ${at(iso())}. #${to.num} did not read it.`;
   const name = `message-${q.id}-${news}.md`;
   try { docs.uploadSystem(from.id, name, `# Message to #${to.num}: ${news === 'waiting' ? 'not delivered yet' : news}\n\n${body}\n\nMessage start:\n\n> ${start.replace(/\n/g, '\n> ')}\n`); inboxDelivery.track(from.id, name); }
@@ -289,7 +298,7 @@ function markTyped(t: Task, id: string, later: boolean, r?: { draft?: 'kept' | '
 
 // The dashboard: type a failed message again (it waits in the queue again), or remove a message.
 export function retry(taskId: string, id: string): Queued | null {
-  const items = list(taskId); const q = items.find(x => x.id === id && x.state !== 'delivered'); if (!q) return null;
+  const items = list(taskId); const q = items.find(x => x.id === id && !closed(x)); if (!q) return null;
   Object.assign(q, { state: 'queued', reason: 'Waiting for an empty input box.' });
   delete q.via;
   // it goes after the other waiting messages
@@ -300,7 +309,7 @@ export function retry(taskId: string, id: string): Queued | null {
 // The dashboard "Deliver by hook": the message waits for the agent's next hook event only; the typing loop leaves it.
 export function viaHook(taskId: string, id: string): Queued | null {
   const t = store.get(taskId); if (!t || !hookEvents(t)) return null;
-  const items = list(taskId); const q = items.find(x => x.id === id && x.state !== 'delivered'); if (!q) return null;
+  const items = list(taskId); const q = items.find(x => x.id === id && !closed(x)); if (!q) return null;
   const wasFailed = q.state === 'failed';
   Object.assign(q, { state: 'queued', via: 'hook', reason: `Waiting for the agent's next hook event: ${hookEvents(t)}.` });
   write(taskId, wasFailed ? [...items.filter(x => x.id !== id), q] : items);
@@ -329,7 +338,7 @@ export function remove(taskId: string, id: string): boolean {
   const items = list(taskId); const q = items.find(x => x.id === id); if (!q) return false;
   write(taskId, items.filter(x => x.id !== id));
   const t = store.get(taskId);
-  if (t && q.state !== 'delivered') tellSender(t, q, 'removed');
+  if (t && !closed(q)) tellSender(t, q, 'removed');
   return true;
 }
 
@@ -342,6 +351,22 @@ function warnLate(taskId: string) {
   for (const q of late) q.warnedAt = iso();
   write(taskId, items);
   for (const q of late) tellSender(t, q, 'waiting');
+}
+
+// Closes failed messages: the ones older than EXPIRE_MS after the agent took a turn, and the oldest ones over MAX_FAILED.
+// A turn after the failure: a later message was delivered after it failed, or the status of the task changed after it.
+export function expireFailed(taskId: string, now = Date.now()) {
+  const t = store.get(taskId); if (!t) return;
+  const items = list(taskId);
+  const failed = items.filter(q => q.state === 'failed');
+  if (!failed.length) return;
+  const failedAt = (q: Queued) => Date.parse(q.triedAt || q.queued);
+  const turnAfter = (q: Queued) => items.some(x => x.state === 'delivered' && x.deliveredAt && Date.parse(x.deliveredAt) > failedAt(q)) || Date.parse(t.statusAt) > failedAt(q);
+  const close = failed.filter((q, i) => i < failed.length - MAX_FAILED || (now - failedAt(q) >= EXPIRE_MS && turnAfter(q)));
+  if (!close.length) return;
+  for (const q of close) Object.assign(q, { state: 'expired', closedAt: iso(now) });
+  write(taskId, items);
+  for (const q of close) tellSender(t, q, 'expired');
 }
 
 // What the dashboard shows on a task: queued and failed messages, and inbox notices that were not delivered yet.
@@ -367,6 +392,7 @@ export async function tick() {
   try {
     for (const id of [...known]) {
       warnLate(id);
+      expireFailed(id);
       if (!chains.has(id) && list(id).some(q => q.state === 'queued')) await flush(id);
     }
     // inbox notices that were not typed: try again when the box is empty (not only when the status changes)

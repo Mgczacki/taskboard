@@ -5,7 +5,8 @@ import type { AllowRule, BuiltInRule, BrowserMode, BrowserStatus, ConfirmRisk, C
 import { cardNotify, cardSound, setCardNotify, setCardSound } from '../cardAlert';
 import { api, autoReload, confirmEnd, DEFAULT_CONFIRM_RISK, DEFAULT_CONTROLLER_APPROVALS, setAutoReload, setConfirmEnd, useStore } from '../api';
 import { reasonText, type ServerHealth } from '../serverStatus';
-import { setTaskThinBar, setWindowSee, taskThinBar, windowSee, windowSeeSupported } from '../controllerView';
+import { setWindowSee, windowSee, windowSeeSupported } from '../controllerView';
+import { infoDefault, setInfoDefault, type InfoDefault } from '../taskNotices';
 import { GlassControls, useGlass, useReadable } from './GlassControls';
 import { onPerfChange, perfOn, setPerfOn } from '../perfStats';
 import { onRendererChange, setWebglOn, webglOn } from '../terminalRenderer';
@@ -91,7 +92,7 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
   useEffect(() => onPerfChange(() => setPerfShown(perfOn())), []);
   const [webgl, setWebgl] = useState(webglOn());
   useEffect(() => onRendererChange(() => setWebgl(webglOn())), []);
-  const [thinBar, setThinBar] = useState(taskThinBar);
+  const [infoDef, setInfoDef] = useState(infoDefault);
   const [accts, setAccts] = useState<Account[]>([]);
   const [routingRules, setRoutingRules] = useState('');
   const [applyAll, setApplyAll] = useState(false); // the confirmation for "Apply to all accounts" is open
@@ -302,9 +303,14 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
                   {winSee.on && <label className="glass-row"><span>Window opacity</span><input type="range" min={40} max={95} step={5} value={winSee.opacity} onChange={e => { setWindowSee({ opacity: Number(e.target.value) }); setWinSeeState(windowSee()); }} /><b>{winSee.opacity}%</b></label>}
                   <div className="sub">Saved for this app. Off at first. The whole window, text too, is drawn at this opacity.</div>
                 </SettingItem>}
-                <SettingItem id="taskThinBar">
-                  <label className="opt" title="The header of a task panel folds to a thin bar with the number, the title and the status, as in the controller view"><input type="checkbox" checked={thinBar} onChange={e => { setTaskThinBar(e.target.checked); setThinBar(e.target.checked); }} /> Fold the header of normal tasks to a thin bar too</label>
-                  <div className="sub">Saved for this app or browser. A change applies to the next task panel that you open.</div>
+                <SettingItem id="taskInfoDefault">
+                  <label className="opt" htmlFor="task-info-default">Details of a task panel when you open it</label>
+                  <select id="task-info-default" className="acct-sel" value={infoDef} onChange={e => { const v = e.target.value as InfoDefault; setInfoDefault(v); setInfoDef(v); }}>
+                    <option value="auto">Open when the task waits on you or has a notice, else folded</option>
+                    <option value="open">Always open</option>
+                    <option value="closed">Always folded</option>
+                  </select>
+                  <div className="sub">The bar above the tabs folds the details: chips, notices, goal and now, links and buttons. A task that you opened or folded keeps your choice. Saved for this app or browser.</div>
                 </SettingItem>
               </SettingGroup>
               <SettingGroup section="browser" id="updates" title="Updates">

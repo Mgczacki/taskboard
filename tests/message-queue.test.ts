@@ -301,6 +301,41 @@ test('a message that was typed only in part fails, stays visible, and can be typ
   assert.match(queue.takeForHook(t.id, 'PostToolUse') || '', /Half/);
 });
 
+// Task 280: task 216 kept two Not delivered cards from 06:57 and 09:13 while later messages reached it by the hook.
+test('a failed message closes after an hour once the agent took a turn, and at most MAX_FAILED stay open', () => {
+  const n = ++num;
+  const now = Date.parse('2026-10-05T12:00:00.000Z'), ago = (min: number) => new Date(now - min * 60_000).toISOString();
+  const t = store.create({ id: `expire-${n}`, num: n, title: 'Expire fixture', agent: 'claude', status: 'working', cwd: root, folder: root, session: `task-${n}`, sessionId: `fixture-${n}`, desc: '' });
+  store.update(t.id, { statusAt: ago(200) });
+  const sender = store.create({ id: `sender-${n}`, num: n + 1000, title: 'Sender', agent: 'claude', status: 'idle', cwd: root, folder: root, session: `task-${n + 1000}`, sessionId: `fixture-${n + 1000}`, desc: '' });
+  const failed = (id: string, min: number, from = 'taskboard') => ({ id, text: `digest ${id}`, kind: 'message', from, queued: ago(min), triedAt: ago(min), state: 'failed', reason: 'Enter was not pressed.', tries: 1 });
+  const write = (items: object[]) => { mkdirSync(store.taskDir(t.id), { recursive: true }); writeFileSync(join(store.taskDir(t.id), 'message-queue.json'), JSON.stringify(items)); queue.start(); queue.stop(); };
+  // old (180 min) and young (30 min), with a later message delivered by the hook at 120 min: only the old one closes
+  write([failed('old', 180, sender.id), { id: 'later', text: 'later', kind: 'message', from: 'taskboard', queued: ago(121), state: 'delivered', deliveredAt: ago(120), deliveredBy: 'UserPromptSubmit hook', reason: '', tries: 1 }, failed('young', 30)]);
+  queue.expireFailed(t.id, now);
+  assert.deepEqual(queue.forView(t.id).map(q => q.id), ['young']);
+  const old = queue.list(t.id).find(q => q.id === 'old')!;
+  assert.equal(old.state, 'expired');
+  assert.equal(old.closedAt, new Date(now).toISOString());
+  assert.match(readFileSync(join(store.taskDir(sender.id), 'inbox', 'message-old-expired.md'), 'utf8'), /failed and was not delivered/, 'the sender task is told');
+  // no turn after the failure: an old failed message stays open
+  write([failed('alone', 180)]);
+  queue.expireFailed(t.id, now);
+  assert.deepEqual(queue.forView(t.id).map(q => q.id), ['alone']);
+  // the status changed after the failure: that is a turn
+  store.update(t.id, { statusAt: ago(100) });
+  queue.expireFailed(t.id, now);
+  assert.deepEqual(queue.forView(t.id), []);
+  // the cap: 22 young failed messages keep the newest MAX_FAILED open
+  store.update(t.id, { statusAt: ago(500) });
+  write(Array.from({ length: queue.MAX_FAILED + 2 }, (_, i) => failed(`f${i}`, 50 - i)));
+  queue.expireFailed(t.id, now);
+  assert.deepEqual(queue.forView(t.id).map(q => q.id), Array.from({ length: queue.MAX_FAILED }, (_, i) => `f${i + 2}`));
+  // an expired message cannot be typed again or given to a hook
+  assert.equal(queue.retry(t.id, 'f0'), null);
+  assert.equal(queue.viaHook(t.id, 'f0'), null);
+});
+
 test('the controller: queued while it does not run, typed when it runs and its box is empty', { timeout: 60000 }, async () => {
   const t = store.create({ id: 'controller', num: 0, title: 'Controller', agent: 'claude', status: 'working', cwd: root, folder: root, session: 'tb-controller', sessionId: 'fixture-ctl', desc: '', role: 'controller' });
   mkdirSync(store.taskDir(t.id), { recursive: true });

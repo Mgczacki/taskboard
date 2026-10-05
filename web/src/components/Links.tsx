@@ -120,17 +120,17 @@ export function LinkMarker({ t, tasks }: { t: Task; tasks: Task[] }) {
 export function LinksSection({ t, tasks, onGo, toast }: { t: Task; tasks: Task[]; onGo: Go; toast: (s: string) => void }) {
   const [adding, setAdding] = useState(false);
   const rows = linkRows(t, tasks), sugs = useSuggestions(t.id);
-  const [open, setOpen] = useState(() => localStorage.getItem('tb-links-open') !== '0');
+  // one line until the user opens it (task 280); the choice is kept for the next panel
+  const [open, setOpen] = useState(() => { try { return localStorage.getItem('tb-links-open') === '1'; } catch { return false; } });
   if (t.machine || t.role === 'controller') return null;
   const toggle = () => { setOpen(o => { try { localStorage.setItem('tb-links-open', o ? '0' : '1'); } catch { /* storage off */ } return !o; }); };
   return <div className="dr-links">
     <div className="lk-head">
-      <button className="lk-fold" onClick={toggle} aria-expanded={open}>{open ? '▾' : '▸'} Links</button>
-      <span className="lk-count">{rows.length}{sugs.length ? ` · ${sugs.length} suggested` : ''}</span>
+      <button className="lk-fold" onClick={toggle} aria-expanded={open} title={open ? 'Hide the links' : 'Show the links, Show linked work and Add link'}>{open ? '▾' : '▸'} Links <span className="lk-count">{rows.length}{sugs.length ? ` · ${sugs.length} suggested` : ''}</span></button>
       <LinkState t={t} tasks={tasks} />
       <span className="sp" />
-      <button className="btn ghost" onClick={() => showLinkedWork({ task: t.id })} title="The state of every task linked to this one">Show linked work</button>
-      <button className="btn ghost" onClick={() => { setAdding(a => !a); setOpen(true); }}>＋ Add link</button>
+      {open && <button className="btn ghost" onClick={() => showLinkedWork({ task: t.id })} title="The state of every task linked to this one">Show linked work</button>}
+      {open && <button className="btn ghost" onClick={() => setAdding(a => !a)}>＋ Add link</button>}
     </div>
     {open && <>{adding && <AddLink t={t} tasks={tasks} toast={toast} close={() => setAdding(false)} />}<LinkList t={t} tasks={tasks} onGo={onGo} toast={toast} /></>}
   </div>;
