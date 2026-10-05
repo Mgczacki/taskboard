@@ -17,6 +17,7 @@ import { beginHold } from '../holdRun';
 import { readTerminalTheme } from '../terminalTheme';
 import { onRendererChange, webglOn } from '../terminalRenderer';
 import { sizeSender } from '../terminalSize';
+import { terminalPaste } from '../terminalPaste';
 import { drawText, liveScreen, paneText, saveScreen, savedScreen, serialize, type PaneScreen } from '../terminalSnapshot';
 
 // Debug record: each terminal keeps its last 300 events (WebSocket messages with their size and first escape
@@ -353,9 +354,8 @@ function TerminalView({ taskId, session, fontSize = 13, autoFocus = false, onFoc
         modes: term.modes, timing: { ...timing }, renders, lastRender, waitingToDrawSince: parsedSince, paneState: lastState, events: [...events] };
     };
     records.set(id, record);
-    // A paste event arrives before xterm.js sends its text. Tell tmux to leave copy mode first.
-    const onPaste = () => { log('paste'); send({ t: 'paste' }); };
-    el.addEventListener('paste', onPaste, true);
+    // Tell tmux to leave copy mode before either xterm or the keyboard fallback sends text.
+    const unpaste = terminalPaste(el, text => term.paste(text), () => { log('paste'); send({ t: 'paste' }); });
     // Shift+Enter: Claude Code and Codex treat ESC+CR as a newline in the prompt
     term.attachCustomKeyEventHandler(e => {
       if (e.type === 'keydown' && e.key === 'Enter' && e.shiftKey) { if (ws && ws.readyState === 1) ws.send('\x1b\r'); return false; }
@@ -373,7 +373,7 @@ function TerminalView({ taskId, session, fontSize = 13, autoFocus = false, onFoc
     term.textarea?.addEventListener('focus', onF);
     if (autoFocus) setTimeout(() => term.focus(), 50);
 
-    return () => { unRenderer(); document.removeEventListener('visibilitychange', restoreDisplay); window.removeEventListener('focus', restoreDisplay); sizes.dispose(); resized.dispose(); clearTimeout(redrawnTimer); clearTimeout(coverQuiet); clearTimeout(coverMax); clearInterval(stallCheck); io.disconnect(); parsed.dispose(); rendered.dispose(); if (records.get(id) === record) records.delete(id); ro.disconnect(); input.dispose(); keyed.dispose(); provider?.dispose(); underline.remove(); for (const type of ['mousedown', 'mouseup', 'click'] as const) el.removeEventListener(type, onModifiedMouse, true); el.removeEventListener('paste', onPaste, true); el.removeEventListener('mousedown', onHoldStart, true); term.textarea?.removeEventListener('focus', onF); ws?.dispose(); termRef.current = null; fitRef.current = () => {};
+    return () => { unRenderer(); document.removeEventListener('visibilitychange', restoreDisplay); window.removeEventListener('focus', restoreDisplay); sizes.dispose(); resized.dispose(); clearTimeout(redrawnTimer); clearTimeout(coverQuiet); clearTimeout(coverMax); clearInterval(stallCheck); io.disconnect(); parsed.dispose(); rendered.dispose(); if (records.get(id) === record) records.delete(id); ro.disconnect(); input.dispose(); keyed.dispose(); provider?.dispose(); underline.remove(); for (const type of ['mousedown', 'mouseup', 'click'] as const) el.removeEventListener(type, onModifiedMouse, true); unpaste(); el.removeEventListener('mousedown', onHoldStart, true); term.textarea?.removeEventListener('focus', onF); ws?.dispose(); termRef.current = null; fitRef.current = () => {};
       unlist(); gone = true;
       // keep the screen only once tmux drew it: before that, the terminal shows the saved one (or nothing)
       if (timing.firstParsed !== undefined) { try { saveScreen(id, serialize(term)); } catch { /* not readable */ } }
