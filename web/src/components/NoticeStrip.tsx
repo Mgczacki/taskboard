@@ -61,6 +61,10 @@ export function noticeActions(n: TaskNotice, c: ActionContext): NoticeAction[] {
       ...(first ? [{ label: 'Dismiss', title: holdsHook(first) ? HOOK_TITLE : DISMISS_TITLE, run: () => dismissItem(first, KIND_LABEL[first.kind], c.toast) }] : []),
     ];
   }
+  if (n.kind === 'permit') return [
+    { label: 'Open permits', title: 'The Permits page: each step, its exit code and its output', primary: n.level === 'error', run: () => { location.hash = 'permits'; } },
+    ...(n.level === 'error' ? [{ label: 'Hide', title: 'Hide this notice in this panel. The Permits page keeps the result. Nothing is sent to the task.', run: () => c.hide(n.key) }] : []),
+  ];
   if (n.kind === 'card') return [{ label: 'Open card', title: 'Open the card in the notification stack', primary: true, run: () => showInStack(`a:${n.ids[0]}`) }];
   if (n.kind === 'stopped') return [
     { label: 'Retry now', title: 'Type "continue" into the agent', primary: true, run: () => act(api.send(t.id, 'continue')) },

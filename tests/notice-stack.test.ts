@@ -138,3 +138,48 @@ test('the notification names the card, or the number of cards', () => {
   assert.equal(alertText([q]).body, '#1 T: Q?');
   assert.equal(alertText([a, q]).title, '2 cards wait on you');
 });
+
+// An approved permit card leaves the stack APPROVED_CARD_MS after this page first saw it running (task 300). Before,
+// the card of permit 3fb83041 (task 281) stayed in the stack as "Running" after the user approved it.
+import { APPROVED_CARD_MS, leavesStackAt, stackApprovals, trackRunning, type RunningSeen } from '../web/src/stack.ts';
+
+test('a running permit card shows for APPROVED_CARD_MS, a pending card stays', () => {
+  const seen: RunningSeen = new Map();
+  const live = [withState('p', 'pending'), withState('r', 'running')];
+  const t0 = 1_000_000;
+  assert.deepEqual(trackRunning(live, live, seen, t0), { failed: [], nextAt: t0 + APPROVED_CARD_MS });
+  assert.equal(leavesStackAt(live[1], seen, t0), t0 + APPROVED_CARD_MS);
+  assert.equal(leavesStackAt(live[0], seen, t0), undefined);
+  assert.deepEqual(stackApprovals(live, seen, t0 + APPROVED_CARD_MS - 1).map(a => a.id), ['p', 'r']);
+  // a later update of the list does not start the time again
+  assert.deepEqual(trackRunning(live, live, seen, t0 + 3000), { failed: [], nextAt: t0 + APPROVED_CARD_MS });
+  assert.deepEqual(stackApprovals(live, seen, t0 + APPROVED_CARD_MS).map(a => a.id), ['p']);
+  assert.equal(trackRunning(live, live, seen, t0 + APPROVED_CARD_MS).nextAt, null);
+  // a pending card stays however long it waits
+  assert.deepEqual(stackApprovals(live, seen, t0 + 3_600_000).map(a => a.id), ['p']);
+});
+
+test('a running permit card that this page has not recorded yet shows', () => {
+  // the first render comes before the effect that records the time
+  assert.deepEqual(stackApprovals([withState('r', 'running')], new Map(), 5).map(a => a.id), ['r']);
+});
+
+test('a permit that this page saw running and that failed is reported once; an approved one is not', () => {
+  const seen: RunningSeen = new Map();
+  const live = [withState('ok', 'running'), withState('bad', 'running'), withState('lost', 'running')];
+  trackRunning(live, live, seen, 0);
+  const all = [withState('ok', 'approved'), withState('bad', 'failed', 'permit', 'Step 1 exited with 2.'), withState('lost', 'unknown')];
+  assert.deepEqual(trackRunning([], all, seen, 9000).failed.map(a => a.id), ['bad', 'lost']);
+  assert.equal(seen.size, 0);
+  assert.deepEqual(trackRunning([], all, seen, 9500).failed, []);
+  // a failed permit that this page never saw running gives no toast: the task panel notice shows it
+  assert.deepEqual(trackRunning([], [withState('old', 'failed')], new Map(), 0).failed, []);
+});
+
+test('a running permit that the Permits page leaves out of the stack keeps its time', () => {
+  const seen: RunningSeen = new Map();
+  const card = withState('r', 'running');
+  trackRunning([card], [card], seen, 100);
+  assert.deepEqual(trackRunning([], [card], seen, 200), { failed: [], nextAt: null });
+  assert.equal(seen.get('r'), 100);
+});
