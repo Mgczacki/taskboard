@@ -139,7 +139,10 @@ function tellSender(to: Task, q: Queued, news: News) {
 }
 
 // Types the text now, or queues it. Throws only for an empty or too long text.
-export async function send(t: Task, text: string, opts: { from: string; kind: Kind }): Promise<SendResult> {
+// opts.holdWhenParked: a message to a parked task waits in the queue (state queued) instead of failing. The typing loop
+// leaves a parked task alone, so the message is typed after the user resumes the task. The group manager rule uses it
+// for messages to a manager that is parked (server/index.ts).
+export async function send(t: Task, text: string, opts: { from: string; kind: Kind; holdWhenParked?: boolean }): Promise<SendResult> {
   const empty = textError(text); if (empty) throw new Error(empty);
   const queue = (state: Queued['state'], reason: string): SendResult => {
     const q = enqueue(t, text, opts.from, opts.kind, state, reason);
@@ -152,6 +155,8 @@ export async function send(t: Task, text: string, opts: { from: string; kind: Ki
     void flush(t.id);
     return r;
   }
+  if (opts.holdWhenParked && t.status === 'parked')
+    return queue('queued', `#${t.num} is parked. Taskboard types the message after the user resumes #${t.num}.`);
   try {
     const r = await typeNow(t, text);
     delivered(t, opts.kind, opts.from, false);

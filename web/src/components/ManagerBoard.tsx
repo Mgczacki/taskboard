@@ -5,7 +5,9 @@ import { PopMenu } from './PopMenu';
 
 type TaskRef = { id: string; num: number; title: string };
 type Audit = { at: string; actor: string; action: string; target: string; result: string; userRequest?: string };
-type Scope = { group: { manager?: string; tasks: string[] }; caps: Record<string, number>; actions: Audit[] };
+type Preset = { name: string; may: string[]; not: string[] };
+type Scope = { group: { manager?: string; tasks: string[] }; caps: Record<string, number>; actions: Audit[];
+  preset: string | null; defaultPreset: string; presets: Record<string, Preset>; never: string[]; rule: string; ruleLimits: string };
 
 const useManagers = () => useSyncExternalStore(subscribeManagers, managersVersion);
 // Read the boards of all groups while the calling view is shown
@@ -110,20 +112,37 @@ function NeedsPanel({ group, rows, manager, open, toast }: { group: string; rows
   </div>;
 }
 
-// Who manages the group, the caps and the last manager actions (task 242), in the group menu
+// Who manages the group, its preset, what the preset allows and the group manager rule (tasks 242 and 273), in the group menu
 export function ManagerScope({ group, tasks }: { group: string; tasks: TaskRef[] }) {
   const [scope, setScope] = useState<Scope | null>(null);
   const load = () => void fetch(`/api/manager/${encodeURIComponent(group)}`).then(r => r.json()).then(setScope).catch(() => {});
   useEffect(load, [group]);
-  const setManager = async (task: string) => {
-    await fetch(`/api/manager/${encodeURIComponent(group)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ task: task || null }) });
+  const setManager = async (body: { task: string | null; preset?: string }) => {
+    await fetch(`/api/manager/${encodeURIComponent(group)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
     load();
   };
   if (!scope) return <div className="manager-scope sub">Loading the manager…</div>;
+  const manager = scope.group.manager || '';
+  const key = scope.preset || scope.defaultPreset;
+  const preset = scope.presets?.[key];
   return <div className="manager-scope">
-    <label style={{ color: 'var(--dim)', margin: '8px 0 2px' }}>◆ Manager <select value={scope.group.manager || ''} onChange={e => void setManager(e.target.value)}>
+    <label style={{ color: 'var(--dim)', margin: '8px 0 2px' }}>◆ Manager <select value={manager} onChange={e => void setManager({ task: e.target.value || null })}>
       <option value="">None</option>{tasks.filter(t => scope.group.tasks.includes(t.id)).map(t => <option key={t.id} value={t.id}>#{t.num} {t.title}</option>)}
     </select></label>
+    {preset && <>
+      <label style={{ color: 'var(--dim)' }}>Preset <select value={key} disabled={!manager} title={manager ? 'What the manager may do without a card' : 'Choose a manager first. A new manager gets this default preset.'}
+        onChange={e => void setManager({ task: manager, preset: e.target.value })}>
+        {Object.entries(scope.presets).map(([k, p]) => <option key={k} value={k}>{p.name}{k === scope.defaultPreset ? ' (default)' : ''}</option>)}
+      </select></label>
+      <div className="sub manager-preset" aria-label="What the preset allows">
+        <b>Without a card, the manager may:</b>
+        <ul>{preset.may.map(x => <li key={x}>{x}</li>)}</ul>
+        {preset.not.length > 0 && <><b>Only with your card:</b><ul>{preset.not.map(x => <li key={x}>{x}</li>)}</ul></>}
+        <b>Never:</b>
+        <ul>{scope.never.map(x => <li key={x}>{x}</li>)}</ul>
+        <div>{scope.rule} {scope.ruleLimits}</div>
+      </div>
+    </>}
     <div className="sub">Limits: {Object.entries(scope.caps).map(([key, value]) => `${key} ${value}`).join(' · ')}</div>
   </div>;
 }

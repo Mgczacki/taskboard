@@ -87,6 +87,8 @@ export interface SigninOverview { template: { profile: boolean; running: boolean
 export interface Scope { id: string; kind: 'worktree' | 'read'; name: string; path: string; at: string; reason: string; repo?: string; branch?: string; base?: string; baseCommit?: string }
 // An allow always rule (server/allow-rules.ts): a task may type into another task without a card
 export type AllowScope = 'pair' | 'both' | 'any';
+// A rule that comes from a role and that nobody stores or revokes (server/manager-role.ts, the group manager rule)
+export interface BuiltInRule { id: string; text: string; limitText: string; groups: { group: string; name: string; manager: string; num?: number; tasks: number; preset: string }[] }
 export interface AllowRule { id: string; kind: 'message' | 'doc'; scope: AllowScope; from?: string; fromNum?: number; fromTitle?: string; to: string; toNum: number; toTitle: string; created: string; card: string; by: 'user'; count: number; lastHour: number; lastAt?: string; text: string }
 export interface Approval { id: string; actor: string; action: string; summary: string; detail: string; created: string; updated?: string; version?: string; state: 'pending' | 'running' | 'approved' | 'denied' | 'failed' | 'expired' | 'unknown' | 'returned'; result?: string; staleFacts?: string; validUntil?: string; unblocks?: string[]; notifyMe?: boolean; returnable?: boolean; allow?: { kind: 'message' | 'doc'; from: string; to: string; choices: { scope: AllowScope; text: string }[]; limitText: string }; decidedBy?: { by: 'user' | 'controller'; userRequest?: string; at: string }; payload?: { permitId?: string; pushId?: string; state?: { forcePush?: boolean }; canPermit?: boolean; message?: string; hash?: string; body?: string; quality?: { state: string; flags: { text: string; start: number; end: number; reason: string; code?: string }[] } } & Partial<MessagePayload> }
 // The structured part of an A2A Notes message card (server/a2anotes/cards.ts MessagePayload)
@@ -360,7 +362,7 @@ export const api = {
   bringBack: (sig: string) => call<{ ok: boolean }>('POST', '/api/dismiss/bring-back', { sig }),
   giveBack: (id: string, comment: string) => call<Approval>('POST', `/api/approvals/${id}/return`, { comment }),
   allowAlways: (id: string, scope: AllowScope) => call<{ rule: AllowRule; approval: Approval }>('POST', `/api/approvals/${id}/allow-always`, { scope }),
-  allowRules: () => call<{ rules: AllowRule[]; limitPerHour: number; limitText: string }>('GET', '/api/allow-rules'),
+  allowRules: () => call<{ rules: AllowRule[]; limitPerHour: number; limitText: string; builtIn?: BuiltInRule[] }>('GET', '/api/allow-rules'),
   revokeAllowRule: (id: string) => call<{ revoked: string }>('POST', `/api/allow-rules/${encodeURIComponent(id)}/revoke`, {}),
   revokeAllAllowRules: () => call<{ revoked: number }>('POST', '/api/allow-rules/revoke-all', {}),
   moveAccount: (id: string, account: string) => call<Task>('POST', `/api/tasks/${id}/move-account`, { account }),

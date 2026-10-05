@@ -1,7 +1,7 @@
 // Settings: what the controller and other agents may do without asking, and this machine's controller. The page has
 // one section for each entry of SECTIONS in settingsIndex.ts, a side list of those sections and a search box.
 import { useEffect, useRef, useState } from 'react';
-import type { AllowRule, BrowserMode, BrowserStatus, ConfirmRisk, ControllerApprovals, MachineInfo, MessageLevel, PushRecord, RestartImpact, RestartResult, Task } from '../api';
+import type { AllowRule, BuiltInRule, BrowserMode, BrowserStatus, ConfirmRisk, ControllerApprovals, MachineInfo, MessageLevel, PushRecord, RestartImpact, RestartResult, Task } from '../api';
 import { cardNotify, cardSound, setCardNotify, setCardSound } from '../cardAlert';
 import { api, autoReload, confirmEnd, DEFAULT_CONFIRM_RISK, DEFAULT_CONTROLLER_APPROVALS, setAutoReload, setConfirmEnd, useStore } from '../api';
 import { reasonText, type ServerHealth } from '../serverStatus';
@@ -540,7 +540,7 @@ function KeySettings({ query }: { query: string }) {
 // Settings > Approvals > Allow always rules (server/allow-rules.ts): each rule in plain words, its deliveries, Revoke
 // and Revoke all. The list reloads every 15 seconds, so new rules and delivery counts show without a page reload.
 function AllowRules({ setErr }: { setErr: (s: string) => void }) {
-  const [data, setData] = useState<{ rules: AllowRule[]; limitPerHour: number; limitText: string } | null>(null);
+  const [data, setData] = useState<{ rules: AllowRule[]; limitPerHour: number; limitText: string; builtIn?: BuiltInRule[] } | null>(null);
   const [confirmAll, setConfirmAll] = useState(false);
   const load = () => api.allowRules().then(setData).catch(e => setErr(String((e as Error).message || e)));
   useEffect(() => { void load(); const timer = setInterval(() => void load(), 15000); return () => clearInterval(timer); }, []);
@@ -549,6 +549,15 @@ function AllowRules({ setErr }: { setErr: (s: string) => void }) {
   return (
     <div className="allow-rules">
       <div className="opt">Tasks that may type into other tasks, or send documents to them, without a card</div>
+      {(data.builtIn || []).map(b => (
+        <div key={b.id} className="allow-rule built-in">
+          <div>
+            <div>{b.text} <span className="sub">(read only)</span></div>
+            <div className="sub">{b.groups.length ? b.groups.map(g => `${g.name}: manager #${g.num ?? g.manager}, ${g.preset}, ${g.tasks} tasks`).join(' · ') : 'No group has a manager now.'}</div>
+            <div className="sub">{b.limitText}</div>
+          </div>
+        </div>
+      ))}
       {data.rules.length ? data.rules.map(r => (
         <div key={r.id} className="allow-rule">
           <div>
@@ -557,7 +566,7 @@ function AllowRules({ setErr }: { setErr: (s: string) => void }) {
           </div>
           <button className="btn" onClick={() => act(api.revokeAllowRule(r.id))}>Revoke</button>
         </div>
-      )) : <div className="sub">No rule. Every message from one task to another waits for your card.</div>}
+      )) : <div className="sub">No allow always rule. Every other message from one task to another waits for your card.</div>}
       <div className="sub">{data.limitText} Taskboard removes a rule when one of its tasks is archived or removed.</div>
       {data.rules.length > 0 && (!confirmAll
         ? <div><button className="btn" onClick={() => setConfirmAll(true)}>Revoke all…</button></div>
