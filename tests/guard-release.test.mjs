@@ -53,6 +53,47 @@ test('the release command with --ref runs when the permit is for that ref', () =
   } finally { g.done(); }
 });
 
+test('a task can send a quoted status to the controller while its release approval stays unused', () => {
+  const g = releaseGuard();
+  try {
+    writePermit(g.dir, 'task-41', 'master');
+    assert.equal(g.run("tb send controller 'Blocker: pnpm release --ref master cannot create the release folder.'"), '');
+    assert.equal(g.run('tb send controller "Status: the release is waiting on a folder."'), '');
+    assert.equal(g.run(`${join(g.dir, 'bin', 'tb')} send controller 'The approved release is blocked.'`), '');
+    assert.equal(existsSync(g.file()), true);
+    assert.equal(g.run('pnpm release --ref master'), '');
+    assert.equal(existsSync(g.file()), false);
+  } finally { g.done(); }
+});
+
+test('controller contact passes without a release approval', () => {
+  const g = releaseGuard();
+  try {
+    assert.equal(g.run("tb send controller 'The push approval is waiting.'"), '');
+    assert.equal(g.run("tb send controller 'The scope request is blocked.'"), '');
+    assert.equal(g.run("tb send controller 'The permit failed.'"), '');
+  } finally { g.done(); }
+});
+
+test('controller contact cannot run another action or change the approved release', () => {
+  const g = releaseGuard();
+  try {
+    writePermit(g.dir, 'task-41', 'master');
+    for (const command of [
+      "tb send controller 'Status'; pnpm release --ref master",
+      "tb send controller 'Status' && pnpm release --ref master",
+      'tb send controller "Status $(pnpm release --ref master)"',
+      'tb send controller "Status `pnpm release --ref master`"',
+      "tb send controller 'Status' | pnpm release --ref master",
+      "tb send other-task 'pnpm release --ref master'",
+      'pnpm release --ref other',
+    ]) {
+      assert.notEqual(g.run(command), '', command);
+      assert.equal(existsSync(g.file()), true, command);
+    }
+  } finally { g.done(); }
+});
+
 test('the guard keeps the permit and names the approved command when the ref differs', () => {
   const g = releaseGuard();
   try {

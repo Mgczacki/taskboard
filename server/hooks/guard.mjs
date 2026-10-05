@@ -19,6 +19,11 @@ try { const j = JSON.parse(input || '{}'); cmd = String((agy ? j.toolCall?.args?
 
 // the real server: the one this agent's Taskboard runs (TASKBOARD_DIR is only set for test servers)
 const tbDir = process.env.TASKBOARD_DIR || join(homedir(), '.taskboard');
+// A quoted message is data for the controller. Check the whole shell command so that no second action can run.
+// Double quotes cannot contain shell expansion or escapes. Single quotes keep those characters literal.
+const contact = cmd.trim().match(/^(tb|\/\S+)\s+send\s+controller\s+(.+)$/);
+if (contact && (contact[1] === 'tb' || contact[1] === join(tbDir, 'bin', 'tb')) &&
+    (/^'[^'\r\n]+'$/.test(contact[2]) || /^"[^"$`\\\r\n]+"$/.test(contact[2]))) process.exit(0);
 let serverPid = '';
 try { serverPid = String(JSON.parse(readFileSync(join(tbDir, 'server.pid'), 'utf8')).pid); } catch { /* not running */ }
 const socket = process.env.TASKBOARD_TMUX_SOCKET || 'taskboard';
