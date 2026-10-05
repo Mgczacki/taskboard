@@ -23,6 +23,7 @@ export interface ActionContext {
   clearError: () => void; clearDrop: () => void; hide: (key: string) => void;
   moveAccount?: () => void; // the Move account panel (not for the controller)
   resumeAnyway?: () => void; // the error "Still open ..." can resume here anyway
+  autoMessage?: string; // the auto-continue message (Settings) that Continue types after a model error
 }
 
 const each = (ids: string[], f: (id: string) => Promise<unknown>) => Promise.all(ids.map(f));
@@ -44,6 +45,14 @@ export function noticeActions(n: TaskNotice, c: ActionContext): NoticeAction[] {
     } });
     if (qs.length) out.push({ label: 'Remove', title: `Remove ${them(qs.length, 'the message', 'the # messages')}. ${them(qs.length, 'It is', 'They are')} not delivered, and a sender task is told.`, run: () => act(each(qs.map(q => q.id), id => api.queueAction(t.id, id, 'remove'))) });
     return out;
+  }
+  if (n.kind === 'agent-error') {
+    if (n.level !== 'error') return [];
+    const message = c.autoMessage || 'continue';
+    return [
+      { label: 'Continue', title: `Type "${message}" into the agent now, as you would by hand`, primary: true, run: () => act(api.send(t.id, message)) },
+      { label: 'Dismiss', title: 'Mark the error as seen. The task shows as idle; the same error is not shown again.', run: () => act(api.dismissAgentError(t.id)) },
+    ];
   }
   if (n.kind === 'question') {
     const first = c.pending?.find(p => p.id === n.ids[0]);

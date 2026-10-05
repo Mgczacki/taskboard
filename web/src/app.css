@@ -903,6 +903,9 @@ table.keyset .keycell { text-align: right; white-space: normal; }
 .nss-full { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 30vh; overflow: auto; padding: 6px 10px 8px; border-top: 1px solid var(--line); color: var(--muted); }
 .ns-history { margin-bottom: 12px; font-size: 12px; color: var(--muted); }
 .ns-history ul { margin: 4px 0 0; padding-left: 18px; }
+/* a model error of task 278: the strip shows the error; this row in the details shows and changes auto-continue */
+.ae-row { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: center; margin: -2px 0 6px; font-size: 12px; }
+.ae-row .ae-auto { display: inline-flex; gap: 6px; align-items: center; color: var(--muted); }
 
 /* The see-through controller terminal. The drawer blurs the page behind it (backdrop-filter, set inline in TaskPanel.tsx
    because the CSS minifier drops a backdrop-filter that uses var()). The header and the terminal box draw the theme

@@ -68,6 +68,26 @@ test('order: errors, then warnings, then information; oldest first within a leve
   assert.equal(list[3].title, 'Not delivered after 40 min · Message from #243');
 });
 
+test('a model error of task 278 is one strip item: an error with Continue and Dismiss when stopped, information while it retries', async () => {
+  const agentError = { kind: 'overloaded', text: 'API Error: 529 Overloaded', source: 'hook', at: ago(4), phase: 'stopped', since: ago(4), seen: ago(4), count: 1 } as const;
+  const stopped = task({ status: 'stopped', stopReason: 'Model overloaded.', errorLabel: 'Model overloaded', agentError, autoContinueOn: false, statusSource: '' });
+  const list = N.taskNotices({ t: stopped, now, autoMessage: 'go on' });
+  assert.deepEqual(list.map(n => [n.kind, n.level, n.title]), [['agent-error', 'error', 'Model overloaded']], 'no second "stopped" item');
+  assert.match(list[0].reason, /529 Overloaded.*Auto-continue is off for this task/);
+  const sent: string[] = [];
+  const orig = { send: api.send, dismiss: api.dismissAgentError };
+  Object.assign(api, { send: async (_: string, text: string) => { sent.push(`send ${text}`); }, dismissAgentError: async () => { sent.push('dismiss'); } });
+  try {
+    const acts = noticeActions(list[0], { t: stopped, act: p => p, toast: () => {}, clearError: () => {}, clearDrop: () => {}, hide: () => {}, autoMessage: 'go on' });
+    assert.deepEqual(acts.map(a => a.label), ['Continue', 'Dismiss']);
+    for (const a of acts) await a.run();
+    assert.deepEqual(sent, ['send go on', 'dismiss']);
+  } finally { Object.assign(api, { send: orig.send, dismissAgentError: orig.dismiss }); }
+  const retrying = N.taskNotices({ t: task({ status: 'working', errorLabel: 'Model overloaded', agentError: { ...agentError, phase: 'retrying' }, statusSource: '' }), now });
+  assert.deepEqual(retrying.map(n => [n.kind, n.level]), [['agent-error', 'info']]);
+  assert.match(retrying[0].reason, /retries by itself/);
+});
+
 test('a notice that is no longer true goes away: the delivered message, the answered question', () => {
   const pending = [{ id: 'p1', taskId: 't216', question: 'Should #261 start?', createdAt: ago(3) }] as never[];
   const before = N.taskNotices({ t: task({ queue: [failedTyping] }), pending, now });

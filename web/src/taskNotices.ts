@@ -8,9 +8,10 @@
 import type { Approval, PendingItem, QueuedMessage, Task } from './api';
 import { fmtWait } from './api';
 import { queueReason } from './components/QueuedMessage';
+import { autoText, errorDetail } from './agentErrorText';
 
 export type NoticeLevel = 'error' | 'warn' | 'info';
-export type NoticeKind = 'message' | 'inbox' | 'question' | 'card' | 'stopped' | 'restart-failed' | 'resumed' | 'error' | 'hook-note' | 'drop' | 'imported';
+export type NoticeKind = 'agent-error' | 'message' | 'inbox' | 'question' | 'card' | 'stopped' | 'restart-failed' | 'resumed' | 'error' | 'hook-note' | 'drop' | 'imported';
 export interface TaskNotice {
   key: string; // stable: the same notice keeps its key while the task changes
   kind: NoticeKind; level: NoticeLevel;
@@ -33,15 +34,16 @@ const clock = (iso: string) => { const d = new Date(iso); return isNaN(+d) ? '' 
 export const isHookNote = (s?: string) => !!s && /queued messages? (was|were) given to the agent by the .* hook/.test(s);
 
 export interface NoticeInput {
-  t: Pick<Task, 'id' | 'num' | 'status' | 'statusAt' | 'statusSource' | 'stopReason' | 'queue' | 'interrupted' | 'restartFailed' | 'imported'>;
+  t: Pick<Task, 'id' | 'num' | 'status' | 'statusAt' | 'statusSource' | 'stopReason' | 'queue' | 'interrupted' | 'restartFailed' | 'imported' | 'errorLabel' | 'agentError' | 'autoContinueOn'>;
   pending?: PendingItem[]; // question cards of this task
   approvals?: Approval[]; // waiting approval cards of this task
   error?: string; // the last error of a panel button
   drop?: string; // the result of files dropped on the panel
+  autoMessage?: string; // the auto-continue message (Settings), for the text of a model error
   now?: number;
 }
 
-export function taskNotices({ t, pending = [], approvals = [], error, drop, now = Date.now() }: NoticeInput): TaskNotice[] {
+export function taskNotices({ t, pending = [], approvals = [], error, drop, autoMessage = 'continue', now = Date.now() }: NoticeInput): TaskNotice[] {
   const out: TaskNotice[] = [];
   // queued and failed messages: one item for each state, kind and sender
   const groups = new Map<string, QueuedMessage[]>();
@@ -70,7 +72,16 @@ export function taskNotices({ t, pending = [], approvals = [], error, drop, now 
     const refused = a.action === 'tool-refusal';
     out.push({ key: `a:${a.id}`, kind: 'card', level: 'warn', title: refused ? 'Refused command' : 'Waits for your approval', reason: oneLine(a.summary), full: a.detail || a.summary, at: a.created, count: 1, ids: [a.id] });
   }
-  if (t.status === 'stopped') {
+  // a model or API error (task 278): stopped needs you; working means the agent retries or Taskboard continued it
+  const modelError = !!(t.errorLabel && t.agentError);
+  if (modelError && t.status === 'stopped') {
+    const e = t.agentError!, detail = errorDetail(e), auto = autoText(t, autoMessage);
+    out.push({ key: `agent-error:${e.at || e.seen}`, kind: 'agent-error', level: 'error', title: t.errorLabel!, reason: oneLine(`${detail} ${auto}`), full: `${detail}${auto ? `\n\n${auto}` : ''}`, at: e.at || e.seen || t.statusAt, count: 1, ids: [] });
+  } else if (modelError && t.status === 'working') {
+    const e = t.agentError!, what = e.phase === 'retrying' ? 'The agent retries by itself. Nothing to do.' : 'Taskboard continued the agent after the error.';
+    out.push({ key: `agent-error:${e.at || e.seen}:${e.phase}`, kind: 'agent-error', level: 'info', title: t.errorLabel!, reason: oneLine(`${errorDetail(e)} ${what}`), full: `${errorDetail(e)}\n\n${what}`, at: e.at || e.seen || t.statusAt, count: 1, ids: [] });
+  }
+  if (t.status === 'stopped' && !modelError) {
     const why = (t.stopReason || 'Stopped').replace(/\.$/, '');
     out.push({ key: `stopped:${t.statusAt}`, kind: 'stopped', level: 'error', title: why, reason: 'The agent is not working.', full: `${why}. The agent is not working.`, at: t.statusAt, count: 1, ids: [] });
   }
