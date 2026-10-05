@@ -21,6 +21,16 @@ export function forTask(id: string): string {
 
 export const fileFor = (id: string) => { forTask(id); return join(dir, id); };
 
+// At server start: a token and a token file for each task. A session launched before TB_TASK_TOKEN existed keeps its
+// old environment, and tb then reads the token from this file (bin/tb taskKey).
+export function ensure(ids: string[]) {
+  let added = false;
+  for (const id of ids) if (!tokens[id]) { tokens[id] = randomBytes(32).toString('hex'); added = true; }
+  if (added) writeFileSync(file, JSON.stringify(tokens), { mode: 0o600 });
+  mkdirSync(dir, { recursive: true });
+  for (const id of ids) writeFileSync(join(dir, id), tokens[id], { mode: 0o600 });
+}
+
 export function actorFor(token: string | undefined): string | undefined {
   if (!token) return;
   return Object.keys(tokens).find(id => tokens[id] === token);

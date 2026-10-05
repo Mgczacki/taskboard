@@ -148,6 +148,7 @@ canvasOrder.load();
 for (const t of store.all()) if (t.openElsewhere && (t.status as string) === 'elsewhere' || t.openElsewhere && t.status === 'suspended')
   store.update(t.id, { status: 'idle', transcript: t.transcript || importer.transcriptFor(t.agent, t.sessionId || '', (accounts.get(t.account) || accounts.defaultFor(t.agent)).dir) });
 installRuntimeFiles();
+taskToken.ensure(store.all().filter(t => t.id !== 'controller' && t.role !== 'controller').map(t => t.id));
 agents.writeClaudeSettings();
 await agents.installAgyPlugin();
 await tmuxHealth.repairAtStart();
@@ -168,7 +169,10 @@ app.use((req, res, next) => {
   if (actor) req.headers['x-tb-actor'] = actor;
   else if (claimed === 'controller' && isControllerToken(req.get('x-tb-mail-controller'))) req.headers['x-tb-actor'] = 'controller';
   else delete req.headers['x-tb-actor'];
-  if (claimed && !req.headers['x-tb-actor']) return res.status(403).json({ error: 'Task identity requires its token.' });
+  // tb names the task of its session in x-tb-actor (bin/tb actorHeaders). A request that names a task without that
+  // task's token is refused, so a session that lost its token never acts as the user.
+  if (claimed && !req.headers['x-tb-actor']) return res.status(403).json({ error: 'Task identity requires its token. This session has no task token. Park and resume the task, or ask the controller.' });
+  if (claimed && req.headers['x-tb-actor'] !== claimed) return res.status(403).json({ error: 'The task token belongs to another task.' });
   if (actor && req.path.startsWith('/api/hooks/') && req.body?.taskId && req.body.taskId !== actor)
     return res.status(403).json({ error: 'A task hook reports its own task only.' });
   next();
