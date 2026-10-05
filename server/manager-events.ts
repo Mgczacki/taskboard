@@ -20,10 +20,17 @@ const safe = (text: string) => text.replace(/\[Taskboard event digest[^\]]*\]/gi
 const timers = new Map<string, NodeJS.Timeout>();
 const exec = promisify(execFile);
 const backoff = [60_000, 120_000, 300_000, 600_000];
+const fromManager = (event: ManagerEvent) => groups.get(event.group)?.manager === event.task;
+const selfOnlyDigest = (text: string, manager: store.Task) => {
+  const header = /^\[Taskboard event digest, [^\n]+, group .+, (\d+) events\]/.exec(text);
+  if (!header) return false;
+  const tasks = [...text.matchAll(/^- #([^\s]+) /gm)].map(x => x[1]);
+  return tasks.length > 0 && tasks.length === Number(header[1]) && tasks.every(task => task === String(manager.num) || task === manager.id);
+};
 
 export function record(task: string, kind: string, text: string, immediate = false) {
   for (const g of groups.groupsOf(task)) {
-    if (!g.manager) continue;
+    if (!g.manager || g.manager === task) continue;
     const event: ManagerEvent = { at: new Date().toISOString(), group: g.id, task, kind, text: safe(text).slice(0, 500) };
     appendFileSync(eventFile, JSON.stringify(event) + '\n');
     queue.push(event); save();
@@ -36,9 +43,10 @@ export async function flush(group: string) {
   const timer = timers.get(group); if (timer) { clearTimeout(timer); timers.delete(group); }
   const g = groups.get(group); const manager = g?.manager && store.get(g.manager);
   if (!manager) return;
-  const events = queue.filter(x => x.group === group);
-  if (!events.length) return;
+  const events = queue.filter(x => x.group === group && !fromManager(x));
+  if (!queue.some(x => x.group === group)) return;
   queue.splice(0, queue.length, ...queue.filter(x => x.group !== group)); save();
+  if (!events.length) return;
   const lines = events.map(x => `- #${store.get(x.task)?.num || x.task} ${x.kind}: ${x.text}`);
   const digest = `[Taskboard event digest, ${new Date().toISOString()}, group ${g.name}, ${events.length} events]\n${lines.join('\n')}\nBoard: tb board "${g.name}"`;
   try { await messageQueue.send(manager, digest, { from: 'taskboard', kind: 'message' }); }
@@ -46,7 +54,7 @@ export async function flush(group: string) {
 }
 
 export function heartbeat(group: string) {
-  const events = queue.filter(x => x.group === group);
+  const events = queue.filter(x => x.group === group && !fromManager(x));
   const manager = groups.get(group)?.manager;
   const lastTurn = manager ? store.get(manager)?.updated : undefined;
   const notResponding = !!events.length && !!lastTurn && Date.now() - Date.parse(lastTurn) > 30 * 60_000;
@@ -77,6 +85,15 @@ async function checkCi() {
 }
 
 export function start() {
+  // Older queue files may hold events from the manager itself. Remove them before scheduling delivery.
+  const pending = queue.filter(x => !fromManager(x));
+  if (pending.length !== queue.length) { queue.splice(0, queue.length, ...pending); save(); }
+  for (const managerId of new Set(groups.all().map(g => g.manager).filter((id): id is string => !!id))) {
+    const manager = store.get(managerId); if (!manager) continue;
+    for (const message of messageQueue.list(managerId))
+      if (message.state === 'queued' && message.from === 'taskboard' && selfOnlyDigest(message.text, manager))
+        messageQueue.remove(managerId, message.id);
+  }
   const status = new Map(store.all().map(t => [t.id, t.status]));
   store.onTaskChange(t => {
     const before = status.get(t.id); status.set(t.id, t.status);
