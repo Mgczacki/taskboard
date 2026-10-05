@@ -11,7 +11,8 @@ import { NewTask } from './components/NewTask';
 import { StyleSwitcher } from './components/StyleSwitcher';
 import { TaskPanel } from './components/TaskPanel';
 import { Terminal } from './components/Terminal';
-import { AgentChip, Dot, StatusLabel, ThreeLines } from './components/ui';
+import { overloadBanners } from './agentErrorText';
+import { AgentChip, Dot, ErrorMark, StatusLabel, ThreeLines } from './components/ui';
 import { ManagerBadge } from './components/ManagerBoard';
 import { setManagerGroups } from './managerBoard';
 import { BoardView, ListView } from './components/Views';
@@ -343,6 +344,9 @@ export function App() {
       {groupPrompt && <GroupPrompt ids={groupPrompt} close={() => setGroupPrompt(null)} done={(g, openWin) => { setGroupPrompt(null); setSelected(new Set()); toast(`Group “${g.name}” created`); if (openWin) openInWindow('g:' + g.id); else { setView('g:' + g.id); go('canvas'); } }} />}
       {role === 'sandbox' && <div className="sandbox-bar" title={`This is a sandbox: a separate test copy of Taskboard (${machineName}). Its agents and tasks are not your real ones.`}>Sandbox · {machineName} · not your real Taskboard</div>}
       {(away || banner) && <div className={`server-bar ${away ? 'away' : ''}`} role="status">{away || banner?.text}{!away && <button className="btn ghost" onClick={dismissBanner}>Close</button>}</div>}
+      {overloadBanners(tasks).length > 0 && <div className="server-bar overload-bar" role="status" title="Taskboard does not switch accounts or models because of this. Each task shows its own error and its own auto-continue state.">
+        <div>{overloadBanners(tasks).map(b => <div key={b.account}><b>{b.text}</b></div>)}It usually passes. This is a health note, not a limit.</div>
+      </div>}
       {tmuxProblem && tmuxProblem.pid !== tmuxClosed && <div className="server-bar away tmux-bar" role="alert">
         <div>
           {tmuxProblem.text}
@@ -462,7 +466,7 @@ function GroupTree({ g, tasks, open }: { g: Group; tasks: Task[]; open: (id: str
   const rows = treeDepth(linkOrder(showReplaced ? list : list.filter(t => !isReplaced(t)), tasks), tasks, 'deps');
   return <>
     {rows.map(({ t, depth, also }) => <div key={t.id} className="rail-item lk-child" style={{ '--depth': depth } as React.CSSProperties} onClick={() => open(t.id)} title={`#${t.num} ${t.title}${also.length ? ` · also blocked by ${also.map(id => '#' + tasks.find(x => x.id === id)?.num).join(' ')}` : ''}`}>
-      {depth > 0 && <span className="lk-indent">└</span>}<Dot s={t.status} /><span className="t">#{t.num} {t.title}</span><ManagerBadge id={t.id} /><LinkMarker t={t} tasks={tasks} /></div>)}
+      {depth > 0 && <span className="lk-indent">└</span>}<Dot s={t.status} /><span className="t">#{t.num} {t.title}</span><ErrorMark t={t} /><ManagerBadge id={t.id} /><LinkMarker t={t} tasks={tasks} /></div>)}
     {replaced.length > 0 && <div className="rail-item lk-child" onClick={() => setShowReplaced(x => !x)} title={replaced.map(t => `#${t.num} ${t.title}`).join('\n')}><span className="lk-mk super">⤳</span><span className="t">{showReplaced ? 'Hide' : 'Show'} {replaced.length} replaced</span></div>}
     {!list.length && <div className="rail-empty lk-child">No live tasks</div>}
   </>;

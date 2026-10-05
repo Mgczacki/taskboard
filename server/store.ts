@@ -4,6 +4,7 @@ import matter from 'gray-matter';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { TASKS_DIR, TB_DIR } from './config.ts';
+import type { AgentError } from './agent-errors.ts';
 
 export type Status = 'working' | 'needs-you' | 'unread' | 'idle' | 'stopped' | 'review' | 'suspended' | 'parked' | 'archived';
 export type Agent = 'claude' | 'codex' | 'antigravity';
@@ -32,6 +33,10 @@ export interface Task {
   ask?: string;            // what it waits for
   waitingOn?: WaitingOn;
   stopReason?: string;
+  // a model or API error that stopped the agent or that it retries (server/agent-error-watch.ts)
+  agentError?: AgentError;
+  errorSeenAt?: string;    // the time of the newest error record that Taskboard acted on; older records are not read again
+  autoContinue?: 'on' | 'off'; // this task only; unset: the account setting, then Settings > Auto-continue
   seenAt?: string;         // when you last opened the task
   interrupted?: string;
   groups?: string[];
@@ -108,7 +113,8 @@ export const terminalLog = (id: string) => join(taskDir(id), 'terminal.log');
 
 function write(t: Task) {
   const { desc, ...fm } = t;
-  const clean = Object.fromEntries(Object.entries(fm).filter(([, v]) => v !== undefined && v !== null && v !== ''));
+  // the YAML writer refuses undefined, also inside an object (for example agentError.auto.nextAt): JSON drops it
+  const clean = Object.fromEntries(Object.entries(fm).filter(([, v]) => v !== undefined && v !== null && v !== '').map(([k, v]) => [k, v && typeof v === 'object' ? JSON.parse(JSON.stringify(v)) : v]));
   writeFileSync(join(TASKS_DIR, t.id + '.md'), matter.stringify(`# ${t.title}\n\n${desc}\n`, clean));
 }
 

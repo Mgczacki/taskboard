@@ -23,7 +23,8 @@ import { LATE_KIND, lateMessages, QueueActions, queueLabel, queueReason } from '
 import { KIND_LABEL, PendingCard } from './PendingCard';
 import { isMessage, reminder, sortTime } from '../messageCard';
 import { Terminal } from './Terminal';
-import { AgentChip, Dot, StatusLabel, ThreeLines } from './ui';
+import { AgentChip, Dot, StatusLabel, ThreeLines, useAutoMessage } from './ui';
+import { autoText, errorDetail } from '../agentErrorText';
 import { ManagerBadge } from './ManagerBoard';
 import { hashKind, KIND_NAME, rowMatches } from '../waitingSummary';
 
@@ -59,6 +60,7 @@ export function dismissedRows(dismissals: Dismissal[], hidden: PendingItem[], ta
 }
 
 export function WaitingPage({ tasks, allTasks, openTask, openController, toast }: { tasks: Task[]; allTasks: Task[]; openTask: (id: string) => void; openController: () => void; toast: Toast }) {
+  const autoMessage = useAutoMessage();
   const { approvals, pending, answered, dismissedPending, dismissals } = useStore();
   useKeymap();
   const [view, setView] = useState<View>('all');
@@ -142,8 +144,11 @@ export function WaitingPage({ tasks, allTasks, openTask, openController, toast }
         {cur.approval && <ApprovalCard key={cur.id} a={cur.approval} allTasks={allTasks} setOpenId={openTask} openController={openController} toast={toast} />}
         {cur.task && !cur.dismissal && <div className="pcard"><div className="pc-h"><Dot s={cur.task.status} /><b>#{cur.task.num} {cur.task.title}</b><StatusLabel s={cur.task.status} /><AgentChip a={cur.task.agent} /><span className="pc-sp" /><span className="pc-age">waiting {fmtWait(cur.task.waitMin)}</span></div>
           <ThreeLines t={cur.task} />
+          {cur.task.status === 'stopped' && cur.task.errorLabel && cur.task.agentError && <div className={`pc-note ${cur.task.agentError.kind === 'stalled' ? 'info' : 'warn'}`}><b>{cur.task.errorLabel}.</b> {errorDetail(cur.task.agentError)} {autoText(cur.task, autoMessage)}</div>}
           <div className="pc-row"><button className="btn" onClick={() => openTask(cur.task!.id)} title="Open task panel: the terminal and the details of this task.">Open task panel</button>
-            <button className="btn" onClick={() => dismiss(cur)} title={`${DISMISS_TITLE} Key: ${keysText('waitingDismiss')}.`}>Dismiss</button>
+            {cur.task.status === 'stopped' && cur.task.errorLabel && <button className="btn primary" title={`Type "${autoMessage}" into the agent now, as you would by hand`} onClick={() => void api.send(cur.task!.id, autoMessage).then(() => toast(`Sent "${autoMessage}" to #${cur.task!.num}.`)).catch(e => toast(String((e as Error).message || e)))}>Continue</button>}
+            {cur.task.status === 'stopped' && cur.task.errorLabel ? <button className="btn" onClick={() => void api.dismissAgentError(cur.task!.id).catch(e => toast(String((e as Error).message || e)))} title="Mark the error as seen. The task shows as idle and leaves this list; the same error is not shown again.">Dismiss</button>
+            : <button className="btn" onClick={() => dismiss(cur)} title={`${DISMISS_TITLE} Key: ${keysText('waitingDismiss')}.`}>Dismiss</button>}
             <button className="btn" onClick={() => void api.setStatus(cur.task!.id, 'parked')} title={SET_ASIDE_TITLE}>Set aside</button></div></div>}
         {showTerm && cur.taskId && !cur.done && <div className="wt-term"><Terminal key={cur.taskId} taskId={cur.taskId} /></div>}
       </> : <div className="wt-empty">Every agent is working or done.</div>}</div>

@@ -1,6 +1,8 @@
 import type { Status, Task } from '../api';
-import { AGENT_NAME, ATTN, STATUS_LABEL, fmtWait } from '../api';
+import { AGENT_NAME, ATTN, STATUS_LABEL, api, fmtWait } from '../api';
+import { useEffect, useState } from 'react';
 import { keyLabel } from '../keys';
+import { errorDetail, errorTone } from '../agentErrorText';
 
 // the first key of an action in keys.ts (nothing when the user removed its keys); the caller calls useKeymap()
 export const Kbd = ({ id }: { id: string }) => keyLabel(id) ? <kbd>{keyLabel(id)}</kbd> : null;
@@ -12,6 +14,23 @@ export const WhereChip = ({ t }: { t: Task }) => t.openElsewhere ? <span classNa
 // the agent asked the user for help in the task browser (tb browser ask); Done in the Browser tab answers it
 export const BrowserAskChip = ({ t }: { t: Task }) => t.browserAsk ? <span className="chip bw-askchip" title={`The agent asks you in the Browser tab: ${t.browserAsk}`}><i />Waits for you in the browser</span> : null;
 export const MachineChip = ({ t }: { t: Task }) => t.machine ? <span className="chip mchip" title={`Runs on ${t.machine.name}`}><span className="mdot" />{t.machine.name}</span> : null;
+// a model or API error of the task (server/agent-error-watch.ts): "Stopped: model overloaded" or, in a calm color,
+// "Retrying (attempt 3/10)" while the agent still retries by itself
+export const ErrorChip = ({ t }: { t: Task }) => {
+  const tone = errorTone(t);
+  return tone ? <span className={`chip errchip ${tone}`} title={errorDetail(t.agentError!)}>{t.errorLabel}</span> : null;
+};
+// the text that Continue and auto-continue type (Settings > Agent errors), "continue" until the settings are read
+export function useAutoMessage(): string {
+  const [message, setMessage] = useState('continue');
+  useEffect(() => { let live = true; api.info().then(i => { if (live) setMessage(i.settings.agentErrors?.message || 'continue'); }).catch(() => {}); return () => { live = false; }; }, []);
+  return message;
+}
+// the same in one character, for the narrow sidebar rows: "!" for a stop, "↻" for a retry; the tooltip has the text
+export const ErrorMark = ({ t }: { t: Task }) => {
+  const tone = errorTone(t);
+  return tone ? <span className={`errmark ${tone}`} title={`${t.errorLabel}. ${errorDetail(t.agentError!)}`} aria-label={t.errorLabel}>{tone === 'stopped' ? '!' : '↻'}</span> : null;
+};
 export const StatusLabel = ({ s }: { s: Status }) => <span className={`st-label ${s}`}>{STATUS_LABEL[s]}</span>;
 
 // The three lines every task shows in the same place: goal (your words), where the agent is, what it waits for.

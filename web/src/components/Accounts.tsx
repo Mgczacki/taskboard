@@ -10,7 +10,7 @@ import { SettingItem } from './SettingsLayout';
 export interface Account {
   id: string; agent: Agent; name: string; dir: string; isDefault?: boolean; maxParallel: number;
   routingRules?: string;
-  limited?: { at: string; note: string }; status: { signedIn: boolean; who?: string }; running: number;
+  limited?: { at: string; note: string }; health?: string; status: { signedIn: boolean; who?: string }; running: number;
   usage?: { windows: { label: string; usedPct: number; resetsAt?: number }[]; at: string; source: string; plan?: string };
   usageStale?: boolean; usageStaleHours?: number; // data older than usageStaleHours counts as unknown (server/accounts.ts)
 }
@@ -195,7 +195,7 @@ export function AccountsPage({ tasks }: { tasks: Task[] }) {
           <tr key={a.id} className="r">
             <td><span className={`chip agent-${a.agent}`}>{AGENT_NAME[a.agent]}</span> <b>{a.name}</b><div className="mono" style={{ marginTop: 4 }}>{short(a.dir)}</div><label className="sub">Routing rule<input className="routing-rule" type="text" maxLength={500} defaultValue={a.routingRules || ''} key={`${a.id}:${a.routingRules || ''}`} placeholder="When should the controller use this account?" onBlur={e => { if (e.target.value !== (a.routingRules || '')) void saveRule(a, e.target.value); }} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} /></label></td>
             <td>{a.status.signedIn ? <span className="st-label unread">✓ signed in</span> : <span className="st-label needs-you">not signed in</span>}<div className="sub">{a.status.who || ''}</div></td>
-            <td>{a.limited && <><span className="st-label stopped">stopped by a limit</span><div className="sub">since {fmtWait(Math.round((Date.now() - Date.parse(a.limited.at)) / 60000))} ago · {a.limited.note}</div></>}<UsageBars a={a} /></td>
+            <td>{a.health && <div className="sub ae-health" title="Several tasks of this account stopped on an overloaded model in the last 15 minutes. It usually passes. Taskboard does not switch accounts or models because of it.">Health note, not a limit: {a.health}</div>}{a.limited && <><span className="st-label stopped">stopped by a limit</span><div className="sub">since {fmtWait(Math.round((Date.now() - Date.parse(a.limited.at)) / 60000))} ago · {a.limited.note}</div></>}<UsageBars a={a} /></td>
             <td className="max-cell"><span className="mono">{a.running} / </span><MaxTasksInput value={a.maxParallel} label={`Maximum number of tasks for ${a.name}`} onSave={n => saveMax(a, n)} /> <span className="sub">tasks</span>
               <div className="sub mono">{tasksOn(a).map(t => '#' + t.num).slice(0, 6).join(' ')}</div>
               {a.running >= a.maxParallel && <div className="sub">{a.running > a.maxParallel ? `${a.running} run, which is more than the maximum. They keep running.` : 'At the maximum.'} New tasks on this account are refused until fewer than {a.maxParallel} run.</div>}</td>

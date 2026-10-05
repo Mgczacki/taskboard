@@ -75,6 +75,12 @@ export const SECTIONS: SectionDef[] = [
       { id: 'askAccount', label: 'Account', words: 'btw ask side question ?' },
       { id: 'askModel', label: 'Model', words: 'btw ask side question ? sonnet haiku opus' },
     ] },
+    { id: 'agentErrors', title: 'Model errors and auto-continue', settings: [
+      { id: 'autoContinue', label: 'Auto-continue after a model error', words: 'overloaded 529 capacity rate limit retry stopped continue error api' },
+      { id: 'autoContinueMessage', label: 'Auto-continue message', words: 'continue text prompt' },
+      { id: 'autoContinueAccounts', label: 'Auto-continue for each account', words: 'account override' },
+      { id: 'stallMinutes', label: 'Show a working task as stalled after', words: 'stall hang hung stuck spinner no output minutes' },
+    ] },
   ] },
   { id: 'taskBrowsers', title: 'Task browsers', help: 'The Chrome browser of each task, the template profile that new task browsers copy, and which agents use them.', groups: [
     { id: 'agents', title: 'Agents', settings: [

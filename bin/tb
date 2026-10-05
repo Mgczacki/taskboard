@@ -118,7 +118,8 @@ function printSet(s, byId) {
     for (const l of s.links) console.log(`    ${num(l.from)} ${l.kind}${l.kind === 'replaces' && l.folded ? ' (folded)' : ''}${l.done ? ' (done)' : ''} ${num(l.to)}${l.note ? `  "${l.note}"` : ''}`);
   }
 }
-const line = t => `#${String(t.num).padEnd(4)} ${t.status.padEnd(10)} ${t.agent.padEnd(11)} ${t.title}${t.ask ? `  — waiting: ${t.ask}` : ''}`;
+// errorLabel: a model or API error (server/agent-errors.ts shortLabel), "Stopped: model overloaded" or "Retrying (attempt 3/10)"
+const line = t => `#${String(t.num).padEnd(4)} ${t.status.padEnd(10)} ${t.agent.padEnd(11)} ${t.title}${t.errorLabel ? `  — ${t.errorLabel}${t.agentError?.text ? `: ${t.agentError.text}` : ''}` : ''}${t.ask ? `  — waiting: ${t.ask}` : ''}`;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 const HELP = `tb — Taskboard command line
@@ -429,7 +430,7 @@ switch (cmd) {
       const info = await call('GET', '/api/info');
       const lines = list.map(a => {
         const windows = (a.usage?.windows || []).map(w => `${w.label} ${w.resetsAt && w.resetsAt < Date.now() ? 'reset' : w.usedPct + '%'}${w.resetsAt ? ` (resets ${new Date(w.resetsAt).toISOString()})` : ''}`).join(', ');
-        return `${a.id} (${a.name}; ${a.agent}): ${a.status.signedIn ? 'signed in' : 'not signed in'}; ${a.running}/${a.maxParallel} tasks; ${a.limited ? `limited (${a.limited.note}); ` : ''}${windows || 'usage unknown'}; as of ${a.usage?.at || 'unknown'}${a.usage && a.usageStale ? ` (STALE: older than ${a.usageStaleHours} h, counted as unknown)` : ''}${a.routingRules ? `; rule: ${a.routingRules}` : ''}`;
+        return `${a.id} (${a.name}; ${a.agent}): ${a.status.signedIn ? 'signed in' : 'not signed in'}; ${a.running}/${a.maxParallel} tasks; ${a.limited ? `limited (${a.limited.note}); ` : ''}${a.health ? `health note, not a limit: ${a.health}; ` : ''}${windows || 'usage unknown'}; as of ${a.usage?.at || 'unknown'}${a.usage && a.usageStale ? ` (STALE: older than ${a.usageStaleHours} h, counted as unknown)` : ''}${a.routingRules ? `; rule: ${a.routingRules}` : ''}`;
       });
       console.log(`Machine rules: ${info.settings.routingRules || '(none)'}\n${lines.join('\n')}`);
     }

@@ -934,7 +934,7 @@ export async function resumeTask(t: Task, force = false): Promise<Task> {
   }
   if (!t.sessionId) throw new Error('No session id recorded for this task, so it cannot be resumed.');
   await launch(t, null, true);
-  return store.update(t.id, { status: 'idle', statusSource: `Resumed with ${resumeCommand(t.agent)} ${t.sessionId}.` })!;
+  return store.update(t.id, { status: 'idle', agentError: undefined, statusSource: `Resumed with ${resumeCommand(t.agent)} ${t.sessionId}.` })!;
 }
 
 // A task whose agent never saved a conversation: Codex and Antigravity report their session id only after they
@@ -1177,7 +1177,7 @@ export async function moveAccount(task: Task, toId: string, instruction = '', op
       agent: to.agent, account: to.id, transcript: copied, handoff, accountChosen: opts.auto ? 'auto' : 'user',
       sessionId: resume ? old.sessionId : to.agent === 'claude' ? randomUUID() : undefined,
       pastSessions: !resume && old.sessionId ? [...new Set([...(old.pastSessions || []), old.sessionId])] : old.pastSessions,
-      status: 'working', statusSource: source, stopReason: undefined, ask: undefined, now: undefined,
+      status: 'working', statusSource: source, stopReason: undefined, agentError: undefined, ask: undefined, now: undefined,
       interrupted: undefined, restartWhenDone: undefined, moveWhenDone: undefined, unscrollable: undefined,
     });
     resetSessionEvents(t.id);

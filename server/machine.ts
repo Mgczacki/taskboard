@@ -51,6 +51,24 @@ export interface MachineSettings {
   // its chat (server/controller-approve.ts). controllerCanApprovePermits above stays a separate switch: it lets the
   // controller approve low risk permits on its own judgment, without the user's words.
   controllerApprovals: ControllerApprovals;
+  // Settings > Agent errors (server/agent-error-watch.ts). autoContinue: type `message` into an agent that stopped on a
+  // model error (overloaded, rate limit, server error, lost connection), after 1, 2, 5, 10 and 10 minutes, at most five
+  // times for one error. accounts: 'on' or 'off' for one account; a task can set its own value (Task.autoContinue).
+  // stallMinutes: a working task whose screen and transcript did not change for this time, while it waits for the
+  // model, shows "Stalled" (0: never).
+  agentErrors: AgentErrorSettings;
+}
+export interface AgentErrorSettings { autoContinue: boolean; message: string; stallMinutes: number; accounts: Record<string, 'on' | 'off'> }
+export const DEFAULT_AGENT_ERRORS: AgentErrorSettings = { autoContinue: false, message: 'continue', stallMinutes: 5, accounts: {} };
+export function readAgentErrors(saved: unknown): AgentErrorSettings {
+  const s = (saved && typeof saved === 'object' ? saved : {}) as Partial<AgentErrorSettings>;
+  const accounts = Object.fromEntries(Object.entries(s.accounts && typeof s.accounts === 'object' ? s.accounts : {}).filter(([, v]) => v === 'on' || v === 'off')) as Record<string, 'on' | 'off'>;
+  return {
+    autoContinue: s.autoContinue === true,
+    message: typeof s.message === 'string' && s.message.trim() ? s.message.trim().slice(0, 500) : DEFAULT_AGENT_ERRORS.message,
+    stallMinutes: Number.isInteger(s.stallMinutes) && s.stallMinutes! >= 0 && s.stallMinutes! <= 240 ? s.stallMinutes! : DEFAULT_AGENT_ERRORS.stallMinutes,
+    accounts,
+  };
 }
 export type ControllerAgent = 'claude' | 'codex' | 'antigravity';
 export const CONTROLLER_AGENTS: ControllerAgent[] = ['claude', 'codex', 'antigravity'];
@@ -119,7 +137,7 @@ export const DEFAULT_ROUTING_RULES = `Use Claude Code or Codex for deep planning
 Use Antigravity for routine work. Do not use it for deep planning.
 When Claude's usage is high, use Codex for deep planning.
 Avoid accounts at their limit or running their maximum number of tasks.`;
-let settings: MachineSettings = { name: process.env.TASKBOARD_MACHINE_NAME || defaultName(), routingRules: DEFAULT_ROUTING_RULES, newTaskDefaultAgent: 'claude', controller: structuredClone(DEFAULT_CONTROLLER), permissions: { controllerNeedsApproval: false, agentsNeedApproval: true, trustWorkspaces: true, autoReview: true, controllerCanApprovePermits: false, holdPermissionHook: true }, permitFolders: [], pushes: { taskBranches: 'run', ownRepositories: [], protectedBranches: [] }, ask: { agent: 'claude', account: 'claude-default', model: 'sonnet' }, review: { account: 'claude-default', model: 'sonnet' }, accounts: { defaultMaxParallel: 4 }, browser: { claude: 'task', codex: 'task', chromePath: '', idleStopMinutes: 10, sharp: false, scale: 'screen', autoSwitch: true }, claudeInChrome: { tasks: false, controller: false }, confirmRisk: { ...DEFAULT_CONFIRM_RISK }, a2aNotes: { slackClientId: '', slackTeamId: '' }, controllerApprovals: { ...DEFAULT_CONTROLLER_APPROVALS } };
+let settings: MachineSettings = { name: process.env.TASKBOARD_MACHINE_NAME || defaultName(), routingRules: DEFAULT_ROUTING_RULES, newTaskDefaultAgent: 'claude', controller: structuredClone(DEFAULT_CONTROLLER), permissions: { controllerNeedsApproval: false, agentsNeedApproval: true, trustWorkspaces: true, autoReview: true, controllerCanApprovePermits: false, holdPermissionHook: true }, permitFolders: [], pushes: { taskBranches: 'run', ownRepositories: [], protectedBranches: [] }, ask: { agent: 'claude', account: 'claude-default', model: 'sonnet' }, review: { account: 'claude-default', model: 'sonnet' }, accounts: { defaultMaxParallel: 4 }, browser: { claude: 'task', codex: 'task', chromePath: '', idleStopMinutes: 10, sharp: false, scale: 'screen', autoSwitch: true }, claudeInChrome: { tasks: false, controller: false }, confirmRisk: { ...DEFAULT_CONFIRM_RISK }, a2aNotes: { slackClientId: '', slackTeamId: '' }, controllerApprovals: { ...DEFAULT_CONTROLLER_APPROVALS }, agentErrors: readAgentErrors(undefined) };
 export type BrowserScale = 'screen' | 'one' | 'two';
 const SCALES: BrowserScale[] = ['screen', 'one', 'two'];
 function readScale(b: { scale?: unknown; sharp?: unknown } | undefined): BrowserScale {
@@ -131,7 +149,7 @@ let controllerAgentSaved = true;
 if (existsSync(FILE)) {
   const saved = JSON.parse(readFileSync(FILE, 'utf8'));
   const c = readController(saved.controller); controllerAgentSaved = c.agentSaved;
-  settings = { ...settings, ...saved, permitFolders: Array.isArray(saved.permitFolders) ? saved.permitFolders : [], pushes: { ...settings.pushes, ...saved.pushes }, controller: c.controller, permissions: { ...settings.permissions, ...saved.permissions }, ask: { ...settings.ask, ...saved.ask }, review: { ...settings.review, ...saved.review }, accounts: { ...settings.accounts, ...saved.accounts }, browser: { ...settings.browser, ...saved.browser, scale: readScale(saved.browser) }, claudeInChrome: readClaudeInChrome(saved.claudeInChrome), confirmRisk: readConfirmRisk(saved.confirmRisk), a2aNotes: { ...settings.a2aNotes, ...saved.a2aNotes }, controllerApprovals: readControllerApprovals(saved.controllerApprovals) };
+  settings = { ...settings, ...saved, permitFolders: Array.isArray(saved.permitFolders) ? saved.permitFolders : [], pushes: { ...settings.pushes, ...saved.pushes }, controller: c.controller, permissions: { ...settings.permissions, ...saved.permissions }, ask: { ...settings.ask, ...saved.ask }, review: { ...settings.review, ...saved.review }, accounts: { ...settings.accounts, ...saved.accounts }, browser: { ...settings.browser, ...saved.browser, scale: readScale(saved.browser) }, claudeInChrome: readClaudeInChrome(saved.claudeInChrome), confirmRisk: readConfirmRisk(saved.confirmRisk), a2aNotes: { ...settings.a2aNotes, ...saved.a2aNotes }, controllerApprovals: readControllerApprovals(saved.controllerApprovals), agentErrors: readAgentErrors(saved.agentErrors) };
 } else writeFileSync(FILE, JSON.stringify(settings, null, 2));
 
 export const get = () => settings;
@@ -160,7 +178,7 @@ export function checkMaxParallel(value: unknown): number {
   return n;
 }
 export const controllerLabel = () => `Taskboard controller · ${settings.name}`;
-export function update(patch: { name?: string; routingRules?: string; newTaskDefaultAgent?: MachineSettings['newTaskDefaultAgent']; autostart?: boolean; remoteControl?: boolean; dangerouslySkipPermissions?: boolean; controllerSkipPermissions?: Partial<Record<ControllerAgent, boolean>>; controllerModels?: Partial<Record<'claude' | 'codex' | 'antigravity', string>>; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; holdPermissionHook?: boolean; permitFolders?: string[]; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; defaultMaxParallel?: number; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; browserIdleStopMinutes?: number; browserSharp?: boolean; browserScale?: BrowserScale; browserAutoSwitch?: boolean; claudeInChromeTasks?: boolean; claudeInChromeController?: boolean; confirmRisk?: Partial<ConfirmRisk>; a2aSlackClientId?: string; a2aSlackTeamId?: string; controllerApprovals?: Partial<ControllerApprovals> }) {
+export function update(patch: { name?: string; routingRules?: string; newTaskDefaultAgent?: MachineSettings['newTaskDefaultAgent']; autostart?: boolean; remoteControl?: boolean; dangerouslySkipPermissions?: boolean; controllerSkipPermissions?: Partial<Record<ControllerAgent, boolean>>; controllerModels?: Partial<Record<'claude' | 'codex' | 'antigravity', string>>; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; holdPermissionHook?: boolean; permitFolders?: string[]; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; defaultMaxParallel?: number; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; browserIdleStopMinutes?: number; browserSharp?: boolean; browserScale?: BrowserScale; browserAutoSwitch?: boolean; claudeInChromeTasks?: boolean; claudeInChromeController?: boolean; confirmRisk?: Partial<ConfirmRisk>; a2aSlackClientId?: string; a2aSlackTeamId?: string; controllerApprovals?: Partial<ControllerApprovals>; agentErrors?: Partial<AgentErrorSettings> }) {
   if (patch.routingRules !== undefined) {
     if (typeof patch.routingRules !== 'string') throw new Error('routingRules must be text.');
     settings.routingRules = patch.routingRules.trim().slice(0, 1000);
@@ -262,6 +280,17 @@ export function update(patch: { name?: string; routingRules?: string; newTaskDef
   if (patch.a2aSlackClientId !== undefined) {
     if (typeof patch.a2aSlackClientId !== 'string' || (patch.a2aSlackClientId.trim() && !/^\d{6,20}\.\d{6,20}$/.test(patch.a2aSlackClientId.trim()))) throw new Error('Give a Slack client ID such as 8696283833057.12198817279122, or leave it empty.');
     settings.a2aNotes.slackClientId = patch.a2aSlackClientId.trim();
+  }
+  if (patch.agentErrors !== undefined) {
+    const a = patch.agentErrors as Record<string, unknown> | null;
+    if (!a || typeof a !== 'object' || Array.isArray(a)) throw new Error('agentErrors must be an object.');
+    if (a.autoContinue !== undefined && typeof a.autoContinue !== 'boolean') throw new Error('Auto-continue must be on or off.');
+    if (a.message !== undefined && (typeof a.message !== 'string' || !a.message.trim() || a.message.length > 500 || /[\r\n]/.test(a.message))) throw new Error('The auto-continue message must be one line of 1 to 500 characters.');
+    if (a.stallMinutes !== undefined && !(Number.isInteger(a.stallMinutes) && (a.stallMinutes as number) >= 0 && (a.stallMinutes as number) <= 240)) throw new Error('The stall time must be a whole number of minutes from 0 (never) to 240.');
+    if (a.accounts !== undefined && (!a.accounts || typeof a.accounts !== 'object' || Object.values(a.accounts).some(v => !['on', 'off', 'default'].includes(v as string)))) throw new Error('Each account takes on, off or default.');
+    const accounts = { ...settings.agentErrors.accounts };
+    for (const [id, v] of Object.entries((a.accounts || {}) as Record<string, string>)) { if (v === 'default') delete accounts[id]; else accounts[id] = v as 'on' | 'off'; }
+    settings.agentErrors = { ...settings.agentErrors, ...(a.autoContinue !== undefined ? { autoContinue: a.autoContinue as boolean } : {}), ...(a.message !== undefined ? { message: (a.message as string).trim() } : {}), ...(a.stallMinutes !== undefined ? { stallMinutes: a.stallMinutes as number } : {}), accounts };
   }
   if (patch.a2aSlackTeamId !== undefined) {
     if (typeof patch.a2aSlackTeamId !== 'string' || (patch.a2aSlackTeamId.trim() && !/^T[A-Z0-9]{6,20}$/.test(patch.a2aSlackTeamId.trim()))) throw new Error('Give a Slack team ID such as T08LG8BQH1P, or leave it empty.');
