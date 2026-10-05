@@ -94,6 +94,26 @@ test('controller contact cannot run another action or change the approved releas
   } finally { g.done(); }
 });
 
+test('the controller can create a task whose quoted prompt names a protected command', () => {
+  const g = releaseGuard();
+  try {
+    assert.equal(g.run("tb new --title 'Mock deploy task' 'If approved, run pnpm release --ref master.'", 'controller'), '');
+    assert.equal(g.run(`${join(g.dir, 'bin', 'tb')} new --title 'Mock rollback task' 'The user must run pnpm rollback.'`, 'controller'), '');
+    assert.equal(g.run("tb new --title 'Mock repair task' 'Do not run pkill -f tsx server/index.ts.'", 'controller'), '');
+  } finally { g.done(); }
+});
+
+test('creating a task does not approve a protected action', () => {
+  const g = releaseGuard();
+  try {
+    assert.match(g.run('pnpm release --ref master', 'controller'), /not such a task/);
+    assert.match(g.run('pnpm release --ref master', 'task-41'), /has no release approval/);
+    assert.match(g.run("tb new 'Mock task: pnpm release --ref master'", 'task-41'), /has no release approval/);
+    assert.match(g.run("tb new 'Mock task' && pnpm release --ref master", 'controller'), /not such a task/);
+    assert.match(g.run('tb new "Mock $(pnpm release --ref master)"', 'controller'), /not such a task/);
+  } finally { g.done(); }
+});
+
 test('the guard keeps the permit and names the approved command when the ref differs', () => {
   const g = releaseGuard();
   try {

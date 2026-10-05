@@ -19,6 +19,11 @@ try { const j = JSON.parse(input || '{}'); cmd = String((agy ? j.toolCall?.args?
 
 // the real server: the one this agent's Taskboard runs (TASKBOARD_DIR is only set for test servers)
 const tbDir = process.env.TASKBOARD_DIR || join(homedir(), '.taskboard');
+// tb new passes its prompt to a new task. Quoted text and literal words cannot run a second shell command.
+const launch = cmd.trim().match(/^(tb|\/[^\s]+)[ \t]+new(?=[ \t]|$)(.*)$/s);
+const literalArgs = /^(?:[ \t]+(?:'[^'\r\n]*'|"[^"$`\\\r\n]*"|[^\s;&|`$<>(){}'"\\#]+))*[ \t]*$/;
+if (process.env.TASK_ID === 'controller' && launch &&
+    (launch[1] === 'tb' || launch[1] === join(tbDir, 'bin', 'tb')) && literalArgs.test(launch[2])) process.exit(0);
 // A quoted message is data for the controller. Check the whole shell command so that no second action can run.
 // Double quotes cannot contain shell expansion or escapes. Single quotes keep those characters literal.
 const contact = cmd.trim().match(/^(tb|\/\S+)\s+send\s+controller\s+(.+)$/);
