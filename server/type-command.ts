@@ -34,8 +34,9 @@ export const MARK: Record<PromptAgent, RegExp> = { claude: /^❯(?:\s|$)/, antig
 const FOOTER_ROWS = 4; // at most this many rows with text below the box (status rows)
 const below = (lines: string[], from: number) => lines.slice(from).filter(l => l.trim()).length;
 
-// The text in the agent's input box, its rows trimmed and joined, or null when the screen does not end with one.
-export function inputBox(screen: string, agent: PromptAgent = 'claude'): string | null {
+// The rows of the agent's input box as the plain screen shows them (the first row starts with the prompt mark), or null
+// when the screen does not end with one.
+export function boxRows(screen: string, agent: PromptAgent = 'claude'): string[] | null {
   const lines = screen.replace(/\s+$/, '').split('\n');
   if (agent === 'codex') {
     let top = -1;
@@ -45,14 +46,18 @@ export function inputBox(screen: string, agent: PromptAgent = 'claude'): string 
     while (end < lines.length && /^ {2}\S/.test(lines[end])) end++;
     if (end < lines.length && lines[end].trim()) return null; // the box ends with a blank row
     if (below(lines, end) > FOOTER_ROWS) return null;
-    return lines.slice(top, end).map(l => l.trim()).join('\n');
+    return lines.slice(top, end);
   }
   let bottom = -1;
   for (let i = lines.length - 1; i >= 0; i--) if (RULE.test(lines[i])) { bottom = i; break; }
   let top = -1;
   for (let i = bottom - 1; i >= 0; i--) if (RULE.test(lines[i])) { top = i; break; }
   if (top < 0 || bottom - top < 2 || below(lines, bottom + 1) > FOOTER_ROWS) return null;
-  return lines.slice(top + 1, bottom).map(l => l.trim()).join('\n');
+  return lines.slice(top + 1, bottom);
+}
+// The text in the agent's input box, its rows trimmed and joined, or null when the screen does not end with one.
+export function inputBox(screen: string, agent: PromptAgent = 'claude'): string | null {
+  return boxRows(screen, agent)?.map(l => l.trim()).join('\n') ?? null;
 }
 export const squash = (s: string) => s.replace(/\s+/g, '');
 const lastIndex = (list: string[], test: (s: string) => boolean) => { for (let i = list.length - 1; i >= 0; i--) if (test(list[i])) return i; return -1; };

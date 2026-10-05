@@ -3,7 +3,7 @@
 // and tmux socket. Covers: which screens take a message, the queue in the task folder, the retry, the expiry, the
 // order of queued messages, a person's draft, the controller, and inbox notices through the PostToolUse hook.
 import assert from 'node:assert/strict';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -28,6 +28,7 @@ const docs = await import('../server/docs.ts');
 const events = await import('../server/events.ts');
 const inboxDelivery = await import('../server/inbox-delivery.ts');
 const queue = await import('../server/message-queue.ts');
+const terminalInput = await import('../server/terminal-input.ts');
 const { blockingQuestion } = await import('../server/agents.ts');
 const { boxState, plainText, readyForInput } = await import('../server/type-command.ts');
 const { bottom } = await import('../server/deliver-text.ts');
@@ -89,11 +90,11 @@ const submitted = (t: { id: string }) => {
 };
 const typed = (t: { id: string }) => { try { return readFileSync(join(store.taskDir(t.id), 'input.txt'), 'utf8'); } catch { return ''; } };
 const until = async (check: () => boolean | Promise<boolean>, ms = 15000) => { for (let i = 0; i < ms / 100 && !(await check()); i++) await pause(100); return check(); };
-async function liveTask(agent: 'claude' | 'codex' = 'claude', role?: 'controller') {
+async function liveTask(agent: 'claude' | 'codex' | 'antigravity' = 'claude', role?: 'controller') {
   const n = ++num;
   const t = store.create({ id: role ? 'controller' : `queue-${n}`, num: role ? 0 : n, title: 'Queue fixture', agent, status: 'working', cwd: root, folder: root, session: role ? 'tb-controller' : `task-${n}`, sessionId: `fixture-${n}`, account: agent === 'codex' ? 'codex-fixture' : undefined, desc: '', ...(role ? { role } : {}) });
   mkdirSync(store.taskDir(t.id), { recursive: true });
-  await tmux.newSession(t.session, root, { TASK_DIR: store.taskDir(t.id), FAKE_AGENT: agent }, [join(bin, agent)], async () => {});
+  await tmux.newSession(t.session, root, { TASK_DIR: store.taskDir(t.id), FAKE_AGENT: agent }, [join(bin, agent === 'antigravity' ? 'agy' : agent)], async () => {});
   await until(async () => /for shortcuts/.test(await tmux.capture(t.session, 0)), 4000);
   return t;
 }
@@ -150,24 +151,93 @@ test('a permission question: nothing is typed, the message is queued, and it is 
   } finally { await tmux.killSession(t.session); }
 });
 
-test('a draft typed by a person is never changed, and the message waits until the box is empty', { timeout: 60000 }, async () => {
+// Task 271: a draft in the box made every message wait until the person sent or cleared it (one message waited 7.6
+// hours). Now the draft is moved out once nobody typed for 3 s, the message is submitted, and the draft is put back.
+const boxText = (t: { id: string }) => JSON.parse(readFileSync(join(store.taskDir(t.id), 'box.json'), 'utf8')).text as string;
+const draftFiles = (t: { id: string }) => { try { return readdirSync(join(store.taskDir(t.id), 'drafts')); } catch { return []; } };
+for (const agent of ['claude', 'codex', 'antigravity'] as const) {
+  test(`${agent}: a quiet draft is moved out, the message is submitted, and the draft is put back`, { timeout: 60000 }, async () => {
+    const t = await liveTask(agent);
+    try {
+      await tmux.tmux('send-keys', '-t', `=${t.session}:`, '-l', 'half a sentence');
+      await pause(agent === 'codex' ? 900 : 300); // the fake Codex joins fast keys into one paste after 600 ms
+      const r = await queue.send(t, 'Do not join the draft', { from: 'controller', kind: 'message' });
+      assert.equal(r.state, 'queued');
+      assert.match(r.reason!, /holds a draft/);
+      // within 3 s of the last change nothing is typed
+      await tick(); await pause(200);
+      assert.equal(boxText(t), 'half a sentence');
+      assert.deepEqual(submitted(t), []);
+      await pause(3200);
+      await tick();
+      assert.ok(await until(() => submitted(t).includes('Do not join the draft')), `the message is submitted: ${JSON.stringify(queue.list(t.id))}\n${await tmux.capture(t.session, 0)}`);
+      assert.ok(await until(() => boxText(t) === 'half a sentence'), 'the draft is back in the box');
+      assert.deepEqual(submitted(t), ['Do not join the draft'], 'the draft is not submitted');
+      assert.equal(draftFiles(t).length, 1, 'the draft is saved in the task folder');
+      assert.match(queue.list(t.id)[0].deliveredBy || '', /the draft in the box was put back/);
+    } finally { await tmux.killSession(t.session); }
+  });
+}
+
+test('a draft that wraps over rows and has several lines comes back exactly', { timeout: 60000 }, async () => {
   const t = await liveTask();
   try {
-    await tmux.tmux('send-keys', '-t', `=${t.session}:`, '-l', 'half a sentence');
-    await pause(300);
-    const r = await queue.send(t, 'Do not join the draft', { from: 'controller', kind: 'message' });
-    assert.equal(r.state, 'queued');
-    assert.match(r.reason!, /holds a draft that a person typed/);
-    for (let i = 0; i < 3; i++) { await tick(); await pause(200); }
-    assert.match(await tmux.capture(t.session, 0), /❯ half a sentence\n/, 'the draft is unchanged');
-    assert.doesNotMatch(typed(t), /Do not join the draft/);
-    assert.deepEqual(submitted(t), []);
-    // the person sends the draft; then the box is empty and the queued message is typed
-    await tmux.tmux('send-keys', '-t', `=${t.session}:`, 'Enter');
-    await until(() => submitted(t).includes('half a sentence'));
+    await tmux.tmux('resize-window', '-t', `=${t.session}:`, '-x', '120', '-y', '40');
+    const draft = 'first line of the draft\n' + 'a second line that is long enough to wrap over more than one row of the box at this width, '.repeat(2).trim() + '\nthird';
+    const f = join(root, 'draft.txt'); writeFileSync(f, draft);
+    await tmux.tmux('load-buffer', '-b', 'd', f); await tmux.tmux('paste-buffer', '-p', '-d', '-b', 'd', '-t', `=${t.session}:`);
+    await until(() => boxText(t) === draft);
+    // the first screen read sees the draft; it is moved once it stayed the same for 3 s
+    assert.equal((await queue.send(t, 'Message between', { from: 'controller', kind: 'message' })).state, 'queued');
+    await pause(3200);
     await tick();
-    assert.ok(await until(() => submitted(t).includes('Do not join the draft')));
-    assert.deepEqual(submitted(t), ['half a sentence', 'Do not join the draft']);
+    assert.ok(await until(() => submitted(t).includes('Message between')), JSON.stringify(queue.list(t.id)));
+    assert.ok(await until(() => boxText(t) === draft), `the draft is back: ${JSON.stringify(boxText(t))}`);
+    assert.deepEqual(submitted(t), ['Message between']);
+    assert.match(await tmux.tmux('display-message', '-p', '-t', `=${t.session}:`, '#{window_width}'), /^120\b/, 'the width is set back');
+  } finally { await tmux.killSession(t.session); }
+});
+
+test('a key from a dashboard terminal in the last 3 s makes the message wait', { timeout: 60000 }, async () => {
+  const t = await liveTask();
+  try {
+    await tmux.tmux('send-keys', '-t', `=${t.session}:`, '-l', 'typing now');
+    await pause(3200);
+    terminalInput.noteKey(t.session);
+    const r = await queue.send(t, 'Not yet', { from: 'controller', kind: 'message' });
+    assert.equal(r.state, 'queued');
+    await tick(); await pause(300);
+    assert.deepEqual(submitted(t), []);
+    assert.equal(boxText(t), 'typing now');
+  } finally { await tmux.killSession(t.session); }
+});
+
+test('a draft with a paste placeholder is not moved, and the message waits', { timeout: 60000 }, async () => {
+  const t = await liveTask();
+  try {
+    const f = join(root, 'big.txt'); writeFileSync(f, 'x'.repeat(900));
+    await tmux.tmux('load-buffer', '-b', 'b', f); await tmux.tmux('paste-buffer', '-p', '-d', '-b', 'b', '-t', `=${t.session}:`);
+    await until(async () => /\[Pasted text #1\]/.test(await tmux.capture(t.session, 0)));
+    const r = await queue.send(t, 'Wait for the paste', { from: 'controller', kind: 'message' });
+    assert.equal(r.state, 'queued');
+    await pause(3200);
+    await tick(); await pause(300);
+    assert.match(queue.list(t.id)[0].reason, /cannot type back exactly/);
+    assert.deepEqual(submitted(t), []);
+    assert.equal(boxText(t), 'x'.repeat(900));
+  } finally { await tmux.killSession(t.session); }
+});
+
+test('a small pane that no terminal shows gets a usable size, and a long message arrives', { timeout: 60000 }, async () => {
+  const t = await liveTask();
+  try {
+    // task 271: at 60x16 a 658 character message did not fit in the visible box, and it stayed in the box
+    await tmux.tmux('resize-window', '-t', `=${t.session}:`, '-x', '60', '-y', '16');
+    await pause(300);
+    const text = 'Long message for a small pane. '.repeat(21).trim();
+    assert.equal((await queue.send(t, text, { from: 'controller', kind: 'message' })).state, 'delivered');
+    assert.ok(await until(() => submitted(t).includes(text)));
+    assert.equal(boxText(t), '');
   } finally { await tmux.killSession(t.session); }
 });
 
