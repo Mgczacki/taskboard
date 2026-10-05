@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
-import { isAbsolute, join, relative, sep } from 'node:path';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { TB_DIR, VAULT, TASKS_DIR, GUARD_SCRIPT, PORT } from './config.ts';
 import type { Task } from './store.ts';
 import * as store from './store.ts';
@@ -97,6 +97,7 @@ function hardRule(argv: string[], task?: Task) {
   const text = argv.join(' ');
   if (/^mcp__[^\s/]+$/.test(argv[0])) throw new Error('An MCP tool call cannot run from a shell permit. Do not retry this command. Use an allowed path or ask the user to do this step.');
   if (/^(sudo|su|ssh|scp|sftp|vi|vim|nano|less|more|top|htop)$/.test(bin) || (/^(bash|sh|zsh|python|python3|node)$/.test(bin) && argv.includes('-i'))) throw new Error('Interactive commands cannot run from a permit.');
+  if (/^(bash|sh|zsh|python|python3|node)$/.test(bin) && argv.some(a => /^(?:-c|-e|--eval|--command)$/.test(a))) throw new Error('Put interpreter code in a script file before requesting a permit.');
   if (bin === 'tb' || bin === 'taskboard') throw new Error('A permit cannot run another Taskboard command.');
   if (bin === 'git' && argv.slice(1).some(x => /^(add|commit|rebase|merge|reset|checkout|switch|push|pull|cherry-pick|revert|worktree|update-ref|stash|branch|tag)$/.test(x)) && !allowedTaskGit(argv) && !(task && allowedSharedGit(argv, task)))
     throw new Error(argv.includes('worktree') || (task && !task.worktree)
@@ -131,7 +132,7 @@ function risk(argv: string[], cwd: string, task: Task, network: boolean): string
   if (!/^(pwd|rg|ls|cat|head|tail|wc|echo|true|false|test|stat)$/.test(bin)) flags.push('Writes in task paths');
   return flags;
 }
-function scriptHash(argv: string[], cwd: string, roots: string[]): string | undefined {
+function scriptHash(argv: string[], cwd: string, roots: string[], otherWorktrees: string[]): string | undefined {
   const bin = argv[0].split('/').pop() || '';
   const name = /^(bash|sh|zsh|python|python3|node)$/.test(bin) ? argv[1] : /\.(sh|py|js|mjs)$/.test(argv[0]) ? argv[0] : undefined;
   if (!name || name.startsWith('-')) return;
@@ -141,9 +142,28 @@ function scriptHash(argv: string[], cwd: string, roots: string[]): string | unde
     if (!roots.some(root => inside(root, real))) throw new Error('The script file is outside this task.');
     const content = readFileSync(real);
     if (/\bgit\s+push\b|\bgh\s+(repo|pr|api)\b/.test(content.toString('utf8'))) throw new Error('A GitHub write needs a separate user decision.');
+    const paths = content.toString('utf8').match(/(?:\.\.?\/|\/)[^\s'"`;,)]+/g) || [];
+    checkWorktreeAccess(paths, dirname(real), otherWorktrees);
     return createHash('sha256').update(content).digest('hex');
   }
-  catch (e) { if (e instanceof Error && /outside this task|GitHub write/.test(e.message)) throw e; throw new Error('The script file must exist when you request the permit.'); }
+  catch (e) { if (e instanceof Error && /outside this task|GitHub write|another task worktree/.test(e.message)) throw e; throw new Error('The script file must exist when you request the permit.'); }
+}
+// Resolve an existing parent as well, so a new output file below a symlink gets the same check.
+function realTarget(path: string): string {
+  if (existsSync(path)) return realpathSync(path);
+  const parent = dirname(path);
+  return resolve(realTarget(parent), path.slice(parent.length + (parent === '/' ? 0 : 1)));
+}
+function checkWorktreeAccess(argv: string[], cwd: string, others: string[]) {
+  const overlaps = (path: string) => others.some(other => inside(other, path));
+  if (others.some(other => inside(cwd, other) || inside(other, cwd))) throw new Error('The working directory overlaps another task worktree.');
+  for (const arg of argv) {
+    // Options may contain a path after '='. Other arguments can be relative to cwd.
+    const value = arg.startsWith('-') && arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : arg;
+    if (value.startsWith('-') || value.includes('://') || !value) continue;
+    const target = isAbsolute(value) ? value : resolve(cwd, value);
+    if (overlaps(realTarget(target))) throw new Error('The command accesses another task worktree.');
+  }
 }
 export function validate(task: Task, inputs: StepInput[]): { steps: PermitStep[]; riskFlags: string[] } {
   if (!Array.isArray(inputs) || inputs.length < 1 || inputs.length > 8) throw new Error('Give one through eight steps.');
@@ -152,7 +172,6 @@ export function validate(task: Task, inputs: StepInput[]): { steps: PermitStep[]
   if (unsafeRoot(realpathSync(task.cwd))) throw new Error('The task folder contains protected Taskboard files.');
   if (machine.get().permitFolders.some(p => !existsSync(p) || unsafeRoot(realpathSync(p)))) throw new Error('An extra folder contains protected Taskboard files.');
   const otherWorktrees = taskWorktrees().filter(w => w.task.id !== task.id && existsSync(w.path)).map(w => w.path);
-  if (roots.some(root => otherWorktrees.some(other => inside(root, other) || inside(other, root)))) throw new Error('The allowed folders overlap another task worktree.');
   const steps = inputs.map(input => {
     if (input.continueOnFailure) throw new Error('Steps must stop after a failure.');
     const argv = parseCommand(input.command); hardRule(argv, task);
@@ -160,12 +179,12 @@ export function validate(task: Task, inputs: StepInput[]): { steps: PermitStep[]
     if (!isAbsolute(requested)) throw new Error('A working directory must be absolute.');
     const cwd = realpathSync(requested);
     if (unsafeRoot(cwd)) throw new Error('The working directory contains protected Taskboard files.');
-    if (otherWorktrees.some(other => inside(other, cwd))) throw new Error('The working directory is another task worktree.');
+    checkWorktreeAccess(argv, cwd, otherWorktrees);
     if (argv[0] === 'git' && allowedTaskGit(argv) && (!task.worktree || !task.branch || cwd !== realpathSync(task.cwd))) throw new Error('Git commands need this task’s own worktree branch.');
     if (argv[0] === 'git' && allowedSharedGit(argv, task) && cwd !== realpathSync(task.folder)) throw new Error('The merge command needs the task’s shared checkout.');
     const timeoutSeconds = input.timeoutSeconds ?? 30;
     if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 120) throw new Error('A step timeout must be 1 through 120 seconds.');
-    return { command: input.command, argv, cwd, timeoutSeconds, network: input.network === true, scriptHash: scriptHash(argv, cwd, [...roots, cwd]), state: 'pending' as const };
+    return { command: input.command, argv, cwd, timeoutSeconds, network: input.network === true, scriptHash: scriptHash(argv, cwd, [...roots, cwd], otherWorktrees), state: 'pending' as const };
   });
   if (steps.reduce((sum, s) => sum + s.timeoutSeconds, 0) > 300) throw new Error('The sequence exceeds five minutes.');
   return { steps, riskFlags: [...new Set(steps.flatMap(s => risk(s.argv, s.cwd, task, s.network)))] };
@@ -310,9 +329,8 @@ export async function run(p: Permit, task: Task, by: 'user' | 'controller', comm
 }
 
 async function execute(task: Task, step: PermitStep): Promise<{ code: number | null; signal: string | null; output: string; error?: string }> {
-  const shell = process.env.SHELL || '/bin/zsh';
   return new Promise(resolveResult => {
-    const child = spawn(shell, ['-lc', step.command],
+    const child = spawn(step.argv[0], step.argv.slice(1),
       { cwd: step.cwd, env: { ...process.env, TASK_ID: task.id }, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
     let output = '', done = false, timedOut = false;
     const finish = (code: number | null, signal: string | null, error?: string) => {
