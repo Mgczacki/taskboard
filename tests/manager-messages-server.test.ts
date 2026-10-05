@@ -166,7 +166,12 @@ test('group manager rule: a manager and the tasks of its group message each othe
     assert.equal((await send('w1', 'manager', 'Are you there?')).status, 202);
     assert.equal((await req('GET', '/api/allow-rules', undefined, {})).data.builtIn[0].groups.length, 0);
 
-    // 13. the user sets the role again, then archives the manager: the rule ends, and a message makes a card
+    // 13. a task that is set aside cannot take the role (task 276). The user brings it back and sets the role again,
+    // then archives the manager: the rule ends, and a message makes a card
+    const refused = await post('/api/manager/messages', { task: 'manager' }, user);
+    assert.equal(refused.status, 400);
+    assert.match(JSON.stringify(refused.data), /Bring this task back first/);
+    assert.equal((await post('/api/tasks/manager/status', { status: 'idle' }, user)).status, 200);
     assert.equal((await post('/api/manager/messages', { task: 'manager' }, user)).status, 200);
     const back = await send('w1', 'manager', 'Back again.');
     assert.equal(back.status, 200, JSON.stringify(back.data));

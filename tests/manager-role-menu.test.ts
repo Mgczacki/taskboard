@@ -226,4 +226,8 @@ test('the canvas header, its narrow menu and the task panel show the item, and t
   assert.match(canvas, /<ManagerRoleButton t=\{t\} variant="menu"/);
   assert.match(canvas, /<ManagerScope group=\{g\.id\} tasks=\{tasks\} \/>/);
   assert.match(readFileSync(new URL('../web/src/components/TaskPanel.tsx', import.meta.url), 'utf8'), /<ManagerRoleButton t=\{t\} variant="button"/);
+  // the group menu lists only tasks that the server accepts as manager, and the current manager
+  const board = readFileSync(new URL('../web/src/components/ManagerBoard.tsx', import.meta.url), 'utf8');
+  assert.match(board, /scope\.group\.tasks\.includes\(t\.id\) && \(t\.id === manager \|\| canManage\(t\)\)/);
+  assert.match(board, /t\.status !== 'archived' && t\.status !== 'parked'/);
 });

@@ -97,3 +97,16 @@ test('events remain on disk and one digest enters the manager queue', async () =
   assert.equal(queue.list(manager.id).filter(x => x.text.startsWith('[Taskboard event digest')).length, 1);
   assert.equal(existsSync(join(store.taskDir(manager.id), 'outbox', 'handoff.md')), true);
 });
+
+test('the role goes only to a live task: a task that is set aside is refused, and a set-aside manager can lose the role', () => {
+  const resting = store.create({ id: 'resting', num: 9, title: 'resting', agent: 'codex', status: 'parked', cwd: root, folder: root, session: 'no-session-9', desc: '' } as any);
+  const g = groups.create('Set aside tests', [resting.id, worker.id]);
+  assert.throws(() => role.set(g, resting, 'user'), /Bring this task back first\. A task that is set aside cannot become a manager\./);
+  assert.equal(groups.all().find(x => x.id === g.id)?.manager, undefined);
+  role.set(g, worker, 'user');
+  store.update(worker.id, { status: 'parked' } as any);
+  assert.throws(() => role.set(g, store.get(worker.id), 'user', undefined, 'watch'), /set aside/);
+  role.set(g, undefined, 'user');
+  assert.equal(groups.all().find(x => x.id === g.id)?.manager, undefined);
+  store.update(worker.id, { status: 'idle' } as any);
+});
