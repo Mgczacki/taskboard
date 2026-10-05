@@ -196,6 +196,21 @@
 .top > .attn-wrap { flex-shrink: 1; min-width: 0; overflow: hidden; }
 .top > .attn-wrap .attn { min-width: 0; overflow: hidden; }
 @media (max-width: 1000px) { .top .attn .sep, .top .attn .long, .top .attn kbd, .top .tbs-lbl, .top .tbs-btn b { display: none; } }
+/* the waiting indicator (WaitingChips.tsx): the main count and one chip for each kind; each one is a button */
+.top > .attn-wrap { gap: 6px; align-items: center; }
+/* with chips, a narrow top bar drops the longest wait and the key from the main count (its tooltip keeps them) */
+@media (max-width: 1500px) { .top .attn-wrap.has-chips .attn .sep, .top .attn-wrap.has-chips .attn .long, .top .attn-wrap.has-chips .attn kbd { display: none; } }
+.attn-chip { flex-shrink: 0; }
+.attn-chip { display: inline-flex; align-items: center; padding: 2px 9px; border-radius: 12px; border: 1px solid color-mix(in srgb, var(--st-needs) 40%, var(--line2)); background: var(--panel); color: var(--text); font: 12px var(--sans); cursor: pointer; white-space: nowrap; }
+.attn-chip:hover { background: color-mix(in srgb, var(--st-needs) 14%, var(--panel)); border-color: var(--st-needs); }
+.attn-chip.ak-review { border-color: color-mix(in srgb, var(--st-review) 50%, var(--line2)); }
+.attn-chip.ak-review:hover { background: color-mix(in srgb, var(--st-review) 14%, var(--panel)); border-color: var(--st-review); }
+.attn-chip.ak-stopped { border-color: color-mix(in srgb, var(--st-stopped) 50%, var(--line2)); }
+.attn-chip.ak-stopped:hover { background: color-mix(in srgb, var(--st-stopped) 14%, var(--panel)); border-color: var(--st-stopped); }
+.attn:focus-visible, .attn-chip:focus-visible, .rail-count:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* the "Needs you" count of the sidebar opens what needs you */
+.rail-sec h6 .rail-count { margin-left: auto; border: 0; background: none; color: inherit; font: inherit; font-family: var(--mono); letter-spacing: 0; padding: 0 4px; border-radius: 6px; cursor: pointer; }
+.rail-sec h6 .rail-count:hover { background: color-mix(in srgb, var(--st-needs) 18%, transparent); color: var(--text); }
 @media (max-width: 700px) { .top .opt-text { display: none; } }
 .tbs-float{position:fixed;top:12px;right:14px;z-index:95}
 .tbs-btn{all:unset;box-sizing:border-box;display:inline-flex;align-items:center;gap:8px;height:32px;padding:0 10px 0 8px;border-radius:8px;cursor:pointer;background:var(--panel);color:var(--text);border:1px solid color-mix(in srgb,var(--accent) 60%,var(--line2));box-shadow:0 0 0 3px var(--accent-bg);white-space:nowrap}
