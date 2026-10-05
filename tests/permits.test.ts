@@ -1,4 +1,4 @@
-import { copyFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -9,7 +9,8 @@ const root = mkdtempSync(join(tmpdir(), 'tb-permits-'));
 process.env.TASKBOARD_DIR = join(root, 'tbdir');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
 process.env.TASKBOARD_PORT = '4399';
-const { taskDir } = await import('../server/store.ts');
+const store = await import('../server/store.ts');
+const { taskDir } = store;
 const { GUARD_SCRIPT } = await import('../server/config.ts');
 const permits = await import('../server/permits.ts');
 type Task = import('../server/store.ts').Task;
@@ -171,4 +172,42 @@ test('a shared checkout merge sequence needs a user or explicit high-risk approv
   assert.equal(p.riskClass, 'high');
   assert.equal(permits.controllerRule(p, task, true), undefined);
   permits.deny(p, 'test');
+});
+
+test('a safe step can run when the task folder contains another task worktree', () => {
+  const parent = join(root, 'shared-parent');
+  const safe = join(parent, 'safe');
+  const other = join(parent, 'other');
+  mkdirSync(safe, { recursive: true });
+  mkdirSync(other, { recursive: true });
+  store.create({ ...freshTask('other-worktree'), num: 2, title: 'Other', status: 'idle', cwd: other, folder: parent, worktree: true, branch: 'task/other', session: 'other', desc: '' });
+  const task = { ...freshTask('parent-task'), cwd: parent, folder: parent };
+  const p = permits.request(task, 'Read from a safe folder', [{ command: 'pwd', cwd: safe }]);
+  assert.equal(p.steps[0].cwd, realpathSync(safe));
+  permits.deny(p, 'test');
+  assert.equal(permits.canPermitRefusal(task, { command: 'pwd', cwd: safe, toolName: 'Bash' }), true);
+  writeFileSync(join(safe, 'read.sh'), 'echo safe\n');
+  assert.ok(permits.validate(task, [{ command: 'bash read.sh', cwd: safe }]).steps[0].scriptHash);
+  const production = permits.request(task, 'Read G3 ECS data', [{ command: 'aws ecs describe-tasks --cluster prod', cwd: safe, network: true }]);
+  assert.equal(production.riskClass, 'high');
+  assert.equal(permits.controllerRule(production, task, true), undefined);
+  permits.deny(production, 'test');
+
+  assert.throws(() => permits.validate(task, [{ command: 'pwd' }]), /working directory overlaps another task worktree/);
+  assert.throws(() => permits.validate(task, [{ command: 'pwd', cwd: other }]), /working directory overlaps another task worktree/);
+  assert.throws(() => permits.validate(task, [{ command: `cat ${join(other, 'data')}`, cwd: safe }]), /command accesses another task worktree/);
+  assert.throws(() => permits.validate(task, [{ command: `cat --file=${join(other, 'data')}`, cwd: safe }]), /command accesses another task worktree/);
+  symlinkSync(other, join(safe, 'link'));
+  assert.throws(() => permits.validate(task, [{ command: 'cat link/data', cwd: safe }]), /command accesses another task worktree/);
+  writeFileSync(join(other, 'read.sh'), 'echo other\n');
+  assert.throws(() => permits.validate(task, [{ command: `bash ${join(other, 'read.sh')}`, cwd: safe }]), /command accesses another task worktree/);
+  assert.throws(() => permits.validate(task, [{ command: `bash -c 'cat ${join(other, 'data')}'`, cwd: safe }]), /Put interpreter code in a script file/);
+});
+
+test('quoted shell syntax stays a literal argument', async () => {
+  const task = freshTask('literal');
+  const p = permits.request(task, 'Check quoted text', [{ command: "echo 'one; echo two'" }]);
+  await permits.run(p, task, 'user');
+  assert.equal(p.state, 'succeeded');
+  assert.equal(p.steps[0].outputTail?.trim(), 'one; echo two');
 });
