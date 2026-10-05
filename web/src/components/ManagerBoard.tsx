@@ -1,16 +1,19 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { api, useStore, useStoreValue } from '../api';
 import { CONFIRM_MS, cardTime, needsConfirm } from '../clickGuard';
-import { badgeTitle, boardOf, loadBoards, boardSummary, fmtAge, managerGroupsOf, managersVersion, needAction, refreshManagerDetails, rowOf, subscribeManagers, waitLabel, watchBoards, type BoardRow, type FindCard } from '../managerBoard';
+import { badgeTitle, boardOf, loadBoards, boardSummary, fmtAge, loadScope, managerGroupsOf, managerMenu, managersVersion, needAction, refreshManagerDetails, rowOf, scopeOf, setManager, subscribeManagers, waitLabel, watchBoards, type Audit, type BoardRow, type FindCard, type ManagerChoice, type ManagerMenu, type PresetKey, type Scope } from '../managerBoard';
 import { PopMenu } from './PopMenu';
 
 type TaskRef = { id: string; num: number; title: string };
-type Audit = { at: string; actor: string; action: string; target: string; result: string; userRequest?: string };
-type Preset = { name: string; may: string[]; not: string[] };
-type Scope = { group: { manager?: string; tasks: string[] }; caps: Record<string, number>; actions: Audit[];
-  preset: string | null; defaultPreset: string; presets: Record<string, Preset>; never: string[]; rule: string; ruleLimits: string };
+type RoleTask = TaskRef & { status: string; role?: string };
 
 const useManagers = () => useSyncExternalStore(subscribeManagers, managersVersion);
+// The shared manager scope of a group (managerBoard.ts scopeOf), read again when the view opens
+function useScope(group: string) {
+  useManagers();
+  useEffect(() => { void loadScope(group); }, [group]);
+  return scopeOf(group);
+}
 // Read the boards of all groups while the calling view is shown
 export function useBoards() { useEffect(() => watchBoards(), []); return useManagers(); }
 // Find a card of the store by the card id of a wait
@@ -113,38 +116,143 @@ function NeedsPanel({ group, rows, manager, open, toast }: { group: string; rows
   </div>;
 }
 
-// Who manages the group, its preset, what the preset allows and the group manager rule (tasks 242 and 273), in the group menu
+// Who manages the group, its preset, what the preset allows and the group manager rule (tasks 242 and 273), in the group menu.
+// It reads and changes the same manager scope as the manager item of a task menu (ManagerRoleButton).
 export function ManagerScope({ group, tasks }: { group: string; tasks: TaskRef[] }) {
-  const [scope, setScope] = useState<Scope | null>(null);
-  const load = () => void fetch(`/api/manager/${encodeURIComponent(group)}`).then(r => r.json()).then(setScope).catch(() => {});
-  useEffect(load, [group]);
-  const setManager = async (body: { task: string | null; preset?: string }) => {
-    await fetch(`/api/manager/${encodeURIComponent(group)}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-    load();
-  };
+  const scope = useScope(group);
+  const [error, setError] = useState('');
+  const change = (body: { task: string | null; preset?: PresetKey }) => { setError(''); setManager(group, body).catch(e => setError(String((e as Error).message || e))); };
   if (!scope) return <div className="manager-scope sub">Loading the manager…</div>;
   const manager = scope.group.manager || '';
   const key = scope.preset || scope.defaultPreset;
   const preset = scope.presets?.[key];
   return <div className="manager-scope">
-    <label style={{ color: 'var(--dim)', margin: '8px 0 2px' }}>◆ Manager <select value={manager} onChange={e => void setManager({ task: e.target.value || null })}>
+    <label style={{ color: 'var(--dim)', margin: '8px 0 2px' }}>◆ Manager <select value={manager} onChange={e => change({ task: e.target.value || null })}>
       <option value="">None</option>{tasks.filter(t => scope.group.tasks.includes(t.id)).map(t => <option key={t.id} value={t.id}>#{t.num} {t.title}</option>)}
     </select></label>
     {preset && <>
       <label style={{ color: 'var(--dim)' }}>Preset <select value={key} disabled={!manager} title={manager ? 'What the manager may do without a card' : 'Choose a manager first. A new manager gets this default preset.'}
-        onChange={e => void setManager({ task: manager, preset: e.target.value })}>
+        onChange={e => change({ task: manager, preset: e.target.value as PresetKey })}>
         {Object.entries(scope.presets).map(([k, p]) => <option key={k} value={k}>{p.name}{k === scope.defaultPreset ? ' (default)' : ''}</option>)}
       </select></label>
-      <div className="sub manager-preset" aria-label="What the preset allows">
-        <b>Without a card, the manager may:</b>
-        <ul>{preset.may.map(x => <li key={x}>{x}</li>)}</ul>
-        {preset.not.length > 0 && <><b>Only with your card:</b><ul>{preset.not.map(x => <li key={x}>{x}</li>)}</ul></>}
-        <b>Never:</b>
-        <ul>{scope.never.map(x => <li key={x}>{x}</li>)}</ul>
-        <div>{scope.rule} {scope.ruleLimits}</div>
-      </div>
+      <PresetText scope={scope} preset={key} />
     </>}
+    {error && <div className="sel-warn">{error}</div>}
     <div className="sub">Limits: {Object.entries(scope.caps).map(([key, value]) => `${key} ${value}`).join(' · ')}</div>
+  </div>;
+}
+
+// What a preset allows, with the group manager rule. The group menu and the confirm panel of a task menu show the same text.
+function PresetText({ scope, preset, who = 'the manager', rule = true }: { scope: Scope; preset: PresetKey; who?: string; rule?: boolean }) {
+  const p = scope.presets[preset];
+  if (!p) return null;
+  return <div className="sub manager-preset" aria-label="What the preset allows">
+    <b>Without a card, {who} may:</b>
+    <ul>{p.may.map(x => <li key={x}>{x}</li>)}</ul>
+    {p.not.length > 0 && <><b>Only with your card:</b><ul>{p.not.map(x => <li key={x}>{x}</li>)}</ul></>}
+    {rule ? <><b>Never:</b><ul>{scope.never.map(x => <li key={x}>{x}</li>)}</ul><div>{scope.rule} {scope.ruleLimits}</div></>
+      : <div><b>Never:</b> {scope.never.map(x => x + '.').join(' ')}</div>}
+  </div>;
+}
+
+// The manager item of a task menu (task 276): a ◆ button in a canvas window header, an item of the ⋯ menu of a narrow
+// window, and a button of the task panel. All three open ManagerRoleView. The controller gets no item.
+export function ManagerRoleButton({ t, variant, toast }: { t: RoleTask; variant: 'head' | 'menu' | 'button'; toast: (text: string) => void }) {
+  useManagers();
+  const groups = useStoreValue(s => s.groups);
+  const tasks = useStoreValue(s => s.tasks);
+  const btn = useRef<HTMLButtonElement>(null);
+  const [open, setOpen] = useState(false);
+  const menu = managerMenu(t, groups, tasks);
+  if (menu.hidden) return null;
+  const manages = menu.choices.some(c => c.kind === 'stop');
+  const off = !menu.choices.some(c => !c.disabled);
+  const title = menu.hint || (off ? menu.choices.find(c => c.disabled)?.disabled : undefined) || `${menu.label}: the group manager role of #${t.num}`;
+  const panel = <ManagerRole t={t} menu={menu} close={() => setOpen(false)} toast={toast} />;
+  // In the ⋯ menu of a narrow window the entries are items of that menu, and the confirm panel opens in their place.
+  // Canvas.tsx closes that menu when the toast comes, so close() has nothing to do here.
+  if (variant === 'menu') return <div className="mgr-role inline"><ManagerRole t={t} menu={menu} close={() => {}} toast={toast} listFirst /></div>;
+  return <>
+    <button ref={btn} className={variant === 'head' ? `b mgr-btn ${manages ? 'on' : ''} ${off ? 'off' : ''}` : `btn ${off ? 'off' : ''}`} aria-haspopup="dialog" aria-expanded={open}
+      aria-label={menu.label} title={title} onPointerDown={e => e.stopPropagation()} onClick={() => setOpen(o => !o)}>{variant === 'head' ? '◆' : `◆ ${menu.label}`}</button>
+    {open && <PopMenu anchor={btn.current} close={() => setOpen(false)} className="mgr-role" align={variant === 'button' ? 'left' : 'right'} label={`Manager role of #${t.num}`}>{panel}</PopMenu>}
+  </>;
+}
+
+// The state of one open manager item: the chosen entry, the preset, the server call and its toast
+function ManagerRole({ t, menu, close, toast, listFirst }: { t: RoleTask; menu: Exclude<ManagerMenu, { hidden: true }>; close: () => void; toast: (text: string) => void; listFirst?: boolean }) {
+  const only = !listFirst && menu.choices.length === 1 && !menu.choices[0].disabled ? menu.choices[0] : null;
+  const [step, setStep] = useState<ManagerChoice | null>(only);
+  const [picked, setPicked] = useState<PresetKey | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  const group = step?.group.id || menu.choices[0]?.group.id || '';
+  useManagers();
+  useEffect(() => { if (group) void loadScope(group); }, [group]);
+  const scope = group ? scopeOf(group) : undefined;
+  const preset = picked || (step?.kind === 'preset' ? scope?.preset : scope?.defaultPreset) || 'direct';
+  const confirm = async () => {
+    if (!step) return;
+    setBusy(true); setError('');
+    try {
+      await setManager(step.group.id, step.kind === 'stop' ? { task: null } : { task: t.id, preset });
+      toast(doneText(t, step, scope?.presets[preset]?.name || preset));
+      close();
+    } catch (e) { setError(String((e as Error).message || e)); setBusy(false); }
+  };
+  return <ManagerRoleView t={t} menu={menu} step={step} scope={scope} preset={preset} busy={busy} error={error}
+    pick={c => { setStep(c); setPicked(null); setError(''); }} setPreset={setPicked} confirm={() => void confirm()} cancel={() => { if (step && !only) { setStep(null); setError(''); } else close(); }} />;
+}
+
+export function doneText(t: TaskRef, c: ManagerChoice, presetName: string) {
+  if (c.kind === 'stop') return `#${t.num} no longer manages ${c.group.name}.`;
+  if (c.kind === 'preset') return `#${t.num} manages ${c.group.name} with the preset ${presetName} now.`;
+  if (c.kind === 'replace') return `#${t.num} now manages ${c.group.name} in place of ${c.current?.num ? `#${c.current.num}` : c.current?.id}, with the preset ${presetName}.`;
+  return `#${t.num} now manages ${c.group.name} with the preset ${presetName}.`;
+}
+
+// The list of entries, or the confirm panel of one entry. It has no hooks, so the tests call it with each state.
+// Keys: PopMenu moves the focus with Up and Down and closes on Escape. The buttons are native buttons, so Enter and
+// Space click them. The confirm panel puts the focus on the Preset drop-down, or on Cancel when it removes the role.
+export interface RoleViewProps {
+  t: TaskRef; menu: Exclude<ManagerMenu, { hidden: true }>; step: ManagerChoice | null; scope?: Scope; preset: PresetKey; busy: boolean; error: string;
+  pick: (c: ManagerChoice) => void; setPreset: (p: PresetKey) => void; confirm: () => void; cancel: () => void;
+}
+export function ManagerRoleView({ t, menu, step, scope, preset, busy, error, pick, setPreset, confirm, cancel }: RoleViewProps) {
+  if (!step) return <div className="mgr-list">
+    {menu.hint && <>
+      <button className="mi off" aria-disabled="true" title={menu.hint}><span className="mi-ico">◆</span>Make manager</button>
+      <div className="mgr-hint">{menu.hint}</div>
+    </>}
+    {menu.choices.map(c => <div key={c.kind + c.group.id}>
+      <button className={`mi ${c.disabled ? 'off' : ''}`} aria-disabled={c.disabled ? 'true' : undefined} title={c.disabled || c.label}
+        onClick={() => { if (!c.disabled) pick(c); }}><span className="mi-ico">◆</span>{c.label}</button>
+      {c.disabled && <div className="mgr-hint">{c.disabled}</div>}
+    </div>)}
+  </div>;
+  const g = step.group.name;
+  const cur = step.current?.num ? `#${step.current.num}` : step.current?.id;
+  const head = step.kind === 'stop' ? `Stop managing ${g}?` : step.kind === 'preset' ? `Change the preset of #${t.num} in ${g}`
+    : step.kind === 'replace' ? `Replace ${cur} as manager of ${g}?` : `Make #${t.num} manager of ${g}?`;
+  const action = step.kind === 'stop' ? 'Stop managing' : step.kind === 'preset' ? 'Change preset' : step.kind === 'replace' ? 'Replace manager' : 'Make manager';
+  const same = step.kind === 'preset' && scope?.preset === preset;
+  const needsScope = step.kind !== 'stop';
+  return <div className="mgr-confirm" role="dialog" aria-label={head}>
+    <b className="mgr-head">◆ {head}</b>
+    {step.kind === 'stop' && <div>The tasks of {g} no longer message #{t.num} without a card. Their messages get a card again. #{t.num} keeps running.</div>}
+    {step.kind === 'replace' && <div>{cur}{step.current?.title ? ` (${step.current.title})` : ''} stops managing {g}. #{t.num} takes the role. A group has one manager.</div>}
+    {needsScope && !scope && <div className="sub">Loading the presets…</div>}
+    {needsScope && scope && <>
+      <label className="mgr-preset">Preset <select autoFocus value={preset} onChange={e => setPreset(e.target.value as PresetKey)}>
+        {Object.entries(scope.presets).map(([k, p]) => <option key={k} value={k}>{p.name}{k === scope.defaultPreset ? ' (default)' : ''}</option>)}
+      </select></label>
+      <PresetText scope={scope} preset={preset} who={`#${t.num}`} rule={false} />
+    </>}
+    {error && <div className="sel-warn" role="alert">{error}</div>}
+    <div className="row">
+      <button className="btn" autoFocus={step.kind === 'stop'} disabled={busy} onClick={cancel}>Cancel</button>
+      <button className={`btn ${step.kind === 'stop' ? 'danger' : 'primary'}`} disabled={busy || same || (needsScope && !scope)} onClick={confirm}>{busy ? 'Saving…' : action}</button>
+    </div>
   </div>;
 }
 

@@ -25,7 +25,8 @@ import { linkOrder, showLinkedWork } from '../links';
 import { GROUP_HINT, HIDE_TITLE, canHide, hiddenHere, hide, unhide, type HiddenByView } from '../hideWindow';
 import { fitToolbar, sameFit, type Fit } from '../toolbarFit';
 import { PopMenu } from './PopMenu';
-import { GroupNeeds, ManagerBadge, ManagerMark, ManagerScope, WaitLabel, useBoards } from './ManagerBoard';
+import { GroupNeeds, ManagerBadge, ManagerMark, ManagerRoleButton, ManagerScope, WaitLabel, useBoards } from './ManagerBoard';
+import { groupManager } from '../managerBoard';
 
 type Layout = 'columns' | 'grid' | 'rows';
 const MINW = 640;
@@ -513,7 +514,7 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
           <div key={g.id} data-drop={'g:' + g.id} data-group-tab={g.id} className={`gtab ${view === 'g:' + g.id ? 'on' : ''} ${dropClass('g:' + g.id)} ${tabDrag?.id === g.id ? 'dragging' : ''} ${slotClass(i)}`} style={{ '--gc': g.color } as React.CSSProperties}
             onPointerDown={e => startTabDrag(e, g.id)}
             onClick={e => { if (!draggedTab.current && !(e.target as HTMLElement).closest('button,input')) setView('g:' + g.id); }} onDoubleClick={() => setMenu({ group: g.id })} title={dropTitle('g:' + g.id) ?? `Drag sideways to move this tab. Drop a window here to move it from the current group, or add it from another view. Double-click for options. Next / previous tab: ${keysText('nextView')} / ${keysText('prevView')}. Move this tab left / right: ${keysText('groupLeft')} / ${keysText('groupRight')}`}>
-            <span className="gdot" /><span className="gname">{g.name}</span><span className="gn">{l.length}</span>{w > 0 && !g.manager && <span className="gw">● {w}</span>}<ManagerMark manager={g.manager} tasks={tasks} open={id => openPanel(id)} /><GroupNeeds group={g.id} open={id => openPanel(id)} toast={toast} />
+            <span className="gdot" /><span className="gname">{g.name}</span><span className="gn">{l.length}</span>{w > 0 && !groupManager(g) && <span className="gw">● {w}</span>}<ManagerMark manager={groupManager(g)} tasks={tasks} open={id => openPanel(id)} /><GroupNeeds group={g.id} open={id => openPanel(id)} toast={toast} />
             <span className="gact"><button title="Open in its own window" onClick={() => openInWindow('g:' + g.id)}>↗</button><button title="Rename, colour, delete" onClick={() => setMenu({ group: g.id })}>⋯</button></span>
           </div>); })}
         {(() => { const l = ungrouped.filter(id => live(tasks.find(t => t.id === id))); const w = waiting(l); return (
@@ -623,11 +624,13 @@ const CanvasWin = memo(function CanvasWin({ t, i, act, linkTasks, cls, span, end
         {!narrow && <><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} /><BrowserAskChip t={t} /><RuntimeButton t={t} small onOpen={tab => a().openPanel(t.id, tab)} /></>}
         {ending ? <><span className="sel-warn">End & archive?</span><button className="b" onClick={() => a().endTask(t)}>Yes, end it</button><button className="b" onClick={() => a().setEnding(null)}>Cancel</button></> : <>
         {(t.status === 'suspended' || t.openElsewhere) && <button className="b" onClick={() => a().openPanel(t.id)}>{t.openElsewhere ? 'Options…' : 'Resume…'}</button>}
+        {!narrow && <ManagerRoleButton t={t} variant="head" toast={m => a().toast(m)} />}
         {!narrow ? acts.map(x => <button key={x.k} className={`b ${x.on ? 'on' : ''}`} title={x.title} aria-label={x.aria} onClick={x.fn}>{x.icon}</button>)
           : <button ref={moreRef} className={`b wmore ${menuOpen ? 'on' : ''}`} aria-haspopup="true" aria-expanded={menuOpen} aria-label="Window menu" title={`The buttons of this window: ${acts.map(x => x.text).join(', ')}`} onClick={() => setMenuOpen(o => !o)}>⋯</button>}
         {narrow && menuOpen && <PopMenu anchor={moreRef.current} close={closeMenu} className="wmenu" label={`Window #${t.num}`}>
           <div className="wmenu-chips"><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} /><BrowserAskChip t={t} /><RuntimeButton t={t} small onOpen={tab => { setMenuOpen(false); a().openPanel(t.id, tab); }} /></div>
           {acts.map(x => <button key={x.k} className={`mi ${x.on ? 'on' : ''}`} title={x.title} aria-label={x.aria} onClick={() => { setMenuOpen(false); x.fn(); }}><span className="mi-ico">{x.icon}</span>{x.text}</button>)}
+          <ManagerRoleButton t={t} variant="menu" toast={m => { setMenuOpen(false); a().toast(m); }} />
         </PopMenu>}</>}
       </div>
       {t.restartWhenDone && t.restartFor && <div className="win-note" title={t.restartWait}>{t.restartOverdue ? t.restartWait : `Waiting for the end of the turn ${t.restartFor}.`}{t.restartOverdue && <button className="b" onClick={() => api.restart(t.id, 'now').catch(e => a().toast(String(e.message || e)))}>Restart now</button>}</div>}

@@ -1118,4 +1118,17 @@ table.procs tr.proc-group td { padding-top: 10px; }
 .gmenu .manager-scope select { max-width: 100%; }
 .gmenu .manager-preset { max-width: 300px; line-height: 1.35; }
 .gmenu .manager-preset ul { margin: 2px 0 6px; padding-left: 16px; }
+/* The manager item of a task menu (ManagerRoleButton): the ◆ of a window header, an item of its ⋯ menu, a task panel button */
+.wh .b.mgr-btn.off, .pop-menu .mi.off, .btn.off { opacity: .5; }
+.pop-menu .mi.off { cursor: default; }
+.pop-menu .mi.off:hover { background: none; }
+.pop-menu.mgr-role { width: min(380px, calc(100vw - 16px)); white-space: normal; font-size: 12.5px; }
+.mgr-role.inline { border-top: 1px solid var(--line); margin-top: 4px; padding-top: 4px; white-space: normal; max-width: 360px; }
+.mgr-hint { padding: 0 8px 6px 34px; color: var(--dim); font-size: 11.5px; line-height: 1.35; }
+.mgr-confirm { display: flex; flex-direction: column; gap: 6px; padding: 8px; line-height: 1.4; }
+.mgr-confirm .mgr-head { font-size: 13px; }
+.mgr-confirm .mgr-preset { display: flex; flex-direction: column; gap: 4px; color: var(--dim); }
+.mgr-confirm .mgr-preset select { max-width: 100%; }
+.mgr-confirm .manager-preset ul { margin: 2px 0 6px; padding-left: 16px; }
+.mgr-confirm .row { display: flex; gap: 8px; justify-content: flex-end; }
 .chip.mgr-badge { flex: none; padding: 0 6px; font-size: 10px; line-height: 15px; font-weight: 600; color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); background: var(--accent-bg); cursor: help; }

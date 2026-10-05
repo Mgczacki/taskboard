@@ -99,8 +99,11 @@ type GroupLike = { id: string; name: string; manager?: string };
 let roles = new Map<string, GroupLike[]>();
 let details = new Map<string, ManagerInfo>();
 let fetchedAt = 0, loading: Promise<void> | null = null;
+// The last group list: App.tsx gives the store groups, setManager() changes one manager at once after the server said yes
+let lastGroups: GroupLike[] = [];
 
 export function setManagerGroups(groups: GroupLike[]) {
+  lastGroups = groups;
   const next = new Map<string, GroupLike[]>();
   for (const g of groups) if (g.manager) next.set(g.manager, [...next.get(g.manager) || [], g]);
   const sig = (m: Map<string, GroupLike[]>) => [...m].map(([id, l]) => id + ':' + l.map(g => g.id + '=' + g.name).join(',')).sort().join('|');
@@ -131,4 +134,79 @@ export function badgeTitle(groups: GroupLike[], info: (group: string) => Manager
       `Limits: ${u.newToday} of ${c.newPerDay} new tasks today, ${u.working} of ${c.working} working tasks in the group, ${u.messagesHour} of ${c.messagesPerHour} messages this hour, ${u.stopsHour} of ${c.stopsPerHour} stop messages this hour.`,
       `May act now: start a task ${yes(u.mayNew)}, send a message ${yes(u.mayMessage)}, stop a task ${yes(u.mayStop)}.${stopped}`].join('\n');
   }).join('\n\n');
+}
+
+// The manager of a group as this page knows it now: the store groups, or the result of setManager() before the
+// server sends the new groups. The ◆ on a group tab reads it, so the tab and the Manager badge change together.
+export function groupManager(g: { id: string; manager?: string }) {
+  const known = lastGroups.find(x => x.id === g.id);
+  return known ? known.manager : g.manager;
+}
+
+// The manager scope of one group (GET /api/manager/:group): the manager, its preset, the preset texts, the caps and the
+// manager actions. The group menu (ManagerScope) and the manager item of a task menu (ManagerRoleMenu) read the same
+// copy, and setManager() reloads it, so the two places show the same manager and preset.
+export type PresetKey = 'watch' | 'direct' | 'create';
+export interface PresetText { name: string; may: string[]; not: string[] }
+export interface Audit { at: string; actor: string; action: string; target: string; result: string; userRequest?: string }
+export interface Scope {
+  group: { id: string; name: string; manager?: string; tasks: string[] }; caps: Record<string, number>; actions: Audit[];
+  preset: PresetKey | null; defaultPreset: PresetKey; presets: Record<PresetKey, PresetText>; never: string[]; rule: string; ruleLimits: string;
+}
+const scopes = new Map<string, Scope>();
+export const scopeOf = (group: string) => scopes.get(group);
+export async function loadScope(group: string, get: Get = httpGet) {
+  try {
+    const s = await get(`/api/manager/${encodeURIComponent(group)}`).then(r => r.json()) as Scope;
+    if (s && s.group) { scopes.set(group, s); changed(); }
+    return s;
+  } catch { return scopes.get(group); }
+}
+type Post = (url: string, body: unknown) => Promise<{ ok: boolean; json(): Promise<unknown> }>;
+const httpPost: Post = (url, body) => fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+// POST /api/manager/:group from the dashboard. task null removes the manager. The server refuses the controller, an
+// archived task and a task outside the group (server/manager-role.ts set()). A refusal throws its error text.
+export async function setManager(group: string, body: { task: string | null; preset?: PresetKey }, post: Post = httpPost, get: Get = httpGet) {
+  const r = await post(`/api/manager/${encodeURIComponent(group)}`, body);
+  if (!r.ok) {
+    const e = await r.json().catch(() => ({})) as { error?: string };
+    throw new Error(e.error || 'The server did not change the manager.');
+  }
+  setManagerGroups(lastGroups.map(g => g.id === group ? { ...g, manager: body.task || undefined } : g));
+  fetchedAt = 0;
+  await Promise.all([loadScope(group, get), loadBoards(get)]);
+}
+
+// The manager item of a task menu (the ◆ button of a canvas window header, its ⋯ menu and the task panel).
+// One entry for each group of the task:
+// - make: the group has no manager. replace: another task manages it. The user confirms the replacement.
+// - stop and preset: this task manages the group.
+// disabled is the reason when the task cannot take the role now. hint is the reason when no entry applies.
+export type ManagerChoice = { kind: 'make' | 'replace' | 'stop' | 'preset'; group: { id: string; name: string }; current?: { id: string; num?: number; title?: string }; label: string; disabled?: string };
+export type ManagerMenu = { hidden: true } | { hidden?: false; label: string; choices: ManagerChoice[]; hint?: string };
+type TaskLike = { id: string; num: number; title: string; status: string; role?: string };
+type GroupOfTask = { id: string; name: string; tasks: string[]; manager?: string };
+
+export const NO_GROUP_HINT = 'Add this task to a group first. Use Add to group in the task panel, or drag its canvas window onto a group tab.';
+export function managerMenu(t: TaskLike, groups: GroupOfTask[], tasks: TaskLike[], presetCount = 3): ManagerMenu {
+  // the server refuses the controller (server/manager-role.ts set()), so its menu has no manager item
+  if (t.role === 'controller' || t.id === 'controller') return { hidden: true };
+  const mine = groups.filter(g => g.tasks.includes(t.id));
+  if (!mine.length) return { label: 'Make manager', choices: [], hint: NO_GROUP_HINT };
+  const cannot = t.status === 'archived' ? 'Restore this task first. An archived task cannot manage a group.'
+    : t.status === 'parked' ? 'Bring this task back first. A task that is set aside cannot become a manager.' : undefined;
+  const choices: ManagerChoice[] = [];
+  for (const g of mine) {
+    const group = { id: g.id, name: g.name };
+    const manager = groupManager(g);
+    if (manager === t.id) {
+      choices.push({ kind: 'stop', group, label: `Stop managing ${g.name}` });
+      if (presetCount > 1 && !cannot) choices.push({ kind: 'preset', group, label: `Change preset of ${g.name}` });
+    } else if (manager) {
+      const m = tasks.find(x => x.id === manager);
+      choices.push({ kind: 'replace', group, current: { id: manager, num: m?.num, title: m?.title }, label: `Replace ${m ? `#${m.num}` : manager} as manager of ${g.name}`, disabled: cannot });
+    } else choices.push({ kind: 'make', group, label: `Make manager of ${g.name}`, disabled: cannot });
+  }
+  const label = choices.length === 1 ? choices[0].label : choices.some(c => c.kind === 'stop') ? 'Manager role' : 'Make manager of…';
+  return { label, choices };
 }
