@@ -32,14 +32,25 @@ if (process.argv.includes('app-server')) { // Taskboard asks Codex for its hook 
   const rl = require('node:readline').createInterface({ input: process.stdin });
   rl.on('line', line => { const msg = JSON.parse(line);
     if (msg.id === 1) console.log(JSON.stringify({ id: 1, result: {} }));
-    if (msg.id === 2) console.log(JSON.stringify({ id: 2, result: { data: [{ hooks: [{ source: 'sessionFlags', eventName: 'preToolUse', command: 'node "$TB_HOOKS_DIR/guard.mjs"', key: '/<session-flags>/config.toml:pre_tool_use:0:0', currentHash: 'sha256:' + 'a'.repeat(64) }] }] } }));
+    // every hook given with -c hooks.<Event>=[...command="..."...], as Codex 0.160.0 lists them (task 267 added the
+    // UserPromptSubmit, PostToolUse and Stop hooks for every Codex task)
+    if (msg.id === 2) {
+      const snake = e => e.replace(/[A-Z]/g, (c, i) => (i ? '_' : '') + c.toLowerCase());
+      const hooks = [{ source: 'sessionFlags', eventName: 'preToolUse', command: 'node "$TB_HOOKS_DIR/guard.mjs"', key: '/<session-flags>/config.toml:pre_tool_use:0:0', currentHash: 'sha256:' + 'a'.repeat(64) }];
+      for (const arg of process.argv) {
+        const m = /^hooks\.([A-Za-z]+)=.*command=("(?:[^"\\]|\\.)*")/.exec(arg);
+        if (m && m[1] !== 'PreToolUse') hooks.push({ source: 'sessionFlags', eventName: m[1][0].toLowerCase() + m[1].slice(1), command: JSON.parse(m[2]), key: `/<session-flags>/config.toml:${snake(m[1])}:0:0`, currentHash: 'sha256:' + 'b'.repeat(64) });
+      }
+      console.log(JSON.stringify({ id: 2, result: { data: [{ hooks }] } }));
+    }
   });
   return;
 }
 const last = process.argv[process.argv.length - 1];
 if (process.argv.length > 2 && !last.startsWith('-') && process.argv[process.argv.length - 2] !== '-c') record({ argv: true, text: last });
 
-const RULE = '─'.repeat(80), WIDTH = 150;
+// rows wrap at the pane width, as the agents do (TASK_DIR/box.json gets the exact box text at each draw)
+const RULE = '─'.repeat(80), width = () => Math.max(20, (process.stdout.columns || 154) - 4);
 const parts = []; // the box: { text, shown }
 let burst = null, burstTimer = null, pasting = null, pastes = 0, history = [];
 let dialog = process.env.TEST_QUESTION === '1' ? 'trust' : null;
@@ -70,10 +81,13 @@ function draw() {
     "› 1. Update now (runs `sh -c 'curl -fsSL https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh'`)", '  2. Skip', '  3. Skip until next version', '', '  enter continue · esc skip'];
   else {
     // wrapped at word boundaries, as Codex and Claude Code do: a wrapped row never starts with a space
-    const text = boxText(), rows = [];
-    let row = '';
-    for (const w of text.split(/(?<= )/)) { if (row && (row + w).length > WIDTH) { rows.push(row.trimEnd()); row = w.trimStart(); } else row += w; }
-    rows.push(row);
+    // each line of the box text (a pasted draft keeps its lines) wraps on its own
+    const text = boxText(), rows = [], WIDTH = width();
+    for (const line of text.split('\n')) {
+      let row = '';
+      for (const w of line.split(/(?<= )/)) { if (row && (row + w).length > WIDTH) { rows.push(row.trimEnd()); row = w.trimStart(); } else row += w; }
+      rows.push(row);
+    }
     const mark = agent === 'codex' ? '›' : agent === 'claude' ? '❯' : '>';
     // the box row starts with a color code, as Claude Code ("ESC[39m❯") and Codex ("ESC[1m›ESC[0m") draw it
     const styled = agent === 'codex' ? '\x1b[1m›\x1b[0m' : '\x1b[39m' + mark;
@@ -89,7 +103,9 @@ function draw() {
     lines = agent === 'codex' ? ['OpenAI Codex (fake)', '', ...past, ...above, '', ...box, '', '  ? for shortcuts'] : ['Fake agent', ...past, ...above, '', upper, ...box, rule, ...(state.footer || []), state.busy ? '  ⏸ manual mode on · esc to interrupt' : '  ? for shortcuts'];
   }
   process.stdout.write('\x1b[2J\x1b[H' + lines.join('\r\n'));
+  fs.writeFileSync(path.join(dir, 'box.json'), JSON.stringify({ text: fullText(), shown: boxText() }));
 }
+process.stdout.on('resize', () => draw());
 function submit() {
   const text = fullText(); parts.length = 0;
   if (state.busy && text) { queued.push(text); return draw(); }
@@ -116,14 +132,15 @@ process.stdout.write('\x1b[?2004h');
 process.stdin.on('data', chunk => {
   fs.appendFileSync(path.join(dir, 'input.txt'), chunk);
   const s = chunk.toString('utf8');
-  const printable = s.replace(/\x1b\[[0-9;?]*[~A-Za-z]/g, '').length;
+  // keys such as Backspace (DEL) and Delete are not text: the real Codex 0.160.0 applies them one by one
+  const printable = s.replace(/\x1b\[[0-9;?]*[~A-Za-z]/g, '').replace(/[\x00-\x1f\x7f]/g, '').length;
   // Codex: several characters in one read start a burst that the following reads join
   if (agent === 'codex' && burst === null && pasting === null && !dialog && printable > 1 && !s.includes('\x1b[200~')) { burst = ''; }
   for (const ch of s) {
     if (esc || ch === '\x1b') {
       esc += ch;
       if (esc === '\x1b[200~') { pasting = ''; esc = ''; }
-      else if (esc === '\x1b[201~') { add(pasting, true); pasting = null; esc = ''; draw(); }
+      else if (esc === '\x1b[201~') { add(pasting.replace(/\r\n?/g, '\n'), true); pasting = null; esc = ''; draw(); }
       else if (esc.length > 1 && /[~A-Za-z]$/.test(esc.slice(1)) && esc !== '\x1b[') { esc = ''; }
       else if (esc.length === 1) { setTimeout(() => { if (esc === '\x1b') { esc = ''; key('\x1b'); } }, 30); }
       continue;

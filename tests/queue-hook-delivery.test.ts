@@ -160,15 +160,15 @@ test('Deliver by hook: the typing loop leaves the message, and the next hook eve
   assert.equal(q.via, 'hook');
   assert.match(q.reason, /next hook event: a tool call ends, a prompt is sent or its turn ends/);
   assert.match((claude(t, { hook_event_name: 'PostToolUse', tool_name: 'Bash' }) as Ctx).hookSpecificOutput.additionalContext, /Failed before\./);
-  // Codex has no hook for this
+  // every Codex task has the Taskboard Codex hooks (task 267)
   const c = task('codex');
   fill(c, [{ text: 'For Codex.', from: 'you' }]);
-  assert.equal(queue.viaHook(c.id, `${c.id}-0`), null);
-  assert.equal((queue.forView(c.id)[0] as { hook?: string }).hook, undefined);
+  assert.equal(queue.viaHook(c.id, `${c.id}-0`)?.via, 'hook');
+  assert.equal((queue.forView(c.id)[0] as { hook?: string }).hook, 'a tool call ends, a prompt is sent or its turn ends');
   await assert.rejects(queue.typeFirst(c.id, 'nope'), /An earlier message waits/);
 });
 
-test('Antigravity: a task and the controller get queued messages at Stop; a Codex task has no hook, the Codex controller has', () => {
+test('Antigravity: a task and the controller get queued messages at Stop; Codex tasks and the Codex controller have hooks', () => {
   const t = task('antigravity');
   fill(t, [{ text: 'For agy.', from: 'you' }]);
   const out = events.antigravityEvent(t.id, 'Stop', { conversationId: t.sessionId, fullyIdle: true }).output as { decision: string; reason: string };
@@ -176,7 +176,7 @@ test('Antigravity: a task and the controller get queued messages at Stop; a Code
   assert.match(out.reason, /For agy\./);
   assert.equal(queue.hookEvents({ agent: 'antigravity', role: 'controller' }), 'its turn ends');
   assert.equal(queue.hookEvents({ agent: 'codex', role: 'controller' }), 'a tool call ends, a prompt is sent or its turn ends');
-  assert.equal(queue.hookEvents({ agent: 'codex' }), null);
+  assert.equal(queue.hookEvents({ agent: 'codex' }), 'a tool call ends, a prompt is sent or its turn ends');
 });
 
 test('the queue holds at most 50 waiting messages for a task', async () => {

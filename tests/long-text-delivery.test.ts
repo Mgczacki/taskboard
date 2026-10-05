@@ -84,7 +84,7 @@ test('long text arrives whole and is submitted once, for Codex and Claude Code i
   }
 });
 
-test('an empty text and a draft in the box are refused, and Enter is not pressed', { timeout: 60000 }, async () => {
+test('an empty text and a fresh draft in the box are refused, and Enter is not pressed', { timeout: 60000 }, async () => {
   const t = await liveTask('codex');
   try {
     await assert.rejects(deliverText(t, ''), /The text is empty/);
@@ -95,7 +95,8 @@ test('an empty text and a draft in the box are refused, and Enter is not pressed
     await waitFor(async () => (await tmux.capture(t.session, 0)).includes('› T'), {
       description: 'Codex to show the draft', state: async () => `expected T in the input box; screen:\n${await tmux.capture(t.session, 0)}`,
     });
-    await assert.rejects(deliverText(t, textOf(6000)), /holds a draft that a person typed\. Taskboard does not type into a draft\. Nothing was typed\./);
+    // a draft that changed in the last 3 s is not moved (task 271 moves a quiet draft and puts it back)
+    await assert.rejects(deliverText(t, textOf(6000)), /holds a draft\. Taskboard types the message when the draft has not changed and no key was typed for 3 s.*Nothing was typed\./);
     await pause(800);
     assert.deepEqual(submitted(t), []);
   } finally { await tmux.killSession(t.session); }
@@ -144,13 +145,12 @@ test('failure 2: a Codex task with a 7,000 character prompt in a worktree starts
   } finally { await tmux.killSession(t.session); }
 });
 
-test('a start that tmux refuses reports a short, clear error and leaves the task suspended', { timeout: 60000 }, async () => {
+test('a start that tmux refuses reports a short, clear error and does not keep the task', { timeout: 60000 }, async () => {
   // a title of 20 KB goes into the task instructions on the command line, so even without the prompt it is too long
   await assert.rejects(agents.startTask({ title: 'T'.repeat(20000), desc: 'Short prompt', agent: 'codex', folder: root, worktree: false, account: 'codex-fixture' }),
-    (e: Error) => /^#\d+ was created, but Codex did not start: The command that starts the agent has \d+ bytes, and tmux accepts at most about 16000\.$/.test(e.message));
-  const t = store.all().find(x => x.title.length === 20000)!;
-  assert.equal(t.status, 'suspended');
-  assert.match(t.statusSource || '', /^Did not start: /);
+    (e: Error) => /^Codex did not start, so Taskboard did not keep task #\d+: The command that starts the agent has \d+ bytes, and tmux accepts at most about 16000\.$/.test(e.message));
+  // a task that did not start is removed (commit f2226ac1)
+  assert.equal(store.all().find(x => x.title.length === 20000), undefined);
   // a tmux error names the command, not the whole command line
   await assert.rejects(tmux.tmux('send-keys', '-t', '=no-such-session:', 'x'.repeat(5000)), (e: Error) => e.message.length < 300 && /^tmux send-keys failed: /.test(e.message));
 });

@@ -7,6 +7,7 @@ import { TMUX_SOCKET } from './config.ts';
 import { TMUX_BIN, ensureConfigured, tmux } from './tmux.ts';
 import { spawnPty } from './pty-spawn.ts';
 import { TERMINAL_LIMITS, sendChecked } from './slow-client.ts';
+import * as input from './terminal-input.ts';
 
 // Attaching or resizing makes Codex redraw, which looks like new output. Ignore activity for a moment after those.
 export const quietUntil = new Map<string, number>();
@@ -191,8 +192,10 @@ export function attach(ws: WebSocket, session: string, cols: number, rows: numbe
     }
     // typing counts as using this terminal (only a change of terminal resizes the window); mouse events arrive here too
     w.lastInput = Date.now();
+    input.noteKey(session);
     if (sizedBy.get(session) !== me) use(session, me); else me.usedAt = Date.now();
-    if (!ended) p.write(s);
+    // while Taskboard moves a draft and types a message (deliver-text.ts), keys wait and arrive after it
+    input.write(session, () => { if (!ended) p.write(s); });
   });
   ws.on('close', () => {
     ended = true;

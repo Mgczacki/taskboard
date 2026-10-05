@@ -3,15 +3,17 @@
 // When nothing can be typed now (the box holds text, a question or dialog shows, no box shows, or another message is
 // being typed), the message goes to TASK_DIR/message-queue.json and the sender gets "queued" and the reason.
 // A queued message reaches the agent by one of two paths, in the order the messages were sent:
-// - a hook (Claude Code and the controller on Codex: PostToolUse, UserPromptSubmit and Stop; Antigravity: Stop). events.ts calls takeForHook,
+// - a hook (Claude Code and Codex: PostToolUse, UserPromptSubmit and Stop; Antigravity: Stop). events.ts calls takeForHook,
 //   which returns the text of every queued message and marks each one delivered. A busy agent runs hooks all the time,
 //   so this path does not depend on the screen.
 // - typing: the loop in start() reads the screen of each task with queued messages every 2 s and types the first
-//   message when the box is empty. Codex tasks (not the controller) have only this path. Each screen check is counted in `checks`, and
-//   `seen` says in plain words what the last check saw.
+//   message when the box is empty, or when it holds a draft that nobody changed for 3 s: deliver-text.ts takes the
+//   draft out, types the message and puts the draft back. A typing try that did not arrive whole is removed from the
+//   box and tried again, up to MAX_RETRIES times. A task that stops at start is resumed again after 1, 2, 4 ...
+//   minutes. Each screen check is counted in `checks`, and `seen` says in plain words what the last check saw.
 // A queued message stays until it is delivered or the user removes it. Its sender (a task) is told through its inbox
 // when the message still waits after WARN_MS, when it fails, when the user removes it, and when it arrives after that
-// warning. A message that was typed only in part (Enter was not pressed) fails: it may be in the box, so it is not
+// warning. A message that was typed only in part and could not be removed from the box fails: it is not
 // typed again without the user (dashboard "Type again").
 // Inbox notices have their own record (inbox-delivery.ts). The same loop tries them again when the box is empty.
 import { randomUUID } from 'node:crypto';
@@ -23,7 +25,7 @@ import * as tmux from './tmux.ts';
 import * as agents from './agents.ts';
 import * as docs from './docs.ts';
 import * as inboxDelivery from './inbox-delivery.ts';
-import { NotTyped, textError } from './deliver-text.ts';
+import { draftQuiet, fitUnwatched, NotTyped, textError } from './deliver-text.ts';
 import { boxState, type BoxState, type PromptAgent } from './type-command.ts';
 
 export const TICK_MS = 2000;
@@ -32,6 +34,8 @@ export const MAX_OPEN = 50; // messages that wait (queued or failed) for one tas
 export const MAX_BYTES = 500_000; // characters of text that wait for one task
 const KEEP_DELIVERED = 20; // delivered messages kept in the file, with the time and the path
 export const HOOK_ROOM = 9000; // characters for messages in one hook answer (Claude Code keeps 10,000 of hook context)
+export const MAX_RETRIES = 5; // typing tries that did not arrive whole or were not submitted, before the message fails
+export const RESUME_MAX_MS = 30 * 60_000; // a task that stops at start is resumed after 1, 2, 4 ... minutes, at most this
 export type Kind = 'message' | 'review' | 'permit' | 'approval';
 export interface Queued {
   id: string; text: string; kind: Kind;
@@ -41,6 +45,7 @@ export interface Queued {
   state: 'queued' | 'failed' | 'delivered';
   reason: string;
   tries: number; // typing attempts
+  retries?: number; // typing tries that Taskboard removed from the box again (NotTyped 'retry'); MAX_RETRIES fail it
   triedAt?: string;
   checks?: number; checkedAt?: string; seen?: string; // screen checks of the 2 s loop, and what the last one saw
   via?: 'hook'; // the user chose "Deliver by hook": the typing loop leaves this message (and the ones after it) alone
@@ -81,7 +86,7 @@ export function hookEvents(t: Pick<Task, 'agent' | 'role'>): string | null {
 // What a screen check saw, in plain words, for the dashboard and the sender.
 export function seenWords(state: BoxState | 'not running', working: boolean): string {
   const what = state === 'empty' ? 'the input box was empty'
-    : state === 'draft' ? 'the input box was not empty (it held typed or queued text)'
+    : state === 'draft' ? 'the input box held a draft (Taskboard types the message when nobody has typed for 3 s, and puts the draft back)'
     : state === 'question' ? 'the agent showed a question or dialog'
     : state === 'no-box' ? 'Taskboard did not find the input box on the screen'
     : 'the agent was not running';
@@ -160,6 +165,7 @@ export async function send(t: Task, text: string, opts: { from: string; kind: Ki
   try {
     const r = await typeNow(t, text);
     delivered(t, opts.kind, opts.from, false);
+    if (r.warning) store.update(t.id, { statusSource: r.warning });
     return { state: 'delivered', resumed: r.resumed, ...(r.warning ? { warning: r.warning } : {}) };
   } catch (e) {
     if (e instanceof NotTyped) return queue('queued', e.reason);
@@ -227,7 +233,7 @@ function flush(taskId: string): Promise<void> {
   chains.set(taskId, next);
   return next.finally(() => { if (chains.get(taskId) === next) chains.delete(taskId); });
 }
-const lastResume = new Map<string, number>();
+const lastResume = new Map<string, { at: number; fails: number }>();
 async function flushOnce(taskId: string) {
   const t = store.get(taskId);
   let items = list(taskId);
@@ -246,30 +252,38 @@ async function flushOnce(taskId: string) {
   if (!s || s.dead) {
     // a stopped task is resumed by sendTaskText, at most once a minute; the controller only by startController
     if (t.role === 'controller') { check(seenWords('not running', false)); if (q.reason !== 'The controller is not running.') update({ reason: 'The controller is not running.' }); return; }
-    if (Date.now() - (lastResume.get(taskId) || 0) < 60000) return;
-    lastResume.set(taskId, Date.now());
+    const last = lastResume.get(taskId);
+    if (last && Date.now() - last.at < Math.min(60_000 * 2 ** (last.fails - 1), RESUME_MAX_MS)) return;
+    lastResume.set(taskId, { at: Date.now(), fails: (last?.fails || 0) + 1 });
   } else {
-    const state = boxState(await tmux.captureStyled(t.session), t.agent as PromptAgent);
+    lastResume.delete(taskId);
+    // a small pane that no terminal shows gets a usable size, so the screen check can find the box
+    await fitUnwatched(t.session);
+    const screen = await tmux.captureStyled(t.session);
+    const state = boxState(screen, t.agent as PromptAgent);
     check(seenWords(state, t.status === 'working'));
-    if (state !== 'empty') return;
+    // a draft: deliverText moves it out and puts it back once nobody has typed in the box for 3 s
+    if (state === 'draft' ? !draftQuiet(t.session, screen, t.agent as PromptAgent) : state !== 'empty') return;
   }
   // a hook took the message while the screen was read
   if (list(taskId).find(x => x.id === q.id)?.state !== 'queued') return;
   try {
-    await typeNow(t, q.text);
-    markTyped(t, q.id, true);
+    const r = await typeNow(t, q.text);
+    markTyped(t, q.id, true, r);
     // the next message, in order, if the box is still empty
     return flushOnce(taskId);
   } catch (e) {
-    if (e instanceof NotTyped) update({ reason: e.reason, tries: q.tries + 1, triedAt: iso() });
+    const retries = list(taskId).find(i => i.id === q.id)?.retries || 0;
+    if (e instanceof NotTyped && !(e.state === 'retry' && retries + 1 >= MAX_RETRIES)) update({ reason: e.reason, tries: q.tries + 1, triedAt: iso(), ...(e.state === 'retry' ? { retries: retries + 1 } : {}) });
     else { update({ state: 'failed', reason: message(e), tries: q.tries + 1, triedAt: iso() }); const x = list(taskId).find(i => i.id === q.id); if (x) tellSender(t, x, 'failed'); }
   }
 }
-function markTyped(t: Task, id: string, later: boolean) {
+function markTyped(t: Task, id: string, later: boolean, r?: { draft?: 'kept' | 'warning'; warning?: string }) {
   const items = list(t.id); const q = items.find(x => x.id === id); if (!q) return;
-  Object.assign(q, { state: 'delivered', deliveredAt: iso(), deliveredBy: 'typed into the input box' });
+  Object.assign(q, { state: 'delivered', deliveredAt: iso(), deliveredBy: r?.draft === 'kept' ? 'typed into the input box; the draft in the box was put back after it' : 'typed into the input box' });
   write(t.id, items);
   delivered(t, q.kind, q.from, later);
+  if (r?.warning) store.update(t.id, { statusSource: r.warning });
   if (q.warnedAt) tellSender(t, q, 'delivered');
 }
 
@@ -300,8 +314,8 @@ export async function typeFirst(taskId: string, id: string): Promise<{ state: 'd
   if (!first) throw new Error('No message waits for this task.');
   if (first.id !== id) throw new Error('An earlier message waits for this task. Deliver or remove it first, so the order stays.');
   try {
-    await typeNow(t, first.text);
-    markTyped(t, id, true);
+    const r = await typeNow(t, first.text);
+    markTyped(t, id, true, r);
     void flush(taskId);
     return { state: 'delivered' };
   } catch (e) {
@@ -360,7 +374,8 @@ export async function tick() {
       const t = store.get(id); if (!t || ['archived', 'parked', 'suspended', 'stopped'].includes(t.status) || t.openElsewhere) continue;
       if (t.agent === 'antigravity' && t.status === 'working') continue;
       const s = (await tmux.listSessions())?.find(x => x.name === t.session); if (!s || s.dead) continue;
-      if (boxState(await tmux.captureStyled(t.session), t.agent as PromptAgent) === 'empty') await inboxDelivery.retry(id);
+      const screen = await tmux.captureStyled(t.session), state = boxState(screen, t.agent as PromptAgent);
+      if (state === 'empty' || (state === 'draft' && draftQuiet(t.session, screen, t.agent as PromptAgent))) await inboxDelivery.retry(id);
     }
   } finally { ticking = false; }
 }

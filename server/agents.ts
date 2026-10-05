@@ -26,7 +26,7 @@ import { credentialGuidance } from './credential-guidance.ts';
 import * as rules from './rules.ts';
 import { readScopes, worktreeScopes } from './scopes.ts';
 import * as taskBrowser from './task-browser.ts';
-import { deliverText, NotTyped, notReadyReason, textError } from './deliver-text.ts';
+import { deliverText, NotTyped, notReadyReason, textError, type Delivered } from './deliver-text.ts';
 import { boxState, readyForInput, type PromptAgent } from './type-command.ts';
 
 const exec = promisify(execFile);
@@ -973,7 +973,7 @@ export const blockingQuestion = /Usage limit reached[\s\S]*Request increase|Appr
 // Resume before typing into a task whose tmux session has ended.
 // answer: the text answers the question at the end of the last turn. The caller (pending.ts typeAnswer) checked that
 // the "needs you" status is that question, so only the screen check of deliverText applies.
-export async function sendTaskText(t: Task, text: string, opts: { answer?: boolean } = {}): Promise<{ resumed: boolean; submitted: boolean; warning?: string }> {
+export async function sendTaskText(t: Task, text: string, opts: { answer?: boolean } = {}): Promise<{ resumed: boolean } & Delivered> {
   const empty = textError(text); if (empty) throw new Error(empty);
   if (delivering.has(t.id)) throw new NotTyped('Another message is being typed into this task now.', 'busy');
   delivering.add(t.id);
@@ -993,7 +993,9 @@ export async function sendTaskText(t: Task, text: string, opts: { answer?: boole
       let readySince = 0;
       for (let i = 0; i < 120; i++) {
         const live = (await tmux.listSessions())?.find(s => s.name === t.session);
-        if (!live || live.dead) throw new Error('The agent stopped before it could receive the message.');
+        // nothing was typed, so the message can wait and be tried again (task 271: on 2026-10-04 new sessions died at
+        // start, and six messages failed for good, then waited 18 to 26 hours for "Type again")
+        if (!live || live.dead) throw new NotTyped('The agent stopped before it could receive the message.', 'no-box');
         const screen = await tmux.captureStyled(t.session);
         const state = boxState(screen, t.agent as PromptAgent);
         if (state === 'question') throw notReadyReason(screen, t.agent as PromptAgent, agentName(t.agent), t.num)!;
