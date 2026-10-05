@@ -6,6 +6,8 @@
 //   - Undelivered message rows: a message to a task or to the controller that failed or waits longer than 5 minutes
 //     (server/message-queue.ts, QueuedMessage.tsx)
 // The views All, Agent questions, Permits, Push and release, and Answered filter this one list.
+// The waiting indicator of the top bar and the sidebar open the page with a filter in the address (#waiting:<filter>,
+// rowMatches in waitingSummary.ts), for example only the tasks to review. The filter shows as a chip with Show all.
 // Dismissed lists the items that the user dismissed (server/dismiss.ts), with Bring back. A dismissed item is not in
 // the other views until its signature changes. Approval and Message cards have no Dismiss: they carry their own decision.
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -23,6 +25,7 @@ import { isMessage, reminder, sortTime } from '../messageCard';
 import { Terminal } from './Terminal';
 import { AgentChip, Dot, StatusLabel, ThreeLines } from './ui';
 import { ManagerBadge } from './ManagerBoard';
+import { hashKind, KIND_NAME, rowMatches } from '../waitingSummary';
 
 type Row = { id: string; at: string; taskId?: string; agent?: Agent; title: string; question: string; kind: string; risky?: boolean; screen?: boolean; late?: boolean; item?: PendingItem; approval?: Approval; task?: Task; done?: boolean; dismissal?: Dismissal; queued?: { t: Task; q: QueuedMessage } };
 type View = 'all' | 'questions' | 'messages' | 'permits' | 'git' | 'answered' | 'dismissed';
@@ -59,6 +62,10 @@ export function WaitingPage({ tasks, allTasks, openTask, openController, toast }
   const { approvals, pending, answered, dismissedPending, dismissals } = useStore();
   useKeymap();
   const [view, setView] = useState<View>('all');
+  // the filter of the count that the user clicked (#waiting:<filter>), or null
+  const [only, setOnly] = useState(() => hashKind(location.hash));
+  useEffect(() => { const on = () => { const k = hashKind(location.hash); setOnly(k); if (k) { setView('all'); setSel(null); } }; addEventListener('hashchange', on); return () => removeEventListener('hashchange', on); }, []);
+  const showAll = () => { history.replaceState(null, '', `${location.pathname}${location.search}#waiting`); setOnly(null); setSel(null); };
   const [agent, setAgent] = useState<Agent | 'any'>('any');
   const [sel, setSel] = useState<string | null>(null);
   const [showTerm, setShowTerm] = useState(() => { try { return localStorage.getItem('tb-waiting-term') !== 'off'; } catch { return true; } });
@@ -85,7 +92,7 @@ export function WaitingPage({ tasks, allTasks, openTask, openController, toast }
     permits: r => r.item?.kind === 'command' || ['permit', 'tool-refusal'].includes(r.approval?.action || ''),
     git: r => GIT.includes(r.approval?.action || ''), dismissed: () => true,
   };
-  const rows = (view === 'answered' ? done : view === 'dismissed' ? gone : all.filter(test[view])).filter(r => agent === 'any' || r.agent === agent);
+  const rows = (view === 'answered' ? done : view === 'dismissed' ? gone : all.filter(test[view])).filter(r => (agent === 'any' || r.agent === agent) && (!only || r.done || rowMatches(only, r, tasks, pending)));
   const displayRows = [...rows].sort((a, b) => Number(!!a.queued) - Number(!!b.queued) || (a.taskId || '').localeCompare(b.taskId || '') || a.at.localeCompare(b.at));
   const userRows = all.filter(r => !r.queued);
   const waitingTasks = new Set(userRows.map(r => r.taskId || r.id)).size;
@@ -107,8 +114,8 @@ export function WaitingPage({ tasks, allTasks, openTask, openController, toast }
   return <div className="waiting">
     <div className="wt-head"><div><div className="sub">{userRows.length ? `${waitingTasks} tasks wait on you (${cardCount} cards)${risky ? ` · ${risky} with a risky option` : ''}${late ? ` · ${late} late items` : ''}` : 'Nothing waits on you.'}</div></div>
       <span className="pc-sp" /><label className="opt"><input type="checkbox" checked={showTerm} onChange={e => setShowTerm(e.target.checked)} /> Show the terminal below the card</label></div>
-    <div className="wt-tabs">{VIEWS.map(([v, label]) => <button key={v} className={`wt-tab ${view === v ? 'on' : ''}`} onClick={() => { setView(v); setSel(null); }}>{label}<span className="n">{v === 'answered' ? done.length : v === 'dismissed' ? gone.length : all.filter(test[v]).length}</span></button>)}</div>
-    <div className="wt-filters">{(['any', 'claude', 'codex', 'antigravity'] as const).map(a => <button key={a} className={`chip wt-chip ${agent === a ? 'on' : ''}`} onClick={() => { setAgent(a); setSel(null); }}>{a === 'any' ? 'All agents' : AGENT_NAME[a]}</button>)}
+    <div className="wt-tabs">{VIEWS.map(([v, label]) => <button key={v} className={`wt-tab ${view === v ? 'on' : ''}`} onClick={() => { setView(v); if (only) showAll(); setSel(null); }}>{label}<span className="n">{v === 'answered' ? done.length : v === 'dismissed' ? gone.length : all.filter(test[v]).length}</span></button>)}</div>
+    <div className="wt-filters">{only && <button type="button" className="chip wt-chip on wt-only" onClick={showAll} aria-label={`Filter: ${KIND_NAME[only]}. Click to show all items.`} title="Show all items">{KIND_NAME[only]} ✕</button>}{(['any', 'claude', 'codex', 'antigravity'] as const).map(a => <button key={a} className={`chip wt-chip ${agent === a ? 'on' : ''}`} onClick={() => { setAgent(a); setSel(null); }}>{a === 'any' ? 'All agents' : AGENT_NAME[a]}</button>)}
       {view === 'permits' && <span className="sub">Permit requests and command permissions from agents.</span>}
       {view === 'dismissed' && <span className="sub">Items that you dismissed. Each one shows again by itself when something new happens for it.</span>}
       {view !== 'dismissed' && view !== 'answered' && keyLabel('waitingDismiss') && <span className="sub" title={`Dismiss the selected item: ${keysText('waitingDismiss')}`}>Dismiss the selected item: <kbd>{keyLabel('waitingDismiss')}</kbd></span>}</div>

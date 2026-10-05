@@ -20,9 +20,10 @@ export function stackEntries(approvals: Approval[], pending: PendingItem[]): Sta
   ].sort((x, y) => x.at.localeCompare(y.at));
 }
 
-// the id of the oldest question card of the task, or null when the task has no card in the stack
+// the id of the oldest question card of the task, or null when the task has no card in the stack. A stack entry id
+// (a:<approval id> or p:<card id>, from the waiting indicator in WaitingChips.tsx) selects that entry.
 export function entryForTask(entries: StackEntry[], taskId: string): string | null {
-  return entries.find(e => e.item?.taskId === taskId)?.id ?? null;
+  return entries.find(e => e.id === taskId)?.id ?? entries.find(e => e.item?.taskId === taskId)?.id ?? null;
 }
 
 // The index of the front card. A screen card gets a new id when the terminal size changes the screen rows (for
@@ -36,6 +37,7 @@ export function frontIndex(entries: StackEntry[], frontId: string | null, frontT
 }
 
 export const SHOW_EVENT = 'tb-stack-show';
+// taskId: a task id (the task's oldest question card) or a stack entry id
 export function showInStack(taskId: string) {
   window.dispatchEvent(new CustomEvent<string>(SHOW_EVENT, { detail: taskId }));
 }

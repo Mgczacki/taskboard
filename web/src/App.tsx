@@ -23,9 +23,11 @@ import { AccountsPage } from './components/Accounts';
 import { SettingsPage } from './components/Settings';
 import { PermitsPage } from './components/Permits';
 import { NoticeStack } from './components/NoticeStack';
-import { liveApprovals } from './stack';
+import { liveApprovals, showInStack } from './stack';
 import { useCardAlerts } from './cardAlert';
 import { WaitingPage, waitingRows } from './components/Waiting';
+import { WaitingChips } from './components/WaitingChips';
+import { itemsText, rowMatches, targetText, waitingHash, waitTarget, type WaitFilter, type WaitTarget } from './waitingSummary';
 import { quietTaskIds } from './dismiss';
 import { StatsPage } from './components/Stats';
 import { PerfMonitor } from './components/PerfMonitor';
@@ -43,6 +45,7 @@ function parseHash(): { page: Page; view?: string } {
   if (h === 'review' || h.startsWith('inbox:')) return { page: 'inbox' }; // #inbox:<messages|sent>:<message id> (MessageCard.tsx)
   if (h.startsWith('canvas:')) return { page: 'canvas', view: h.slice(7) };
   if (h.startsWith('settings:')) return { page: 'settings' }; // #settings:<section> (Settings scrolls to it)
+  if (h.startsWith('waiting:')) return { page: 'waiting' }; // #waiting:<filter> (waitingSummary.ts hashKind)
   return { page: (['list', 'board', 'canvas', 'graph', 'waiting', 'inbox', 'permits', 'accounts', 'stats', 'settings'].includes(h) ? h : 'list') as Page };
 }
 export const SOLO = new URLSearchParams(location.search).get('solo') === '1';
@@ -196,12 +199,14 @@ export function App() {
   // The Mac app (desktop/main.cjs) opens a task, triage or the controller from its menu-bar item with this event.
   useEffect(() => {
     const on = (e: Event) => {
-      const d = (e as CustomEvent<{ task?: string; triage?: boolean; controller?: boolean; newTask?: boolean; settings?: string }>).detail || {};
+      const d = (e as CustomEvent<{ task?: string; triage?: boolean; controller?: boolean; newTask?: boolean; settings?: string; waiting?: boolean }>).detail || {};
       if (d.newTask) setNewOpen(true);
       // the app menu item "Restart Taskboard Server…" opens Settings at the server section
       if (d.settings) { location.hash = `settings:${d.settings}`; setPage('settings'); }
       if (d.task) setOpenId(d.task);
       if (d.triage) setTriage(true);
+      // the menu-bar item and the Dock menu: "Open Waiting"
+      if (d.waiting) go('waiting');
       if (d.controller && openId !== 'controller') openController();
     };
     addEventListener('taskboard:open', on); return () => removeEventListener('taskboard:open', on);
@@ -211,7 +216,15 @@ export function App() {
   const queue = useMemo(() => tasks.filter(t => ATTN.includes(t.status) && !quiet.has(t.id)).sort((a, b) => b.waitMin - a.waitMin), [tasks, quiet]);
   const needs = tasks.filter(t => t.status === 'needs-you' && !quiet.has(t.id)), unread = tasks.filter(t => t.status === 'unread');
   // everything on the Waiting page: question cards, approval cards, and tasks that wait with no card
-  const waitingCount = useMemo(() => waitingRows(tasks, approvals, pending, quiet, allTasks).length, [tasks, allTasks, approvals, pending, quiet]);
+  const waitRows = useMemo(() => waitingRows(tasks, approvals, pending, quiet, allTasks), [tasks, allTasks, approvals, pending, quiet]);
+  const waitingCount = waitRows.length;
+  // a click on a waiting count (WaitingChips, the sidebar): the card in the stack, the task panel or the Waiting page.
+  // The Waiting page has no stack, so there a click for one card opens the filter of the count.
+  const actWait = (t: WaitTarget, kind: WaitFilter | 'all') => {
+    if ('task' in t) setOpenId(t.task);
+    else if ('stack' in t && page !== 'waiting') showInStack(t.stack);
+    else { location.hash = waitingHash('waiting' in t ? t.waiting : kind); setPage('waiting'); }
+  };
   const canvasIds = useMemo(() => {
     if (page !== 'canvas') return [];
     if (view.startsWith('g:')) return groups.find(g => g.id === view.slice(2))?.tasks || [];
@@ -270,10 +283,10 @@ export function App() {
         <div className="rail-item ctl-item" onClick={openController} title={`The controller agent manages the other agents. Shortcut: ${keysText('controller')}`}>{controller ? <Dot s={controller.status} /> : <span className="dot idle" />}<span className="t"><b>Controller</b>{controller ? <span className="sub"> · {AGENT_NAME[controller.agent]}</span> : ' · start'}</span>{controller?.remoteUrl && <a className="rc-link" href={controller.remoteUrl} target="_blank" rel="noreferrer" onClick={e => e.stopPropagation()} title="Remote Control is on: open the controller on claude.ai or the Claude mobile app">📱</a>}{keyLabel('controller') && <kbd>{keyLabel('controller')}</kbd>}</div>
         <button className="importbtn" onClick={() => setImportOpen(true)} title="Bring in Claude Code, Codex and Antigravity sessions you started outside Taskboard">⇪ Import sessions</button>
         <nav className="nav">
-          {(['list', 'board', 'graph', 'canvas', 'waiting', 'inbox', 'permits', 'accounts', 'stats', 'settings'] as Page[]).map(p => <a key={p} href={p === 'canvas' ? `#canvas:${encodeURIComponent(view)}` : `#${p}`} className={page === p ? 'on' : ''} onClick={() => go(p)}>{p[0].toUpperCase() + p.slice(1)}{p === 'list' && <span className="n">{tasks.filter(t => t.status !== 'archived').length}</span>}{p === 'waiting' && waitingCount > 0 && <span className="n needs">{waitingCount}</span>}{p === 'inbox' && reviewCount > 0 && <span className="n" style={{ color: 'var(--st-review)' }}>{reviewCount}</span>}</a>)}
+          {(['list', 'board', 'graph', 'canvas', 'waiting', 'inbox', 'permits', 'accounts', 'stats', 'settings'] as Page[]).map(p => <a key={p} href={p === 'canvas' ? `#canvas:${encodeURIComponent(view)}` : `#${p}`} className={page === p ? 'on' : ''} onClick={() => go(p)}>{p[0].toUpperCase() + p.slice(1)}{p === 'list' && <span className="n">{tasks.filter(t => t.status !== 'archived').length}</span>}{p === 'waiting' && waitingCount > 0 && <span className="n needs" title={itemsText(waitingCount)}>{waitingCount}</span>}{p === 'inbox' && reviewCount > 0 && <span className="n" style={{ color: 'var(--st-review)' }}>{reviewCount}</span>}</a>)}
         </nav>
         <div className="rail-scroll">
-          <div className="rail-sec"><h6>Needs you<span>{needs.length}</span></h6>{needs.map(item)}{!needs.length && <div className="rail-empty">Nothing waiting</div>}</div>
+          <div className="rail-sec"><h6>Needs you{needs.length ? (w => <button type="button" className="rail-count" onClick={() => actWait(w, 'needs')} aria-label={`${needs.length} ${needs.length === 1 ? 'task needs' : 'tasks need'} you. ${targetText(w)}`} title={targetText(w)}>{needs.length}</button>)(waitTarget(waitRows.filter(r => rowMatches('needs', r, tasks, pending)), 'needs')) : <span>0</span>}</h6>{needs.map(item)}{!needs.length && <div className="rail-empty">Nothing waiting</div>}</div>
           <div className="rail-sec"><h6>Done · unread<span>{unread.length}</span></h6>{unread.map(item)}{!unread.length && <div className="rail-empty">All read</div>}</div>
           {<div className="rail-sec"><h6>Machines<span className="addg" title="Add a machine" onClick={() => setAddMachine(true)}>＋</span></h6>
             {machines.map(m => <div key={m.id} className={`rail-item ${m.online ? '' : 'off'}`} title={m.local ? 'This machine' : `${m.url}${m.error ? ' · ' + m.error : ''}`}><span className={`mdot ${m.online ? '' : 'off'}`} /><span className="t">{m.name}{m.local ? ' (this)' : ''}</span><span className="m">{m.local ? tasks.filter(t => !t.machine && t.status !== 'archived').length : m.online ? `${m.latency ?? '?'} ms · ${m.tasks ?? 0}` : 'offline'}</span></div>)}
@@ -300,9 +313,7 @@ export function App() {
           {!SOLO && <button className="btn icon" title={`Hide or show the sidebar (${keysText('sidebar')})`} onClick={() => setRailHidden(h => !h)}>◧</button>}
           <h1>{SOLO ? viewName(view, groups, tasks) : page[0].toUpperCase() + page.slice(1)}</h1>
           <span className="spacer" />
-          <div className="attn-wrap">{approvals.some(a => a.state === 'pending') && <span className="attn" style={{ marginRight: 8 }}>{approvals.filter(a => a.state === 'pending').length} to approve</span>}{queue.length
-            ? <button className="attn" onClick={() => go('waiting')} title={`The Waiting page: everything waiting on you. Triage shortcut: ${keysText('triage')}`}>{queue.length} waiting on you<span className="sep">·</span><span className="long">longest {fmtWait(queue[0].waitMin)}</span>{keyLabel('triage') && <kbd>{keyLabel('triage')}</kbd>}</button>
-            : <span className="attn quiet">Nothing waiting</span>}</div>
+          <WaitingChips queue={queue} tasks={tasks} approvals={approvals} pending={pending} rows={waitRows} act={actWait} triageKey={keyLabel('triage')} />
           <span className="spacer" />
           {page === 'list' && <label className="opt" title="Show archived tasks"><input type="checkbox" checked={showArchived} onChange={e => setShowArchived(e.target.checked)} /> <span className="opt-text">Show archived</span></label>}
           <StyleSwitcher />

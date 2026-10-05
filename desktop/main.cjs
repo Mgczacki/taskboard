@@ -221,7 +221,7 @@ function trackButtons() {
 function show() { if (!win || win.isDestroyed()) createWindow(); if (win.isMinimized()) win.restore(); win.show(); win.focus(); }
 function toggle() { if (win && win.isVisible() && win.isFocused()) win.hide(); else show(); }
 
-// Ask the page to open a task, triage, the controller or the New task dialog (App.tsx listens for 'taskboard:open'),
+// Ask the page to open a task, triage, the Waiting page, the controller or the New task dialog (App.tsx listens for 'taskboard:open'),
 // in the window you are using (the main window when the call comes from the menu bar or Dock).
 function openInPage(detail) {
   const focused = BrowserWindow.getFocusedWindow();
@@ -262,7 +262,7 @@ async function poll() {
   if (dockMenuKey !== lastDockMenuKey) { lastDockMenuKey = dockMenuKey; app.dock?.setMenu(Menu.buildFromTemplate([
     { label: 'New Window', click: () => newWindow() },
     ...(groups.length ? [{ label: 'New Window for Group', submenu: groupItems() }] : []),
-    ...(waiting.length ? [{ type: 'separator' }, ...waiting.slice(0, 8).map(t => ({ label: `#${t.num} ${t.title.slice(0, 40)} — ${STATUS_WORDS[t.status] || t.status}`, click: () => openInPage({ task: t.id }) }))] : []),
+    ...(waiting.length ? [{ type: 'separator' }, { label: `${waiting.length} waiting on you: Open Waiting`, click: () => openInPage({ waiting: true }) }, ...waiting.slice(0, 8).map(t => ({ label: `#${t.num} ${t.title.slice(0, 40)} — ${STATUS_WORDS[t.status] || t.status}`, click: () => openInPage({ task: t.id }) }))] : []),
   ])); }
   if (tray) {
     tray.setTitle(!serverUp ? ' off' : waiting.length ? ` ${waiting.length}` : '');
@@ -284,7 +284,8 @@ function trayMenu(unread) {
     items.push({ label: 'Show Details…', click: show });
   }
   else {
-    items.push({ label: waiting.length ? `${waiting.length} waiting on you` : 'Nothing waiting on you', enabled: false });
+    // the count opens the Waiting page in the main window (App.tsx 'taskboard:open' with waiting)
+    items.push(waiting.length ? { label: `${waiting.length} waiting on you: Open Waiting`, click: () => openInPage({ waiting: true }) } : { label: 'Nothing waiting on you', enabled: false });
     for (const t of waiting.slice(0, 12)) items.push({ label: `#${t.num} ${t.title.slice(0, 48)} — ${STATUS_WORDS[t.status] || t.status}${t.waitMin ? `, ${t.waitMin} min` : ''}`, click: () => openInPage({ task: t.id }) });
     if (unread) items.push({ label: `${unread} done, unread`, enabled: false });
   }
@@ -294,6 +295,7 @@ function trayMenu(unread) {
     { label: 'New Task…', enabled: serverUp, click: () => { show(); openInPage({ newTask: true }); } },
     { label: 'New Window', click: () => newWindow() },
     ...(groups.length ? [{ label: 'New Window for Group', submenu: groupItems() }] : []),
+    { label: 'Open Waiting', enabled: serverUp, click: () => openInPage({ waiting: true }) },
     { label: 'Triage (everything waiting)', enabled: serverUp, click: () => openInPage({ triage: true }) },
     { label: 'Controller', enabled: serverUp, click: () => openInPage({ controller: true }) },
     { label: 'Restart Taskboard Server…', enabled: serverUp, click: () => { show(); openInPage({ settings: 'server' }); } },
@@ -337,6 +339,7 @@ function appMenu() {
       { role: 'togglefullscreen' }, { role: 'toggleDevTools' },
     ] },
     { label: 'Go', submenu: [
+      { label: 'Waiting', click: () => openInPage({ waiting: true }) },
       { label: 'Triage', click: () => openInPage({ triage: true }) },
       { label: 'Controller', click: () => openInPage({ controller: true }) },
     ] },
