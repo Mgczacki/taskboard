@@ -12,6 +12,7 @@ import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readF
 import { basename, join, sep } from 'node:path';
 import { TB_DIR, TOKEN, URL_BASE } from '../config.ts';
 import * as tasks from '../store.ts';
+import * as taskToken from '../task-token.ts';
 import * as docs from '../docs.ts';
 import type { Delivery } from '../inbox-delivery.ts';
 import { human, isControllerToken } from './auth.ts';
@@ -44,8 +45,11 @@ export function mountA2ANotes(app: Express, options: { delivery?: A2ADeps; setti
 
   const role = (req: Request): Role | undefined => {
     if (human(req)) return 'person';
-    if (req.get('x-taskboard-token') !== TOKEN) return undefined;
     const actor = req.get('x-tb-actor') || '';
+    // a task proves itself with its own token (server/task-token.ts): a session launched after the task-token release
+    // sends that token as x-taskboard-token too, so the shared token alone is not required for a task
+    const taskProof = !!actor && actor !== 'controller' && taskToken.actorFor(req.get('x-tb-task-token') || req.get('x-taskboard-token')) === actor;
+    if (req.get('x-taskboard-token') !== TOKEN && !taskProof) return undefined;
     if (actor === 'controller') return isControllerToken(req.get('x-tb-mail-controller')) ? 'reviewer' : undefined;
     return actor && tasks.get(actor) ? 'agent' : undefined;
   };

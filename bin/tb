@@ -4,14 +4,32 @@
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const URL_BASE = process.env.TB_URL || 'http://127.0.0.1:4317';
 const token = (() => { try { return readFileSync(process.env.TB_TOKEN_FILE || join(homedir(), '.taskboard', 'token'), 'utf8').trim(); } catch { return ''; } })();
-const actorHeaders = () => process.env.TASK_ID === 'controller'
-  ? { 'x-tb-actor': 'controller', 'x-tb-mail-controller': process.env.TB_MAIL_CONTROLLER_TOKEN || '' }
-  : { 'x-tb-task-token': process.env.TB_TASK_TOKEN || '' };
+// A task session sends its task token (server/task-token.ts). A session launched before the release that added
+// TB_TASK_TOKEN keeps its old environment, so tb then reads the token from the file that the server writes for each task
+// (~/.taskboard/task-tokens/<TASK_ID>, mode 0600). tb also names the task in x-tb-actor: the server refuses a request
+// that names a task without that task's token, so a session with no token never acts as the user.
+function taskKey(id) {
+  if (process.env.TB_TASK_TOKEN) return process.env.TB_TASK_TOKEN;
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(id)) return '';
+  const f = process.env.TB_TOKEN_FILE;
+  // TB_TOKEN_FILE is the task token file for a new session, or ~/.taskboard/token (the server folder) for an old one
+  const dirs = [f && basename(dirname(f)) === 'task-tokens' && basename(f) === id ? dirname(f) : '', f && basename(f) === 'token' ? join(dirname(f), 'task-tokens') : '', join(homedir(), '.taskboard', 'task-tokens')];
+  for (const d of dirs.filter(Boolean)) { try { const k = readFileSync(join(d, id), 'utf8').trim(); if (k) return k; } catch {} }
+  return '';
+}
+const actorHeaders = () => {
+  const id = process.env.TASK_ID;
+  if (id === 'controller') return { 'x-tb-actor': 'controller', 'x-tb-mail-controller': process.env.TB_MAIL_CONTROLLER_TOKEN || '' };
+  if (!id) return {};
+  const key = taskKey(id);
+  if (!key) { console.error('tb: This session has no task token. Park and resume the task, or ask the controller.'); process.exit(1); }
+  return { 'x-tb-actor': id, 'x-tb-task-token': key };
+};
 const args = process.argv.slice(2);
 const flag = (name, def) => { const i = args.indexOf(name); if (i < 0) return def; const v = args[i + 1]; args.splice(i, 2); return v; };
 const has = name => { const i = args.indexOf(name); if (i < 0) return false; args.splice(i, 1); return true; };
@@ -539,7 +557,7 @@ switch (cmd) {
     for (const s of specs) {
       if (!s.folder || !s.prompt) { console.error('tb new: --folder and a prompt are required'); process.exit(1); }
       const t = await call('POST', '/api/tasks', { title: s.title || s.prompt.slice(0, 60), desc: s.prompt, agent: s.agent || 'claude', folder: resolve(s.folder.replace(/^~/, homedir())), worktree: s.worktree === false ? false : s.worktree ? true : undefined, branch: typeof s.worktree === 'string' ? s.worktree : undefined, parent: process.env.TASK_ID || undefined, group: s.group || undefined, account: s.account || undefined, model: s.model || undefined, links: startLinks(s) });
-      if (t.approved) continue;
+      if (t.approved || t.approval) continue; // the card waits on the dashboard; call() printed its id
       console.log(`Started #${t.num} ${t.title} (${t.agent} on ${t.account}) in ${t.cwd}`);
       for (const p of t.linkProblems || []) console.error(`tb: link not added: ${p}`);
     }
@@ -559,7 +577,7 @@ switch (cmd) {
     const folder = flag('--folder', source.folder);
     const worktree = flag('--worktree');
     const created = await call('POST', '/api/tasks', { title, agent, account, folder: resolve(folder.replace(/^~/, homedir())), worktree: worktree ? true : undefined, branch: worktree, spinOff: { sourceNum: source.num, question: item.q, answer: item.a } });
-    if (!created.approved) console.log(`Started #${created.num} ${created.title} (${created.agent}) in ${created.cwd}`);
+    if (!created.approved && !created.approval) console.log(`Started #${created.num} ${created.title} (${created.agent}) in ${created.cwd}`);
     break;
   }
   case 'dep': {
