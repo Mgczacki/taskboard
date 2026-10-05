@@ -26,13 +26,21 @@ const section = (body: string, path: string) => {
   return { lines, start, end };
 };
 
+// The hooks that Taskboard gives every Codex task with -c (agents.ts codexFlags), as hooks/list names them in a key:
+// "/<session-flags>/config.toml:<event>:0:0". The key and the hash do not depend on the task or its folder.
+// Since task 242 every Codex task gets the hooks of server/hooks/codex-hook.mjs, not only the controller.
+export const CODEX_HOOK_EVENTS = ['pre_tool_use', 'user_prompt_submit', 'post_tool_use', 'stop'] as const;
+export const codexHookKey = (event: string) => `/<session-flags>/config.toml:${event}:0:0`;
+export const isTaskboardCodexHook = (key: string) => (CODEX_HOOK_EVENTS as readonly string[]).some(e => key === codexHookKey(e));
+
 // Codex does not read hooks.state from -c overrides. Its hook review reads this value from the account config.
-// Trust only the hash that Codex reports for Taskboard's guard command.
+// Trust only the hash that Codex reports for one of Taskboard's own hook commands.
 export function trustCodexHook(t: Task, key: string, hash: string) {
-  // the guard (every Codex task) and the controller's hooks (agents.ts CODEX_CONTROLLER_HOOKS)
-  const allowed = t.role === 'controller' ? /^\/<session-flags>\/config\.toml:(pre_tool_use|user_prompt_submit|post_tool_use|stop):0:0$/ : /^\/<session-flags>\/config\.toml:pre_tool_use:0:0$/;
-  if (t.agent !== 'codex' || !allowed.test(key) || !/^sha256:[a-f0-9]{64}$/.test(hash))
-    throw new Error('Codex reported an unexpected Taskboard hook.');
+  if (t.agent !== 'codex') throw new Error('Only a Codex task has Codex hooks.');
+  if (!isTaskboardCodexHook(key))
+    throw new Error(`Codex listed the hook ${JSON.stringify(key)}, which is not a Taskboard hook, so Taskboard did not trust it. Report this to the Taskboard developer.`);
+  if (!/^sha256:[a-f0-9]{64}$/.test(hash))
+    throw new Error(`Codex reported the hash ${JSON.stringify(hash)} for the Taskboard hook ${key}, which is not a sha256 hash. Report this to the Taskboard developer.`);
   const acct = accounts.get(t.account) || accounts.defaultFor('codex');
   const file = join(acct.isDefault ? join(HOME, '.codex') : acct.dir, 'config.toml');
   const body = existsSync(file) ? readFileSync(file, 'utf8') : '';

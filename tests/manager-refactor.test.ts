@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, readFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -8,6 +8,13 @@ const root = mkdtempSync(join(tmpdir(), 'tb-manager-'));
 process.env.TASKBOARD_DIR = join(root, 'private');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
 process.env.TASKBOARD_TMUX_SOCKET = `tb-manager-test-${process.pid}`;
+// A message to an idle task resumes it. These tests must not start the real Codex or write to the real ~/.codex:
+// HOME is a scratch folder, and `codex` on PATH ends at once, so the start fails and the message stays queued.
+process.env.HOME = join(root, 'home');
+mkdirSync(join(root, 'home', '.codex'), { recursive: true });
+mkdirSync(join(root, 'bin'));
+writeFileSync(join(root, 'bin', 'codex'), '#!/bin/sh\nexit 1\n'); chmodSync(join(root, 'bin', 'codex'), 0o755);
+process.env.PATH = `${join(root, 'bin')}:${process.env.PATH}`;
 const store = await import('../server/store.ts');
 const groups = await import('../server/groups.ts');
 const role = await import('../server/manager-role.ts');

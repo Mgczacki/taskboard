@@ -687,8 +687,9 @@ export function baseEnv(t: Task): Record<string, string> {
 // Keep these commands identical across Taskboard servers. Codex identifies a hook from its command and settings.
 const codexHookCommand = () => 'node "$TB_HOOKS_DIR/guard.mjs"';
 const codexHookSetting = () => `hooks.PreToolUse=[{matcher="^Bash$",hooks=[{type="command",command=${JSON.stringify(codexHookCommand())},timeout=5}]}]`;
-// The controller on Codex also gets hooks that give text to the model (server/hooks/codex-hook.mjs, events.ts
-// codexHookEvent): inbox notices, queued messages and the account usage. Codex 0.160.0 gives the additionalContext of
+// Every Codex task also gets hooks that give text to the model (server/hooks/codex-hook.mjs, events.ts codexHookEvent):
+// inbox notices and queued messages, and for the controller the account usage. trust.ts CODEX_HOOK_EVENTS must name
+// each hook here, or trustCodexHook refuses it and the task does not start (tasks 263 to 265). Codex 0.160.0 gives the additionalContext of
 // UserPromptSubmit and PostToolUse to the model, and a Stop answer {decision: "block", reason} runs one more turn with the
 // reason (observed in test runs). hooks/list names them userPromptSubmit, postToolUse and stop.
 export const CODEX_CONTROLLER_HOOKS = ['UserPromptSubmit', 'PostToolUse', 'Stop'] as const;
@@ -742,7 +743,7 @@ async function codexHookTrust(t: Task): Promise<string[]> {
   });
 }
 
-function codexFlags(t: Pick<Task, 'role'>): string[] {
+export function codexFlags(t: Pick<Task, 'role'>): string[] {
   return [
     '-c', `notify=${JSON.stringify(['node', CODEX_NOTIFY_SCRIPT])}`,
     // ask Codex's terminal UI to ring the bell when it waits for approval; tmux turns the bell into an event
@@ -888,6 +889,12 @@ export async function startTask(n: NewTask): Promise<Task> {
   try { await launch(t, attachImages(t, n.desc, images), false); }
   catch (e) {
     const why = e instanceof Error ? e.message : String(e);
+    // A task without a worktree has nothing to keep: remove it (store.remove moves its files to the trash folder), so
+    // the board shows no suspended task. A worktree task keeps its branch and worktree, so the task stays suspended.
+    if (!worktree && (await tmux.hasSession(t.session)) === false) {
+      store.remove(t.id);
+      throw new Error(`${agentName(agent)} did not start, so Taskboard did not keep task #${num}: ${why}`);
+    }
     store.update(t.id, { status: 'suspended', statusSource: `Did not start: ${why}` });
     throw new Error(`#${num} was created${worktree ? ` with its worktree ${cwd}` : ''}, but ${agentName(agent)} did not start: ${why}`);
   }
