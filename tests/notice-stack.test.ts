@@ -67,3 +67,74 @@ test('a permit card says when it ended and never that it waits', () => {
   assert.match(permitHeadline({ ...p, state: 'expired', error: 'Task #7 was archived before a decision.' }).note!, /^Task #7 was archived/);
   assert.equal(stepWord('cancelled'), 'not run');
 });
+
+// Hide hides the stack until a card arrives (arrivals in stack.ts), not for the whole browser session.
+import { alertText } from '../web/src/cardAlert.ts';
+import { arrivals, frontAfterArrival, readHidden, seenCards } from '../web/src/stack.ts';
+
+test('a new card arrives while the stack is hidden; the same list does not', () => {
+  const before = stackEntries([approval('a1', '2026-10-02T10:00:00Z')], [item('p1', 't1', '2026-10-02T10:01:00Z')]);
+  const hidden = seenCards(before);
+  assert.deepEqual(arrivals(hidden, before), []);
+  const after = stackEntries([approval('a1', '2026-10-02T10:00:00Z'), approval('a2', '2026-10-02T10:05:00Z')], [item('p1', 't1', '2026-10-02T10:01:00Z')]);
+  assert.deepEqual(arrivals(hidden, after).map(e => e.id), ['a:a2']);
+  // a card that left does not count, and a card that came back (for example a dismissed question) counts again
+  assert.deepEqual(arrivals(hidden, before.slice(0, 1)), []);
+  assert.deepEqual(arrivals(seenCards(before.slice(0, 1)), before).map(e => e.id), ['p:p1']);
+  // before the page has a list, nothing arrives
+  assert.deepEqual(arrivals(null, after), []);
+});
+
+test('a card that the server updated in place keeps its id and arrives again', () => {
+  // approvals.request (task 242) keeps the id of a pending card of the same actor, action and target and sets updated
+  const first = { ...approval('s1', '2026-10-02T10:00:00Z'), summary: 'read /p', version: 'v1' } as Approval;
+  const hidden = seenCards(stackEntries([first], []));
+  assert.deepEqual(arrivals(hidden, stackEntries([{ ...first }], [])), []);
+  assert.deepEqual(arrivals(hidden, stackEntries([{ ...first, updated: '2026-10-02T10:03:00Z' }], [])).map(e => e.id), ['a:s1']);
+  // a merge or push card whose head changed gets a new version
+  assert.deepEqual(arrivals(hidden, stackEntries([{ ...first, version: 'v2' }], [])).map(e => e.id), ['a:s1']);
+});
+
+test('a screen card with a new id after a terminal resize is the same question', () => {
+  const screen = (id: string) => ({ ...item(id, 't1', '2026-10-02T10:00:00Z'), source: 'screen' }) as PendingItem;
+  const hidden = seenCards(stackEntries([], [screen('old')]));
+  assert.deepEqual(arrivals(hidden, stackEntries([], [screen('new')])), []);
+  assert.deepEqual(arrivals(hidden, stackEntries([], [{ ...screen('new'), question: 'Other?' }])).length, 1);
+});
+
+test('after a reconnect of the events socket, the full lists show what arrived during the outage', () => {
+  // api.ts keeps the lists while the socket is closed; the server sends approvals and pending again on connect
+  const beforeOutage = stackEntries([approval('a1', '2026-10-02T10:00:00Z')], []);
+  const seen = seenCards(beforeOutage);
+  const resent = stackEntries([approval('a1', '2026-10-02T10:00:00Z'), approval('a3', '2026-10-02T10:09:00Z')], [item('p9', 't9', '2026-10-02T10:08:00Z')]);
+  assert.deepEqual(arrivals(seen, resent).map(e => e.id), ['p:p9', 'a:a3']);
+  // a reconnect with no change shows nothing new
+  assert.deepEqual(arrivals(seen, stackEntries([approval('a1', '2026-10-02T10:00:00Z')], [])), []);
+});
+
+test('the stack shows again with the old front card when it still waits, else with the oldest arrived card', () => {
+  const e = stackEntries([approval('a1', '2026-10-02T10:00:00Z'), approval('a2', '2026-10-02T10:05:00Z'), approval('a3', '2026-10-02T10:06:00Z')], []);
+  const arrived = [e[2], e[1]].sort((x, y) => x.at.localeCompare(y.at));
+  assert.equal(frontAfterArrival(e, 'a:a1', arrived), 'a:a1');
+  assert.equal(frontAfterArrival(e, 'a:gone', arrived), 'a:a2');
+  assert.equal(frontAfterArrival(e, null, arrived), 'a:a2');
+  assert.equal(frontAfterArrival([], null, []), null);
+});
+
+test('the hidden flag of older pages ("1") shows the stack; a saved list keeps it hidden', () => {
+  assert.equal(readHidden('1'), null);
+  assert.equal(readHidden('0'), null);
+  assert.equal(readHidden(null), null);
+  assert.equal(readHidden('not json'), null);
+  assert.equal(readHidden('[1]'), null);
+  assert.deepEqual(readHidden('{"a:a1":"x"}'), { 'a:a1': 'x' });
+  assert.deepEqual(readHidden('{}'), {});
+});
+
+test('the notification names the card, or the number of cards', () => {
+  const [a] = stackEntries([{ ...approval('a1', '2026-10-02T10:00:00Z'), summary: 'attach a worktree' } as Approval], []);
+  assert.deepEqual(alertText([a]), { title: 'A card waits on you', body: 'attach a worktree' });
+  const [q] = stackEntries([], [item('p1', 't1', '2026-10-02T10:00:00Z')]);
+  assert.equal(alertText([q]).body, '#1 T: Q?');
+  assert.equal(alertText([a, q]).title, '2 cards wait on you');
+});

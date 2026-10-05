@@ -942,6 +942,10 @@ table.keyset .keycell { text-align: right; white-space: normal; }
 .ns-edge { height: 7px; margin: 0 10px; border: 1px solid var(--line2); border-top: 0; border-radius: 0 0 8px 8px; background: var(--panel2); }
 .ns-edge.two { margin: 0 20px; }
 .ns-pill { position: fixed; top: 58px; right: 16px; z-index: 120; background: var(--st-needs); color: #000; border-color: var(--st-needs); font-weight: 600; }
+/* a card arrived: the pill or the bar of the stack pulses twice (NoticeStack.tsx PULSE_MS) */
+.ns-pulse { animation: ns-pulse .8s ease-out 2; }
+@keyframes ns-pulse { 0% { box-shadow: 0 0 0 0 var(--st-needs); } 100% { box-shadow: 0 0 0 10px transparent; } }
+@media (prefers-reduced-motion: reduce) { .ns-pulse { animation: none; outline: 2px solid var(--st-needs); } }
 .nav a .n.needs { color: var(--st-needs); }
 .waiting { padding: 14px 16px; display: grid; gap: 8px; min-width: 0; }
 .wt-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }

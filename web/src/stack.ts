@@ -60,3 +60,41 @@ export function closedNotice(entry: StackEntry, approvals: Approval[], answered:
   }
   return null;
 }
+
+// ---------- Hide, and the cards that arrive while the stack is hidden ----------
+// Hide hides the stack until a card arrives. Before, Hide kept the stack hidden for the whole browser session, and a new
+// card only raised the number on the pill. A card arrives when:
+//   - its id is not in the cards that the page saw before (a new card, or a card that came back, for example a
+//     dismissed question that shows again)
+//   - the server updated it in place: approvals.request in server/approvals.ts keeps the id of a pending card of the
+//     same actor, action and target, and sets `updated` (also when the facts of a merge or push card changed), and
+//     `version` changes with the payload
+// A screen card (source 'screen') gets a new id when the terminal size changes its rows. It is the same question, so its
+// key is the task and the question text, not the id.
+// The page keeps the keys of the cards it saw (seenCards). When the events socket connects again, the server sends the
+// full lists, and arrivals compares them with the cards from before the reconnect. Hide saves the keys in
+// sessionStorage (HIDDEN_KEY), so a reload of the page also finds the cards that arrived while the stack was hidden.
+export type Seen = Record<string, string>;
+const entryKey = (e: StackEntry) => e.item?.source === 'screen' ? `screen:${e.item.taskId}:${e.item.question}` : e.id;
+const entryStamp = (e: StackEntry) => e.approval ? `${e.approval.updated || e.approval.created}|${e.approval.version || ''}` : '';
+export const seenCards = (entries: StackEntry[]): Seen => Object.fromEntries(entries.map(e => [entryKey(e), entryStamp(e)]));
+// the cards that are new or updated since `seen`, oldest first; none when the page has not seen a list yet
+export function arrivals(seen: Seen | null, entries: StackEntry[]): StackEntry[] {
+  if (!seen) return [];
+  return entries.filter(e => seen[entryKey(e)] !== entryStamp(e));
+}
+
+// The front card when the stack shows again for arrived cards: the card that was in front before Hide, while it still
+// waits, so the front card does not change by itself. With no such card, the oldest arrived card.
+export function frontAfterArrival(entries: StackEntry[], frontId: string | null, arrived: StackEntry[]): string | null {
+  if (frontId && entries.some(e => e.id === frontId)) return frontId;
+  return arrived[0]?.id ?? entries[0]?.id ?? null;
+}
+
+// sessionStorage: the keys of the cards that the stack showed when the user clicked Hide (JSON), or nothing when the
+// stack shows. Taskboard before this change saved "1" here. readHidden treats that value as "show the stack".
+export const HIDDEN_KEY = 'tb-stack-hidden';
+export function readHidden(raw: string | null): Seen | null {
+  if (!raw || raw === '0' || raw === '1') return null;
+  try { const v = JSON.parse(raw); return v && typeof v === 'object' && !Array.isArray(v) ? v as Seen : null; } catch { return null; }
+}

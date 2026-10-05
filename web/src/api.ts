@@ -88,7 +88,7 @@ export interface Scope { id: string; kind: 'worktree' | 'read'; name: string; pa
 // An allow always rule (server/allow-rules.ts): a task may type into another task without a card
 export type AllowScope = 'pair' | 'both' | 'any';
 export interface AllowRule { id: string; kind: 'message' | 'doc'; scope: AllowScope; from?: string; fromNum?: number; fromTitle?: string; to: string; toNum: number; toTitle: string; created: string; card: string; by: 'user'; count: number; lastHour: number; lastAt?: string; text: string }
-export interface Approval { id: string; actor: string; action: string; summary: string; detail: string; created: string; state: 'pending' | 'running' | 'approved' | 'denied' | 'failed' | 'expired' | 'unknown' | 'returned'; result?: string; staleFacts?: string; validUntil?: string; unblocks?: string[]; notifyMe?: boolean; returnable?: boolean; allow?: { kind: 'message' | 'doc'; from: string; to: string; choices: { scope: AllowScope; text: string }[]; limitText: string }; decidedBy?: { by: 'user' | 'controller'; userRequest?: string; at: string }; payload?: { permitId?: string; pushId?: string; state?: { forcePush?: boolean }; canPermit?: boolean; message?: string; hash?: string; body?: string; quality?: { state: string; flags: { text: string; start: number; end: number; reason: string; code?: string }[] } } & Partial<MessagePayload> }
+export interface Approval { id: string; actor: string; action: string; summary: string; detail: string; created: string; updated?: string; version?: string; state: 'pending' | 'running' | 'approved' | 'denied' | 'failed' | 'expired' | 'unknown' | 'returned'; result?: string; staleFacts?: string; validUntil?: string; unblocks?: string[]; notifyMe?: boolean; returnable?: boolean; allow?: { kind: 'message' | 'doc'; from: string; to: string; choices: { scope: AllowScope; text: string }[]; limitText: string }; decidedBy?: { by: 'user' | 'controller'; userRequest?: string; at: string }; payload?: { permitId?: string; pushId?: string; state?: { forcePush?: boolean }; canPermit?: boolean; message?: string; hash?: string; body?: string; quality?: { state: string; flags: { text: string; start: number; end: number; reason: string; code?: string }[] } } & Partial<MessagePayload> }
 // The structured part of an A2A Notes message card (server/a2anotes/cards.ts MessagePayload)
 export interface MessageNote { code: string; title: string; text: string; todo: string; actions: ('recheck' | 'remove-flagged' | 'send-back' | 'approve-anyway')[] }
 export interface MessagePayload {
@@ -167,6 +167,9 @@ let canvasOrder: Record<string, string[]> = {};
 let approvals: Approval[] = [];
 let pending: PendingItem[] = [];
 let answered: PendingItem[] = [];
+// true after the page got both card lists (approvals and pending) from the server once; before, the lists are empty
+// only because nothing arrived yet (stack.ts arrivals)
+let cardsLoaded = false, gotApprovals = false, gotPending = false;
 // pending has the question cards that show; the dismissed ones are in dismissedPending (server/dismiss.ts)
 let dismissedPending: PendingItem[] = [];
 let dismissals: Dismissal[] = [];
@@ -187,7 +190,7 @@ let attempt = 0, openedAt = 0, retryTimer: ReturnType<typeof setTimeout> | undef
 export const dismissBanner = () => { banner = null; publish(); };
 const subs = new Set<() => void>();
 const emit = () => subs.forEach(f => f());
-let snapshot = { tasks, groups, canvasOrder, approvals, pending, answered, dismissedPending, dismissals, machines, connected, runtime, confirmRisk, link, server: server as ServerHealth | null, banner: banner as Banner };
+let snapshot = { tasks, groups, canvasOrder, approvals, pending, answered, dismissedPending, dismissals, machines, connected, runtime, confirmRisk, link, server: server as ServerHealth | null, banner: banner as Banner, cardsLoaded };
 
 let ws: WebSocket | null = null;
 let viewingIds: string[] = [];
@@ -230,8 +233,9 @@ function connect() {
     if (m.type === 'waits') { const w = m.waits as Record<string, number>; if (!tasks.some(t => w[t.id] !== undefined && w[t.id] !== t.waitMin)) return; tasks = tasks.map(t => w[t.id] !== undefined && w[t.id] !== t.waitMin ? { ...t, waitMin: w[t.id] } : t); }
     if (m.type === 'groups') groups = m.groups;
     if (m.type === 'canvasOrder') canvasOrder = m.orders;
-    if (m.type === 'approvals') approvals = m.approvals;
-    if (m.type === 'pending') { const items: PendingItem[] = m.items || []; pending = items.filter(i => !i.dismissed); dismissedPending = items.filter(i => i.dismissed); answered = m.answered || []; }
+    if (m.type === 'approvals') { approvals = m.approvals; gotApprovals = true; }
+    if (m.type === 'pending') { const items: PendingItem[] = m.items || []; pending = items.filter(i => !i.dismissed); dismissedPending = items.filter(i => i.dismissed); answered = m.answered || []; gotPending = true; }
+    cardsLoaded = gotApprovals && gotPending;
     if (m.type === 'dismissed') dismissals = m.entries || [];
     if (m.type === 'runtime') runtime = m.counts || {};
     if (m.type === 'machines') { loadMachines(); return; }
@@ -242,7 +246,7 @@ function connect() {
     publishSoon();
   };
 }
-function publish() { cancelSoon(); snapshot = { tasks, groups, canvasOrder, approvals, pending, answered, dismissedPending, dismissals, machines, connected, runtime, confirmRisk, link, server, banner }; emit(); }
+function publish() { cancelSoon(); snapshot = { tasks, groups, canvasOrder, approvals, pending, answered, dismissedPending, dismissals, machines, connected, runtime, confirmRisk, link, server, banner, cardsLoaded }; emit(); }
 // Messages often come in bursts (a task, its question card and its runtime count). The page draws once for each burst:
 // at the next animation frame, or after 250 ms when the page is hidden and draws no frames.
 let soon: { frame: number; timer: ReturnType<typeof setTimeout> } | null = null;
