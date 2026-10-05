@@ -201,6 +201,12 @@ export function deny(p: Permit, comment: string) {
   p.state = 'denied'; p.decidedAt = now(); p.decisionComment = redactOutput(comment.slice(0, 2000));
   p.steps.forEach(s => s.state = 'cancelled'); p.finishedAt = now(); save(p); return p;
 }
+// The user undid the denial on the card (approvals.undo): the permit waits again. Nothing ran, so each step is pending.
+export function reopen(p: Permit) {
+  if (p.state !== 'denied') return false;
+  p.state = 'pending'; p.decidedAt = undefined; p.decisionComment = undefined; p.finishedAt = undefined;
+  p.steps.forEach(s => s.state = 'pending'); save(p); return true;
+}
 export function controllerRule(p: Permit, task: Task, readOnly: boolean): string | undefined {
   if (!readOnly || p.taskId !== task.id || p.state !== 'pending' || expire(p)) return;
   if (p.riskClass !== 'low' || classify(p.steps, task) !== 'low') return;

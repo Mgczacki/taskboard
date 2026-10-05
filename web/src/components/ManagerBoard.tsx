@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
-import { api, useStoreValue } from '../api';
+import { api, useStore, useStoreValue } from '../api';
+import { CONFIRM_MS, cardTime, needsConfirm } from '../clickGuard';
 import { badgeTitle, boardOf, loadBoards, boardSummary, fmtAge, managerGroupsOf, managersVersion, needAction, refreshManagerDetails, rowOf, subscribeManagers, waitLabel, watchBoards, type BoardRow, type FindCard } from '../managerBoard';
 import { PopMenu } from './PopMenu';
 
@@ -93,8 +94,8 @@ function NeedsPanel({ group, rows, manager, open, toast }: { group: string; rows
         <div className="need-txt"><b title={r.title}>{r.title}</b><small title={r.waitingOn?.needs}>{r.waitingOn?.needs || r.waitingOn?.reason || 'Needs you'}</small></div>
         <span className="a">{fmtAge(r.ageMinutes)}</span>
         <span className="need-acts">
-          {act.kind === 'push' && <><button className="btn primary" onClick={() => void api.decidePush(act.pushId, true, '').then(() => loadBoards(), fail)}>Approve</button><button className="btn" onClick={() => void api.decidePush(act.pushId, false, '').then(() => loadBoards(), fail)}>Deny</button></>}
-          {act.kind === 'decide' && <><button className="btn primary" onClick={() => void api.decide(act.id, true).then(() => loadBoards(), fail)}>Approve</button><button className="btn" onClick={() => void api.decide(act.id, false).then(() => loadBoards(), fail)}>Deny</button></>}
+          {act.kind === 'push' && <><button className="btn primary" onClick={() => void api.decidePush(act.pushId, true, '', { from: 'manager-board', target: 'approve' }).then(() => loadBoards(), fail)}>Approve</button><DenyButton card={r.waitingOn?.card} run={() => api.decidePush(act.pushId, false, '', { from: 'manager-board', target: 'deny' }).then(() => loadBoards(), fail)} /></>}
+          {act.kind === 'decide' && <><button className="btn primary" onClick={() => void api.decide(act.id, true, { from: 'manager-board', target: 'approve' }).then(() => loadBoards(), fail)}>Approve</button><DenyButton card={act.id} run={() => api.decide(act.id, false, { from: 'manager-board', target: 'deny' }).then(() => loadBoards(), fail)} /></>}
           {act.kind === 'review' && <button className="btn" onClick={() => { location.hash = 'inbox:documents'; }}>Open review</button>}
           {act.kind === 'open' && <button className="btn" onClick={() => open(r.id)}>Open task</button>}
         </span>
@@ -145,4 +146,13 @@ export function ManagerScope({ group, tasks }: { group: string; tasks: TaskRef[]
     </>}
     <div className="sub">Limits: {Object.entries(scope.caps).map(([key, value]) => `${key} ${value}`).join(' · ')}</div>
   </div>;
+}
+
+// Deny in a "Need you" row: a card that appeared less than NEW_CARD_MS ago needs a second click (clickGuard.ts)
+function DenyButton({ card, run }: { card?: string; run: () => Promise<unknown> }) {
+  const { approvals } = useStore();
+  const [ask, setAsk] = useState(false);
+  useEffect(() => { if (!ask) return; const t = setTimeout(() => setAsk(false), CONFIRM_MS); return () => clearTimeout(t); }, [ask]);
+  const a = approvals.find(x => x.id === card);
+  return <button className={`btn${ask ? ' confirm' : ''}`} onClick={() => { if (!ask && a && needsConfirm(cardTime(a))) { setAsk(true); return; } setAsk(false); void run(); }}>{ask ? 'Confirm deny' : 'Deny'}</button>;
 }

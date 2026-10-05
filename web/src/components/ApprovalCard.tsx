@@ -1,50 +1,98 @@
 // One approval card (server/approvals.ts): permit, push, refused tool call, message (MessageCard.tsx), or any other
 // approval with Approve / Deny.
-// The notification stack and the Waiting page show it.
+// The notification stack and the Waiting page show it. Its buttons follow the click rules of clickGuard.ts: off for a
+// moment after the card shows, a click counts only when it started on the button, and Deny on a new card needs a
+// second click. A refused-command card has no decision: Taskboard cannot override the agent's own permission check, so
+// it has Dismiss (close without telling the task) instead of Deny. A card that you denied less than a minute ago shows
+// Undo in the Answered view and in the stack (NoticeStack.tsx RecentDenials).
 import { useState } from 'react';
-import type { AllowScope, Approval, Task } from '../api';
+import type { AllowScope, Approval, DecisionOrigin, Task } from '../api';
 import { api } from '../api';
 import { FlaggedBody, request as messageRequest } from './messages';
 import { PermitDetails } from './Permits';
 import { MessageCard } from './MessageCard';
 import { isMessage, resultLine } from '../messageCard';
 import { decidedByLine } from '../approvalHistory';
+import { cardTime, needsConfirm, useCardGuard, type CardGuard } from '../clickGuard';
+import { refusalText } from '../refusalText';
 
-export function ApprovalCard({ a, allTasks, setOpenId, openController, toast }: { a: Approval; allTasks: Task[]; setOpenId: (id: string) => void; openController: () => void; toast: (s: string) => void }) {
+export function ApprovalCard({ a, allTasks, setOpenId, openController, toast, from = 'waiting' }: { a: Approval; allTasks: Task[]; setOpenId: (id: string) => void; openController: () => void; toast: (s: string) => void; from?: DecisionOrigin['from'] }) {
   const [cardComments, setCardComments] = useState<Record<string, string>>({});
+  // a new key starts the guard again: a new card, a card that the server changed in place, or a reopened card
+  const guard = useCardGuard(`${a.id}|${cardTime(a)}`, from);
   // A2A Notes drafts and incoming messages (server/a2anotes/cards.ts) have their own card
   if (isMessage(a)) return <MessageCard a={a} allTasks={allTasks} setOpenId={setOpenId} openController={openController} toast={toast} />;
   const who = a.actor === 'controller' ? 'The controller' : `Task #${allTasks.find(t => t.id === a.actor)?.num || a.actor}`;
+  const fail = (e: unknown) => toast(String((e as Error).message || e));
+  const newCard = () => needsConfirm(cardTime(a));
+  const denyLabel = (target = 'deny') => guard.confirming === target ? 'Confirm deny' : 'Deny';
   // a decided card in the Answered view: what it was, who decided it, and the result
   if (a.state !== 'pending' && a.state !== 'running') return (
     <div className="approval">
-      <div className="ap-h"><b>{who} asked to {a.summary}</b><span className="sub">{a.state}{a.decidedBy ? ` · ${new Date(a.decidedBy.at).toLocaleTimeString()}` : ''}</span></div>
+      <div className="ap-h"><b>{a.action === 'tool-refusal' ? `${who} had a tool call refused` : `${who} asked to ${a.summary}`}</b><span className="sub">{a.state}{a.decidedBy ? ` · ${new Date(a.decidedBy.at).toLocaleTimeString()}` : ''}</span></div>
       <pre className="ap-d">{a.detail}</pre>
       <div className={`pc-note ${a.state === 'approved' ? 'ok' : a.state === 'failed' ? 'bad' : 'info'}`}>{decidedByLine(a) && <><b>{decidedByLine(a)}</b><br /></>}{resultLine(a)}</div>
-      <div className="ap-a"><button className="btn ghost" onClick={() => a.actor === 'controller' ? openController() : setOpenId(a.actor)}>{a.actor === 'controller' ? 'Open controller' : 'Open task'}</button></div>
+      <UndoLine a={a} toast={toast} from={from} />
+      <div className="ap-a">{a.action === 'tool-refusal' && <CopyCommand a={a} toast={toast} />}<button className="btn ghost" onClick={() => a.actor === 'controller' ? openController() : setOpenId(a.actor)}>{a.actor === 'controller' ? 'Open controller' : 'Open task'}</button></div>
     </div>
   );
   return (
         <div className={`approval${a.action === 'git-push' ? ' push-card' : ''}`}>
-          {(a.action === 'permit' || a.action === 'external') && a.payload?.permitId ? <PermitDetails id={a.payload.permitId} decision openTask={setOpenId} /> : a.action === 'git-push' && a.payload?.pushId ? <><div className="ap-h"><span className="dot needs-you" /><b>Task #{allTasks.find(t => t.id === a.actor)?.num || a.actor} asks to push</b><span className="sub">Valid until the facts change</span></div><pre className="ap-d">{a.detail}</pre><textarea className="routing-rule" rows={2} aria-label="Push decision comment" placeholder="Comment for the task" value={cardComments[a.id] || ''} onChange={e => setCardComments(c => ({ ...c, [a.id]: e.target.value }))} /><div className="ap-a"><button className="btn primary" onClick={() => void api.decidePush(a.payload!.pushId!, true, cardComments[a.id] || '').catch(e => toast(String(e.message || e)))}>{a.payload?.state?.forcePush ? 'Approve force push' : 'Approve push'}</button><button className="btn" onClick={() => void api.decidePush(a.payload!.pushId!, false, cardComments[a.id] || '').catch(e => toast(String(e.message || e)))}>Deny</button><button className="btn ghost" onClick={() => setOpenId(a.actor)}>Open task</button></div></> : a.action === 'tool-refusal' ? <><div className="ap-h"><span className="dot needs-you" /><b>Task #{allTasks.find(t => t.id === a.actor)?.num || a.actor} had a tool call refused</b></div><pre className="ap-d">{a.detail}</pre><div className="ap-a">{a.payload?.canPermit && <button className="btn primary" onClick={() => void api.permitRefusal(a.id).catch(e => toast(String(e.message || e)))}>Allow this once</button>}<button className="btn" onClick={() => void api.decide(a.id, false)}>Deny</button><button className="btn ghost" onClick={() => setOpenId(a.actor)}>Open task</button></div></> : <>
+          {guard.bar}
+          {(a.action === 'permit' || a.action === 'external') && a.payload?.permitId ? <PermitDetails id={a.payload.permitId} decision openTask={setOpenId} guard={guard} newCard={newCard} /> : a.action === 'git-push' && a.payload?.pushId ? <><div className="ap-h"><span className="dot needs-you" /><b>Task #{allTasks.find(t => t.id === a.actor)?.num || a.actor} asks to push</b><span className="sub">Valid until the facts change</span></div><pre className="ap-d">{a.detail}</pre><textarea className="routing-rule" rows={2} aria-label="Push decision comment" placeholder="Comment for the task" value={cardComments[a.id] || ''} onChange={e => setCardComments(c => ({ ...c, [a.id]: e.target.value }))} /><div className="ap-a"><button {...guard.button('approve', o => void api.decidePush(a.payload!.pushId!, true, cardComments[a.id] || '', o).catch(fail), { className: 'btn primary' })}>{a.payload?.state?.forcePush ? 'Approve force push' : 'Approve push'}</button><button {...guard.button('deny', o => void api.decidePush(a.payload!.pushId!, false, cardComments[a.id] || '', o).catch(fail), { confirm: newCard })}>{denyLabel()}</button><button {...guard.button('open', () => setOpenId(a.actor), { className: 'btn ghost' })}>Open task</button></div></> : a.action === 'tool-refusal' ? <RefusalCard a={a} task={allTasks.find(t => t.id === a.actor)} guard={guard} setOpenId={setOpenId} toast={toast} /> : <>
           <div className="ap-h"><span className="dot needs-you" /><b>{a.actor === 'controller' ? 'The controller' : `Task #${allTasks.find(t => t.id === a.actor)?.num || a.actor}`} wants to {a.summary}</b>{a.action === 'scope' && <span className="sub">Scope request {a.id}</span>}</div>
           {a.detail && (a.action === 'mail-out' && a.payload?.body
             ? <><pre className="ap-d">{a.detail.slice(0, a.detail.lastIndexOf(a.payload.body))}</pre><FlaggedBody body={a.payload.body} quality={a.payload.quality} /></>
             : <pre className="ap-d">{a.detail}</pre>)}
           {a.returnable && <textarea className="routing-rule" rows={2} aria-label="Comment for Send back" placeholder={a.action === 'mail-in' ? 'What is wrong with the message or the task? The controller receives this comment.' : 'What should change in the draft? The agent that wrote it receives this comment.'} value={cardComments[a.id] || ''} onChange={e => setCardComments(c => ({ ...c, [a.id]: e.target.value }))} />}
           {a.allow && <AllowAlways a={a} toast={toast} />}
-          <div className="ap-a"><button className="btn primary" onClick={() => void api.decide(a.id, true).then(r => { if (a.returnable && r.result) toast(r.result); }).catch(e => toast((e as Error).message))}>Approve</button>
+          <div className="ap-a"><button {...guard.button('approve', o => void api.decide(a.id, true, o).then(r => { if (a.returnable && r.result) toast(r.result); }).catch(fail), { className: 'btn primary' })}>Approve</button>
             {a.action === 'mail-out' && a.payload?.quality?.flags.length && <button className="btn" onClick={() => void (async () => {
               await messageRequest(`/messages/${a.payload!.message}/remove-flagged`, { hash: a.payload!.hash });
               toast('Flagged text was removed. Taskboard checks the edited draft again.');
             })().catch(e => toast((e as Error).message))}>Remove flagged text</button>}
             {/* the result says where the comment went (server/a2anotes/cards.ts giveBack) */}
             {a.returnable && <button className="btn" disabled={!cardComments[a.id]?.trim()} onClick={() => void api.giveBack(a.id, cardComments[a.id]).then(r => { if (r.result) toast(r.result); }).catch(e => toast((e as Error).message))}>Send back</button>}
-            <button className="btn" onClick={() => api.decide(a.id, false)}>Deny</button><button className="btn ghost" onClick={() => a.actor === 'controller' ? openController() : setOpenId(a.actor)}>{a.actor === 'controller' ? 'Open controller' : 'Open task'}</button></div></>}
+            <button {...guard.button('deny', o => void api.decide(a.id, false, o).catch(fail), { confirm: newCard })}>{denyLabel()}</button><button {...guard.button('open', () => a.actor === 'controller' ? openController() : setOpenId(a.actor), { className: 'btn ghost' })}>{a.actor === 'controller' ? 'Open controller' : 'Open task'}</button></div></>}
+          {guard.confirming === 'deny' && <div className="pc-note warn">This card appeared a few seconds ago. Click Confirm deny to deny it.</div>}
           {a.staleFacts && <div className="pc-note warn">Facts changed: {a.staleFacts}</div>}
+          {a.reopened && <div className="pc-note info">You reopened this card with Undo at {new Date(a.reopened.at).toLocaleTimeString()}. The task was told.</div>}
           <label className="opt"><input type="checkbox" checked={!!a.notifyMe} onChange={e => void fetch(`/api/approvals/${a.id}/notify`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled: e.target.checked }) }).catch(err => toast(String(err)))} /> Notify me on my phone</label>
         </div>
   );
+}
+
+// A refused tool call: the command and the reason, which check refused it and where its rules are set, and what the
+// user can do. Allow this once only when a shell permit can run the command (server/permits.ts canPermitRefusal).
+// Dismiss closes the card without a decision. The task is not told (server/approvals.ts dismiss).
+function RefusalCard({ a, task, guard, setOpenId, toast }: { a: Approval; task?: Task; guard: CardGuard; setOpenId: (id: string) => void; toast: (s: string) => void }) {
+  const r = refusalText(a, task?.agent);
+  const fail = (e: unknown) => toast(String((e as Error).message || e));
+  return <>
+    <div className="ap-h"><span className="dot needs-you" /><b>Task #{task?.num || a.actor} had a tool call refused</b></div>
+    <pre className="ap-d">{a.detail}</pre>
+    <div className="pc-note info refusal-help"><b>{r.who}</b><br />{r.todo}<br /><span className="sub">{r.where}</span></div>
+    <div className="ap-a">
+      {a.payload?.canPermit && <button {...guard.button('permit', () => void api.permitRefusal(a.id).catch(fail), { className: 'btn primary' })}>Allow this once</button>}
+      <button {...guard.button('copy', () => void navigator.clipboard.writeText(r.command).then(() => toast('Command copied.'), fail))}>Copy command</button>
+      <button {...guard.button('open', () => setOpenId(a.actor))}>Go to task</button>
+      <button {...guard.button('dismiss', o => void api.dismissCard(a.id, o).catch(fail), { className: 'btn ghost' })} title="Close this card without a decision. The task is not told.">Dismiss</button>
+    </div>
+  </>;
+}
+
+function CopyCommand({ a, toast }: { a: Approval; toast: (s: string) => void }) {
+  const command = refusalText(a).command;
+  return <button className="btn" onClick={() => void navigator.clipboard.writeText(command).then(() => toast('Command copied.'), e => toast(String(e)))}>Copy command</button>;
+}
+
+// Undo on a card that you denied less than a minute ago (server/approvals.ts undo), or why it is not possible
+export function UndoLine({ a, toast, from }: { a: Approval; toast: (s: string) => void; from: DecisionOrigin['from'] }) {
+  if (a.state === 'dismissed') return <div className="sub">You closed this card without a decision. The task was not told, so there is nothing to undo.</div>;
+  if (a.state !== 'denied' || a.decidedBy?.by !== 'user') return null;
+  if (a.noUndo) return <div className="sub">{a.noUndo}</div>;
+  if (!a.undoUntil || Date.parse(a.undoUntil) < Date.now()) return null;
+  return <div className="ap-a"><button className="btn" onClick={() => void api.undoCard(a.id, { from, target: 'undo' }).then(() => toast('The card waits again. The task was told.'), e => toast(String((e as Error).message || e)))}>Undo the denial</button><span className="sub">Until {new Date(a.undoUntil).toLocaleTimeString()}. Nothing ran.</span></div>;
 }
 
 // Allow always on a "type into" or "send the document" card from one task to another (server/allow-rules.ts). The user picks who may send,

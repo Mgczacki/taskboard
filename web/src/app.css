@@ -949,7 +949,20 @@ table.keyset .keycell { text-align: right; white-space: normal; }
 .ns-bar { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-bottom: 6px; font-size: 12px; background: var(--panel); border: 1px solid var(--line2); border-radius: 8px; padding: 3px 4px 3px 10px; }
 .ns-bar .btn { height: 24px; padding: 0 8px; }
 .ns-front { max-height: calc(100vh - 140px); overflow: auto; border-radius: 10px; box-shadow: 0 18px 50px rgba(0,0,0,.45); }
-.ns-front.guard { pointer-events: none; opacity: .75; }
+.ns-front { position: relative; }
+/* the layer takes a click while the buttons are off, so the click does not reach the page below (NoticeStack.tsx) */
+.ns-front.guard { opacity: .75; }
+.ns-front.guard::after { content: ''; position: absolute; inset: 0; cursor: progress; }
+/* a card whose buttons are off for a moment (clickGuard.ts): greyed buttons and a thin bar that runs down */
+.approval { position: relative; }
+.card-arm { position: absolute; left: 10px; right: 10px; top: 4px; height: 2px; border-radius: 2px; background: var(--accent); transform-origin: left; animation: card-arm linear forwards; }
+@keyframes card-arm { from { transform: scaleX(1); } to { transform: scaleX(0); } }
+.btn.guard-off { opacity: .45; cursor: progress; }
+.btn.confirm { border-color: var(--st-stopped); color: var(--st-stopped); }
+.refusal-help .sub { display: block; margin-top: 4px; }
+.ns-undo { display: grid; gap: 6px; padding: 8px 10px; border: 1px solid var(--line2); border-radius: 10px; background: var(--panel2); font-size: 12px; }
+.ns-undo-row { display: grid; gap: 4px; }
+.ns-undo-row .ap-a { align-items: center; }
 .ns-front > .approval { box-shadow: none; }
 /* a front card that closed without a decision: greyed, no buttons (NoticeStack.tsx) */
 .ns-closed { color: var(--muted); filter: grayscale(1); }

@@ -242,7 +242,8 @@ export function recordCommandRefusal(t: Task, refusal: CommandRefusal, source: s
     : 'Use the dashboard to review the refused command. If no permit is available, use an allowed path or ask the user to do this step.';
   if (!approvals.hasRefusal(t.id, refusal.id)) {
     approvals.request({ actor: t.id, action: 'tool-refusal', summary: `review refused command for task #${t.num}`,
-      detail: `Tool: ${refusal.toolName || 'shell command'}\nCommand: ${refusal.command}\nWorking directory: ${refusal.cwd || t.cwd}\nReason: ${refusal.reason}\n${next}`, payload: { ...refusal, canPermit } },
+      // the card itself says what the user can do (web/src/refusalText.ts); `next` is guidance for the agent
+      detail: `Tool: ${refusal.toolName || 'shell command'}\nCommand: ${refusal.command}\nWorking directory: ${refusal.cwd || t.cwd}\nReason: ${refusal.reason}`, payload: { ...refusal, canPermit } },
       async () => next);
     if (refusal.toolName && refusal.toolName !== 'Bash') {
       try { docs.uploadSystem(t.id, `refusal-${refusal.id}.md`, `# Refused tool call\n\n${next}\n`); }
