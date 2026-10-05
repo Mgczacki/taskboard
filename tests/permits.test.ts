@@ -201,6 +201,8 @@ test('a safe step can run when the task folder contains another task worktree', 
   assert.throws(() => permits.validate(task, [{ command: 'cat link/data', cwd: safe }]), /command accesses another task worktree/);
   writeFileSync(join(other, 'read.sh'), 'echo other\n');
   assert.throws(() => permits.validate(task, [{ command: `bash ${join(other, 'read.sh')}`, cwd: safe }]), /command accesses another task worktree/);
+  writeFileSync(join(safe, 'read.sh'), `cat ${join(other, 'data')}\n`);
+  assert.throws(() => permits.validate(task, [{ command: 'bash read.sh', cwd: safe }]), /command accesses another task worktree/);
   assert.throws(() => permits.validate(task, [{ command: `bash -c 'cat ${join(other, 'data')}'`, cwd: safe }]), /Put interpreter code in a script file/);
 });
 

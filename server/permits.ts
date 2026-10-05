@@ -132,7 +132,7 @@ function risk(argv: string[], cwd: string, task: Task, network: boolean): string
   if (!/^(pwd|rg|ls|cat|head|tail|wc|echo|true|false|test|stat)$/.test(bin)) flags.push('Writes in task paths');
   return flags;
 }
-function scriptHash(argv: string[], cwd: string, roots: string[]): string | undefined {
+function scriptHash(argv: string[], cwd: string, roots: string[], otherWorktrees: string[]): string | undefined {
   const bin = argv[0].split('/').pop() || '';
   const name = /^(bash|sh|zsh|python|python3|node)$/.test(bin) ? argv[1] : /\.(sh|py|js|mjs)$/.test(argv[0]) ? argv[0] : undefined;
   if (!name || name.startsWith('-')) return;
@@ -142,9 +142,11 @@ function scriptHash(argv: string[], cwd: string, roots: string[]): string | unde
     if (!roots.some(root => inside(root, real))) throw new Error('The script file is outside this task.');
     const content = readFileSync(real);
     if (/\bgit\s+push\b|\bgh\s+(repo|pr|api)\b/.test(content.toString('utf8'))) throw new Error('A GitHub write needs a separate user decision.');
+    const paths = content.toString('utf8').match(/(?:\.\.?\/|\/)[^\s'"`;,)]+/g) || [];
+    checkWorktreeAccess(paths, dirname(real), otherWorktrees);
     return createHash('sha256').update(content).digest('hex');
   }
-  catch (e) { if (e instanceof Error && /outside this task|GitHub write/.test(e.message)) throw e; throw new Error('The script file must exist when you request the permit.'); }
+  catch (e) { if (e instanceof Error && /outside this task|GitHub write|another task worktree/.test(e.message)) throw e; throw new Error('The script file must exist when you request the permit.'); }
 }
 // Resolve an existing parent as well, so a new output file below a symlink gets the same check.
 function realTarget(path: string): string {
@@ -182,7 +184,7 @@ export function validate(task: Task, inputs: StepInput[]): { steps: PermitStep[]
     if (argv[0] === 'git' && allowedSharedGit(argv, task) && cwd !== realpathSync(task.folder)) throw new Error('The merge command needs the task’s shared checkout.');
     const timeoutSeconds = input.timeoutSeconds ?? 30;
     if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 120) throw new Error('A step timeout must be 1 through 120 seconds.');
-    return { command: input.command, argv, cwd, timeoutSeconds, network: input.network === true, scriptHash: scriptHash(argv, cwd, [...roots, cwd]), state: 'pending' as const };
+    return { command: input.command, argv, cwd, timeoutSeconds, network: input.network === true, scriptHash: scriptHash(argv, cwd, [...roots, cwd], otherWorktrees), state: 'pending' as const };
   });
   if (steps.reduce((sum, s) => sum + s.timeoutSeconds, 0) > 300) throw new Error('The sequence exceeds five minutes.');
   return { steps, riskFlags: [...new Set(steps.flatMap(s => risk(s.argv, s.cwd, task, s.network)))] };
