@@ -30,7 +30,8 @@ function task(id: string, num: number, parent?: string) {
 }
 const manager = task('manager', 1), worker = task('worker', 2), outside = task('outside', 3), child = task('child', 4, 'manager');
 const group = groups.create('Manager tests', [manager.id, worker.id]);
-role.set(group, manager, 'user');
+// these tests cover the caps on new tasks, so the manager has the preset Direct and create tasks (the default is Direct the group)
+role.set(group, manager, 'user', undefined, 'create');
 
 test('task tokens identify their own task', () => {
   const a = tokens.forTask(manager.id), b = tokens.forTask(worker.id);

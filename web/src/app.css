@@ -1103,4 +1103,6 @@ table.procs tr.proc-group td { padding-top: 10px; }
 .gmenu .manager-scope { display: flex; flex-direction: column; gap: 4px; margin-bottom: 6px; }
 .gmenu .manager-scope label { display: flex; flex-direction: column; gap: 4px; }
 .gmenu .manager-scope select { max-width: 100%; }
+.gmenu .manager-preset { max-width: 300px; line-height: 1.35; }
+.gmenu .manager-preset ul { margin: 2px 0 6px; padding-left: 16px; }
 .chip.mgr-badge { flex: none; padding: 0 6px; font-size: 10px; line-height: 15px; font-weight: 600; color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--line)); background: var(--accent-bg); cursor: help; }
