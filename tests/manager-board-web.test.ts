@@ -83,7 +83,7 @@ test('the badge knows each manager task and shows its caps and whether it may ac
 test('option J: no board above the canvas, the group tab has the ◆ mark and the need you chip, the review page has the badge', () => {
   const canvas = readFileSync(new URL('../web/src/components/Canvas.tsx', import.meta.url), 'utf8');
   assert.doesNotMatch(canvas, /<ManagerBoard\b/);
-  assert.match(canvas, /<ManagerMark manager=\{g\.manager\}/);
+  assert.match(canvas, /<ManagerMark manager=\{groupManager\(g\)\}/);
   assert.match(canvas, /<GroupNeeds group=\{g\.id\}/);
   assert.match(canvas, /<WaitLabel taskId=\{t\.id\}>/);
   assert.match(canvas, /<ManagerScope group=\{g\.id\}/);

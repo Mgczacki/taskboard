@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import type { Group, Task } from '../api';
 import { AGENT_NAME, STATUS_LABEL, api, fmtWait, linkedTaskId, shortPath } from '../api';
 import { QueueActions, queueLabel, queueReason } from './QueuedMessage';
-import { ManagerBadge } from './ManagerBoard';
+import { ManagerBadge, ManagerRoleButton } from './ManagerBoard';
 import { AgentChip, ByController, Dot, MachineChip, ThreeLines, WhereChip, BrowserAskChip } from './ui';
 import { Terminal } from './Terminal';
 import { PendingMarker } from './PendingCard';
@@ -255,6 +255,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
           <button className="btn" onClick={() => { navigator.clipboard.writeText(t.attach); setCopied(true); setTimeout(() => setCopied(false), 1500); }} title="Open this agent in iTerm or Terminal">⧉ {copied ? 'Copied' : <>Copy <code>{t.attach}</code></>}</button>
           {t.role === 'controller' && !t.newSessionWhenDone && <button className="btn" onClick={() => setConfirmNew(o => !o)} title="End this conversation and start the controller in a new one, with the current instructions and tools">New session…</button>}
           <button className="btn" onClick={() => onCanvas(t.id)} title="Open this agent's live terminal as a window on the canvas">⊞ Show on canvas</button>
+          <ManagerRoleButton t={t} variant="button" toast={toast} />
           {t.status === 'suspended' && !t.transfer && <button className="btn primary" onClick={() => act(api.resume(t.id))} title="Start the agent again in tmux and continue its saved conversation">Resume</button>}
           {t.status === 'parked' ? <button className="btn" onClick={() => act(api.setStatus(t.id, 'idle'))} title="Put it back on your lists as Idle">Bring back</button> : <button className="btn" onClick={() => act(api.setStatus(t.id, 'parked'))} title="Take it off Needs you, Unread and triage. The agent is not stopped; the task comes back by itself the next time the agent works or finishes a turn.">Set aside</button>}
           {t.status === 'archived' ? <button className="btn" onClick={() => act(api.setStatus(t.id, 'idle'))} title="Take it out of the archive; open it to resume the conversation">Restore</button> : <button className="btn" onClick={() => act(api.kill(t.id).then(onClose))} title={t.openElsewhere ? 'Archives the task; the session in the other terminal keeps running' : 'Ends the tmux session and archives the task'}>End & archive</button>}
