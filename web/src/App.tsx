@@ -24,6 +24,7 @@ import { SettingsPage } from './components/Settings';
 import { PermitsPage } from './components/Permits';
 import { NoticeStack } from './components/NoticeStack';
 import { liveApprovals } from './stack';
+import { useCardAlerts } from './cardAlert';
 import { WaitingPage, waitingRows } from './components/Waiting';
 import { quietTaskIds } from './dismiss';
 import { StatsPage } from './components/Stats';
@@ -92,7 +93,8 @@ function HoldCard({ tasks }: { tasks: Task[] }) {
 }
 
 export function App() {
-  const { tasks: allTasks, groups, approvals, pending, dismissedPending, dismissals, machines, connected, link, banner } = useStore();
+  const { tasks: allTasks, groups, approvals, pending, dismissedPending, dismissals, machines, connected, link, banner, cardsLoaded } = useStore();
+  useCardAlerts(approvals, pending, cardsLoaded);
   // the "for N s" in the server line and the banner count while the server does not answer
   const [, setTick] = useState(0);
   useEffect(() => { if (connected) return; const timer = setInterval(() => setTick(n => n + 1), 1000); return () => clearInterval(timer); }, [connected]);

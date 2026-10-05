@@ -2,6 +2,7 @@
 // one section for each entry of SECTIONS in settingsIndex.ts, a side list of those sections and a search box.
 import { useEffect, useRef, useState } from 'react';
 import type { AllowRule, BrowserMode, BrowserStatus, ConfirmRisk, ControllerApprovals, MachineInfo, MessageLevel, PushRecord, RestartImpact, RestartResult, Task } from '../api';
+import { cardNotify, cardSound, setCardNotify, setCardSound } from '../cardAlert';
 import { api, autoReload, confirmEnd, DEFAULT_CONFIRM_RISK, DEFAULT_CONTROLLER_APPROVALS, setAutoReload, setConfirmEnd, useStore } from '../api';
 import { reasonText, type ServerHealth } from '../serverStatus';
 import { setTaskThinBar, setWindowSee, taskThinBar, windowSee, windowSeeSupported } from '../controllerView';
@@ -82,6 +83,8 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
   const [busy, setBusy] = useState(false);
   const [reloadOn, setReloadOn] = useState(autoReload());
   const [askEnd, setAskEnd] = useState(confirmEnd());
+  const [notifyCards, setNotifyCards] = useState(cardNotify());
+  const [soundCards, setSoundCards] = useState(cardSound());
   const glass = useGlass(), readable = useReadable(glass);
   const [winSee, setWinSeeState] = useState(windowSee);
   const [perfShown, setPerfShown] = useState(perfOn());
@@ -275,6 +278,16 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
                 <SettingItem id="confirmEnd">
                   <label className="opt" title="The ⏻ button in a canvas window's header ends the tmux session and archives the task"><input type="checkbox" checked={askEnd} onChange={e => { setConfirmEnd(e.target.checked); setAskEnd(e.target.checked); }} /> Ask before ⏻ in a window header ends and archives the task</label>
                   <div className="sub">Saved for this app or browser. When it is off, ⏻ acts at once and a message offers Restore.</div>
+                </SettingItem>
+              </SettingGroup>
+              <SettingGroup section="browser" id="cardAlerts" title="Notifications">
+                <SettingItem id="cardNotify">
+                  <label className="opt"><input type="checkbox" checked={notifyCards} onChange={e => { const on = e.target.checked; setCardNotify(on); setNotifyCards(on); if (on && typeof Notification !== 'undefined' && Notification.permission === 'default') void Notification.requestPermission(); }} /> Desktop notification when a card arrives and this window does not have focus</label>
+                  <div className="sub">For a new or changed approval card or question card. Saved for this app or browser. Off by default.{typeof Notification !== 'undefined' && Notification.permission === 'denied' ? ' Notifications are blocked for this page in the browser or system settings.' : ''}</div>
+                </SettingItem>
+                <SettingItem id="cardSound">
+                  <label className="opt"><input type="checkbox" checked={soundCards} onChange={e => { setCardSound(e.target.checked); setSoundCards(e.target.checked); }} /> Sound when a card arrives and this window does not have focus</label>
+                  <div className="sub">Two short tones. Saved for this app or browser. Off by default.</div>
                 </SettingItem>
               </SettingGroup>
               <SettingGroup section="browser" id="controllerView" title="Controller view">

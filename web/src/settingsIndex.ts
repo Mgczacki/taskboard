@@ -113,6 +113,10 @@ export const SECTIONS: SectionDef[] = [
     { id: 'canvas', title: 'Canvas', settings: [
       { id: 'confirmEnd', label: 'Ask before ⏻ in a window header ends and archives the task', words: 'end archive confirm power' },
     ] },
+    { id: 'cardAlerts', title: 'Notifications', settings: [
+      { id: 'cardNotify', label: 'Desktop notification when a card arrives and this window does not have focus', words: 'notification notify alert approval card permit scope question pop-up popup stack waiting' },
+      { id: 'cardSound', label: 'Sound when a card arrives and this window does not have focus', words: 'sound beep audio alert approval card permit scope question stack waiting' },
+    ] },
     { id: 'controllerView', title: 'Controller view', settings: [
       { id: 'controllerGlass', label: 'See-through controller terminal', words: 'transparent transparency see-through glass ghost blur opacity background text strength shadow outline bold tint contrast slider presets' },
       { id: 'windowSee', label: 'Window see-through while the controller view is open', words: 'transparent translucent window desktop opacity see-through app' },
