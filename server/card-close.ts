@@ -4,7 +4,7 @@
 // the card, and only for a permit that the timer itself expired. A permit that a read expired kept a pending card in
 // the stack, the Waiting page and the "to approve" count until the next restart. index.ts now calls permitCardClose
 // on each permit change, so the card closes in the same moment as the permit, whoever expired it.
-import type { Approval } from './approvals.ts';
+import { QUICK_MS, type Approval } from './approvals.ts';
 import type { Permit } from './permits.ts';
 import type { Task } from './store.ts';
 
@@ -32,17 +32,33 @@ type StatusPatch = Pick<Task, 'status' | 'ask' | 'statusSource'>;
 // the pending and the running cards of the task: a running card still sets the status itself (applyScope reads the ask
 // of a scope request while its card runs).
 // With no open card left, the task does not wait on the user any more:
-//   - a refused command card was denied (refusalDenied): unread, as before
+//   - the last refused-command card was dismissed (refusalDismissed) or denied before Dismiss existed (refusalDenied), and the
+//     task waits on it (ask "Refused: ..."). A refusal that Taskboard read at the end of a turn (events.ts
+//     recordCommandRefusal: "<agent> refused a tool call") leaves the turn ended: unread. A refusal of `tb permit`
+//     (index.ts POST /api/permits) happens while the agent is in its turn: working.
 //   - the last card expired or closed without a decision: working, and the status source says why. The agent is in
 //     its turn while it waits in `tb scope request`. When the turn has ended, the transcript check in index.ts sets
 //     the status from the transcript.
 //   - any other end: working, "Your decision was sent back to the task.", as before
-export function statusAfterCards(t: Pick<Task, 'status' | 'ask' | 'statusSource'>, o: { open: number; last?: Pick<Approval, 'state'> & { result?: string }; refusalDenied?: boolean }): StatusPatch | undefined {
+export const DISMISSED_STATUS = 'You closed the refused-command card. Nothing was decided and the task was not told.';
+export function statusAfterCards(t: Pick<Task, 'status' | 'ask' | 'statusSource'>, o: { open: number; last?: Pick<Approval, 'state'> & { result?: string }; refusalDenied?: boolean; refusalDismissed?: boolean }): StatusPatch | undefined {
   if (o.open || t.status !== 'needs-you') return;
-  if (t.statusSource?.includes('auto mode refused') && o.refusalDenied)
+  const turnEnded = /refused a tool call|auto mode refused/.test(t.statusSource || '');
+  if (o.refusalDismissed && (t.ask?.startsWith('Refused:') || turnEnded))
+    return { status: turnEnded ? 'unread' : 'working', ask: '', statusSource: DISMISSED_STATUS };
+  if (turnEnded && o.refusalDenied)
     return { status: 'unread', ask: '', statusSource: 'The user denied the refused command.' };
   if (!CARD_ASKS.some(x => t.ask?.startsWith(x))) return;
   if (o.last && (o.last.state === 'expired' || o.last.state === 'unknown'))
     return { status: 'working', ask: '', statusSource: `The approval card closed without a decision. ${o.last.result || ''}`.trim() };
   return { status: 'working', ask: '', statusSource: 'Your decision was sent back to the task.' };
+}
+
+// The extra line of the message to the task when the user denied a card less than QUICK_MS after it appeared
+// (decidedBy.ageMs, server/approvals.ts decide). Before, a Deny 2.8 s after the card appeared read the same as a
+// considered one, and the task gave up the step. Empty for any other decision.
+export function quickLine(card: Pick<Approval, 'state' | 'decidedBy'>): string {
+  const age = card.decidedBy?.ageMs;
+  if (card.state !== 'denied' || card.decidedBy?.by !== 'user' || age === undefined || age >= QUICK_MS) return '';
+  return `The user denied this card ${(age / 1000).toFixed(1)} seconds after it appeared. A click this fast can be a mistake. If this step matters, check with the user before you give it up. The user can reopen the card with Undo for 60 seconds.`;
 }

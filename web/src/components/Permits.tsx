@@ -1,8 +1,10 @@
 import { useEffect, useState } from 'react';
-import { api, type Permit } from '../api';
+import { api, type DecisionOrigin, type Permit } from '../api';
+import type { CardGuard } from '../clickGuard';
 import { permitHeadline, stepWord } from '../permitText';
 
-export function PermitDetails({ id, decision = false, openTask }: { id: string; decision?: boolean; openTask?: (id: string) => void }) {
+// guard: the click rules of the approval card that shows this permit (clickGuard.ts). newCard: true while Deny needs a second click.
+export function PermitDetails({ id, decision = false, openTask, guard, newCard }: { id: string; decision?: boolean; openTask?: (id: string) => void; guard?: CardGuard; newCard?: () => boolean }) {
   const [permit, setPermit] = useState<Permit | null>(null);
   const [comment, setComment] = useState('');
   const [busy, setBusy] = useState(false);
@@ -11,9 +13,9 @@ export function PermitDetails({ id, decision = false, openTask }: { id: string; 
     const load = () => api.permit(id).then(setPermit).catch(e => setError(String(e.message || e)));
     void load(); const timer = setInterval(load, 2000); return () => clearInterval(timer);
   }, [id]);
-  const decide = async (approve: boolean) => {
+  const decide = async (approve: boolean, origin?: DecisionOrigin) => {
     setBusy(true); setError('');
-    try { setPermit(await api.decidePermit(id, approve, comment)); }
+    try { setPermit(await api.decidePermit(id, approve, comment, origin)); }
     catch (e) { setError(String((e as Error).message || e)); }
     setBusy(false);
   };
@@ -29,7 +31,9 @@ export function PermitDetails({ id, decision = false, openTask }: { id: string; 
     {permit.decisionComment && <div className="sub">Comment: {permit.decisionComment}</div>}
     {head.note ? <div className="pc-note info">{head.note}</div> : permit.error && <div className="banner">{permit.error}</div>}
     {error && <div className="banner">{error}</div>}
-    {decision && head.open && <><textarea className="routing-rule" rows={2} aria-label="Permit decision comment" placeholder="Optional comment for the task" value={comment} onChange={e => setComment(e.target.value)} /><div className="ap-a"><button className="btn primary" disabled={busy} onClick={() => void decide(true)}>Run</button><button className="btn" onClick={() => void navigator.clipboard.writeText(permit.steps.map(s => s.command).join('\n'))}>Copy</button><button className="btn" disabled={busy} onClick={() => void decide(false)}>Deny</button>{openTask && <button className="btn ghost" onClick={() => openTask(permit.taskId)}>Open task</button>}</div></>}
+    {decision && head.open && <><textarea className="routing-rule" rows={2} aria-label="Permit decision comment" placeholder="Optional comment for the task" value={comment} onChange={e => setComment(e.target.value)} />{guard
+      ? <div className="ap-a"><button disabled={busy} {...guard.button('approve', o => void decide(true, o), { className: 'btn primary' })}>Run</button><button className="btn" onClick={() => void navigator.clipboard.writeText(permit.steps.map(s => s.command).join('\n'))}>Copy</button><button disabled={busy} {...guard.button('deny', o => void decide(false, o), { confirm: newCard })}>{guard.confirming === 'deny' ? 'Confirm deny' : 'Deny'}</button>{openTask && <button {...guard.button('open', () => openTask(permit.taskId), { className: 'btn ghost' })}>Open task</button>}</div>
+      : <div className="ap-a"><button className="btn primary" disabled={busy} onClick={() => void decide(true, { from: 'permits', target: 'approve' })}>Run</button><button className="btn" onClick={() => void navigator.clipboard.writeText(permit.steps.map(s => s.command).join('\n'))}>Copy</button><button className="btn" disabled={busy} onClick={() => void decide(false, { from: 'permits', target: 'deny' })}>Deny</button>{openTask && <button className="btn ghost" onClick={() => openTask(permit.taskId)}>Open task</button>}</div>}</>}
   </div>;
 }
 

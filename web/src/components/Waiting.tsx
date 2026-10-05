@@ -32,7 +32,7 @@ type View = 'all' | 'questions' | 'messages' | 'permits' | 'git' | 'answered' | 
 const VIEWS: [View, string][] = [['all', 'All'], ['questions', 'Agent questions'], ['messages', 'Messages'], ['permits', 'Permits'], ['git', 'Push and release'], ['answered', 'Answered'], ['dismissed', 'Dismissed']];
 const GIT = ['git-push', 'git-merge', 'release', 'restart'];
 // the kind chip of a decided approval card in the Answered view
-const KIND_OF_ACTION: Record<string, string> = { permit: 'Permit', external: 'External action', plan: 'Plan', 'git-push': 'Push', 'git-merge': 'Merge', release: 'Release', restart: 'Restart', scope: 'Scope', new: 'New task', send: 'Message', 'mail-in': 'Message', 'mail-out': 'Message' };
+const KIND_OF_ACTION: Record<string, string> = { 'tool-refusal': 'Refused command', permit: 'Permit', external: 'External action', plan: 'Plan', 'git-push': 'Push', 'git-merge': 'Merge', release: 'Release', restart: 'Restart', scope: 'Scope', new: 'New task', send: 'Message', 'mail-in': 'Message', 'mail-out': 'Message' };
 const minutesSince = (iso: string) => Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
 
 // quiet: the tasks whose waiting item the user dismissed (dismiss.ts quietTaskIds). They get no task row.
@@ -85,7 +85,8 @@ export function WaitingPage({ tasks, allTasks, openTask, openController, toast }
   }, []);
   const done: Row[] = [...answered.map(i => ({ id: `p:${i.id}`, at: i.answer?.at || i.createdAt, taskId: i.taskId, agent: i.agent, title: `#${i.taskNum} ${i.taskTitle}`, question: i.question, kind: KIND_LABEL[i.kind], item: i, done: true })),
     // decided Message cards, with their result: sent, failed with the reason, rejected, or sent back
-    ...approvals.filter(a => (isMessage(a) || a.action !== 'tool-refusal') && ['approved', 'failed', 'denied', 'returned', ...(isMessage(a) ? [] : ['expired', 'unknown'])].includes(a.state)).map(a => { const t = tasks.find(x => x.id === a.actor); return { id: `a:${a.id}`, at: a.decidedBy?.at || a.created, taskId: t?.id, agent: t?.agent, title: a.actor === 'controller' ? 'The controller' : t ? `#${t.num} ${t.title}` : a.actor, question: a.summary, kind: isMessage(a) ? 'Message' : KIND_OF_ACTION[a.action] || 'Approval', approval: a, done: true }; })]
+    // a refused-command card shows here when you dismissed it (or denied it, before Dismiss existed)
+    ...approvals.filter(a => (isMessage(a) || a.action !== 'tool-refusal' || ['dismissed', 'denied'].includes(a.state)) && ['approved', 'failed', 'denied', 'returned', 'dismissed', ...(isMessage(a) ? [] : ['expired', 'unknown'])].includes(a.state)).map(a => { const t = tasks.find(x => x.id === a.actor); return { id: `a:${a.id}`, at: a.decidedBy?.at || a.created, taskId: t?.id, agent: t?.agent, title: a.actor === 'controller' ? 'The controller' : t ? `#${t.num} ${t.title}` : a.actor, question: a.summary, kind: isMessage(a) ? 'Message' : KIND_OF_ACTION[a.action] || 'Approval', approval: a, done: true }; })]
     .sort((x, y) => y.at.localeCompare(x.at));
   const test: Record<View, (r: Row) => boolean> = {
     all: () => true, questions: r => !!r.item, answered: () => true, messages: r => r.kind === 'Message' || r.kind === LATE_KIND,

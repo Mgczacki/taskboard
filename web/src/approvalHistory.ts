@@ -7,5 +7,6 @@ export function decidedByLine(a: Pick<Approval, 'state' | 'decidedBy'>): string 
   const d = a.decidedBy;
   if (!d) return '';
   if (d.by === 'controller') return d.userRequest ? controllerHistoryText(d.userRequest) : 'Approved by the controller under the low risk rule in Settings.';
+  if (a.state === 'dismissed') return 'Closed by you without a decision.';
   return a.state === 'denied' ? 'Denied by you.' : 'Approved by you.';
 }

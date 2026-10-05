@@ -98,6 +98,11 @@ export function recordPush(state: PushState, id: string, approvalId?: string): P
   records.push(record); save(); return record;
 }
 export function finishPush(record: PushRecord, state: PushRecord['state'], result: string) { record.state = state; record.result = safe(result); record.doneAt = new Date().toISOString(); save(); }
+// The user undid the denial on the card (approvals.undo): the push waits again. Nothing was pushed.
+export function reopenPush(record: PushRecord) {
+  if (record.state !== 'denied') return false;
+  record.state = 'pending'; record.result = undefined; record.doneAt = undefined; save(); return true;
+}
 // The heads that Taskboard pushed for a task to one branch of one remote, from pushes.json. Each succeeded push
 // record holds the task, the remote URL, the branch, the pushed head and the time.
 export const pushedHeads = (taskId: string, remoteUrl: string, branch: string) =>

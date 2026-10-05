@@ -53,7 +53,7 @@ import * as taskRepair from './task-repair.ts';
 import * as push from './push.ts';
 import * as restart from './restart.ts';
 import * as permits from './permits.ts';
-import { archivedResult, cardsToCloseOnArchive, permitCardClose, statusAfterCards } from './card-close.ts';
+import { archivedResult, cardsToCloseOnArchive, permitCardClose, quickLine, statusAfterCards } from './card-close.ts';
 import * as scopeRestart from './scope-restart.ts';
 import * as pending from './pending.ts';
 import * as dismiss from './dismiss.ts';
@@ -482,16 +482,23 @@ app.post('/api/tasks/:id/log-entry', (req, res) => {
 });
 app.post('/api/approvals/:id/:decision', async (req, res, next) => {
   // any other word (return) is a different route; it must never count as Deny
-  if (!['approve', 'deny'].includes(req.params.decision)) return next();
+  if (!['approve', 'deny', 'dismiss', 'undo'].includes(req.params.decision)) return next();
   // only you, from the dashboard, can decide
   if (!req.get('origin')) return res.status(403).json({ error: 'approvals are decided on the dashboard' });
+  const origin = approvals.cleanOrigin(req.body?.origin, req.get('user-agent'));
+  // Dismiss closes a refused-command card without a decision. Undo reopens a card that the user denied less than a minute ago.
+  if (req.params.decision === 'dismiss' || req.params.decision === 'undo') {
+    if (!fromDashboard(req)) return res.status(403).json({ error: 'Only the user can do this, on the dashboard.' });
+    try { const a = req.params.decision === 'dismiss' ? approvals.dismiss(req.params.id, origin) : approvals.undo(req.params.id, origin); return a ? res.json(a) : res.status(404).end(); }
+    catch (e) { return res.status(409).json({ error: e instanceof Error ? e.message : String(e) }); }
+  }
   const current = approvals.get(req.params.id);
   if (current?.action === 'git-push' || (req.params.decision === 'approve' && ['permit', 'tool-refusal'].includes(current?.action || '')))
     return res.status(403).json({ error: 'Use the dedicated decision on the dashboard.' });
   // a task cannot decide its own scope request: tb sends the token and x-tb-actor, the dashboard sends neither
   if (current?.action === 'scope' && (req.get('x-tb-actor') || req.get('x-taskboard-token')))
     return res.status(403).json({ error: 'Only the user decides a scope request, on the dashboard.' });
-  const a = await approvals.decide(req.params.id, req.params.decision === 'approve'); a ? res.json(a) : res.status(404).end();
+  const a = await approvals.decide(req.params.id, req.params.decision === 'approve', { by: 'user' }, origin); a ? res.json(a) : res.status(404).end();
 });
 // Send a message card back with a comment: to the controller (incoming) or to the agent that wrote the draft (outgoing).
 app.post('/api/approvals/:id/return', async (req, res) => {
@@ -652,7 +659,7 @@ function createPermit(task: store.Task, reason: string, steps: permits.StepInput
         const result = await permits.run(p, task, 'user', p.decisionComment || '');
         if (result.state !== 'succeeded') throw new Error(result.error || result.state);
         return `Permit ${p.id} succeeded.`;
-      }, { onDeny: () => { permits.deny(p, 'Denied on the dashboard.'); } });
+      }, { onDeny: () => { permits.deny(p, 'Denied on the dashboard.'); }, onReopen: () => { permits.reopen(p); } });
     permits.attachApproval(p, card.id);
     store.update(actor, { status: 'needs-you', ask: `Approve permit ${p.id}`, statusSource: 'Waiting for a permit decision on the dashboard.' });
     return p;
@@ -757,10 +764,11 @@ app.post('/api/permits/:id/decide', async (req, res) => {
   const comment = String(req.body.comment || '');
   if (comment.length > 2000) return res.status(400).json({ error: 'Keep the comment under 2000 characters.' });
   if (!card || card.state !== 'pending') return res.status(409).json({ error: 'The approval card is no longer pending.' });
-  if (req.body.approve !== true) { permits.deny(p, comment); await approvals.decide(card.id, false); return res.json(p); }
+  const origin = approvals.cleanOrigin(req.body.origin, req.get('user-agent'));
+  if (req.body.approve !== true) { permits.deny(p, comment); await approvals.decide(card.id, false, { by: 'user' }, origin); return res.json(p); }
   try {
     p.decisionComment = comment;
-    await approvals.decide(card.id, true);
+    await approvals.decide(card.id, true, { by: 'user' }, origin);
     res.json(p);
   } catch (e) { fail(res, e); }
 });
@@ -897,7 +905,7 @@ async function createPushRequest(task: store.Task, reason: string, options: { br
         if (state.thenRelease) createReleaseApproval(task);
         return output;
       } catch (e) { push.finishPush(record, 'failed', String(e)); pushNotice(task, record); throw e; }
-    }, { onDeny: () => { push.finishPush(record, 'denied', 'Denied by the user.'); pushNotice(task, record); }, check: async () => {
+    }, { onDeny: () => { push.finishPush(record, 'denied', 'Denied by the user.'); pushNotice(task, record); }, onReopen: () => { if (push.reopenPush(record)) pushNotice(task, record); }, check: async () => {
       const head = (await execFileP('git', ['rev-parse', 'HEAD'], { cwd: state.branch === 'master' ? task.folder : task.cwd })).stdout.trim();
       return head === state.newHead ? undefined : `The branch ${state.branch} moved to ${head} after the card was made. The card pushes ${state.newHead}. Ask the task to run tb git push-request again.`;
     } });
@@ -943,14 +951,15 @@ app.post('/api/git/pushes/:id/decide', async (req, res) => {
     push.finishPush(record, 'expired', 'The push request expired.');
     approvals.close(card.id, 'expired', 'The push request expired.'); return res.json(record);
   }
+  const origin = approvals.cleanOrigin(req.body.origin, req.get('user-agent'));
   if (req.body.approve !== true) {
     const comment = String(req.body.comment || '').slice(0, 2000);
-    await approvals.decide(card.id, false);
+    await approvals.decide(card.id, false, { by: 'user' }, origin);
     push.finishPush(record, 'denied', `Denied by the user. ${comment}`.trim());
     const task = store.get(record.taskId); if (task) pushNotice(task, record);
     return res.json(record);
   }
-  await approvals.decide(card.id, true);
+  await approvals.decide(card.id, true, { by: 'user' }, origin);
   res.json(record);
 });
 app.post('/api/git/merge-request', async (req, res) => {
@@ -2023,10 +2032,12 @@ function settleCardStatus() {
     // an Antigravity screen prompt also sets "Approve: <tool>" (events.ts), without a card
     if (t.status !== 'needs-you' || t.statusSource?.startsWith(events.SCREEN_SOURCE)) continue;
     const mine = approvals.all().filter(a => a.actor === t.id);
+    const refusal = mine.filter(a => a.action === 'tool-refusal' && a.state !== 'pending' && a.state !== 'running').sort((a, b) => b.created.localeCompare(a.created))[0];
     const patch = statusAfterCards(t, {
       open: approvals.pendingFor(t.id).length + approvals.running().filter(a => a.actor === t.id).length,
       last: mine.filter(a => a.state !== 'pending' && a.state !== 'running').sort((a, b) => b.created.localeCompare(a.created))[0],
-      refusalDenied: mine.some(a => a.action === 'tool-refusal' && a.state === 'denied'),
+      refusalDenied: refusal?.state === 'denied',
+      refusalDismissed: refusal?.state === 'dismissed',
     });
     if (patch) store.update(t.id, patch);
   }
@@ -2044,7 +2055,9 @@ approvals.onApprovalsChange(() => {
   for (const c of eventClients) sendEvent(c, msg);
 });
 approvals.onDecision(card => {
-  const line = `Taskboard card ${card.id} version ${card.version || 'unknown'}: ${card.state}. ${card.result || ''}`.trim();
+  // A dismissed refused-command card holds no decision: the task is not told (server/approvals.ts dismiss).
+  if (card.state === 'dismissed') { managerEvents.record(card.actor, 'card', `${card.action} ${card.id} dismissed. ${card.result || ''}`, true); return; }
+  const line = [`Taskboard card ${card.id} version ${card.version || 'unknown'}: ${card.state}. ${card.result || ''}`.trim(), quickLine(card)].filter(Boolean).join('\n');
   const requester = store.get(card.actor);
   if (requester) void messageQueue.send(requester, line, { from: 'taskboard', kind: 'approval' }).catch(e => console.error('card result message', e));
   for (const ref of card.unblocks || []) {
@@ -2052,6 +2065,19 @@ approvals.onDecision(card => {
     if (task && task.id !== card.actor) void messageQueue.send(task, line, { from: 'taskboard', kind: 'approval' }).catch(e => console.error('card unblock message', e));
   }
   managerEvents.record(card.actor, 'card', `${card.action} ${card.id} ${card.state}. ${card.result || ''}`, true);
+});
+// Undo (approvals.undo) reopened a denied card: the task waits on it again and reads the new decision later.
+approvals.onReopen(card => {
+  const line = `Taskboard card ${card.id} version ${card.version || 'unknown'}: reopened. The user undid the denial. The card waits on the dashboard again. Nothing ran. Wait for the new decision before you act on the denial.`;
+  const requester = store.get(card.actor);
+  if (requester) {
+    const p = card.payload as { permitId?: string; state?: { branch?: string } } | undefined;
+    const ask = p?.permitId ? `Approve permit ${p.permitId}` : card.action === 'git-push' ? `Approve push ${p?.state?.branch || ''}`.trim()
+      : card.action === 'scope' ? `Approve scope request ${card.id}: ${card.summary}` : `Approve: ${card.summary}`;
+    store.update(requester.id, { status: 'needs-you', ask, statusSource: 'The user reopened the card with Undo. Waiting for a decision on the dashboard.' });
+    void messageQueue.send(requester, line, { from: 'taskboard', kind: 'approval' }).catch(e => console.error('card reopen message', e));
+  }
+  managerEvents.record(card.actor, 'card', `${card.action} ${card.id} reopened by Undo.`, true);
 });
 dismiss.load(TB_DIR);
 // a dismiss changes the dismissed field of the question cards: send both lists

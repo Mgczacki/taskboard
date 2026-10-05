@@ -90,7 +90,9 @@ export type AllowScope = 'pair' | 'both' | 'any';
 // A rule that comes from a role and that nobody stores or revokes (server/manager-role.ts, the group manager rule)
 export interface BuiltInRule { id: string; text: string; limitText: string; groups: { group: string; name: string; manager: string; num?: number; tasks: number; preset: string }[] }
 export interface AllowRule { id: string; kind: 'message' | 'doc'; scope: AllowScope; from?: string; fromNum?: number; fromTitle?: string; to: string; toNum: number; toTitle: string; created: string; card: string; by: 'user'; count: number; lastHour: number; lastAt?: string; text: string }
-export interface Approval { id: string; actor: string; action: string; summary: string; detail: string; created: string; updated?: string; version?: string; state: 'pending' | 'running' | 'approved' | 'denied' | 'failed' | 'expired' | 'unknown' | 'returned'; result?: string; staleFacts?: string; validUntil?: string; unblocks?: string[]; notifyMe?: boolean; returnable?: boolean; allow?: { kind: 'message' | 'doc'; from: string; to: string; choices: { scope: AllowScope; text: string }[]; limitText: string }; decidedBy?: { by: 'user' | 'controller'; userRequest?: string; at: string }; payload?: { permitId?: string; pushId?: string; state?: { forcePush?: boolean }; canPermit?: boolean; message?: string; hash?: string; body?: string; quality?: { state: string; flags: { text: string; start: number; end: number; reason: string; code?: string }[] } } & Partial<MessagePayload> }
+export interface Approval { id: string; actor: string; action: string; summary: string; detail: string; created: string; updated?: string; version?: string; state: 'pending' | 'running' | 'approved' | 'denied' | 'failed' | 'expired' | 'unknown' | 'returned' | 'dismissed'; result?: string; staleFacts?: string; undoUntil?: string; noUndo?: string; reopened?: { at: string }; validUntil?: string; unblocks?: string[]; notifyMe?: boolean; returnable?: boolean; allow?: { kind: 'message' | 'doc'; from: string; to: string; choices: { scope: AllowScope; text: string }[]; limitText: string }; decidedBy?: { by: 'user' | 'controller'; userRequest?: string; at: string; origin?: DecisionOrigin; ageMs?: number }; payload?: { id?: string; command?: string; reason?: string; toolName?: string; permitId?: string; pushId?: string; state?: { forcePush?: boolean }; canPermit?: boolean; message?: string; hash?: string; body?: string; quality?: { state: string; flags: { text: string; start: number; end: number; reason: string; code?: string }[] } } & Partial<MessagePayload> }
+// Where a decision on a card came from, for the audit (server/approvals.ts DecisionOrigin)
+export interface DecisionOrigin { from: 'stack' | 'waiting' | 'permits' | 'manager-board' | 'controller' | 'unknown'; target?: string; shownMs?: number; pointerMs?: number }
 // The structured part of an A2A Notes message card (server/a2anotes/cards.ts MessagePayload)
 export interface MessageNote { code: string; title: string; text: string; todo: string; actions: ('recheck' | 'remove-flagged' | 'send-back' | 'approve-anyway')[] }
 export interface MessagePayload {
@@ -339,7 +341,11 @@ export const api = {
   queueAction: (id: string, qid: string, action: 'retry' | 'remove' | 'hook' | 'type') => call<{ state?: 'delivered' | 'queued' | 'failed'; reason?: string }>('POST', `/api/tasks/${id}/queue/${encodeURIComponent(qid)}/${action}`),
   removeInbox: (id: string, name: string) => call('POST', `/api/tasks/${id}/inbox/remove`, { name }),
   tellInbox: (id: string) => call<{ told: boolean } & Partial<NoticeResult>>('POST', `/api/tasks/${id}/inbox/tell`, {}),
-  decide: (id: string, approve: boolean) => call<Approval>('POST', `/api/approvals/${id}/${approve ? 'approve' : 'deny'}`, {}),
+  decide: (id: string, approve: boolean, origin?: DecisionOrigin) => call<Approval>('POST', `/api/approvals/${id}/${approve ? 'approve' : 'deny'}`, { origin }),
+  // a refused-command card: close it without a decision (server/approvals.ts dismiss)
+  dismissCard: (id: string, origin?: DecisionOrigin) => call<Approval>('POST', `/api/approvals/${id}/dismiss`, { origin }),
+  // reopen a card that you denied less than a minute ago (server/approvals.ts undo)
+  undoCard: (id: string, origin?: DecisionOrigin) => call<Approval>('POST', `/api/approvals/${id}/undo`, { origin }),
   permits: () => call<Permit[]>('GET', '/api/permits'),
   // 409 with ignored: the worktree holds ignored files that a removal deletes; send confirm to remove it anyway
   removeScope: async (id: string, name: string, confirm: boolean): Promise<{ result?: string; error?: string; ignored?: string[] }> => {
@@ -349,9 +355,9 @@ export const api = {
     return data;
   },
   permit: (id: string) => call<Permit>('GET', `/api/permits/${encodeURIComponent(id)}`),
-  decidePermit: (id: string, approve: boolean, comment: string) => call<Permit>('POST', `/api/permits/${encodeURIComponent(id)}/decide`, { approve, comment }),
+  decidePermit: (id: string, approve: boolean, comment: string, origin?: DecisionOrigin) => call<Permit>('POST', `/api/permits/${encodeURIComponent(id)}/decide`, { approve, comment, origin }),
   pushes: () => call<PushRecord[]>('GET', '/api/git/pushes'),
-  decidePush: (id: string, approve: boolean, comment: string) => call<PushRecord>('POST', `/api/git/pushes/${encodeURIComponent(id)}/decide`, { approve, comment }),
+  decidePush: (id: string, approve: boolean, comment: string, origin?: DecisionOrigin) => call<PushRecord>('POST', `/api/git/pushes/${encodeURIComponent(id)}/decide`, { approve, comment, origin }),
   permitRefusal: (id: string) => call<{ permit: Permit }>('POST', `/api/refusals/${encodeURIComponent(id)}/permit`, {}),
   // a message card goes back to the controller or to the agent that wrote the draft, with the comment
   answerPending: (id: string, body: { option?: string; text?: string; confirm?: boolean; group?: string[] }) => call<PendingItem>('POST', `/api/pending/${id}/answer`, body),

@@ -1,6 +1,10 @@
 // The notification stack at the top right of the dashboard: approval cards and question cards, one at a time, oldest
 // first (first in, first out). A new card joins the back, so the front card never changes under the pointer. When the
-// front card changes, its buttons stay off for 0.6 s, so a second click meant for the old card cannot answer the new one.
+// front card changes, or the stack shows again, its buttons stay off for GUARD_MS (ARM_MS of clickGuard.ts, 1.5 s), so
+// a second click meant for the old card or for the page cannot answer the new one. Before, the guard was 0.6 s and let
+// the click through to the page below (pointer-events: none). Now a layer over the card takes that click. Approval
+// cards also keep their own guard (ApprovalCard.tsx, clickGuard.ts).
+// A card that you denied less than a minute ago shows a row with Undo above the cards (RecentDenials).
 // The stack is the only place outside the Waiting page that shows a question card in full. Canvas windows and the task
 // panel show a one-line marker, and its button (showInStack in stack.ts) brings that task's card to the front here, also
 // when the stack is hidden.
@@ -16,10 +20,11 @@ import { useEffect, useRef, useState } from 'react';
 import type { Approval, PendingItem, Task } from '../api';
 import { useStore } from '../api';
 import { arrivals, CLOSED_MS, closedNotice, entryForTask, frontAfterArrival, frontIndex, HIDDEN_KEY, readHidden, seenCards, SHOW_EVENT, stackEntries, type Seen, type StackEntry } from '../stack';
-import { ApprovalCard } from './ApprovalCard';
+import { ApprovalCard, UndoLine } from './ApprovalCard';
+import { ARM_MS } from '../clickGuard';
 import { PendingCard } from './PendingCard';
 
-const GUARD_MS = 600;
+const GUARD_MS = ARM_MS;
 const PULSE_MS = 1600;
 const ALSO = 'The Waiting page (All) also lists tasks that wait on you without a card, and messages that wait to be delivered.';
 
@@ -116,7 +121,8 @@ export function NoticeStack({ approvals, pending, allTasks, setOpenId, openContr
   }, []);
   useEffect(() => { if (scrollTo && frontEl.current) { frontEl.current.scrollTop = 0; frontEl.current.scrollIntoView({ block: 'nearest' }); } }, [scrollTo]);
   const closedCard = closed && <div className="pcard gone ns-closed" aria-live="polite"><div className="pc-h"><b>{closed.state}</b><span className="pc-sp" /><span className="pc-age">not waiting</span></div><p className="pc-q">{closed.title}</p><div className="pc-note info">{closed.text}</div></div>;
-  if (!entries.length) return closedCard ? <div className="ns" role="region" aria-label="Cards that wait on you"><div className="ns-bar"><b>Nothing waits on you</b></div><div className="ns-front">{closedCard}</div></div> : null;
+  const recent = <RecentDenials approvals={allApprovals} allTasks={allTasks} toast={toast} />;
+  if (!entries.length) return closedCard || hasRecentDenial(allApprovals) ? <div className="ns" role="region" aria-label="Cards that wait on you"><div className="ns-bar"><b>Nothing waits on you</b></div>{recent}{closedCard && <div className="ns-front">{closedCard}</div>}</div> : null;
   if (hidden) return <button className={`btn ns-pill ${pulse ? 'ns-pulse' : ''}`} onClick={() => hide(false)} onPointerEnter={() => { onPill.current = true; }} onPointerLeave={leavePill}
     title={`Show the cards that wait on you, oldest first. The stack also shows again by itself when a card arrives. ${ALSO}`}>{entries.length} waiting on you{fresh ? ` · ${fresh} new` : ''}</button>;
   const go = (d: number) => setFrontId(entries[(index + d + entries.length) % entries.length].id);
@@ -127,11 +133,27 @@ export function NoticeStack({ approvals, pending, allTasks, setOpenId, openContr
       <button className="btn ghost" onClick={showAll} title={`The Waiting page: everything that waits on you. ${ALSO}`}>All</button>
       <button className="btn ghost" onClick={() => hide(true)} title="Hide the stack until a new or changed card arrives">Hide</button>
     </div>
+    {recent}
     <div ref={frontEl} className={`ns-front ${guard ? 'guard' : ''}`}>
       {closedCard}
-      {!closedCard && front.approval && <ApprovalCard key={front.id} a={front.approval} allTasks={allTasks} setOpenId={setOpenId} openController={openController} toast={toast} />}
+      {!closedCard && front.approval && <ApprovalCard key={front.id} a={front.approval} allTasks={allTasks} setOpenId={setOpenId} openController={openController} toast={toast} from="stack" />}
       {!closedCard && front.item && <PendingCard key={front.id} item={front.item} compact openTask={setOpenId} toast={toast} />}
     </div>
     {entries.length > 1 && <div className="ns-edge" />}{entries.length > 2 && <div className="ns-edge two" />}
   </div>;
+}
+
+// The cards that you denied less than UNDO_MS ago, from the full list (the stack holds only waiting cards)
+const recentDenials = (approvals: Approval[], now = Date.now()) => approvals.filter(a => a.state === 'denied' && a.decidedBy?.by === 'user' && (a.undoUntil ? Date.parse(a.undoUntil) > now : now - Date.parse(a.decidedBy.at) < 60_000));
+const hasRecentDenial = (approvals: Approval[]) => recentDenials(approvals).length > 0;
+// One row for each recent denial: what was denied and Undo, or why Undo is not possible. The rows go away after a minute.
+function RecentDenials({ approvals, allTasks, toast }: { approvals: Approval[]; allTasks: Task[]; toast: (s: string) => void }) {
+  const [, tick] = useState(0);
+  const list = recentDenials(approvals);
+  useEffect(() => { if (!list.length) return; const t = setInterval(() => tick(n => n + 1), 1000); return () => clearInterval(t); }, [list.length]);
+  if (!list.length) return null;
+  return <div className="ns-undo">{list.map(a => {
+    const t = allTasks.find(x => x.id === a.actor);
+    return <div key={a.id} className="ns-undo-row"><span>You denied: {a.actor === 'controller' ? 'the controller' : `task #${t?.num || a.actor}`} · {a.summary}</span><UndoLine a={a} toast={toast} from="stack" /></div>;
+  })}</div>;
 }
