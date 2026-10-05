@@ -4,6 +4,8 @@ import { useEffect, useRef, useState } from 'react';
 import { api } from '../api';
 import type { Agent, MachineInfo, Task } from '../api';
 import { AGENTS, AGENT_NAME, fmtWait } from '../api';
+import { usageText } from '../accountUsageText';
+export { usageText } from '../accountUsageText';
 import { Terminal } from './Terminal';
 import { SettingItem } from './SettingsLayout';
 
@@ -14,10 +16,6 @@ export interface Account {
   usage?: { windows: { label: string; usedPct: number; resetsAt?: number }[]; at: string; source: string; plan?: string };
   usageStale?: boolean; usageStaleHours?: number; // data older than usageStaleHours counts as unknown (server/accounts.ts)
 }
-const dataAge = (a: Account) => fmtWait(Math.round((Date.now() - Date.parse(a.usage?.at || '')) / 60000));
-// "5-hour 12% · weekly 66%" (windows that already reset are left out); old data shows as unknown with its age
-export const usageText = (a: Account) => a.usage && a.usageStale ? `usage unknown (data ${dataAge(a)} old)`
-  : (a.usage?.windows || []).filter(w => !w.resetsAt || w.resetsAt > Date.now()).map(w => `${w.label} ${w.usedPct}%`).join(' · ');
 const resetText = (ms?: number) => {
   if (!ms) return '';
   const d = new Date(ms), mins = Math.round((ms - Date.now()) / 60000);

@@ -16,7 +16,8 @@ import { PendingMarker } from './PendingCard';
 import { DocsTab } from './Docs';
 import { LinksSection } from './Links';
 import { hasFiles, uploadAll } from '../drop';
-import { loadAccounts, usageText, type Account } from './Accounts';
+import { loadAccounts, type Account } from './Accounts';
+import { MoveAccountForm } from './MoveAccountForm';
 import { formatTokens } from '../formatTokens';
 import { autoText } from '../agentErrorText';
 import type { DocumentLink } from '../documentLinks';
@@ -50,6 +51,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
   const [moveOpen, setMoveOpen] = useState(false);
   const [targetAccount, setTargetAccount] = useState('');
   const [moving, setMoving] = useState(false);
+  const [moveError, setMoveError] = useState('');
   const [transferOpen, setTransferOpen] = useState(false);
   useEffect(() => {
     const load = () => loadAccounts().then(setAccts).catch(() => {});
@@ -162,7 +164,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
     handle.addEventListener('pointermove', move); handle.addEventListener('pointerup', up); handle.addEventListener('pointercancel', up);
   };
   const moreItems = panelMoreItems(t, {
-    moveAccount: () => setMoveOpen(o => !o), moveMachine: () => setTransferOpen(o => !o), canvas: () => onCanvas(t.id), remove: () => setConfirmRm(true),
+    moveAccount: () => { setMoveError(''); setMoveOpen(o => !o); }, moveMachine: () => setTransferOpen(o => !o), canvas: () => onCanvas(t.id), remove: () => setConfirmRm(true),
     copyAttach: () => navigator.clipboard.writeText(t.attach).then(() => toast(`Copied: ${t.attach}`), () => toast('The browser did not allow the copy.')),
     setAside: () => act(api.setStatus(t.id, 'parked')), archive: () => act(api.kill(t.id).then(onClose)),
   });
@@ -200,7 +202,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
         </div>
         {isCtl && glassOpen && <div className="glass-pop"><GlassControls g={glass} r={readable} /></div>}
         {!collapsed && <NoticeStrip list={notices} ctx={{ t, pending, act, toast, autoMessage, clearError: () => setErr(''), clearDrop: () => setDropMsg(''),
-          moveAccount: isCtl ? undefined : () => setMoveOpen(true), resumeAnyway: () => { setErr(''); act(api.resume(t.id, true)); } }} />}
+          moveAccount: isCtl ? undefined : () => { setMoveError(''); setMoveOpen(true); }, resumeAnyway: () => { setErr(''); act(api.resume(t.id, true)); } }} />}
         <div id={infoId} className="dr-info" hidden={collapsed}>
         {isCtl && <div className="banner intro">The controller is {t.agent === 'antigravity' ? 'an' : 'a'} {AGENT_NAME[t.agent]} session in <code>~/AgentVault/controller</code> (choose its account and agent on the Accounts page).{t.remoteUrl && <> Remote Control is on: <a href={t.remoteUrl} target="_blank" rel="noreferrer">open it on claude.ai or the Claude app</a>.</>} It manages agents with the <code>tb</code> command: reading and organising run without asking; starting agents, typing into them and archiving wait for your approval here. Try: “what needs me?” or “split X into three parallel tasks”.</div>}
         <div className="dr-actions">
@@ -215,24 +217,14 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
           </PopMenu>}
           {confirmRm && <><span className="sel-warn">Remove from Taskboard? The note goes to ~/.taskboard/trash; the conversation stays in {AGENT_NAME[t.agent]}.</span><button className="btn danger" onClick={() => api.remove(t.id).then(onClose, e => setErr(String(e.message || e)))}>Yes, remove</button><button className="btn ghost" onClick={() => setConfirmRm(false)}>Cancel</button></>}
         </div>
-        {moveOpen && t.role !== 'controller' && <div className="banner">
-          <label htmlFor="move-account">Move to account</label>
-          <select id="move-account" className="acct-sel" value={targetAccount} disabled={moving} onChange={e => setTargetAccount(e.target.value)}>
-            <option value="">Choose an account</option>
-            {accts.filter(a => a.id !== (t.account || `${t.agent}-default`)).map(a => <option key={a.id} value={a.id} disabled={!a.status.signedIn}>
-              {a.name} · {AGENT_NAME[a.agent]} · {usageText(a) || 'usage unknown'}{a.limited ? ' · usage limit reached' : ''}{!a.status.signedIn ? ' · not signed in' : ''}
-            </option>)}
-          </select>
-          <span className="sub">The task keeps its files and worktree. A different agent continues with a handoff. Moving stops the current session.</span>
-          <button className="btn primary" disabled={!targetAccount || moving || !!t.openElsewhere} onClick={async () => {
-            setMoving(true); setErr('');
+        {moveOpen && t.role !== 'controller' && <MoveAccountForm accounts={accts} current={t.account || `${t.agent}-default`}
+          target={targetAccount} moving={moving} error={moveError} status={t.status} openElsewhere={!!t.openElsewhere}
+          select={id => { setTargetAccount(id); setMoveError(''); }} cancel={() => setMoveOpen(false)} move={async () => {
+            setMoving(true); setMoveError('');
             try { await api.moveAccount(t.id, targetAccount); setMoveOpen(false); setTargetAccount(''); }
-            catch (e) { setErr(String((e as Error).message || e)); }
+            catch (e) { setMoveError(String((e as Error).message || e)); }
             finally { setMoving(false); }
-          }}>{moving ? 'Moving…' : t.status === 'working' ? 'Stop and move' : 'Move and continue'}</button>
-          {t.openElsewhere && <span>Move the session here from its other terminal first.</span>}
-          <button className="btn ghost" disabled={moving} onClick={() => setMoveOpen(false)}>Cancel</button>
-        </div>}
+          }} />}
         {transferOpen && t.role !== 'controller' && <TransferPanel task={t} close={() => setTransferOpen(false)} openTarget={onOpenTask} />}
         {t.transfer && <div className="banner">{t.transfer.direction === 'source' ? 'This task moved to another machine.' : 'This task came from another machine.'} {t.transfer.state === 'started' && <button className="btn" onClick={() => act(linkedTaskId(t.transfer!.peerIdentity, t.transfer!.task).then(id => id ? onOpenTask(id) : toast('The linked machine is not paired with this dashboard.')))}>Open linked task</button>}{t.transfer.direction === 'source' && t.transfer.state !== 'started' && <><span>Check the target before either task resumes.</span><button className="btn" onClick={() => act(api.transferRecover(t.id, 'status').then(r => toast(`Target transfer: ${r.state}.`)))}>Check target</button><button className="btn" onClick={() => act(api.transferRecover(t.id, 'retry-target').then(r => toast(`Target transfer: ${r.state}.`)))}>Retry target</button><button className="btn" onClick={() => act(api.transferRecover(t.id, 'resume-source').then(() => api.resume(t.id)))}>Resume source</button></>}</div>}
         {/* a restart that gives the agent a new scope (server/index.ts applyScope), and a restart that failed */}

@@ -22,6 +22,7 @@ writeFileSync(join(process.env.TASKBOARD_DIR, 'accounts.json'), JSON.stringify([
 writeFileSync(join(process.env.TASKBOARD_DIR, 'machine.json'), JSON.stringify({ controller: { autostart: false }, permissions: { trustWorkspaces: false } }));
 const store = await import('../server/store.ts');
 const agents = await import('../server/agents.ts');
+const messageQueue = await import('../server/message-queue.ts');
 const tmux = await import('../server/tmux.ts');
 const accounts = await import('../server/accounts.ts');
 const docs = await import('../server/docs.ts');
@@ -156,6 +157,28 @@ test('a limited account keeps the task stopped and its inbox notice pending', as
     assert.equal(t.status, 'stopped');
     assert.deepEqual(docs.pendingInboxNotice(t.id)?.names, ['file.md']);
   } finally { delete account.limited; }
+});
+
+test('a digest does not enter a stopped manager session on a limited account', async () => {
+  const t = task('claude', 10, 'fixture-manager');
+  const account = accounts.defaultFor('claude');
+  await tmux.newSession(t.session, root, { TASK_DIR: store.taskDir(t.id) }, [join(bin, 'claude')], async () => {});
+  try {
+    await waitFor(async () => (await tmux.capture(t.session, 10)).includes('Fake agent'), { description: 'the manager input box' });
+    account.limited = { at: new Date().toISOString(), note: 'weekly limit' };
+    const result = await messageQueue.send(t, '[Taskboard event digest, worker update]', { from: 'taskboard', kind: 'message' });
+    assert.equal(result.state, 'failed');
+    assert.match(result.reason || '', /stopped at a usage limit.*weekly limit/);
+    assert.equal(store.get(t.id)?.status, 'stopped');
+    assert.equal(existsSync(join(store.taskDir(t.id), 'input.txt')), false);
+    assert.ok(result.id);
+    assert.equal(messageQueue.viaHook(t.id, result.id!)?.state, 'queued');
+    assert.equal(messageQueue.takeForHook(t.id, 'Stop'), null);
+    assert.equal(messageQueue.list(t.id).find(x => x.id === result.id)?.state, 'queued');
+  } finally {
+    delete account.limited;
+    await tmux.killSession(t.session);
+  }
 });
 
 test.after(() => {
