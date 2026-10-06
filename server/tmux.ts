@@ -1,4 +1,5 @@
 import { execFile } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { promisify } from 'node:util';
 import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
@@ -107,9 +108,27 @@ export async function repairSettings(): Promise<string[] | null> {
 }
 
 export async function newSession(name: string, cwd: string, env: Record<string, string>, command: string[]) {
-  const args = newSessionArgs(name, cwd, env, command);
-  if (commandBytes(args) > MAX_COMMAND_BYTES) throw new Error(`The command that starts the agent has ${commandBytes(args)} bytes, and tmux accepts at most about ${MAX_COMMAND_BYTES}.`);
-  await tmux(...args);
+  let args = newSessionArgs(name, cwd, env, command);
+  let launchFile: string | undefined;
+  if (commandBytes(args) > MAX_COMMAND_BYTES) {
+    // tmux limits the size of one request. A private, single-use shell file carries the exact argv and environment.
+    // Quote each value as shell data. The file removes itself before exec, and tmux receives only its path.
+    launchFile = join(TB_DIR, `agent-launch-${randomUUID()}.sh`);
+    const withEnv = newSessionArgs(name, cwd, env, ['/bin/sh', launchFile]);
+    // Keep tmux's session environment when it fits. If the environment alone is too long, set it in the pane.
+    const envInTmux = commandBytes(withEnv) <= MAX_COMMAND_BYTES;
+    const shellEnv = envInTmux ? {} : env;
+    for (const key of Object.keys(shellEnv)) if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) throw new Error('The agent environment has an invalid variable name.');
+    const exports = Object.entries(shellEnv).map(([key, value]) => `export ${key}=${quote(value)}`).join('\n');
+    writeFileSync(launchFile, `#!/bin/sh\nrm -f -- "$0"\n${exports}\nexec ${command.map(quote).join(' ')}\n`, { flag: 'wx', mode: 0o600 });
+    args = envInTmux ? withEnv : newSessionArgs(name, cwd, {}, ['/bin/sh', launchFile]);
+  }
+  if (commandBytes(args) > MAX_COMMAND_BYTES) {
+    if (launchFile) rmSync(launchFile, { force: true });
+    throw new Error(`The command that starts the agent has ${commandBytes(args)} bytes, and tmux accepts at most about ${MAX_COMMAND_BYTES}.`);
+  }
+  try { await tmux(...args); }
+  catch (e) { if (launchFile) rmSync(launchFile, { force: true }); throw e; }
   // the session may have started the tmux server; options can only be set once it exists
   await ensureConfigured();
 }
