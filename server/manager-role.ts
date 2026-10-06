@@ -23,7 +23,7 @@ export const PRESETS: Record<ManagerPreset, { name: string; may: string[]; not: 
     not: [] },
 };
 // What a manager never does, in every preset.
-export const NEVER = ['Approve a card, a push, a merge, a release or a deploy', 'Act on a task outside this group', 'Change Settings, rules or roles'];
+export const NEVER = ['Approve a card, a push, a merge, a release or a deploy', 'Send to a task outside this group without your approval on a card', 'Change Settings, rules or roles'];
 const ALLOWS: Record<ManagerPreset, ManagerAction[]> = {
   watch: ['waiting'],
   direct: ['send', 'doc', 'dep', 'park', 'resume', 'waiting', 'stop'],

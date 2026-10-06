@@ -2,6 +2,7 @@
 // and inbox/ (documents sent to it). Sending copies the file, so the agent reads it like any local file.
 // inbox/.sent.json records where each inbox file came from.
 import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { basename, extname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HOME, TASKS_DIR, VAULT } from './config.ts';
@@ -56,13 +57,17 @@ export const counts = (id: string) => ({ inbox: fileCount(inboxDir(id)), outbox:
 // Tasks with new inbox files the agent has not been told about yet (Claude Code learns on its next prompt).
 const pendingFile = (id: string) => join(inboxDir(id), '.pending.json');
 
-export function send(fromTask: string, name: string, toTask: string): string {
+export function send(fromTask: string, name: string, toTask: string, expectedHash?: string): string {
   const src = join(outboxDir(fromTask), basename(name));
   if (!existsSync(src)) throw new Error(`No such file in #${store.get(fromTask)?.num}'s outbox: ${name}`);
+  const approvedContent = expectedHash === undefined ? undefined : readFileSync(src);
+  if (approvedContent && createHash('sha256').update(approvedContent).digest('hex') !== expectedHash)
+    throw new Error('The document content changed. Request a new card.');
   mkdirSync(inboxDir(toTask), { recursive: true });
   let target = basename(name), n = 2;
   while (existsSync(join(inboxDir(toTask), target))) target = basename(name, extname(name)) + `-${n++}` + extname(name);
-  copyFileSync(src, join(inboxDir(toTask), target));
+  if (approvedContent) writeFileSync(join(inboxDir(toTask), target), approvedContent);
+  else copyFileSync(src, join(inboxDir(toTask), target));
   const sent = readJson<Record<string, unknown>>(sentFile(toTask), {});
   sent[target] = { task: fromTask, at: new Date().toISOString(), orig: basename(name) };
   writeFileSync(sentFile(toTask), JSON.stringify(sent, null, 2));
