@@ -156,7 +156,7 @@ function tellSender(to: Task, q: Queued, news: News) {
 // opts.holdWhenParked: a message to a parked task waits in the queue (state queued) instead of failing. The typing loop
 // leaves a parked task alone, so the message is typed after the user resumes the task. The group manager rule uses it
 // for messages to a manager that is parked (server/index.ts).
-export async function send(t: Task, text: string, opts: { from: string; kind: Kind; holdWhenParked?: boolean }): Promise<SendResult> {
+export async function send(t: Task, text: string, opts: { from: string; kind: Kind; holdWhenParked?: boolean; queueOnError?: boolean }): Promise<SendResult> {
   const empty = textError(text); if (empty) throw new Error(empty);
   const queue = (state: Queued['state'], reason: string): SendResult => {
     const q = enqueue(t, text, opts.from, opts.kind, state, reason);
@@ -178,6 +178,7 @@ export async function send(t: Task, text: string, opts: { from: string; kind: Ki
     return { state: 'delivered', resumed: r.resumed, ...(r.warning ? { warning: r.warning } : {}) };
   } catch (e) {
     if (e instanceof NotTyped) return queue('queued', e.reason);
+    if (opts.queueOnError) return queue('queued', message(e));
     // the dashboard shows its own error; a message from an agent or from Taskboard stays on the task
     if (opts.from === 'you') return { state: 'failed', reason: message(e) };
     const r = queue('failed', message(e));
