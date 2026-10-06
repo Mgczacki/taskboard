@@ -13,12 +13,50 @@ const store = await import('../server/store.ts');
 const { taskDir } = store;
 const { GUARD_SCRIPT } = await import('../server/config.ts');
 const permits = await import('../server/permits.ts');
+const machine = await import('../server/machine.ts');
 type Task = import('../server/store.ts').Task;
 mkdirSync(join(root, 'work'), { recursive: true });
 mkdirSync(join(root, 'tbdir', 'hooks'), { recursive: true });
 copyFileSync(fileURLToPath(new URL('../server/hooks/guard.mjs', import.meta.url)), GUARD_SCRIPT);
 const freshTask = (id: string) => { mkdirSync(taskDir(id), { recursive: true }); return { id, num: 1, agent: 'codex', cwd: join(root, 'work'), folder: join(root, 'work'), role: undefined, worktree: false } as Task; };
 after(() => rmSync(root, { recursive: true, force: true }));
+
+test('rolling permit windows use the current setting and give the next request time', () => {
+  const at = Date.parse('2026-10-06T12:00:00.000Z');
+  const limits = { enabled: true, tenMinutes: 2, day: 4 };
+  const times = [at - 600001, at - 590000, at - 1000].map(time => new Date(time).toISOString());
+  assert.match(permits.requestLimitBlock(times, limits, at)!, /10 minutes \(2\/2\).*2026-10-06T12:00:10.000Z/);
+  assert.equal(permits.requestLimitBlock(times, { ...limits, tenMinutes: 3 }, at), undefined);
+  assert.equal(permits.requestLimitBlock(times, { ...limits, enabled: false }, at), undefined);
+  const both = [...times, new Date(at - 3600000).toISOString()];
+  assert.match(permits.requestLimitBlock(both, limits, at)!, /10 minutes \(2\/2\) and 24 hours \(4\/4\).*2026-10-07T11:00:00.000Z/);
+  assert.equal(permits.requestLimitBlock(times, limits, at + 10000), undefined);
+});
+
+test('failed and denied permits count under changed settings; off still keeps the pending guard', async () => {
+  const task = freshTask('configured-limits');
+  machine.update({ permitRequestLimits: { enabled: true, tenMinutes: 2, day: 20 } });
+  const failed = permits.request(task, 'Failure', [{ command: 'echo failed' }]);
+  await permits.run(failed, task, 'user', '', '', async () => ({ code: 1, signal: null, output: '' }));
+  const denied = permits.request(task, 'Denial', [{ command: 'echo denied' }]);
+  permits.deny(denied, 'test');
+  assert.throws(() => permits.request(task, 'Blocked', [{ command: 'pwd' }]), /10 minutes \(2\/2\).*next request can be made at/);
+  machine.update({ permitRequestLimits: { tenMinutes: 3 } });
+  const pending = permits.request(task, 'After change', [{ command: 'pwd' }]);
+  assert.throws(() => permits.request(task, 'Pending', [{ command: 'pwd' }]), /already has a pending permit/);
+  permits.deny(pending, 'test');
+  machine.update({ permitRequestLimits: { enabled: false } });
+  const unlimited = permits.request(task, 'Off', [{ command: 'pwd' }]);
+  assert.equal(unlimited.state, 'pending');
+  permits.deny(unlimited, 'test');
+});
+
+test('permit limit settings reject invalid values and keep defaults for old files', () => {
+  assert.deepEqual(machine.readPermitRequestLimits(undefined), machine.DEFAULT_PERMIT_REQUEST_LIMITS);
+  assert.deepEqual(machine.readPermitRequestLimits({ enabled: 'no', tenMinutes: 0, day: 20.5 }), machine.DEFAULT_PERMIT_REQUEST_LIMITS);
+  assert.throws(() => machine.update({ permitRequestLimits: { tenMinutes: 0 } }), /whole numbers/);
+  assert.throws(() => machine.update({ permitRequestLimits: { day: 1.5 } }), /whole numbers/);
+});
 
 test('a sequence runs each step once in order', async () => {
   const task = freshTask('success');

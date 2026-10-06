@@ -97,13 +97,15 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
   const [routingRules, setRoutingRules] = useState('');
   const [applyAll, setApplyAll] = useState(false); // the confirmation for "Apply to all accounts" is open
   const [permitFolders, setPermitFolders] = useState('');
+  const [tenMinuteLimit, setTenMinuteLimit] = useState('5');
+  const [dayLimit, setDayLimit] = useState('20');
   const [confirmPermits, setConfirmPermits] = useState(false);
   const [pushes, setPushes] = useState<PushRecord[]>([]);
   const [ownRepositories, setOwnRepositories] = useState('');
   const [protectedBranches, setProtectedBranches] = useState('');
   const [query, setQuery] = useState('');
   const pageRef = useRef<HTMLDivElement>(null);
-  useEffect(() => { api.info().then(i => { setInfo(i); setRoutingRules(i.settings.routingRules || ''); setPermitFolders((i.settings.permitFolders || []).join('\n')); setOwnRepositories((i.settings.pushes?.ownRepositories || []).join('\n')); setProtectedBranches((i.settings.pushes?.protectedBranches || []).join('\n')); }).catch(e => setErr(String(e.message || e))); loadAccounts().then(setAccts).catch(() => {}); api.pushes().then(setPushes).catch(() => {}); }, []);
+  useEffect(() => { api.info().then(i => { setInfo(i); setRoutingRules(i.settings.routingRules || ''); setPermitFolders((i.settings.permitFolders || []).join('\n')); setTenMinuteLimit(String(i.settings.permitRequestLimits.tenMinutes)); setDayLimit(String(i.settings.permitRequestLimits.day)); setOwnRepositories((i.settings.pushes?.ownRepositories || []).join('\n')); setProtectedBranches((i.settings.pushes?.protectedBranches || []).join('\n')); }).catch(e => setErr(String(e.message || e))); loadAccounts().then(setAccts).catch(() => {}); api.pushes().then(setPushes).catch(() => {}); }, []);
   // #settings:<section> opens the page at that section
   useEffect(() => {
     const go = () => { const id = hashSection(); if (id) document.getElementById(sectionAnchor(id))?.scrollIntoView({ block: 'start' }); };
@@ -111,7 +113,7 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
     addEventListener('hashchange', go);
     return () => { clearTimeout(timer); removeEventListener('hashchange', go); };
   }, []);
-  const save = async (p: { routingRules?: string; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; holdPermissionHook?: boolean; permitFolders?: string[]; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; checkPrivateNotes?: boolean; confirmLowerControl?: boolean; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; confirmRisk?: Partial<ConfirmRisk>; controllerApprovals?: Partial<ControllerApprovals>; agentErrors?: Parameters<typeof api.updateInfo>[0]['agentErrors'] }) => {
+  const save = async (p: { routingRules?: string; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; holdPermissionHook?: boolean; permitFolders?: string[]; permitRequestLimits?: Partial<MachineInfo['settings']['permitRequestLimits']>; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; checkPrivateNotes?: boolean; confirmLowerControl?: boolean; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; confirmRisk?: Partial<ConfirmRisk>; controllerApprovals?: Partial<ControllerApprovals>; agentErrors?: Parameters<typeof api.updateInfo>[0]['agentErrors'] }) => {
     setBusy(true); try { setInfo(await api.updateInfo(p)); } catch (e) { setErr(String((e as Error).message || e)); } setBusy(false);
   };
   const ctl = tasks.find(t => t.role === 'controller');
@@ -149,6 +151,13 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
                 <SettingItem id="standingRulesList"><StandingRules tasks={tasks} /></SettingItem>
               </SettingGroup>
               <SettingGroup section="approvals" id="permits" title="Permit requests">
+                {info && <SettingItem id="permitRequestLimits">
+                  <label className="opt"><input type="checkbox" disabled={busy} checked={info.settings.permitRequestLimits.enabled} onChange={e => void save({ permitRequestLimits: { enabled: e.target.checked } })} /> Limit permit requests per task</label>
+                  <div className="sub">Current limits: {info.settings.permitRequestLimits.enabled ? `${info.settings.permitRequestLimits.tenMinutes} in 10 minutes and ${info.settings.permitRequestLimits.day} in 24 hours` : 'off'}. Failed and denied permits count. Every permit still needs risk review and approval.</div>
+                  <label className="opt" htmlFor="permit-limit-ten">Requests in 10 minutes <input id="permit-limit-ten" type="number" min="1" max="1000" step="1" disabled={busy} value={tenMinuteLimit} onChange={e => setTenMinuteLimit(e.target.value)} /></label>
+                  <label className="opt" htmlFor="permit-limit-day">Requests in 24 hours <input id="permit-limit-day" type="number" min="1" max="1000" step="1" disabled={busy} value={dayLimit} onChange={e => setDayLimit(e.target.value)} /></label>
+                  <div><button className="btn" disabled={busy || !/^[1-9]\d*$/.test(tenMinuteLimit) || !/^[1-9]\d*$/.test(dayLimit) || Number(tenMinuteLimit) > 1000 || Number(dayLimit) > 1000 || (Number(tenMinuteLimit) === info.settings.permitRequestLimits.tenMinutes && Number(dayLimit) === info.settings.permitRequestLimits.day)} onClick={() => void save({ permitRequestLimits: { tenMinutes: Number(tenMinuteLimit), day: Number(dayLimit) } })}>Save limits</button></div>
+                </SettingItem>}
                 {p && <SettingItem id="controllerApprovesPermits">
                   <label className="opt"><input type="checkbox" disabled={busy} checked={p.controllerCanApprovePermits} onChange={e => e.target.checked ? setConfirmPermits(true) : void save({ controllerCanApprovePermits: false })} /> The controller may approve low risk suggestions</label>
                   <div className="sub">Taskboard checks every step. The controller cannot approve network use, deletion, Git history changes, or commands with unknown effects.</div>
