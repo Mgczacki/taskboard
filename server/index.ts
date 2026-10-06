@@ -1690,6 +1690,11 @@ app.get('/api/tasks/:id/document-link', (req, res) => {
   if (!doc) return res.status(404).json({ error: 'Document not found' });
   res.json({ ...doc, reviewId: pendingForPath(doc.path)?.id });
 });
+app.get('/api/tasks/:id/task-text-file', (req, res) => {
+  const doc = docs.resolveTaskTextFile(String(req.params.id), String(req.query.name || ''));
+  if (!doc) return res.status(404).json({ error: 'Document not found' });
+  res.json({ ...doc, reviewId: pendingForPath(doc.path)?.id });
+});
 app.get('/api/document-link', (req, res) => {
   const link = docs.resolveViewerLink(String(req.query.source || ''), String(req.query.href || ''));
   if (link.kind === 'document' && link.document) return res.json({ ...link, document: { ...link.document, reviewId: pendingForPath(link.document.path)?.id } });

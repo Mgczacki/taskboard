@@ -26,6 +26,7 @@ import { Terminal } from './Terminal';
 import { AgentChip, Dot, StatusLabel, ThreeLines, useAutoMessage } from './ui';
 import { autoText, errorDetail } from '../agentErrorText';
 import { ManagerBadge } from './ManagerBoard';
+import { TaskFileText } from './TaskFileText';
 import { hashKind, KIND_NAME, rowMatches } from '../waitingSummary';
 
 type Row = { id: string; at: string; taskId?: string; agent?: Agent; title: string; question: string; kind: string; risky?: boolean; screen?: boolean; late?: boolean; item?: PendingItem; approval?: Approval; task?: Task; done?: boolean; dismissal?: Dismissal; queued?: { t: Task; q: QueuedMessage } };
@@ -129,7 +130,7 @@ export function WaitingPage({ tasks, allTasks, openTask, openController, toast }
         <button className={`wt-row ${cur?.id === r.id ? 'on' : ''} ${r.done ? 'done' : ''}`} onClick={() => setSel(r.id)}>
         <span className={`dot ${r.done ? 'idle' : r.kind === 'Stopped' ? 'stopped' : r.kind === 'Review' ? 'review' : 'needs-you'}`} />
         <span className="t">{r.title}</span><span className="a">{fmtWait(minutesSince(r.at))}</span>
-        <span className="q">{r.question}{r.approval && <small> · valid {r.approval.validUntil || 'until facts change'}{r.approval.unblocks?.length ? ` · unblocks ${r.approval.unblocks.join(', ')}` : ''}</small>}</span>
+        <span className="q">{r.taskId ? <TaskFileText taskId={r.taskId} text={r.question} /> : r.question}{r.approval && <small> · valid {r.approval.validUntil || 'until facts change'}{r.approval.unblocks?.length ? ` · unblocks ${r.approval.unblocks.join(', ')}` : ''}</small>}</span>
         <span className="k"><ManagerBadge id={r.taskId} />{r.agent && <AgentChip a={r.agent} />}<span className="chip">{r.kind}</span>{r.risky && <span className="chip warn">risky option</span>}{r.screen && <span className="chip">screen</span>}{r.late && !r.queued && <span className="chip warn" title="Nobody approved this draft for a long time. It is not sent.">reminder</span>}{r.queued && <span className="chip warn" title="Taskboard could not give this message to the agent yet.">not delivered</span>}{r.done && r.approval && <span className="chip">{r.approval.state === 'approved' ? r.approval.decidedBy?.by === 'controller' ? 'approved by the controller' : 'done' : r.approval.state}</span>}{r.dismissal && <span className="chip">dismissed{r.dismissal.until ? ' for 10 min' : ''}</span>}{r.done && !r.dismissal && r.item?.state && <span className="chip">{r.item.state === 'answered' ? `answered by ${r.item.answer?.by === 'controller' ? 'the controller' : 'you'}` : r.item.state}</span>}</span>
         </button></div>) : <div className="wt-empty">Nothing here.</div>}</div>
       <div className="wt-detail">{cur ? <>
