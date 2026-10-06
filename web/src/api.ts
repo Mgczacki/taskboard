@@ -16,6 +16,7 @@ export interface Task {
   cwd: string; folder: string; branch?: string; worktree?: boolean; session: string; sessionId?: string;
   created: string; updated: string; statusAt: string; statusSource?: string;
   goal?: string; now?: string; ask?: string; stopReason?: string; interrupted?: string; desc: string;
+  lastFailure?: { account?: string; name?: string; agent: Agent; reason: string; at?: string };
   // the length of the whole description when desc has only its start (the /ws/events task list, server/index.ts listView)
   descCut?: number;
   waitMin: number; waitSig?: string; attach: string; docs?: { inbox: number; outbox: number }; role?: 'controller'; parent?: string; links?: TaskLink[]; link?: LinkInfo; account?: string; model?: string; machine?: { id: string; name: string }; imported?: string; openElsewhere?: { pid: number; tty: string }; moveWhenDone?: boolean; remoteUrl?: string; restartWhenDone?: boolean; restartFor?: string; restartWait?: string; restartOverdue?: boolean; restartFailed?: string; newSessionWhenDone?: boolean; unscrollable?: boolean; tokenEstimate?: number | null;
