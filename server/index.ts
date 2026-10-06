@@ -1233,7 +1233,7 @@ app.delete('/api/machines/:id', (req, res) => { machines.remove(req.params.id); 
 // waitSig: the signature of the task row on the Waiting page, for a dismiss (dismiss.ts taskSignature)
 const WAITS_ON_USER = ['needs-you', 'stopped', 'review'];
 const waitSig = (t: store.Task) => WAITS_ON_USER.includes(t.status) ? dismiss.taskSignature(t, t.status === 'review' ? pendingFor(t.id) : undefined) : undefined;
-const view = (t: store.Task) => ({ ...t, browserAsk: runtime.browserAsk(t.id), waitSig: waitSig(t), link: links.info(t), docs: docs.counts(t.id), queue: messageQueue.forView(t.id), waitMin: Math.round((Date.now() - Date.parse(t.statusAt)) / 60000), errorLabel: agentErrorWatch.errorLabel(t) || undefined, autoContinueOn: agentErrorWatch.autoContinueOn(t), attach: `tmux -L taskboard attach -t ${t.session}`, ...(t.agent === 'antigravity' ? { tokenEstimate: stats.taskEstimate(t) } : {}) });
+const view = (t: store.Task) => ({ ...t, browserAsk: runtime.browserAsk(t.id), waitSig: waitSig(t), link: links.info(t), docs: docs.counts(t.id), queue: messageQueue.forView(t.id), waitMin: Math.round((Date.now() - Date.parse(t.statusAt)) / 60000), errorLabel: agentErrorWatch.errorLabel(t) || undefined, autoContinueOn: agentErrorWatch.errorAutoContinueOn(t), attach: `tmux -L taskboard attach -t ${t.session}`, ...(t.agent === 'antigravity' ? { tokenEstimate: stats.taskEstimate(t) } : {}) });
 pending.setIo({
   capture: session => tmux.capture(session, 0),
   key: async (session, key, literal) => { await tmux.tmux('send-keys', '-t', '=' + session + ':', ...(literal ? ['-l', key] : [key])); },

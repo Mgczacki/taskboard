@@ -587,10 +587,19 @@ function AgentErrorSettings({ info, accts, busy, save }: { info: MachineInfo | n
   const a = info?.settings.agentErrors;
   const [message, setMessage] = useState('');
   const [stall, setStall] = useState('');
+  const [capacityInterval, setCapacityInterval] = useState('60');
+  const [capacityRetries, setCapacityRetries] = useState('5');
   useEffect(() => { setMessage(a?.message || 'continue'); }, [a?.message]);
   useEffect(() => { setStall(String(a?.stallMinutes ?? 5)); }, [a?.stallMinutes]);
+  useEffect(() => { setCapacityInterval(String(a?.codexCapacity.intervalSeconds ?? 60)); }, [a?.codexCapacity.intervalSeconds]);
+  useEffect(() => { setCapacityRetries(String(a?.codexCapacity.maxRetries ?? 5)); }, [a?.codexCapacity.maxRetries]);
   if (!a) return null;
   return <SettingGroup section="sessions" id="agentErrors" title="Model errors and auto-continue" help={<>Taskboard shows when an agent stopped on a model error: the model is overloaded or at capacity, a rate limit, a server error or a lost connection. It reads the Claude Code StopFailure hook, the session file of the agent, and the screen. A task that the agent still retries shows "Retrying" and stays working.</>}>
+    <SettingItem id="codexCapacity">
+      <label className="opt"><input type="checkbox" disabled={busy} checked={a.codexCapacity.enabled} onChange={e => void save({ agentErrors: { codexCapacity: { enabled: e.target.checked } } })} /> Continue Codex after "Selected model is at capacity"</label>
+      <div className="sub">Taskboard retries the same task, account, and model. It stops after the retry count. This setting starts off.</div>
+      <div className="opt">Retry every <input aria-label="Codex capacity retry interval in seconds" type="number" min={5} max={3600} step={1} style={{ width: '6em' }} value={capacityInterval} onChange={e => setCapacityInterval(e.target.value)} /> seconds. Stop after <input aria-label="Codex capacity maximum retries" type="number" min={1} max={100} step={1} style={{ width: '5em' }} value={capacityRetries} onChange={e => setCapacityRetries(e.target.value)} /> retries. <button className="btn" disabled={busy || !Number.isInteger(Number(capacityInterval)) || Number(capacityInterval) < 5 || Number(capacityInterval) > 3600 || !Number.isInteger(Number(capacityRetries)) || Number(capacityRetries) < 1 || Number(capacityRetries) > 100 || (Number(capacityInterval) === a.codexCapacity.intervalSeconds && Number(capacityRetries) === a.codexCapacity.maxRetries)} onClick={() => void save({ agentErrors: { codexCapacity: { intervalSeconds: Number(capacityInterval), maxRetries: Number(capacityRetries) } } })}>Save</button></div>
+    </SettingItem>
     <SettingItem id="autoContinue">
       <label className="opt"><input type="checkbox" disabled={busy} checked={a.autoContinue} onChange={e => void save({ agentErrors: { autoContinue: e.target.checked } })} /> Auto-continue after a model error</label>
       <div className="sub">On: when an agent stopped on a model error, Taskboard types the message below after 1, 2, 5, 10 and 10 minutes, at most 5 times for one error. It types only into an empty input box. It never types over your draft or into a dialog, and never for a task that waits on a card or a question. It never retries a usage limit, a credit problem, a sign-in problem, a conversation that is too long, or a stall. Each try is an ordinary turn of the agent and uses the same usage as when you type it. Each try is in the task log. Default: Off.</div>

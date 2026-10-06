@@ -30,7 +30,7 @@ export function autoText(t: Pick<Task, 'agentError' | 'autoContinueOn'>, message
     return e.kind === 'stalled' ? 'The agent may still run. Look at the terminal before you continue.' : 'Auto-continue does not retry this kind of error: it needs you.';
   if (e.auto?.off) return `Auto-continue stopped${tries ? ` after ${tries} ${tries === 1 ? 'try' : 'tries'}` : ''}: ${e.auto.off}`;
   if (!t.autoContinueOn) return 'Auto-continue is off for this task.';
-  if (e.auto?.nextAt) return `Taskboard types "${message}" at ${clock(e.auto.nextAt)} (try ${tries + 1} of ${MAX_TRIES})${e.auto.wait ? `. Waits: ${e.auto.wait}` : ''}.`;
+  if (e.auto?.nextAt) return `Taskboard types "${message}" at ${clock(e.auto.nextAt)} (try ${tries + 1} of ${e.auto.maxTries || MAX_TRIES}; ${Math.max(0, (e.auto.maxTries || MAX_TRIES) - tries)} left)${e.auto.wait ? `. Waits: ${e.auto.wait}` : ''}.`;
   return '';
 }
 
