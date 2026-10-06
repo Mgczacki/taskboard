@@ -43,12 +43,14 @@ export function SigninNote({ status, onMode, onShared }: { status: BrowserStatus
 // The task browser is headless Chrome with a debugging port, and Google and some other sites refuse a sign-in there. On a
 // sign-in page this line offers the template's normal Chrome window (server/browser-signins.ts signinWindow). While that
 // window is open, the line says what to do and reads the status every 2 s. When the user quits the window, the server
-// copies the site's cookies into this browser, and the line offers to open the page again.
+// copies the site's cookies into this browser. Firebase sign-ins copy the full template profile after the user starts
+// OAuth from the app page in the normal window.
 export function SigninWindowNote({ id, tab, status, reload, onGo }: { id: string; tab: BrowserTab | undefined; status: BrowserStatus | null; reload: () => void; onGo: (url: string) => void }) {
   const [hidden, setHidden] = useState('');
   const [seen, setSeen] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState('');
+  const [appUrl, setAppUrl] = useState('');
   const page = tab ? signinPage(tab.url, tab.title) : null;
   const sw = status?.signinWindow;
   const open = sw?.state === 'open' || sw?.state === 'copying' || busy;
@@ -56,21 +58,28 @@ export function SigninWindowNote({ id, tab, status, reload, onGo }: { id: string
   const start = async () => {
     if (!page) return;
     setBusy(true); setErr('');
-    try { await api.signinWindow(id, page.target); reload(); } catch (e) { setErr(msg(e)); } finally { setBusy(false); }
+    try { await api.signinWindow(id, page.firebase ? appUrl.trim() : page.target, !!page.firebase); reload(); } catch (e) { setErr(msg(e)); } finally { setBusy(false); }
   };
   const sites = sw?.sites.join(', ') || '';
   if (sw?.state === 'open') return (
-    <div className="banner bw-signins" role="status">Sign in to {sites} in the Chrome window that opened. Then quit that Chrome (Chrome menu, Quit Google Chrome). This browser gets the sign-in after that.</div>
+    <div className="banner bw-signins" role="status">Sign in to {sites} in the Chrome window that opened. Then quit that Chrome (Chrome menu, Quit Google Chrome). {sw.profile ? 'Taskboard then copies that profile into this task browser.' : 'This browser gets the sign-in after that.'}</div>
   );
-  if (sw?.state === 'copying') return <div className="banner bw-signins" role="status">The Chrome window closed. Copying the sign-in to {sites} into this browser…</div>;
+  if (sw?.state === 'copying') return <div className="banner bw-signins" role="status">The Chrome window closed. {sw.profile ? 'Copying its profile into this task browser…' : `Copying the sign-in to ${sites} into this browser…`}</div>;
   if (sw && seen !== sw.at && Date.now() - Date.parse(sw.at) < 10 * 60_000) return (
     <div className="banner bw-signins" role="status">
-      {sw.state === 'done' ? `This browser got the sign-in to ${sites} from the normal Chrome window (${sw.cookies ?? 0} cookie(s)). New task browsers get it too.` : `The sign-in to ${sites} did not reach this browser: ${sw.error || 'unknown error'}`}
-      {sw.state === 'done' && page && <button className="btn ghost" onClick={() => { setSeen(sw.at); onGo(page.target); }}>Open the page again</button>}
+      {sw.state === 'done' ? sw.profile ? 'This browser now has the normal Chrome profile. Open the app to check the sign-in.' : `This browser got the sign-in to ${sites} from the normal Chrome window (${sw.cookies ?? 0} cookie(s)). New task browsers get it too.` : `The sign-in to ${sites} did not reach this browser: ${sw.error || 'unknown error'}`}
+      {sw.state === 'done' && page && (!sw.profile || appUrl) && <button className="btn ghost" onClick={() => { setSeen(sw.at); onGo(sw.profile ? appUrl : page.target); }}>Open the page again</button>}
       <button className="btn ghost" onClick={() => setSeen(sw.at)}>OK</button>
     </div>
   );
   if (!page || hidden === tab?.url || status?.noShared) return null;
+  if (page.firebase) return <div className="banner bw-signins bw-warn" role="status">
+    Firebase cannot finish this redirect in a different browser profile. Enter the app page where you start sign-in. Sign in there in normal Chrome, then quit that Chrome. Taskboard replaces this task browser's profile with that Chrome profile, including its site data.
+    <input aria-label="App URL" type="url" placeholder="https://stage-api.sekai.chat/sekai-agent-ts/agent-eval/" value={appUrl} onChange={e => setAppUrl(e.target.value)} spellCheck={false} />
+    <button className="btn" disabled={busy || !appUrl.trim()} onClick={() => void start()}>Open app in a normal window</button>
+    <button className="btn ghost" onClick={() => setHidden(tab?.url || '')}>Hide</button>
+    {err && <span className="bw-err"> {err}</span>}
+  </div>;
   return (
     <div className={`banner bw-signins ${page.refused ? 'bw-warn' : ''}`} role="status">
       {page.refused ? 'Google refused the sign-in in this task browser.' : `If ${page.site} refuses the sign-in in this task browser, sign in in a normal Chrome window.`} You sign in there, then quit that Chrome. This browser and new task browsers get the sign-in.

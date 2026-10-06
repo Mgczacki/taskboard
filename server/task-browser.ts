@@ -44,12 +44,12 @@ export interface Meta { pid?: number; port?: number; started?: string; startMs?:
   // autoSwitch: the dashboard view switches to a new tab or popup (tab-switch.ts); unset follows the Settings choice
   autoSwitch?: boolean;
   // signinWindow: the user signs in for this task browser in the template's normal Chrome window (browser-signins.ts
-  // signinWindow). state 'open' while that window is open, 'copying' while the cookies move after it closed, then 'done'
-  // (cookies of sites copied) or 'failed' (error).
+  // signinWindow). state 'open' while that window is open, 'copying' while cookies or the profile move after it closes,
+  // then 'done' or 'failed'.
   signinWindow?: SigninWindow }
 export interface SoundCheck { state: SoundState; at: string; how?: 'flag' | 'tabs'; reason?: string }
 export type SoundState = 'muted' | 'on' | 'unverified';
-export interface SigninWindow { sites: string[]; at: string; state: 'open' | 'copying' | 'done' | 'failed'; cookies?: number; error?: string }
+export interface SigninWindow { sites: string[]; at: string; state: 'open' | 'copying' | 'done' | 'failed'; cookies?: number; error?: string; profile?: boolean }
 export interface Ask { reason: string; at: string }
 export interface Tab { id: string; title: string; url: string; faviconUrl?: string; dialog?: Dialog }
 // A box that a page opened with alert(), confirm(), prompt() or onbeforeunload. Headless Chrome draws no box, and the

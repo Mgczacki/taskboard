@@ -90,7 +90,7 @@ export interface BrowserStatus { id: string; running: boolean; port?: number; ta
   noShared?: boolean; syncedAt?: string; headed?: boolean; templateSites?: number | null;
   // the last sign-in for this task browser in the template's normal Chrome window (server/browser-signins.ts signinWindow)
   signinWindow?: SigninWindow }
-export interface SigninWindow { sites: string[]; at: string; state: 'open' | 'copying' | 'done' | 'failed'; cookies?: number; error?: string }
+export interface SigninWindow { sites: string[]; at: string; state: 'open' | 'copying' | 'done' | 'failed'; cookies?: number; error?: string; profile?: boolean }
 // A site with cookies in a browser: the name and the count only, never a value.
 export interface SigninSite { site: string; cookies: number; lastUsed?: string }
 export interface SigninBrowser { id: string; num?: number; title?: string; status?: string; running: boolean; noShared: boolean; copiedFromTemplate?: string; syncedAt?: string; liveSyncAt?: string; agents: number }
@@ -424,7 +424,7 @@ export const api = {
   signinSites: (id: string) => call<{ sites: SigninSite[] | null }>('POST', `/api/tasks/${encodeURIComponent(id)}/browser/signins/sites`, {}),
   signinSaveTemplate: (id: string) => call<{ sites: SigninSite[] }>('POST', `/api/tasks/${encodeURIComponent(id)}/browser/signins/save-template`, {}),
   signinSync: (id: string, sites: string[]) => call<{ sites: string[]; cookies: number }>('POST', `/api/tasks/${encodeURIComponent(id)}/browser/signins/sync`, { sites }),
-  signinWindow: (id: string, url: string) => call<SigninWindow>('POST', `/api/tasks/${encodeURIComponent(id)}/browser/signins/window`, { url }),
+  signinWindow: (id: string, url: string, profile = false) => call<SigninWindow>('POST', `/api/tasks/${encodeURIComponent(id)}/browser/signins/window`, { url, profile }),
   signinShared: (id: string, on: boolean) => call<BrowserStatus>('POST', `/api/tasks/${encodeURIComponent(id)}/browser/signins/shared`, { on }),
   signinOverview: () => call<SigninOverview>('POST', '/api/browser-signins/overview', {}),
   signinRemove: (site: string) => call<SigninOverview>('POST', '/api/browser-signins/remove', { site }),

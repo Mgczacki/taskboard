@@ -166,19 +166,22 @@ export async function syncFromTemplate(id: string, chosen: string[]): Promise<{ 
 // window, the template's cookies of the page's site go into each task browser that asked (syncFromTemplate). New task
 // browsers copy the template, so they get the sign-in too. The list of waiting task browsers is kept in memory only: after a
 // restart of Taskboard, the user syncs with Sync sign-ins.
-const waiting = new Map<string, Set<string>>();
-export async function signinWindow(id: string, url: string): Promise<browser.SigninWindow> {
+const waiting = new Map<string, { sites: Set<string>; profile: boolean }>();
+export async function signinWindow(id: string, url: string, profile = false): Promise<browser.SigninWindow> {
   if (id === TEMPLATE) throw new Error('This is the template.');
   if (browser.readMeta(id).noShared) throw new Error('This task browser does not get shared sign-ins. Turn that on first, or use Open in a window.');
+  if (browser.templateWindowOpen()) throw new Error('Close the existing normal Chrome sign-in window before starting another sign-in.');
   let u: URL;
   try { u = new URL(url); } catch { throw new Error('This is not a web address.'); }
   if (u.protocol !== 'https:') throw new Error('Only an https page opens in the sign-in window.');
+  if (profile && (u.pathname.startsWith('/__/auth/') || /^(accounts\.google\.com|login\.microsoftonline\.com)$/.test(u.hostname)))
+    throw new Error('Open the app page that starts sign-in, not an OAuth or Firebase handler page.');
   const site = siteOf(u.hostname);
   if (!validSite(site)) throw new Error('This address has no site name.');
-  const sites = waiting.get(id) || new Set<string>();
+  const sites = waiting.get(id)?.sites || new Set<string>();
   sites.add(site);
-  waiting.set(id, sites);
-  const state: browser.SigninWindow = { sites: [...sites], at: new Date().toISOString(), state: 'open' };
+  waiting.set(id, { sites, profile: profile || !!waiting.get(id)?.profile });
+  const state: browser.SigninWindow = { sites: [...sites], at: new Date().toISOString(), state: 'open', profile };
   browser.updateMeta(id, { signinWindow: state });
   try { await browser.openTemplateWindow(u.href); }
   catch (e) { waiting.delete(id); browser.updateMeta(id, { signinWindow: { ...state, state: 'failed', error: (e as Error).message } }); throw e; }
@@ -189,15 +192,22 @@ async function afterWindow() {
   waiting.clear();
   forgetCount();
   // the view reads the status every 2 s while the state is 'open' or 'copying', so it sees the result
-  for (const [id, sites] of list) browser.updateMeta(id, { signinWindow: { sites: [...sites], at: new Date().toISOString(), state: 'copying' } });
-  for (const [id, sites] of list) {
+  for (const [id, { sites, profile }] of list) browser.updateMeta(id, { signinWindow: { sites: [...sites], at: new Date().toISOString(), state: 'copying', profile } });
+  for (const [id, { sites, profile }] of list) {
     const at = new Date().toISOString();
     try {
-      const r = await syncFromTemplate(id, [...sites]);
-      browser.updateMeta(id, { signinWindow: { sites: [...sites], at, state: 'done', cookies: r.cookies } });
-      console.log(`${at} sign-ins: after the sign-in window, task browser ${id} got ${r.cookies} cookie(s) of ${[...sites].join(', ')}`);
+      if (profile) {
+        await browser.resetFromTemplate(id);
+        await browser.ensure(id);
+        browser.updateMeta(id, { signinWindow: { sites: [...sites], at, state: 'done', profile } });
+        console.log(`${at} sign-ins: after the sign-in window, task browser ${id} copied the template profile`);
+      } else {
+        const r = await syncFromTemplate(id, [...sites]);
+        browser.updateMeta(id, { signinWindow: { sites: [...sites], at, state: 'done', cookies: r.cookies } });
+        console.log(`${at} sign-ins: after the sign-in window, task browser ${id} got ${r.cookies} cookie(s) of ${[...sites].join(', ')}`);
+      }
     } catch (e) {
-      browser.updateMeta(id, { signinWindow: { sites: [...sites], at, state: 'failed', error: (e as Error).message } });
+      browser.updateMeta(id, { signinWindow: { sites: [...sites], at, state: 'failed', error: (e as Error).message, profile } });
       console.error(`${at} sign-ins: after the sign-in window, the copy to task browser ${id} failed: ${(e as Error).message}`);
     }
   }
