@@ -22,6 +22,7 @@ export const SECTIONS: SectionDef[] = [
       { id: 'standingRulesList', label: 'Allow one action for one task and target, up to a daily limit', words: 'standing approval rule push deploy dev catalog stage daily limit manager' },
     ] },
     { id: 'permits', title: 'Permit requests', settings: [
+      { id: 'permitRequestLimits', label: 'Limit permit requests per task', words: 'permit rate limit 10 minutes 24 hours off failed denied' },
       { id: 'controllerApprovesPermits', label: 'The controller may approve low risk suggestions', words: 'permit approval risk' },
       { id: 'holdPermissionHook', label: 'Answer Claude Code permission questions on the Waiting page', words: 'waiting inbox question hook permission dialog' },
       { id: 'confirmRisk', label: 'Ask again before Taskboard sends a risky answer on a waiting card', words: 'confirm wide access always allow rule installs software credit ends session exit' },

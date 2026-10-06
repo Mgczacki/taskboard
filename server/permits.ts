@@ -194,12 +194,27 @@ export function canPermitRefusal(task: Task, refusal: { command: string; cwd?: s
   try { validate(task, [{ command: refusal.command, cwd: refusal.cwd || task.cwd }]); return true; }
   catch { return false; }
 }
+export function requestLimitBlock(createdAt: string[], limits: machine.PermitRequestLimits, at = Date.now()): string | undefined {
+  if (!limits.enabled) return;
+  const windows = [
+    { ms: 600000, max: limits.tenMinutes, label: '10 minutes' },
+    { ms: 86400000, max: limits.day, label: '24 hours' },
+  ];
+  const full = windows.flatMap(window => {
+    const recent = createdAt.map(Date.parse).filter(time => Number.isFinite(time) && time > at - window.ms && time <= at).sort((a, b) => a - b);
+    return recent.length >= window.max ? [{ label: window.label, count: recent.length, max: window.max, next: recent[recent.length - window.max] + window.ms }] : [];
+  });
+  if (!full.length) return;
+  const details = full.map(window => `${window.label} (${window.count}/${window.max})`).join(' and ');
+  return `This task has reached its permit request limit for ${details}. The next request can be made at ${new Date(Math.max(...full.map(window => window.next))).toISOString()}.`;
+}
 export function request(task: Task, reason: string, inputs: StepInput[], refusalId?: string, statedRisk = ''): Permit {
   if (typeof reason !== 'string' || !reason.trim() || reason.length > 1000) throw new Error('Give a reason under 1000 characters.');
   if (typeof statedRisk !== 'string' || statedRisk.length > 500) throw new Error('Keep the risk under 500 characters.');
   const recent = all().filter(p => p.taskId === task.id);
   if (recent.some(p => ['pending', 'running'].includes(p.state))) throw new Error('This task already has a pending permit.');
-  if (recent.filter(p => Date.parse(p.createdAt) > Date.now() - 600000).length >= 3 || recent.filter(p => Date.parse(p.createdAt) > Date.now() - 86400000).length >= 10) throw new Error('This task has reached its permit request limit.');
+  const limitBlock = requestLimitBlock(recent.map(p => p.createdAt), machine.get().permitRequestLimits);
+  if (limitBlock) throw new Error(limitBlock);
   const { steps, riskFlags } = validate(task, inputs);
   const id = randomUUID();
   const stepHash = createHash('sha256').update(JSON.stringify({ taskId: task.id, steps: steps.map(s => [s.command, s.cwd, s.timeoutSeconds, s.network, s.scriptHash]) })).digest('hex');
