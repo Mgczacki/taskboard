@@ -28,15 +28,7 @@
 .lk-mk.super { color: var(--dim); background: color-mix(in srgb, var(--dim) 16%, transparent); }
 .lk-mk.ready { color: var(--st-unread); background: color-mix(in srgb, var(--st-unread) 14%, transparent); }
 
-/* ports on the title bar of a Canvas window, and the card */
-.lk-pw { position: relative; flex: none; display: inline-flex; }
-.lk-port { display: inline-block; height: 17px; min-width: 17px; padding: 0 4px; border-radius: 9px; font: 600 10.5px/15px var(--mono); text-align: center; border: 1px solid var(--line2); color: var(--dim); cursor: default; outline: none; }
-.lk-port:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
-.lk-port.empty { border-style: dashed; opacity: .6; }
-.lk-port.blocked { background: var(--st-stopped); border-color: var(--st-stopped); color: #fff; }
-.lk-port.ready { background: var(--st-unread); border-color: var(--st-unread); color: #fff; }
-.lk-port.out { background: var(--st-needs); border-color: var(--st-needs); color: #111; }
-.lk-port.rep { background: color-mix(in srgb, var(--dim) 18%, transparent); color: var(--muted); border-color: var(--dim); }
+/* The link card opens from the Canvas task number and name. */
 .lk-card { position: fixed; z-index: 200; width: min(360px, calc(100vw - 16px)); overflow: auto; background: var(--panel); color: var(--text); border: 1px solid var(--line2); border-radius: 8px; padding: 8px 10px; box-shadow: 0 8px 24px rgba(0,0,0,.35); cursor: default; text-align: left; font-weight: 400; }
 .lk-card-h { font-weight: 600; font-size: 12.5px; margin-bottom: 1px; }
 .lk-card-sub { color: var(--muted); font-size: 11.5px; margin-bottom: 6px; }

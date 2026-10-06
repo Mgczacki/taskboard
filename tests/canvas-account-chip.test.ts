@@ -2,7 +2,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { CanvasAccountChip, CanvasFailureChip } from '../web/src/components/CanvasAccountChip.tsx';
+import { CanvasAccountChip, CanvasFailureChip, canvasAccountSymbol } from '../web/src/components/CanvasAccountChip.tsx';
 
 const accounts = [
   { id: 'claude-default', name: 'Main Claude' },
@@ -13,14 +13,16 @@ const card = (account: string | undefined, names = accounts) => renderToStaticMa
 );
 
 test('Canvas account chip follows a task move and an account list refresh', () => {
-  assert.match(card('claude-default'), />Main Claude<\/span>/);
-  assert.match(card('claude-second'), />Work Claude<\/span>/);
-  assert.match(card('claude-second', [{ ...accounts[1], name: 'Renamed Claude' }]), />Renamed Claude<\/span>/);
+  assert.match(card('claude-default'), /aria-label="Account: Main Claude" data-name="Main Claude" tabindex="0">/);
+  assert.match(card('claude-second'), /aria-label="Account: Work Claude" data-name="Work Claude" tabindex="0">/);
+  assert.match(card('claude-second', [{ ...accounts[1], name: 'Renamed Claude' }]), /aria-label="Account: Renamed Claude" data-name="Renamed Claude" tabindex="0">/);
+  assert.equal(canvasAccountSymbol('claude-second'), canvasAccountSymbol('claude-second'));
+  assert.notEqual(canvasAccountSymbol('claude-default'), canvasAccountSymbol('claude-second'));
 });
 
 test('Canvas account chip stays visible while account data loads', () => {
-  assert.match(card('claude-second', []), />claude-second<\/span>/);
-  assert.match(card(undefined, []), />claude-default<\/span>/);
+  assert.match(card('claude-second', []), /aria-label="Account: claude-second"/);
+  assert.match(card(undefined, []), /aria-label="Account: claude-default"/);
 });
 
 test('Canvas shows the failure account after a move and a card refresh', () => {

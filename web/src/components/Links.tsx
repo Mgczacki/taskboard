@@ -136,43 +136,29 @@ export function LinksSection({ t, tasks, onGo, toast }: { t: Task; tasks: Task[]
   </div>;
 }
 
-// The two ports on the title bar of a Canvas window. Left: what the task waits for (or "⤳ #n" when another task
-// replaced it). Right: how many tasks wait for it. The pointer on a port opens the card with every link of the task.
-export function LinkPorts({ t, tasks, onGo, side }: { t: Task; tasks: Task[]; onGo: Go; side: 'left' | 'right' }) {
-  // the card is fixed to the screen (a window clips its content), below the port and inside the screen
+// The Canvas title shows the task and opens its link details on hover or keyboard focus.
+export function CanvasLinkTitle({ t, tasks, onOpen, onGo }: { t: Task; tasks: Task[]; onOpen: () => void; onGo: Go }) {
+  // The card is fixed to the screen because a Canvas window clips its content.
   const [open, setOpen] = useState<{ top: number; left: number } | null>(null);
   const timer = useRef<number | undefined>(undefined);
-  const port = useRef<HTMLSpanElement>(null);
-  const l = t.link;
-  if (!l || t.machine) return null;
-  const num = (id?: string) => '#' + (find(tasks, id || '')?.num ?? '?');
-  let cls = 'empty', text = '·', title = '';
-  if (side === 'left') {
-    if (l.state === 'superseded') { cls = 'rep'; text = `⤳${num(l.replacedBy).slice(1)}`; title = `Replaced by ${num(l.replacedBy)}`; }
-    else if (l.state === 'blocked') { const b = l.blockedBy || []; cls = 'blocked'; text = num(b[0]).slice(1) + (b.length > 1 ? ` +${b.length - 1}` : ''); title = `Blocked by ${b.map(num).join(' ')}`; }
-    else if (l.state === 'ready' && recentlyReady(t, tasks)) { cls = 'ready'; text = '✓'; title = 'Ready: no task blocks it now'; }
-    else title = 'No task blocks this task';
-  } else {
-    const w = l.waitedOnBy || [];
-    if (w.length) { cls = 'out'; text = String(w.length); title = `${w.length} task${w.length === 1 ? '' : 's'} wait${w.length === 1 ? 's' : ''} on this: ${w.map(num).join(' ')}`; }
-    else title = 'No task waits on this task';
-  }
+  const anchor = useRef<HTMLDivElement>(null);
   const enter = () => {
     window.clearTimeout(timer.current);
-    const r = port.current?.getBoundingClientRect(); if (!r) return;
+    const r = anchor.current?.getBoundingClientRect(); if (!r) return;
     const w = Math.min(360, innerWidth - 16);
-    setOpen(o => o || { top: Math.min(r.bottom + 4, innerHeight - 120), left: Math.max(8, Math.min(side === 'left' ? r.left - 4 : r.right - w + 4, innerWidth - w - 8)) });
+    setOpen(o => o || { top: Math.min(r.bottom + 4, innerHeight - 120), left: Math.max(8, Math.min(r.left, innerWidth - w - 8)) });
   };
   const leave = () => { window.clearTimeout(timer.current); timer.current = window.setTimeout(() => setOpen(null), 200); };
-  return <span className={`lk-pw ${side}`} onPointerDown={e => e.stopPropagation()} onMouseEnter={enter} onMouseLeave={leave}>
-    <span ref={port} className={`lk-port ${cls}`} aria-label={title} title={open ? undefined : title} tabIndex={0} onFocus={enter} onBlur={leave}>{text}</span>
+  return <div ref={anchor} className="canvas-link-title" onPointerDown={e => e.stopPropagation()} onDoubleClick={e => e.stopPropagation()} onMouseEnter={enter} onMouseLeave={leave} onFocus={enter} onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget)) leave(); }}>
+    <button className="n" onClick={onOpen} aria-label={`Open task #${t.num}`} aria-describedby={open ? `canvas-links-${t.id}` : undefined}>#{t.num}</button>
+    <button className="ti" onClick={onOpen} title={t.title} aria-label={`Open task #${t.num}: ${t.title}`} aria-describedby={open ? `canvas-links-${t.id}` : undefined}>{t.title}</button>
     {open && <div className="lk-card" role="dialog" aria-label={`Links of #${t.num}`} style={{ top: open.top, left: open.left, maxHeight: innerHeight - open.top - 12 }}>
       <div className="lk-card-h">#{t.num} {t.title}</div>
-      <div className="lk-card-sub">{title}</div>
+      <div className="lk-card-sub" id={`canvas-links-${t.id}`}>{STATUS_LABEL[t.status]}</div>
       <LinkList t={t} tasks={tasks} onGo={id => { setOpen(null); onGo(id); }} compact />
       <div className="lk-card-f">A click on a number goes to its window, or opens its task panel. <a href="#" onClick={e => { e.preventDefault(); setOpen(null); showLinkedWork({ task: t.id }); }}>Show linked work</a></div>
     </div>}
-  </span>;
+  </div>;
 }
 
 // The linked work overview: for a task, its linked set; for a group, every linked set that holds a task of the group.
