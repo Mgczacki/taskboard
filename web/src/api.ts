@@ -139,6 +139,7 @@ export interface PendingItem {
   sameIn?: { id: string; taskId: string; taskNum: number }[];
   sig?: string; dismissed?: { at: string; until?: string };
 }
+export type UnknownReply = { state: 'queued' | 'delivered' | 'failed' | 'expired'; reason: string; id: string; deliveredAt?: string } | null;
 // An item that the user dismissed on the Waiting page (server/dismiss.ts). until: a held hook card shows again then.
 export interface Dismissal { sig: string; kind: 'item' | 'task'; taskId: string; taskNum: number; title: string; question: string; label: string; at: string; until?: string }
 export interface PushRecord { id: string; at: string; taskId: string; branch: string; remote: string; remoteUrl: string; oldHead: string | null; newHead: string; state: string; result?: string; approvalId?: string }
@@ -375,6 +376,8 @@ export const api = {
   permitRefusal: (id: string) => call<{ permit: Permit }>('POST', `/api/refusals/${encodeURIComponent(id)}/permit`, {}),
   // a message card goes back to the controller or to the agent that wrote the draft, with the comment
   answerPending: (id: string, body: { option?: string; text?: string; confirm?: boolean; group?: string[] }) => call<PendingItem>('POST', `/api/pending/${id}/answer`, body),
+  unknownReply: (id: string) => call<UnknownReply>('GET', `/api/pending/${id}/reply`),
+  sendUnknownReply: (id: string, text: string) => call<UnknownReply>('POST', `/api/pending/${id}/reply`, { text }),
   hidePending: (id: string) => call('POST', `/api/pending/${id}/hide`, {}),
   // Dismiss: hide one waiting item until something new happens for it (server/dismiss.ts). The task status does not change.
   dismissItem: (id: string, label: string) => call<Dismissal>('POST', '/api/dismiss', { item: id, label }),

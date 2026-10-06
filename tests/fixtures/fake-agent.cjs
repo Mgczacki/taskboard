@@ -74,6 +74,7 @@ const add = (text, paste) => {
 function draw() {
   let lines;
   if (dialog === 'trust') lines = ['Do you trust the contents of this project?', '> Yes, I trust this folder', '  No, exit'];
+  else if (state.codexQuestion) lines = ['OpenAI Codex (fake)', '? 1 question', 'Shift+Left to answer', 'The question is still open'];
   else if (dialog === 'permission') lines = [...(state.history || []), '', '  Running ./build.sh', '  ⎿  $ ./build.sh', '', RULE, ' Bash command', ' Run shell command', '╌'.repeat(80), ' ./build.sh', '╌'.repeat(80),
     ' This command requires approval', '', ' Do you want to proceed?', ' ❯ 1. Yes', '   2. Yes, and don’t ask again for: ./build.sh *', '   3. No', '', ' Esc to cancel · Tab to amend'];
   else if (state.drawing) lines = ['Fake agent', ...(state.history || [])];
@@ -114,7 +115,7 @@ function submit() {
 }
 function endBurst() { burstTimer = null; if (burst !== null) { add(burst.replace(/\r/g, '\n'), burst.length > 1); burst = null; draw(); } }
 function key(ch) {
-  if (dialog) {
+  if (dialog || state.codexQuestion) {
     if (dialog === 'update' && ch === '\r') { record({ text: 'UPDATE_CHOSEN' }); process.exit(0); }
     if (dialog === 'update' && (ch === '\x1b' || ch === '2')) { dialog = null; draw(); }
     if (dialog === 'permission' && ch === '1') { record({ text: 'PERMISSION_ANSWERED' }); dialog = null; state = { ...state, permission: false }; fs.writeFileSync(stateFile, JSON.stringify(state)); draw(); }

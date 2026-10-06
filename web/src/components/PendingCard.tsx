@@ -4,8 +4,8 @@
 // tag with its risk. It opens a confirm step first when Settings has that step on for its risk kind (confirmRisk in
 // server/machine.ts; by default off for wide access only). The server refuses the option without the step when the
 // setting is on, and refuses it from the controller always.
-import { useState, type ReactNode } from 'react';
-import type { PendingItem, PendingOption, PendingRisk } from '../api';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
+import type { PendingItem, PendingOption, PendingRisk, UnknownReply } from '../api';
 import { api, fmtWait, loadConfirmRisk, RISK_SETTING, useStoreValue } from '../api';
 import { showInStack } from '../stack';
 import { DISMISS_TITLE, dismissItem, holdsHook, HOOK_TITLE } from '../dismiss';
@@ -27,6 +27,24 @@ const RISK_TEXT: Record<PendingRisk, string> = {
   exits: 'This option ends the agent session of this task. The task stops until you resume it.',
 };
 const minutes = (iso: string) => Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
+const replyMessage = (item: PendingItem, reply: NonNullable<UnknownReply>) => reply.state === 'queued'
+  ? `Queued for #${item.taskNum}. The task has not received it yet. ${reply.reason}`
+  : reply.state === 'delivered' ? `Delivered to #${item.taskNum}.`
+  : `Not delivered to #${item.taskNum}. ${reply.reason}`;
+const replyClass = (reply: NonNullable<UnknownReply>) => reply.state === 'delivered' ? 'ok' : reply.state === 'queued' ? 'info' : 'bad';
+
+export function UnknownReplyResult({ item }: { item: PendingItem }) {
+  const [reply, setReply] = useState<UnknownReply>(null);
+  useEffect(() => {
+    if (item.agent !== 'codex' || item.kind !== 'unknown' || item.source !== 'screen') return;
+    let active = true;
+    const read = () => void api.unknownReply(item.id).then(r => { if (active) setReply(r); }).catch(() => {});
+    read();
+    const timer = setInterval(read, 2000);
+    return () => { active = false; clearInterval(timer); };
+  }, [item.id, item.agent, item.kind, item.source]);
+  return reply && <div className={`pc-note ${replyClass(reply)}`} role="status">{replyMessage(item, reply)}</div>;
+}
 
 type Toast = (s: string, action?: { label: string; fn: () => void }) => void;
 export function PendingCard({ item, compact, openTask, toast }: { item: PendingItem; compact?: boolean; openTask: (id: string) => void; toast: Toast }) {
@@ -34,6 +52,25 @@ export function PendingCard({ item, compact, openTask, toast }: { item: PendingI
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [text, setText] = useState('');
+  const unknown = item.agent === 'codex' && item.kind === 'unknown' && item.source === 'screen';
+  const [reply, setReply] = useState<UnknownReply>(null);
+  const [replyReady, setReplyReady] = useState(false);
+  const replySending = useRef(false);
+  useEffect(() => {
+    if (!unknown) return;
+    let active = true, loaded = false;
+    const read = () => void api.unknownReply(item.id).then(r => { if (active) { loaded = true; if (r) setReply(r); setReplyReady(true); } }).catch(e => { if (active && !loaded) { setError(String((e as Error).message || e)); setReplyReady(true); } });
+    read();
+    const timer = setInterval(read, 2000);
+    return () => { active = false; clearInterval(timer); };
+  }, [unknown, item.id]);
+  const sendUnknown = async () => {
+    if (replySending.current || !replyReady || reply || !text.trim()) return;
+    replySending.current = true; setBusy(true); setError('');
+    try { setReply(await api.sendUnknownReply(item.id, text)); }
+    catch (e) { setError(String((e as Error).message || e)); }
+    finally { replySending.current = false; setBusy(false); }
+  };
   const [confirm, setConfirm] = useState<PendingOption | null>(null);
   const [ack, setAck] = useState(false);
   const [groupOn, setGroupOn] = useState(false);
@@ -88,7 +125,7 @@ export function PendingCard({ item, compact, openTask, toast }: { item: PendingI
       <b className="pc-ti">{item.taskTitle}</b><AgentChip a={item.agent} /><span className="chip">{KIND_LABEL[item.kind]}</span>
       <span className="pc-sp" /><span className="pc-age">waiting {fmtWait(minutes(item.createdAt))}</span>
     </div>
-    {!compact && <div className="pc-src">{SOURCE_LABEL[item.source]}</div>}
+    {!compact && <div className="pc-src">{unknown ? 'Read from the terminal screen. Taskboard cannot parse an answer for this prompt.' : SOURCE_LABEL[item.source]}</div>}
     {item.header && <span className="chip pc-header">{item.header}</span>}
     <p className="pc-q">{item.question}</p>
     {!compact && (d.command || d.cwd || d.reason || d.title) && <dl className="pc-d">
@@ -104,7 +141,14 @@ export function PendingCard({ item, compact, openTask, toast }: { item: PendingI
     {item.screen && (!item.answerable || (!compact && item.source === 'screen')) && <details className="pc-screen" open={!item.answerable}><summary>Screen rows that Taskboard read</summary><pre>{item.screen.excerpt}</pre></details>}
     {item.screen?.partial && <div className="pc-note info">The terminal is too short to show the whole list. The card shows the rows on the screen. Open the terminal for the other rows.</div>}
     {item.kind === 'signin' && <div className="pc-note info">Taskboard does not sign in for you. Open the terminal and sign in there. This card closes when the dialog is gone.</div>}
-    {!item.answerable && item.kind !== 'signin' && <div className="pc-note info">Taskboard does not answer this prompt. Open the terminal to answer it.</div>}
+    {!item.answerable && item.kind !== 'signin' && !unknown && <div className="pc-note info">Taskboard does not answer this prompt. Open the terminal to answer it.</div>}
+    {unknown && <div className="pc-text">
+      <label htmlFor={`unknown-reply-${item.id}`}>Text for #{item.taskNum}</label>
+      <textarea id={`unknown-reply-${item.id}`} rows={compact ? 2 : 3} value={text} disabled={busy || !!reply} onChange={e => setText(e.target.value)} placeholder="Type text to send to this task" />
+      <div className="pc-note info">Taskboard sends this text through the task input queue. It is not a direct answer to the question on screen. The task receives it when the terminal can accept input.</div>
+      <div className="pc-row"><button type="button" className="btn primary" disabled={!replyReady || busy || !!reply || !text.trim()} onClick={() => void sendUnknown()}>Send</button></div>
+      {reply && <div className={`pc-note ${replyClass(reply)}`} role="status">{replyMessage(item, reply)}</div>}
+    </div>}
     {item.answerable && item.options.length > 0 && <div className="pc-opts">{item.options.map(o =>
       <button key={o.key} className={`btn pc-opt ${o.risk ? 'risky' : ''}`} disabled={locked} onClick={() => choose(o)}>
         <span className="pc-ol"><span className="l">{o.risk ? '⚠ ' : ''}{o.label}</span>{o.selected && <span className="pc-def">selected on screen</span>}{o.description && <span className="d">{o.description}</span>}{o.risk && <span className="d pc-risk">{RISK_LABEL[o.risk]}{asks(o) ? ' · needs a confirm step' : ' · sent at once, no confirm step'}</span>}</span>

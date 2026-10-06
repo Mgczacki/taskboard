@@ -55,6 +55,7 @@ export interface Queued {
   checks?: number; checkedAt?: string; seen?: string; // screen checks of the 2 s loop, and what the last one saw
   via?: 'hook'; // the user chose "Deliver by hook": the typing loop leaves this message (and the ones after it) alone
   deliveredAt?: string; deliveredBy?: string;
+  sourceCard?: string; // an Unknown prompt card can submit text only once
   closedAt?: string; // expired: when Taskboard closed the failed message
   warnedAt?: string; // the sender was told that the message still waits
 }
@@ -71,7 +72,8 @@ const known = new Set<string>(); // tasks that may have a queue file, so the loo
 // touch: the dashboard shows the queue on the task. A screen check that saw the same as before does not update it.
 function write(taskId: string, items: Queued[], touch = true) {
   const done = items.filter(closed).slice(-KEEP_DELIVERED);
-  items = items.filter(q => !closed(q) || done.includes(q));
+  items = items.filter(q => !closed(q) || done.includes(q) || q.sourceCard);
+  for (const q of items) if (q.sourceCard && closed(q)) q.text = ''; // keep the receipt, not delivered text
   if (items.length) { mkdirSync(store.taskDir(taskId), { recursive: true }); writeFileSync(file(taskId), JSON.stringify(items, null, 2)); known.add(taskId); }
   else { rmSync(file(taskId), { force: true }); known.delete(taskId); }
   if (touch) store.touch(taskId);
@@ -101,14 +103,30 @@ export function seenWords(state: BoxState | 'not running', working: boolean): st
   return `${working ? 'The agent was working and ' : ''}${working ? what : what[0].toUpperCase() + what.slice(1)}.`;
 }
 
-function enqueue(t: Task, text: string, from: string, kind: Kind, state: Queued['state'], reason: string): Queued | string {
+function enqueue(t: Task, text: string, from: string, kind: Kind, state: Queued['state'], reason: string, sourceCard?: string): Queued | string {
   const items = list(t.id), waiting = open(items);
   if (waiting.length >= MAX_OPEN) return `${waiting.length} messages already wait for #${t.num} (the limit is ${MAX_OPEN}). Remove some on the dashboard first.`;
   const size = waiting.reduce((n, q) => n + q.text.length, 0);
   if (size + text.length > MAX_BYTES) return `The messages that wait for #${t.num} would hold more than ${MAX_BYTES} characters. Put the text in a file and send the path.`;
-  const q: Queued = { id: randomUUID().slice(0, 8), text, kind, from, queued: iso(), state, reason, tries: 1, triedAt: iso(), checks: 0 };
+  const q: Queued = { id: randomUUID().slice(0, 8), text, kind, from, queued: iso(), state, reason, tries: 1, triedAt: iso(), checks: 0, ...(sourceCard ? { sourceCard } : {}) };
   write(t.id, [...items, q]);
   return q;
+}
+
+// Store the card ID with the queue entry before delivery starts. Repeated requests return that entry.
+// The queue keeps this entry after delivery, so a page refresh cannot submit the same card again.
+export function sendUnknownPrompt(t: Task, cardId: string, text: string): Queued {
+  const existing = list(t.id).find(q => q.sourceCard === cardId);
+  if (existing) return existing;
+  const error = textError(text); if (error) throw new Error(error);
+  const q = enqueue(t, text, 'you', 'message', 'queued', 'Waiting for the agent input box. This text is not a direct answer to the question on screen.', cardId);
+  if (typeof q === 'string') throw new Error(q);
+  void flush(t.id);
+  return q;
+}
+
+export function unknownPromptStatus(taskId: string, cardId: string): Queued | undefined {
+  return list(taskId).find(q => q.sourceCard === cardId);
 }
 
 // The controller is never resumed by a message: agents.startController starts it.
@@ -339,7 +357,8 @@ export async function typeFirst(taskId: string, id: string): Promise<{ state: 'd
 }
 export function remove(taskId: string, id: string): boolean {
   const items = list(taskId); const q = items.find(x => x.id === id); if (!q) return false;
-  write(taskId, items.filter(x => x.id !== id));
+  if (q.sourceCard) Object.assign(q, { state: 'expired', reason: 'Removed by the user.', closedAt: iso() });
+  write(taskId, q.sourceCard ? items : items.filter(x => x.id !== id));
   const t = store.get(taskId);
   if (t && !closed(q)) tellSender(t, q, 'removed');
   return true;
