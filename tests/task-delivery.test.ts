@@ -23,6 +23,7 @@ writeFileSync(join(process.env.TASKBOARD_DIR, 'machine.json'), JSON.stringify({ 
 const store = await import('../server/store.ts');
 const agents = await import('../server/agents.ts');
 const messageQueue = await import('../server/message-queue.ts');
+const pending = await import('../server/pending.ts');
 const tmux = await import('../server/tmux.ts');
 const accounts = await import('../server/accounts.ts');
 const docs = await import('../server/docs.ts');
@@ -131,6 +132,53 @@ test('Codex receives text while running and questions block terminal input', asy
     await assert.rejects(agents.sendTaskText(t, 'Do not type this'), /asks a question/);
     assert.doesNotMatch(readFileSync(input, 'utf8'), /Do not type this/);
   } finally { await tmux.killSession(t.session); }
+});
+
+test('Unknown Codex prompt text waits, delivers once after the question ends, and stays with its task', async () => {
+  const first = task('codex', 81, 'fixture-first-question');
+  const second = task('codex', 82, 'fixture-second-question');
+  const tasks = [first, second];
+  for (const t of tasks) {
+    writeFileSync(join(store.taskDir(t.id), 'fake-state.json'), JSON.stringify({ codexQuestion: true }));
+    await tmux.newSession(t.session, root, { TASK_DIR: store.taskDir(t.id) }, [join(bin, 'codex')], async () => {});
+  }
+  try {
+    for (const t of tasks) {
+      await waitFor(async () => (await tmux.capture(t.session, 10)).includes('Shift+Left to answer'), { description: `question for #${t.num}` });
+      store.update(t.id, { status: 'needs-you' });
+      pending.scan(store.get(t.id)!, (await tmux.capture(t.session, 30)).trimEnd());
+    }
+    const cards = tasks.map(t => pending.list().find(i => i.taskId === t.id && i.kind === 'unknown')!);
+    assert.ok(cards.every(Boolean), JSON.stringify({ cards: pending.list(), screens: await Promise.all(tasks.map(t => tmux.capture(t.session, 30))) }));
+    for (const [i, t] of tasks.entries()) {
+      const q = messageQueue.sendUnknownPrompt(t, cards[i].id, `Text for #${t.num}`);
+      assert.equal(messageQueue.sendUnknownPrompt(t, cards[i].id, 'A repeated click').id, q.id);
+    }
+    await new Promise(resolve => setTimeout(resolve, 250));
+    for (const [i, t] of tasks.entries()) {
+      assert.equal(messageQueue.unknownPromptStatus(t.id, cards[i].id)?.state, 'queued');
+      assert.equal(existsSync(join(store.taskDir(t.id), 'submitted.jsonl')), false);
+      assert.equal(messageQueue.unknownPromptStatus(tasks[1 - i].id, cards[i].id), undefined);
+    }
+    for (const t of tasks) {
+      writeFileSync(join(store.taskDir(t.id), 'fake-state.json'), '{}');
+      await waitFor(async () => (await tmux.capture(t.session, 10)).includes('Ask Codex to do anything'), { description: `input box for #${t.num}` });
+      store.update(t.id, { status: 'working', ask: '' });
+      pending.scan(store.get(t.id)!, (await tmux.capture(t.session, 30)).trimEnd());
+    }
+    for (const [i, t] of tasks.entries()) {
+      await waitFor(async () => {
+        const q = messageQueue.unknownPromptStatus(t.id, cards[i].id)!;
+        if (q.state === 'delivered') return true;
+        await messageQueue.typeFirst(t.id, q.id);
+        return messageQueue.unknownPromptStatus(t.id, cards[i].id)?.state === 'delivered';
+      }, { description: `delivery for #${t.num}`, timeoutMs: 15_000, state: async () => JSON.stringify({ queue: messageQueue.unknownPromptStatus(t.id, cards[i].id), screen: await tmux.captureStyled(t.session) }) });
+      assert.equal(messageQueue.unknownPromptStatus(t.id, cards[i].id)?.state, 'delivered');
+      const lines = readFileSync(join(store.taskDir(t.id), 'submitted.jsonl'), 'utf8').trim().split('\n').map(x => JSON.parse(x).text);
+      assert.deepEqual(lines, [`Text for #${t.num}`]);
+      assert.equal(messageQueue.sendUnknownPrompt(t, cards[i].id, 'A refresh').id, messageQueue.unknownPromptStatus(t.id, cards[i].id)?.id);
+    }
+  } finally { for (const t of tasks) await tmux.killSession(t.session); }
 });
 
 test('a trust question blocks text sent to a live session', async () => {

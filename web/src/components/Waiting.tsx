@@ -20,7 +20,7 @@ import { hit, keyLabel, keysText, useKeymap } from '../keys';
 import { liveApprovals, SHOW_EVENT } from '../stack';
 import { ApprovalCard } from './ApprovalCard';
 import { LATE_KIND, lateMessages, QueueActions, queueLabel, queueReason } from './QueuedMessage';
-import { KIND_LABEL, PendingCard } from './PendingCard';
+import { KIND_LABEL, PendingCard, UnknownReplyResult } from './PendingCard';
 import { isMessage, reminder, sortTime } from '../messageCard';
 import { Terminal } from './Terminal';
 import { AgentChip, Dot, StatusLabel, ThreeLines, useAutoMessage } from './ui';
@@ -140,7 +140,7 @@ export function WaitingPage({ tasks, allTasks, openTask, openController, toast }
           <div className="pc-row"><button className="btn primary" onClick={() => void bringBack(cur.dismissal!.sig, toast)} title="Show this item again in the lists">Bring back</button><button className="btn" onClick={() => openTask(cur.dismissal!.taskId)}>Open task panel</button></div></div>}
         {cur.item && !cur.done && <PendingCard key={cur.id} item={cur.item} openTask={openTask} toast={toast} />}
         {cur.item && cur.done && !cur.dismissal && <div className={`pcard ${cur.item.state}`}><div className="pc-h"><b>#{cur.item.taskNum} {cur.item.taskTitle}</b><AgentChip a={cur.item.agent} /><span className="chip">{KIND_LABEL[cur.item.kind]}</span></div><p className="pc-q">{cur.item.question}</p>
-          <div className={`pc-note ${cur.item.state === 'answered' ? 'ok' : 'info'}`}>{cur.item.answer ? <><b>Answered:</b> {cur.item.answer.label} · by {cur.item.answer.by === 'controller' ? `the controller (${cur.item.answer.rule})` : 'you'} · {new Date(cur.item.answer.at).toLocaleTimeString()}{cur.item.answer.tasks ? ` · one answer for ${cur.item.answer.tasks.map(n => '#' + n).join(', ')}` : ''}<br />{cur.item.result}</> : cur.item.result}</div></div>}
+          <div className={`pc-note ${cur.item.state === 'answered' ? 'ok' : 'info'}`}>{cur.item.answer ? <><b>Answered:</b> {cur.item.answer.label} · by {cur.item.answer.by === 'controller' ? `the controller (${cur.item.answer.rule})` : 'you'} · {new Date(cur.item.answer.at).toLocaleTimeString()}{cur.item.answer.tasks ? ` · one answer for ${cur.item.answer.tasks.map(n => '#' + n).join(', ')}` : ''}<br />{cur.item.result}</> : cur.item.result}</div><UnknownReplyResult item={cur.item} /></div>}
         {cur.queued && <QueuedCard t={cur.queued.t} q={cur.queued.q} openTask={openTask} openController={openController} toast={toast} />}
         {cur.approval && <ApprovalCard key={cur.id} a={cur.approval} allTasks={allTasks} setOpenId={openTask} openController={openController} toast={toast} />}
         {cur.task && !cur.dismissal && <div className="pcard"><div className="pc-h"><Dot s={cur.task.status} /><b>#{cur.task.num} {cur.task.title}</b><StatusLabel s={cur.task.status} /><AgentChip a={cur.task.agent} /><span className="pc-sp" /><span className="pc-age">waiting {fmtWait(cur.task.waitMin)}</span></div>

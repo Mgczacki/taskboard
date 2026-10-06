@@ -344,6 +344,27 @@ app.post('/api/pending/:id/hide', (req, res) => {
   if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Use the dashboard.' });
   try { pending.hide(req.params.id); res.json({}); } catch (e) { res.status(e instanceof pending.AnswerError ? e.status : 400).json({ error: e instanceof Error ? e.message : String(e) }); }
 });
+// Unknown Codex screen prompts have no parsed option to answer. Send text through the task queue.
+const unknownReply = (id: string) => {
+  const item = pending.get(id);
+  return item?.agent === 'codex' && item.kind === 'unknown' && item.source === 'screen' ? item : null;
+};
+const replyView = (q: messageQueue.Queued | undefined) => q ? { state: q.state, reason: q.reason, id: q.id, deliveredAt: q.deliveredAt } : null;
+app.get('/api/pending/:id/reply', (req, res) => {
+  if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Use the dashboard.' });
+  const item = unknownReply(req.params.id);
+  if (!item) return res.status(404).json({ error: 'This Unknown prompt card does not exist.' });
+  res.json(replyView(messageQueue.unknownPromptStatus(item.taskId, item.id)));
+});
+app.post('/api/pending/:id/reply', (req, res) => {
+  if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Use the dashboard.' });
+  const item = unknownReply(req.params.id);
+  if (!item || item.state !== 'pending') return res.status(404).json({ error: 'This Unknown prompt card no longer waits.' });
+  if (typeof req.body?.text !== 'string') return res.status(400).json({ error: 'Enter text to send.' });
+  try {
+    res.json(replyView(messageQueue.sendUnknownPrompt(store.get(item.taskId)!, item.id, req.body.text)));
+  } catch (e) { fail(res, e); }
+});
 // ---------- dismissed items of the Waiting page (dismiss.ts) ----------
 // Only the user dismisses, on the dashboard. The controller reads the dismissed field in tb pending and has no command.
 app.get('/api/dismissed', (_req, res) => res.json({ entries: dismiss.all() }));
