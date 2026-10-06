@@ -27,6 +27,11 @@ const selfOnlyDigest = (text: string, manager: store.Task) => {
   const tasks = [...text.matchAll(/^- #([^\s]+) /gm)].map(x => x[1]);
   return tasks.length > 0 && tasks.length === Number(header[1]) && tasks.every(task => task === String(manager.num) || task === manager.id);
 };
+const schedule = (group: string) => {
+  if (timers.has(group)) return;
+  const timer = setTimeout(() => { timers.delete(group); void flush(group); }, 120_000);
+  timer.unref(); timers.set(group, timer);
+};
 
 export function record(task: string, kind: string, text: string, immediate = false) {
   for (const g of groups.groupsOf(task)) {
@@ -35,7 +40,7 @@ export function record(task: string, kind: string, text: string, immediate = fal
     appendFileSync(eventFile, JSON.stringify(event) + '\n');
     queue.push(event); save();
     if (immediate) void flush(g.id);
-    else if (!timers.has(g.id)) { const timer = setTimeout(() => { timers.delete(g.id); void flush(g.id); }, 120_000); timer.unref(); timers.set(g.id, timer); }
+    else schedule(g.id);
   }
 }
 
@@ -49,8 +54,11 @@ export async function flush(group: string) {
   if (!events.length) return;
   const lines = events.map(x => `- #${store.get(x.task)?.num || x.task} ${x.kind}: ${x.text}`);
   const digest = `[Taskboard event digest, ${new Date().toISOString()}, group ${g.name}, ${events.length} events]\n${lines.join('\n')}\nBoard: tb board "${g.name}"`;
-  try { await messageQueue.send(manager, digest, { from: 'taskboard', kind: 'message' }); }
-  catch (e) { queue.unshift(...events); save(); console.error('manager event delivery', e); }
+  try {
+    const result = await messageQueue.send(manager, digest, { from: 'taskboard', kind: 'message', holdWhenParked: true, queueOnError: true });
+    if (result.state === 'failed') throw new Error(result.reason || 'The manager message was not queued.');
+  }
+  catch (e) { queue.unshift(...events); save(); schedule(group); console.error('manager event delivery', e); }
 }
 
 export function heartbeat(group: string) {
@@ -99,7 +107,7 @@ export function start() {
     const before = status.get(t.id); status.set(t.id, t.status);
     if (before && before !== t.status) record(t.id, 'status', `${before} to ${t.status}`, t.status === 'stopped');
   });
-  for (const e of queue) if (!timers.has(e.group)) { const timer = setTimeout(() => { timers.delete(e.group); void flush(e.group); }, 120_000); timer.unref(); timers.set(e.group, timer); }
+  for (const e of queue) schedule(e.group);
   const warned = new Set<string>();
   setInterval(() => {
     void checkCi();
