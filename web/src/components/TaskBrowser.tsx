@@ -180,6 +180,8 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, 
   const [state, setState] = useState<BrowserStatus | null>(null);
   const [running, setRunning] = useState<boolean | null>(null);
   const [agents, setAgents] = useState(0);
+  const [followAgent, setFollowAgent] = useState(false);
+  const followRef = useRef(false);
   const [muted, setMuted] = useState<boolean | null>(null);
   const [soundCheck, setSoundCheck] = useState<SoundCheck>({ state: null });
   const [nav, setNav] = useState({ loading: false, canBack: false, canForward: false });
@@ -319,6 +321,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, 
         if (m.type === 'frameSize') frameSize.current = { w: m.w, h: m.h };
         // the server sends the tabs every second: an unchanged list keeps the old array, so the view does not draw again
         else if (m.type === 'agent') setAgentEvt({ ...m, seen: Date.now() });
+        else if (m.type === 'followAgent') { followRef.current = !!m.on; setFollowAgent(!!m.on); }
         else if (m.type === 'ask') setAsk(m.ask || null);
         else if (m.type === 'widget') { setMenu(null); setWidget(m); }
         else if (m.type === 'menu') { setWidget(null); setMenu(m); }
@@ -341,7 +344,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, 
         else if (m.type === 'state') { setRunning(m.running); setState(m); setMuted(m.muted ?? null); setSoundCheck({ state: m.soundState ?? null, reason: m.soundReason }); if (!m.running) { setTabs([]); setActive(''); setFramed(false); clearFrames(); } }
         else if (m.type === 'error') setErr(m.message);
       };
-      s.onopen = () => { send({ type: 'hello', acks: true, dpr: devicePixelRatio }); send({ type: 'visible', on: shown.current }); sendSize(); };
+      s.onopen = () => { send({ type: 'hello', acks: true, dpr: devicePixelRatio, followAgent: followRef.current }); send({ type: 'visible', on: shown.current }); sendSize(); };
       s.onclose = () => { if (!closed) retry = setTimeout(connect, 2000); };
     };
     connect();
@@ -389,7 +392,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, 
     }
     setActive(next);
     setOffers(prev => prev.includes(next) ? prev.filter(x => x !== next) : prev);
-    if (auto) {
+    if (auto && !followRef.current) {
       setAutoNote({ id: next, ...auto });
       clearTimeout(autoNoteTimer.current); autoNoteTimer.current = setTimeout(() => setAutoNote(null), 10000);
     }
@@ -562,7 +565,8 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, 
     leaveBrowser(e.currentTarget as HTMLElement);
   };
   const go = () => { drafts.current.delete(active); setEditing(false); if (addr.trim()) send({ type: 'nav', action: 'go', url: addr.trim() }); screen.current?.focus(); };
-  const select = (tab: string) => send({ type: 'select', id: tab });
+  const select = (tab: string) => { if (tab !== active && followRef.current) { followRef.current = false; setFollowAgent(false); } send({ type: 'select', id: tab }); };
+  const toggleFollow = () => { const on = !followRef.current; followRef.current = on; setFollowAgent(on); if (on) setAutoNote(null); send({ type: 'followAgent', on }); };
   const goBack = () => { if (!autoNote) return; backTo.current = autoNote.from; setAutoNote(null); select(autoNote.from); };
   const startNow = () => { setErr(''); send({ type: 'start' }); };
 
@@ -675,6 +679,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, 
   const autoSwitchItem = <button className="bw-mi" role="menuitemcheckbox" aria-checked={autoSwitch.on} onClick={() => { setPop(null); send({ type: 'autoSwitch', on: !autoSwitch.on }); }}>
     <Icon d={autoSwitch.on ? I.popout : I.close} size={15} /><span>Switch to new tabs and popups: {autoSwitch.on ? 'on' : 'off'}<small>{autoSwitch.own ? 'Set for this browser. Click to change.' : 'From Settings. Click to change for this browser.'}</small></span>
   </button>;
+  const followButton = !isTemplate && <button className={`bw-follow ${followAgent ? 'on' : ''}`} type="button" onClick={toggleFollow} aria-pressed={followAgent} title={followAgent ? 'Following the agent. Selecting another tab turns this off.' : 'Show the tab and page the agent uses. Selecting another tab turns this off.'}>Follow agent: {followAgent ? 'On' : 'Off'}</button>;
   return (
     <div ref={root} className={`bw ${inside ? 'kb' : ''} ${compact ? 'compact' : ''}`} data-tb-browser="" onKeyDownCapture={leave} onFocus={() => setInside(true)} onBlur={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setInside(false); }}>
       {compact ? (
@@ -687,6 +692,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, 
             <b>{tabs.length}</b><Icon d={I.down} size={12} />{waiting ? <i className="bw-ask" /> : offered.length > 0 && <i className="bw-new" />}
           </button>
           {offerButton}
+          {followButton}
           <button className="bw-ib" onClick={() => send({ type: 'new', url: 'about:blank' })} aria-label="New tab" title="New tab"><Icon d={I.plus} /></button>
           {sound}
           {stopButton}
@@ -732,6 +738,7 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, 
           ))}
           <button className="bw-ib bw-newtab" onClick={() => send({ type: 'new', url: 'about:blank' })} aria-label="New tab" title="New tab"><Icon d={I.plus} /></button>
           {offerButton}
+          {followButton}
           <button className={`bw-ib bw-auto ${autoSwitch.on ? 'on' : ''}`} onClick={() => send({ type: 'autoSwitch', on: !autoSwitch.on })} aria-pressed={autoSwitch.on} aria-label="Switch to new tabs and popups" title={`Switch to new tabs and popups: ${autoSwitch.on ? 'on' : 'off'} (${autoSwitch.own ? 'set for this browser' : 'from Settings'}). Click to change for this browser.`}><Icon d={I.popout} size={14} /></button>
         </div>
         <div className="bw-bar">
