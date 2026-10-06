@@ -3,8 +3,8 @@
 // Grid, Rows. The keys are in keys.ts (⌃⌥ + key by default, so typing into agents is not affected).
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import type { Group, SpinOffExchange, Task } from '../api';
-import { ATTN, STATUS_LABEL, api, confirmEnd, useStore } from '../api';
-import { AgentChip, Dot, MachineChip, WhereChip, BrowserAskChip, ErrorChip, ErrorMark } from './ui';
+import { AGENT_NAME, ATTN, STATUS_LABEL, api, confirmEnd, useStore } from '../api';
+import { Dot, MachineChip, WhereChip, BrowserAskChip, ErrorMark } from './ui';
 import { Terminal, terminalDebugRecord } from './Terminal';
 import { PendingMarker } from './PendingCard';
 import { hit as key, hitIn, inBrowser, keyLabel, keysText, useKeymap } from '../keys';
@@ -20,7 +20,7 @@ import { panelHolds, type PanelTab } from '../panelShare';
 import { BrowserView } from './TaskBrowser';
 import { readSplit, writeSplit, type Split } from '../browserSplit';
 import { countText, sumCounts } from '../runtimeText';
-import { LinkPorts } from './Links';
+import { CanvasLinkTitle } from './Links';
 import { linkOrder, showLinkedWork } from '../links';
 import { GROUP_HINT, HIDE_TITLE, canHide, hiddenHere, hide, unhide, type HiddenByView } from '../hideWindow';
 import { fitToolbar, sameFit, type Fit } from '../toolbarFit';
@@ -603,9 +603,7 @@ interface WinProps {
 const CanvasWin = memo(function CanvasWin({ t, accounts, i, act, linkTasks, cls, span, ending, asking, maxed, splitOpen, splitSide, heldTerminal, heldBrowser, font, hideButton }: WinProps) {
   const a = () => act.current!;
   const sp: Split = { open: splitOpen, side: splitSide };
-  // The buttons of the header. Every window has a menu for its Outbox. A narrow window moves its other buttons there
-  // with the agent and runtime chips. narrow starts when the header's content is wider than the header (scrollWidth),
-  // and ends when the header is again as wide as that content was.
+  // Keep the frequent actions in the header. The menu holds the other actions.
   const showBrowser = canBrowse(t) && !t.openElsewhere && t.status !== 'suspended' && !heldTerminal && !heldBrowser;
   const acts: { k: string; icon: React.ReactNode; text: string; title: string; on?: boolean; aria?: string; fn: () => void }[] = [];
   if (showBrowser) {
@@ -618,36 +616,26 @@ const CanvasWin = memo(function CanvasWin({ t, accounts, i, act, linkTasks, cls,
   acts.push({ k: 'debug', icon: '⚙', text: 'Copy the terminal debug record', title: 'Copy the terminal debug record: recent output sizes and escape sequences, without text. Use it when the terminal stops drawing.', fn: () => a().copyDebugRecord(t) });
   if (t.role !== 'controller') acts.push({ k: 'end', icon: '⏻', text: 'End & archive', title: t.openElsewhere ? 'End & archive: archives the task; the session in the other terminal keeps running' : 'End & archive: ends the tmux session and archives the task', fn: () => confirmEnd() ? a().setEnding(t.id) : a().endTask(t) });
   if (hideButton) acts.push({ k: 'hide', icon: <EyeOff />, text: 'Hide from this view', title: `${HIDE_TITLE} Shortcut: ${keysText('removeWindow')}.`, aria: 'Hide from this view', fn: () => a().hideWindow(t.id) });
-  const head = useRef<HTMLDivElement>(null), moreRef = useRef<HTMLButtonElement>(null), fullW = useRef(0);
-  const [narrow, setNarrow] = useState(false);
+  const moreRef = useRef<HTMLButtonElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const closeMenu = useCallback(() => setMenuOpen(false), []);
-  const fitHead = useRef(() => {});
-  fitHead.current = () => {
-    const el = head.current; if (!el) return;
-    if (!narrow) { if (el.scrollWidth > el.clientWidth + 1) { fullW.current = el.scrollWidth; setNarrow(true); } }
-    else if (el.clientWidth >= fullW.current) { setNarrow(false); setMenuOpen(false); }
-  };
-  useLayoutEffect(() => fitHead.current());
-  useEffect(() => { const el = head.current; if (!el) return; const ro = new ResizeObserver(() => fitHead.current()); ro.observe(el); return () => ro.disconnect(); }, []);
+  const direct = acts.filter(x => ['browser', 'btw', 'end'].includes(x.k));
+  const extra = acts.filter(x => !['browser', 'btw', 'end'].includes(x.k));
   return (
     <div data-win={t.id} className={cls} style={{ order: i, ...(span ? { gridColumn: `span ${span}` } : {}) }} onMouseDown={() => { a().focus(t.id); if (t.status === 'unread') api.seen(t.id); }}>
-      <div ref={head} className={`wh ${narrow ? 'narrow' : ''}`} onPointerDown={e => a().startDrag(e, t.id)} onDoubleClick={() => a().toggleMax(t.id)}>
-        <span className="grip" title={`Drag to move this window between two others, or onto a group tab. Move it one place: ${keysText('windowEarlier')} / ${keysText('windowLater')}`}>⠿</span><span className="ix">{i + 1}</span><LinkPorts t={t} tasks={linkTasks} onGo={id => a().goTask(id)} side="left" /><Dot s={t.status} /><span className="n">#{t.num}</span><span className="ti">{t.title}</span><ManagerBadge id={t.id} /><LinkPorts t={t} tasks={linkTasks} onGo={id => a().goTask(id)} side="right" />
+      <div className="wh" onPointerDown={e => a().startDrag(e, t.id)} onDoubleClick={() => a().toggleMax(t.id)}>
+        <span className="grip" title={`Drag to move this window between two others, or onto a group tab. Move it one place: ${keysText('windowEarlier')} / ${keysText('windowLater')}`}>⠿</span><span className="ix">{i + 1}</span><Dot s={t.status} /><CanvasLinkTitle t={t} tasks={linkTasks} onOpen={() => a().openPanel(t.id)} onGo={id => a().goTask(id)} /><ManagerBadge id={t.id} />
         <PendingMarker taskId={t.id} small><WaitLabel taskId={t.id}><span className={`st st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span></WaitLabel></PendingMarker>
-        {narrow ? <ErrorMark t={t} /> : <ErrorChip t={t} />}
-        {!narrow && <AgentChip a={t.agent} />}<CanvasAccountChip task={t} accounts={accounts} /><CanvasFailureChip task={t} accounts={accounts} />
-        {!narrow && <><MachineChip t={t} /><WhereChip t={t} /><BrowserAskChip t={t} /><RuntimeButton t={t} small onOpen={tab => a().openPanel(t.id, tab)} /></>}
+        <ErrorMark t={t} /><span className="canvas-agent" title={AGENT_NAME[t.agent]} aria-label={AGENT_NAME[t.agent]} tabIndex={0}>{t.agent === 'claude' ? 'CC' : t.agent === 'codex' ? 'CX' : 'AG'}</span><CanvasAccountChip task={t} accounts={accounts} /><RuntimeButton t={t} small onOpen={tab => a().openPanel(t.id, tab)} />
         {ending ? <><span className="sel-warn">End & archive?</span><button className="b" onClick={() => a().endTask(t)}>Yes, end it</button><button className="b" onClick={() => a().setEnding(null)}>Cancel</button></> : <>
         {(t.status === 'suspended' || t.openElsewhere) && <button className="b" onClick={() => a().openPanel(t.id)}>{t.openElsewhere ? 'Options…' : 'Resume…'}</button>}
-        {!narrow && <ManagerRoleButton t={t} variant="head" toast={m => a().toast(m)} />}
-        {!narrow && acts.map(x => <button key={x.k} className={`b ${x.on ? 'on' : ''}`} title={x.title} aria-label={x.aria} onClick={x.fn}>{x.icon}</button>)}
-        <button ref={moreRef} className={`b wmore ${menuOpen ? 'on' : ''}`} aria-haspopup="true" aria-expanded={menuOpen} aria-label="Window menu" title={narrow ? `The buttons of this window: Open Outbox, ${acts.map(x => x.text).join(', ')}` : 'Open this task’s Outbox'} onClick={() => setMenuOpen(o => !o)}>⋯</button>
+        {direct.map(x => <button key={x.k} className={`b direct ${x.on ? 'on' : ''}`} title={x.title} aria-label={x.aria || x.text} onPointerDown={e => e.stopPropagation()} onClick={x.fn}>{x.k === 'end' ? 'End & archive' : x.icon}</button>)}
+        <button ref={moreRef} className={`b wmore ${menuOpen ? 'on' : ''}`} aria-haspopup="true" aria-expanded={menuOpen} aria-label="Window menu" title="More actions, including Open Outbox" onPointerDown={e => e.stopPropagation()} onClick={() => setMenuOpen(o => !o)}>⋯</button>
         {menuOpen && <PopMenu anchor={moreRef.current} close={closeMenu} className="wmenu" label={`Window #${t.num}`}>
-          {narrow && <div className="wmenu-chips"><AgentChip a={t.agent} /><CanvasAccountChip task={t} accounts={accounts} /><CanvasFailureChip task={t} accounts={accounts} /><MachineChip t={t} /><WhereChip t={t} /><BrowserAskChip t={t} /><RuntimeButton t={t} small onOpen={tab => { setMenuOpen(false); a().openPanel(t.id, tab); }} /></div>}
+          <div className="wmenu-chips"><CanvasFailureChip task={t} accounts={accounts} /><MachineChip t={t} /><WhereChip t={t} /><BrowserAskChip t={t} /></div>
           <button className="mi" onClick={() => { setMenuOpen(false); a().openPanel(t.id, 'docs'); }}><span className="mi-ico" aria-hidden="true">▤</span>Open Outbox</button>
-          {narrow && acts.map(x => <button key={x.k} className={`mi ${x.on ? 'on' : ''}`} title={x.title} aria-label={x.aria} onClick={() => { setMenuOpen(false); x.fn(); }}><span className="mi-ico">{x.icon}</span>{x.text}</button>)}
-          {narrow && <ManagerRoleButton t={t} variant="menu" toast={m => { setMenuOpen(false); a().toast(m); }} />}
+          {extra.map(x => <button key={x.k} className={`mi ${x.on ? 'on' : ''}`} title={x.title} aria-label={x.aria} onClick={() => { setMenuOpen(false); x.fn(); }}><span className="mi-ico">{x.icon}</span>{x.text}</button>)}
+          <ManagerRoleButton t={t} variant="menu" toast={m => { setMenuOpen(false); a().toast(m); }} />
         </PopMenu>}</>}
       </div>
       {t.restartWhenDone && t.restartFor && <div className="win-note" title={t.restartWait}>{t.restartOverdue ? t.restartWait : `Waiting for the end of the turn ${t.restartFor}.`}{t.restartOverdue && <button className="b" onClick={() => api.restart(t.id, 'now').catch(e => a().toast(String(e.message || e)))}>Restart now</button>}</div>}
