@@ -464,8 +464,8 @@ table.keys td:nth-child(2) { white-space: nowrap; }
 /* a sandbox (test copy) is marked so it is never mistaken for the real Taskboard */
 .sandbox-bar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 50; text-align: center; padding: 3px; font: 600 11.5px var(--mono); color: #1b1200; background: #f0a830; pointer-events: none; }
 
-/* Mac app (no title bar): the header and sidebar top can drag the window; a thin strip along the top edge too
-   (pop-out windows have no header). The sidebar top makes room for the window buttons while they are shown. */
+/* Mac app (no native title bar): the dashboard header, pop-out headers and sidebar top can drag the window.
+   A thin strip along the top edge also drags. The headers leave room for the native window buttons. */
 /* Window drag areas in the app. Electron builds the drag area from -webkit-app-region in document order: it adds each
    drag box and cuts out each later no-drag box. z-index and pointer-events do not count, so an element drawn on top
    (the task drawer over .top) is inside the drag area unless it is no-drag itself. A click in the drag area moves the
@@ -473,8 +473,8 @@ table.keys td:nth-child(2) { white-space: nowrap; }
    - the 8 px strip at the top edge, .top and .brand are drag; the strip lets the pointer through to the page
    - every control is no-drag, and so is the whole drawer, which comes after them in the document
    - the empty spacer of the drawer bar is drag again: the place to move the window from the drawer
-   - the pop-out browser window (BrowserWindowPage) has no .top: its header .bw-window-h is drag, with room on the left
-     for the window buttons; the browser view below it is not drag, so the page gets every click
+   - browser and HTML document pop-outs have no .top: their shared header .bw-window-h is drag, with room on the left
+     for the window buttons; the browser view or document iframe below it is no-drag
    - a floating window (.floatwin) is no-drag: it can be moved over .top, and its title bar moves only itself
    tests/drag-regions.test.ts and scripts/check-drag-regions.mjs check this. */
 body.in-app::before { content: ''; position: fixed; top: 0; left: 0; right: 0; height: 8px; z-index: 1000; pointer-events: none; -webkit-app-region: drag; }
@@ -485,7 +485,7 @@ body.in-app .drawer .dr-bar .tabs-sp { -webkit-app-region: drag; }
 body.in-app .floatwin { -webkit-app-region: no-drag; }
 body.in-app .bw-window-h { -webkit-app-region: drag; }
 body.in-app .bw-window > :not(.bw-window-h) { -webkit-app-region: no-drag; }
-body.in-app .bw-window-h { min-height: 40px; align-items: center; padding-left: 84px; box-sizing: border-box; }
+body.in-app .bw-window-h { min-height: 44px; align-items: center; padding-left: 84px; box-sizing: border-box; }
 body.in-app .brand { transition: padding-left .15s ease; }
 body.in-app.app-buttons .brand { padding-left: 84px; }
 body.in-app.app-buttons .app:not(:has(.rail)) .top { padding-left: 84px; }
@@ -731,7 +731,10 @@ table.keyset .keycell { text-align: right; white-space: normal; }
 .bw-screen { flex: 1; min-height: 120px; position: relative; overflow: hidden; background: var(--bg); outline: none; cursor: default; }
 .bw-screen.framed { background: #fff; }
 .bw-window { display: flex; flex-direction: column; height: 100vh; background: var(--panel); }
-.bw-window-h { display: flex; gap: 10px; align-items: baseline; padding: 6px 10px; border-bottom: 1px solid var(--line); font-size: 12.5px; flex: none; user-select: none; }
+.bw-window-h { display: flex; gap: 10px; align-items: center; min-height: 44px; padding: 6px 10px; box-sizing: border-box; border-bottom: 1px solid var(--line); font-size: 12.5px; flex: none; user-select: none; }
+.bw-window-h b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.document-window-frame { flex: 1; min-height: 0; width: 100%; border: 0; background: #fff; }
+.document-window-error { padding: 16px; }
 .bw-chip.bw-leave kbd { font: inherit; }
 .bw.kb .bw-chip.bw-leave { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 50%, var(--line)); }
 .bw-screen:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }

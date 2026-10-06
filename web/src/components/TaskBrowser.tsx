@@ -34,6 +34,7 @@ import { wheelBatch } from '../browserWheel';
 import { SigninDialog, SigninNote, SigninWindowNote, useSharing, type SigninMode } from './BrowserSignins';
 import { isApp, useAppWindow } from '../appWindow';
 import { clampFloat, keepOnScreen, startFloatDrag } from '../floatWindow';
+import { PopoutWindow } from './PopoutWindow';
 
 // ---------- which browsers are popped out ----------
 // Pop out opens the view in its own window (/?browser=<id>, BrowserWindowPage below; an app window in the desktop app).
@@ -70,8 +71,7 @@ export function popOutBrowser(id: string, title: string, sub = '', autostart = f
 }
 
 // The page of a browser window: only the view, with the task as the window title.
-// In the Mac app the window has no title bar: the header .bw-window-h is the drag area (app.css), with room on the
-// left for the window buttons. A double click on it zooms the window, as on a title bar.
+// In the Mac app the shared PopoutWindow header is the drag area, with room on the left for the native window buttons.
 export function BrowserWindowPage() {
   const q = new URLSearchParams(location.search);
   const id = q.get('browser') || '', title = q.get('title') || 'Task browser', sub = q.get('sub') || '';
@@ -83,10 +83,9 @@ export function BrowserWindowPage() {
     addEventListener('pagehide', gone); return () => { removeEventListener('pagehide', gone); gone(); };
   }, []);
   return (
-    <div className="bw-window">
-      <div className="bw-window-h"><b>{title}</b>{sub && <span className="sub">{sub}</span>}</div>
+    <PopoutWindow title={title} sub={sub}>
       <BrowserView id={id} autostart={q.get('start') === '1'} floating />
-    </div>
+    </PopoutWindow>
   );
 }
 

@@ -46,6 +46,17 @@ let win = null, tray = null, quitting = false, serverUp = false, waiting = [];
 let diagnosis = null, repairing = null, lastRepair = null, lastDoctorAt = 0;
 
 const sameOrigin = url => { try { return new URL(url).origin === SERVER; } catch { return false; } };
+// Links opened from a document iframe can name the file directly. Give HTML files the same movable window frame.
+function popoutUrl(url) {
+  try {
+    const target = new URL(url);
+    const path = target.pathname.startsWith('/api/files/') ? decodeURIComponent(target.pathname.slice('/api/files/'.length))
+      : target.pathname === '/api/file' ? target.searchParams.get('path') || '' : '';
+    if (!/\.html?$/i.test(path)) return url;
+    const title = path.split('/').pop() || 'HTML document';
+    return `${SERVER}/?${new URLSearchParams({ document: target.pathname + target.search + target.hash, title })}`;
+  } catch { return url; }
+}
 const webPreferences = { contextIsolation: true, nodeIntegration: false, sandbox: true, spellcheck: false, preload: join(__dirname, 'preload.cjs') };
 // every window: no title bar; the traffic-light buttons sit inside the page and are shown only near the top edge
 const chrome = { titleBarStyle: 'hidden', trafficLightPosition: { x: 14, y: 14 }, backgroundColor: '#0d1117', webPreferences };
@@ -56,7 +67,7 @@ let lastTrayMenuKey = '';
 function guard(contents) {
   // pop-out windows of the dashboard stay in the app; everything else opens in the default browser
   contents.setWindowOpenHandler(({ url }) => {
-    if (sameOrigin(url)) openWindow(url, { width: 1500, height: 950 });
+    if (sameOrigin(url)) openWindow(popoutUrl(url), { width: 1500, height: 950 });
     else if (/^https?:/.test(url)) shell.openExternal(url);
     return { action: 'deny' };
   });

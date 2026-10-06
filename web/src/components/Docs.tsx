@@ -28,7 +28,9 @@ export function openDoc(d: { path: string; name: string; kind: string }, locatio
   else if (d.kind === 'md') readMarkdown(d.path, d.name, location);
   else window.open(fileUrl(d.path), '_blank');
 }
-export const openInBrowser = (path: string) => window.open(fileUrl(path), '_blank');
+export const documentWindowUrl = (path: string, name = path.split('/').pop() || 'HTML document') =>
+  `/?${new URLSearchParams({ document: fileUrl(path), title: name })}`;
+export const openInBrowser = (path: string, name?: string) => window.open(/\.html?$/i.test(path) ? documentWindowUrl(path, name) : fileUrl(path), '_blank');
 
 export function DocsTab({ t, tasks, documentLink }: { t: Task; tasks: Task[]; documentLink?: DocumentLink | null }) {
   const [d, setD] = useState<{ inbox: DocInfo[]; outbox: DocInfo[] } | null>(null);
@@ -55,7 +57,7 @@ export function DocsTab({ t, tasks, documentLink }: { t: Task; tasks: Task[]; do
         {box === 'inbox' && x.pending && <div className="s">Not delivered yet: the agent was not told about this file.</div>}
       </div>
       <button className="btn" onClick={() => openDoc(x)} title={x.kind === 'html' ? 'Preview in a floating window (Space)' : 'Read (Space)'}>{x.kind === 'html' ? 'Preview' : 'Read'}</button>
-      <button className="btn" onClick={() => openInBrowser(x.path)} title="Open at full size in its own browser tab (Enter)">Open in new tab ↗</button>
+      <button className="btn" onClick={() => openInBrowser(x.path, x.name)} title="Open at full size in its own browser tab (Enter)">Open in new tab ↗</button>
       {box === 'outbox' && <select value="" onChange={async e => { const to = e.target.value; if (!to) return; try { const result = await api.sendDoc(t.id, x.name, to); const tt = tasks.find(y => y.id === to)!; setMsg(result.delivery === 'delivered' ? `Sent to #${tt.num}.${result.resumed ? ' The task resumed.' : ' The agent received the notice.'}` : result.delivery === 'queued' ? `Copied to #${tt.num}. The agent was not told yet: ${result.reason} Taskboard tells it when its input box is empty.` : `Copied to #${tt.num}, but the agent was not told: ${result.reason}`); load(); } catch (error) { setMsg((error as Error).message); load(); } }}>
         <option value="">Send to task…</option>{others.map(o => <option key={o.id} value={o.id}>#{o.num} {o.title}</option>)}
       </select>}
@@ -99,7 +101,7 @@ function FloatWin({ title, sub, path, close, host, body }: { title: string; sub:
     <>
       <div className="fw-h" onPointerDown={e => startFloatDrag(e, host)} onDoubleClick={() => host.classList.toggle('big')} onMouseDown={() => { host.style.zIndex = String(++z); }}>
         <div className="fw-t"><b>{title}</b><span>{sub}</span></div>
-        <button className="btn" onClick={() => openInBrowser(path)} title="Open at full size in its own browser tab">Open in new tab ↗</button>
+        <button className="btn" onClick={() => openInBrowser(path, title)} title="Open at full size in its own browser tab">Open in new tab ↗</button>
         <button className="btn icon" onClick={close} title="Close (Esc)">✕</button>
       </div>
       <div className="fw-b" ref={inner} />

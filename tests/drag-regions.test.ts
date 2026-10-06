@@ -68,8 +68,26 @@ test('the pop-out browser window: the page marks itself as the app, the header l
   const pad = Number(css.match(/body\.in-app \.bw-window-h \{[^}]*padding-left: (\d+)px/)?.[1]);
   const x = Number(readFileSync('desktop/main.cjs', 'utf8').match(/trafficLightPosition: \{ x: (\d+)/)?.[1]);
   assert.ok(x + 3 * 14 + 2 * 6 + 8 <= pad, `the window buttons end at ${x + 54} px, the header text starts at ${pad} px`);
-  // the buttons are about 14 px high from y 14: the header is at least 40 px high
-  assert.match(css, /body\.in-app \.bw-window-h \{[^}]*min-height: 40px;/);
+  // the buttons are about 14 px high from y 14: the header has room below them for dragging
+  assert.match(css, /body\.in-app \.bw-window-h \{[^}]*min-height: 44px;/);
+});
+
+test('HTML documents open in the shared pop-out frame with a sandboxed, no-drag view', () => {
+  const docs = readFileSync('web/src/components/Docs.tsx', 'utf8');
+  const review = readFileSync('web/src/components/Review.tsx', 'utf8');
+  const page = readFileSync('web/src/components/DocumentWindow.tsx', 'utf8');
+  const frame = readFileSync('web/src/components/PopoutWindow.tsx', 'utf8');
+  const main = readFileSync('web/src/main.tsx', 'utf8');
+  const desktop = readFileSync('desktop/main.cjs', 'utf8');
+  const css = readFileSync('web/src/app.css', 'utf8');
+  assert.ok(docs.includes('documentWindowUrl(path, name) : fileUrl(path)'));
+  assert.match(review, /isHtml\(item\.name\) \? documentWindowUrl\(item\.path, item\.name\)/);
+  assert.match(main, /page\.has\('document'\) \? <DocumentWindowPage \/>/);
+  assert.match(page, /<PopoutWindow title=\{title\}>/);
+  assert.match(page, /sandbox="allow-scripts allow-popups"/);
+  assert.match(frame, /className="bw-window-h"/);
+  assert.match(css, /body\.in-app \.bw-window > :not\(\.bw-window-h\) \{ -webkit-app-region: no-drag; \}/);
+  assert.match(desktop, /if \(sameOrigin\(url\)\) openWindow\(popoutUrl\(url\)/);
 });
 
 test('the desktop app opens a pop-out browser window where the last one was', () => {

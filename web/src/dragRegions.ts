@@ -98,7 +98,7 @@ export function dragRegionReport(boxAt: typeof dragBoxAt, boxesOf: typeof dragBo
 export type HeaderItem = { what: string; region: string; control: boolean; problem: string };
 export type HeaderReport = { items: HeaderItem[]; samples: number; problems: string[] };
 
-// The header of a window without a title bar (the pop-out browser window: .bw-window-h) and the view below it.
+// The shared header of a pop-out browser or HTML document window (.bw-window-h) and the view below it.
 // - the header itself has -webkit-app-region: drag
 // - each element in the header is listed; a control in it must be no-drag
 // - points along the middle of the header, every 16 px: a point on a control is outside the drag area, every other
