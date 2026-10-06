@@ -28,7 +28,12 @@ const signins = await import('../server/browser-signins.ts');
 const { existsSync, readFileSync } = await import('node:fs');
 const skip = existsSync(CHROME) ? false : 'Chrome is not installed';
 // ---------- the sign-in window with a stand-in for Chrome ----------
-const server = createServer((_req, res) => { res.writeHead(200, { 'content-type': 'text/html' }); res.end('<title>site</title>'); });
+const server = createServer((req, res) => {
+  res.writeHead(200, { 'content-type': 'text/html' });
+  if (req.url === '/start') return res.end('<script>sessionStorage.setItem("oauth-state", "pending"); location.replace("/handler")</script>');
+  if (req.url === '/handler') return res.end('<script>document.title = sessionStorage.getItem("oauth-state") === "pending" ? "signed in" : "missing initial state"; if (document.title === "signed in") localStorage.setItem("firebase-test", "signed-in")</script>');
+  res.end('<title>site</title>');
+});
 await new Promise<void>(r => server.listen(0, '127.0.0.1', () => r()));
 const PORT = (server.address() as { port: number }).port;
 function cdp(wsUrl: string, method: string, params: object = {}): Promise<any> {
@@ -87,8 +92,38 @@ test('the view knows the sign-in pages and the Google page of a refused sign-in'
   assert.equal(signinPage('https://github.com/anthropics'), null);
   assert.ok(signinPage('https://acme.okta.com/app/x'));
   assert.equal(signinPage('http://accounts.google.com/'), null);
+  assert.deepEqual(signinPage('https://sekai-399502.firebaseapp.com/__/auth/handler', 'Unable to process request due to missing initial state.'),
+    { site: 'sekai-399502.firebaseapp.com', refused: true, target: '', firebase: true });
+  assert.equal(signinPage('https://accounts.google.com/o/oauth2/v2/auth?redirect_uri=https%3A%2F%2Fsekai-399502.firebaseapp.com%2F__%2Fauth%2Fhandler')?.firebase, true);
   assert.equal(signinPage('https://example.com/'), null);
   assert.equal(signinPage('not a url'), null);
+});
+
+test('Firebase sign-in opens the app and copies browser site data after the window closes', { skip, timeout: 240000 }, async () => {
+  const task = await browser.ensure('w2');
+  const taskPages = await (await fetch(`http://127.0.0.1:${task.port}/json/list`)).json() as { type: string; webSocketDebuggerUrl: string }[];
+  const taskPage = taskPages.find(p => p.type === 'page')!;
+  await cdp(taskPage.webSocketDebuggerUrl, 'Page.navigate', { url: `http://127.0.0.1:${PORT}/handler` });
+  await waitFor(async () => (await cdp(taskPage.webSocketDebuggerUrl, 'Runtime.evaluate', { expression: 'document.title', returnByValue: true })).result.value === 'missing initial state', { description: 'handler without state', timeoutMs: 15000 });
+  await signins.withTemplate(async ws => {
+    const port = browser.readMeta('template').port!;
+    const pages = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json() as { type: string; webSocketDebuggerUrl: string }[];
+    const page = pages.find(p => p.type === 'page')!;
+    await cdp(page.webSocketDebuggerUrl, 'Page.navigate', { url: `http://127.0.0.1:${PORT}/start` });
+    await waitFor(async () => (await cdp(page.webSocketDebuggerUrl, 'Runtime.evaluate', { expression: 'document.title', returnByValue: true })).result.value === 'signed in', { description: 'redirect with state', timeoutMs: 15000 });
+  });
+  await assert.rejects(signins.signinWindow('w2', 'https://sekai-399502.firebaseapp.com/__/auth/handler', true), /app page/);
+  const app = 'https://stage-api.sekai.chat/sekai-agent-ts/agent-eval/';
+  const state = await signins.signinWindow('w2', app, true);
+  assert.equal(state.profile, true);
+  assert.equal(readFileSync(join(root, 'window-args'), 'utf8').trim().split(' ').at(-1), app);
+  await waitFor(() => browser.readMeta('w2').signinWindow?.state === 'done', { timeoutMs: 120000 });
+  const port = browser.readMeta('w2').port!;
+  const pages = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json() as { type: string; webSocketDebuggerUrl: string }[];
+  const page = pages.find(p => p.type === 'page')!;
+  await cdp(page.webSocketDebuggerUrl, 'Page.navigate', { url: `http://127.0.0.1:${PORT}/` });
+  await waitFor(async () => (await cdp(page.webSocketDebuggerUrl, 'Runtime.evaluate', { expression: 'location.origin', returnByValue: true })).result.value === `http://127.0.0.1:${PORT}`, { description: 'task app page', timeoutMs: 15000 });
+  assert.equal((await cdp(page.webSocketDebuggerUrl, 'Runtime.evaluate', { expression: "localStorage.getItem('firebase-test')", returnByValue: true })).result.value, 'signed-in');
 });
 
 const cookieNames = async (id: string) => ((await cdp((await browser.ensure(id)).ws, 'Storage.getCookies')).cookies as { name: string; domain: string }[]).map(c => `${c.name}@${c.domain}`);

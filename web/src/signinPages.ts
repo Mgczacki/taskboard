@@ -4,8 +4,13 @@
 // "Error 500 (Server Error)!!1" page on accounts.google.com, the /signin/rejected page, or "Couldn't sign you in".
 // target: the address that opens in the normal window. For Google it is the service in the continue parameter (for
 // example https://mail.google.com/), or https://accounts.google.com/, because the address of a refused step does not
-// work again. For other sites it is the page itself.
-export interface SigninPage { site: string; refused: boolean; target: string }
+// work again. For other sites it is the page itself. Firebase handlers need the user to enter the app page instead.
+export interface SigninPage { site: string; refused: boolean; target: string; firebase?: boolean }
+
+const firebaseHandler = (url: string) => {
+  try { const u = new URL(url); return u.protocol === 'https:' && u.hostname.endsWith('.firebaseapp.com') && u.pathname.startsWith('/__/auth/handler'); }
+  catch { return false; }
+};
 
 const HOSTS: { test: (host: string, path: string) => boolean; site: string }[] = [
   { test: h => h === 'accounts.google.com', site: 'google.com' },
@@ -19,6 +24,9 @@ export function signinPage(url: string, title = ''): SigninPage | null {
   try { u = new URL(url); } catch { return null; }
   if (u.protocol !== 'https:') return null;
   const host = u.hostname.toLowerCase();
+  if (firebaseHandler(u.href)) return { site: host, refused: true, target: '', firebase: true };
+  if (host === 'accounts.google.com' && [...u.searchParams.values()].some(firebaseHandler))
+    return { site: host, refused: false, target: '', firebase: true };
   const hit = HOSTS.find(h => h.test(host, u.pathname));
   if (!hit) return null;
   if (hit.site !== 'google.com') return { site: host, refused: false, target: u.href };
