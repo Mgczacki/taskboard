@@ -27,6 +27,8 @@ import { fitToolbar, sameFit, type Fit } from '../toolbarFit';
 import { PopMenu } from './PopMenu';
 import { GroupNeeds, ManagerBadge, ManagerMark, ManagerRoleButton, ManagerScope, WaitLabel, useBoards } from './ManagerBoard';
 import { groupManager } from '../managerBoard';
+import { loadAccounts, type Account } from './Accounts';
+import { CanvasAccountChip } from './CanvasAccountChip';
 
 type Layout = 'columns' | 'grid' | 'rows';
 const MINW = 640;
@@ -70,6 +72,18 @@ interface Props {
 export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTaskId, panelTab, selected, toggleSel, clearSel, solo, focusMode, setFocusMode, toast, newTask, newTaskToFocus, onNewTaskFocused, onSpinOff }: Props) {
   // the boards of all groups: the ◆ need you chip of each group tab and the wait text of each window header
   useBoards();
+  const [accounts, setAccounts] = useState<Pick<Account, 'id' | 'name'>[]>([]);
+  useEffect(() => {
+    let active = true;
+    const load = () => loadAccounts().then(list => {
+      if (!active) return;
+      const names = list.map(({ id, name }) => ({ id, name }));
+      setAccounts(old => old.length === names.length && old.every((account, i) => account.id === names[i].id && account.name === names[i].name) ? old : names);
+    }).catch(() => {});
+    void load();
+    const timer = setInterval(load, 15000);
+    return () => { active = false; clearInterval(timer); };
+  }, []);
   const lk = (k: string) => `tb-cv-${view}-${k}`;
   const [layout, setLayout] = useState<Layout>(() => (localStorage.getItem(lk('layout')) as Layout) || 'columns');
   // Links: a task after the open tasks that block it (links.ts). Computed on each change and never saved as the order.
@@ -560,7 +574,7 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
         {/* renderOrder: the page keeps the windows in one fixed order and CSS order puts them in place, so a move does not remount a terminal */}
         {measuredW !== null && renderOrder(shown).map(({ item: t, at: i }) => {
           const sp = splitOf(t.id), h = held(t.id);
-          return <CanvasWin key={t.id} t={t} i={i} act={act} linkTasks={t.link ? tasks : NO_TASKS}
+          return <CanvasWin key={t.id} t={t} accounts={accounts} i={i} act={act} linkTasks={t.link ? tasks : NO_TASKS}
             cls={`win ${t.status} ${t.link?.state === 'superseded' ? 'superseded' : ''} ${focused === t.id ? 'focus' : ''} ${selected.has(t.id) ? 'selected' : ''} ${tileDrag?.id === t.id ? 'dragging' : ''} ${tileSlotClass(i)} ${layout === 'rows' ? 'vslot' : ''}`}
             span={layout === 'grid' && !maxId ? (i < tileCount - lastRow ? lastRow : gridCols) : 0}
             ending={ending === t.id} asking={asking.has(t.id)} maxed={maxId === t.id} splitOpen={sp.open} splitSide={sp.side}
@@ -580,13 +594,13 @@ interface WinActions {
 }
 const NO_TASKS: Task[] = [];
 interface WinProps {
-  t: Task; i: number; act: React.RefObject<WinActions>; linkTasks: Task[]; cls: string; span: number; ending: boolean; asking: boolean; maxed: boolean;
+  t: Task; accounts: Pick<Account, 'id' | 'name'>[]; i: number; act: React.RefObject<WinActions>; linkTasks: Task[]; cls: string; span: number; ending: boolean; asking: boolean; maxed: boolean;
   splitOpen: boolean; splitSide: Split['side']; heldTerminal: boolean; heldBrowser: boolean; font: number; hideButton: boolean;
 }
 // One Canvas window. It draws again only when one of its props changes: its task object (the store keeps the object of a
 // task that did not change), its place, or its own state in the Canvas. linkTasks is the task list only for a task
 // with links (its link ports name other tasks), and an empty list that never changes for the others.
-const CanvasWin = memo(function CanvasWin({ t, i, act, linkTasks, cls, span, ending, asking, maxed, splitOpen, splitSide, heldTerminal, heldBrowser, font, hideButton }: WinProps) {
+const CanvasWin = memo(function CanvasWin({ t, accounts, i, act, linkTasks, cls, span, ending, asking, maxed, splitOpen, splitSide, heldTerminal, heldBrowser, font, hideButton }: WinProps) {
   const a = () => act.current!;
   const sp: Split = { open: splitOpen, side: splitSide };
   // The buttons of the header. A window too narrow for all of them shows ⋯ in their place, and they show in its menu
@@ -622,14 +636,15 @@ const CanvasWin = memo(function CanvasWin({ t, i, act, linkTasks, cls, span, end
         <span className="grip" title={`Drag to move this window between two others, or onto a group tab. Move it one place: ${keysText('windowEarlier')} / ${keysText('windowLater')}`}>⠿</span><span className="ix">{i + 1}</span><LinkPorts t={t} tasks={linkTasks} onGo={id => a().goTask(id)} side="left" /><Dot s={t.status} /><span className="n">#{t.num}</span><span className="ti">{t.title}</span><ManagerBadge id={t.id} /><LinkPorts t={t} tasks={linkTasks} onGo={id => a().goTask(id)} side="right" />
         <PendingMarker taskId={t.id} small><WaitLabel taskId={t.id}><span className={`st st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span></WaitLabel></PendingMarker>
         {narrow ? <ErrorMark t={t} /> : <ErrorChip t={t} />}
-        {!narrow && <><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} /><BrowserAskChip t={t} /><RuntimeButton t={t} small onOpen={tab => a().openPanel(t.id, tab)} /></>}
+        {!narrow && <AgentChip a={t.agent} />}<CanvasAccountChip task={t} accounts={accounts} />
+        {!narrow && <><MachineChip t={t} /><WhereChip t={t} /><BrowserAskChip t={t} /><RuntimeButton t={t} small onOpen={tab => a().openPanel(t.id, tab)} /></>}
         {ending ? <><span className="sel-warn">End & archive?</span><button className="b" onClick={() => a().endTask(t)}>Yes, end it</button><button className="b" onClick={() => a().setEnding(null)}>Cancel</button></> : <>
         {(t.status === 'suspended' || t.openElsewhere) && <button className="b" onClick={() => a().openPanel(t.id)}>{t.openElsewhere ? 'Options…' : 'Resume…'}</button>}
         {!narrow && <ManagerRoleButton t={t} variant="head" toast={m => a().toast(m)} />}
         {!narrow ? acts.map(x => <button key={x.k} className={`b ${x.on ? 'on' : ''}`} title={x.title} aria-label={x.aria} onClick={x.fn}>{x.icon}</button>)
           : <button ref={moreRef} className={`b wmore ${menuOpen ? 'on' : ''}`} aria-haspopup="true" aria-expanded={menuOpen} aria-label="Window menu" title={`The buttons of this window: ${acts.map(x => x.text).join(', ')}`} onClick={() => setMenuOpen(o => !o)}>⋯</button>}
         {narrow && menuOpen && <PopMenu anchor={moreRef.current} close={closeMenu} className="wmenu" label={`Window #${t.num}`}>
-          <div className="wmenu-chips"><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} /><BrowserAskChip t={t} /><RuntimeButton t={t} small onOpen={tab => { setMenuOpen(false); a().openPanel(t.id, tab); }} /></div>
+          <div className="wmenu-chips"><AgentChip a={t.agent} /><CanvasAccountChip task={t} accounts={accounts} /><MachineChip t={t} /><WhereChip t={t} /><BrowserAskChip t={t} /><RuntimeButton t={t} small onOpen={tab => { setMenuOpen(false); a().openPanel(t.id, tab); }} /></div>
           {acts.map(x => <button key={x.k} className={`mi ${x.on ? 'on' : ''}`} title={x.title} aria-label={x.aria} onClick={() => { setMenuOpen(false); x.fn(); }}><span className="mi-ico">{x.icon}</span>{x.text}</button>)}
           <ManagerRoleButton t={t} variant="menu" toast={m => { setMenuOpen(false); a().toast(m); }} />
         </PopMenu>}</>}
