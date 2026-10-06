@@ -24,7 +24,7 @@ import * as managerEvents from './manager-events.ts';
 import { deliverText } from './deliver-text.ts';
 import { boxState, type PromptAgent } from './type-command.ts';
 import {
-  applyHit, claudeKind, CONTINUABLE, continueDecision, errorFromScreen, kindLabel, MAX_TRIES, nextDue, screenSignature, shortLabel, stalled,
+  applyHit, claudeKind, CONTINUABLE, continueDecision, errorFromScreen, isCodexCapacity, kindLabel, MAX_TRIES, nextDue, screenSignature, shortLabel, stalled,
   transcriptError, type AgentError, type ErrorHit,
 } from './agent-errors.ts';
 
@@ -46,6 +46,14 @@ export function autoContinueOn(t: Pick<Task, 'autoContinue' | 'account' | 'agent
   const acc = s.accounts[t.account || accounts.defaultFor(t.agent)?.id || ''];
   return acc ? acc === 'on' : s.autoContinue;
 }
+function policy(t: Task, hit: ErrorHit) {
+  if (isCodexCapacity(t.agent, hit)) {
+    const c = machine.get().agentErrors.codexCapacity;
+    return { enabled: c.enabled, schedule: { intervalMs: c.intervalSeconds * 1000, maxTries: c.maxRetries } };
+  }
+  return { enabled: autoContinueOn(t), schedule: undefined };
+}
+export function errorAutoContinueOn(t: Task): boolean { return t.agentError ? policy(t, t.agentError).enabled : autoContinueOn(t); }
 
 function describe(e: AgentError): string {
   const attempt = e.attempt ? ` (attempt ${e.attempt}${e.maxAttempts ? `/${e.maxAttempts}` : ''})` : '';
@@ -53,9 +61,9 @@ function describe(e: AgentError): string {
 }
 function plan(e: AgentError, t: Task): string {
   if (!['overloaded', 'rate_limited', 'server_error', 'network'].includes(e.kind)) return '';
-  if (!autoContinueOn(t)) return ' Auto-continue is off.';
+  if (!policy(t, e).enabled) return ' Auto-continue is off.';
   if (e.auto?.off) return ` Auto-continue stopped: ${e.auto.off}`;
-  return e.auto?.nextAt ? ` Taskboard types "${machine.get().agentErrors.message}" at ${clock(Date.parse(e.auto.nextAt))} (try ${(e.auto.tries || 0) + 1} of ${MAX_TRIES}).` : '';
+  return e.auto?.nextAt ? ` Taskboard types "${machine.get().agentErrors.message}" at ${clock(Date.parse(e.auto.nextAt))} (try ${(e.auto.tries || 0) + 1} of ${e.auto.maxTries || MAX_TRIES}).` : '';
 }
 
 // The label that lists show (tb list, the task row), or '': an error shows on a stopped task, and a retry or an
@@ -69,8 +77,12 @@ export function errorLabel(t: Task): string {
 
 // Record a stop: status "stopped", the reason, the task log, and an event for a group manager.
 export function stop(t: Task, hit: ErrorHit) {
-  const cur = store.get(t.id); if (!cur || cur.status === 'archived') return;
-  const e = applyHit(cur.agentError, hit, Date.now(), autoContinueOn(cur));
+  const cur = store.get(t.id); if (!cur || ['archived', 'parked', 'suspended'].includes(cur.status)) return;
+  if (cur.status === 'stopped' && cur.agentError?.phase === 'stopped' && cur.agentError.text === hit.text) return;
+  const p = policy(cur, hit);
+  const previous = cur.agentError && isCodexCapacity(cur.agent, cur.agentError) === isCodexCapacity(cur.agent, hit) ? cur.agentError : undefined;
+  const e = applyHit(previous, hit, Date.now(), p.enabled, p.schedule);
+  if (e.auto && !e.auto.session) e.auto = { ...e.auto, account: cur.account, model: cur.model, session: cur.session };
   const label = shortLabel(e);
   const observed = hit.source === 'stall' ? 'Inferred from' : 'Read from';
   const source = `${observed} ${SOURCE_TEXT[hit.source]} at ${clock()}: ${describe(e)}.${plan(e, cur)}`;
@@ -87,7 +99,8 @@ export function stop(t: Task, hit: ErrorHit) {
 function retrying(t: Task, hit: ErrorHit) {
   const prev = t.agentError;
   if (prev?.phase === 'retrying' && prev.attempt === hit.attempt && prev.text === hit.text) return;
-  const e = applyHit(prev, hit, Date.now(), autoContinueOn(t));
+  const p = policy(t, hit);
+  const e = applyHit(prev, hit, Date.now(), p.enabled, p.schedule);
   store.update(t.id, { agentError: e, statusSource: `Read from the screen at ${clock()}: the agent retries after ${kindLabel(e)} (${describe(e)}).` });
   // one log line for each episode, not one for each attempt
   if (prev?.phase !== 'retrying') store.appendLog(t.id, { did: `The agent retries by itself after an error: ${describe(e)}.`, next: 'Nothing: the agent retries on its own.' });
@@ -212,47 +225,72 @@ export async function autoContinue(t: Task): Promise<void> {
   if (!e || e.phase !== 'stopped' || t.status !== 'stopped' || typing.has(t.id)) return;
   const now = Date.now();
   // turned on after the stop: plan the next try from the time of the stop
-  if (!e.auto?.nextAt && !e.auto?.off && autoContinueOn(t) && CONTINUABLE.includes(e.kind)) {
-    const due = nextDue(Date.parse(e.seen) || now, e.auto?.tries || 0);
-    if (due !== null) { store.update(t.id, { agentError: { ...e, auto: { ...e.auto, tries: e.auto?.tries || 0, nextAt: new Date(due).toISOString() } } }); return; }
+  const p = policy(t, e);
+  if (p.enabled && e.auto?.off === 'Auto-continue is off for this task.') {
+    store.update(t.id, { agentError: { ...e, auto: { ...e.auto, off: undefined } } });
+    return;
+  }
+  if (p.schedule && (e.auto?.tries || 0) >= p.schedule.maxTries && !e.auto?.off) {
+    const off = `Taskboard typed the message ${e.auto?.tries || 0} times and the error came back each time.`;
+    store.update(t.id, { agentError: { ...e, auto: { ...e.auto, tries: e.auto?.tries || 0, nextAt: undefined, off } } });
+    return;
+  }
+  if (e.auto?.nextAt && !p.enabled) {
+    store.update(t.id, { agentError: { ...e, auto: { ...e.auto, nextAt: undefined, off: 'Auto-continue is off for this task.' } } });
+    return;
+  }
+  if (!e.auto?.nextAt && !e.auto?.off && p.enabled && CONTINUABLE.includes(e.kind)) {
+    const due = nextDue(Date.parse(e.seen) || now, e.auto?.tries || 0, 0, p.schedule);
+    if (due !== null) { store.update(t.id, { agentError: { ...e, auto: { ...e.auto, tries: e.auto?.tries || 0, maxTries: p.schedule?.maxTries || MAX_TRIES, account: t.account, model: t.model, session: t.session, nextAt: new Date(due).toISOString() } } }); return; }
   }
   if (!e.auto?.nextAt) return;
   const due = e.auto?.nextAt ? Date.parse(e.auto.nextAt) : NaN;
   if (!(due <= now)) return; // nothing to read before it is due
-  const a = accounts.get(t.account) || accounts.defaultFor(t.agent);
-  // with colors: the box check tells a typed draft from the gray hint text only by its color (type-command.ts typedText)
-  const screen = await tmux.captureStyled(t.session);
-  const box = boxState(screen, t.agent as PromptAgent);
-  const decision = continueDecision({
-    enabled: autoContinueOn(t), status: t.status, error: e, accountLimited: !!a?.limited, questionOpen: pending.hasOpen(t.id),
-    waitsOnUser: t.waitingOn?.on === 'user', box, now,
-  });
-  if (decision.act === 'wait') {
-    if (e.auto && e.auto.wait !== decision.reason) store.update(t.id, { agentError: { ...e, auto: { ...e.auto, wait: decision.reason } } });
-    return;
-  }
-  if (decision.act === 'off') {
-    store.update(t.id, { agentError: { ...e, auto: { ...e.auto, tries: e.auto?.tries || 0, nextAt: undefined, off: decision.reason } } });
-    store.appendLog(t.id, { did: `Auto-continue did not type the message: ${decision.reason}`, wait: 'The user: continue the task when the model works again.' });
-    return;
-  }
-  const text = machine.get().agentErrors.message;
   typing.add(t.id);
   try {
-    typed.set(t.id, { at: Date.now(), text });
-    await deliverText({ session: t.session, agent: t.agent, num: t.num, id: t.id }, text, undefined, { keepDraft: false });
-    const tries = (e.auto?.tries || 0) + 1;
-    const next = { ...e, phase: 'resumed' as const, auto: { tries, lastAt: new Date().toISOString() } };
-    store.update(t.id, { status: 'working', agentError: next, stopReason: undefined, statusSource: `Auto-continue at ${clock()}: Taskboard typed "${text}" after ${kindLabel(e)} (try ${tries} of ${MAX_TRIES}).` });
-    store.appendLog(t.id, { did: `Auto-continue: typed "${text}" after ${kindLabel(e)} (${e.text}). Try ${tries} of ${MAX_TRIES}. It is an ordinary turn of the agent.`, next: tries < MAX_TRIES ? 'Taskboard tries again after the next wait if the error comes back.' : 'No more tries for this error.' });
-  } catch (err) {
-    // The text may have reached the agent although the check after Enter failed. Typing again could send it twice, so
-    // auto-continue ends for this error and the task shows why.
-    typed.delete(t.id);
-    const reason = err instanceof Error ? err.message : String(err);
-    const off = `Typing failed, so Taskboard does not try again for this error: ${reason}`.slice(0, 300);
-    store.update(t.id, { agentError: { ...e, auto: { ...e.auto, tries: e.auto?.tries || 0, nextAt: undefined, wait: undefined, off } } });
-    store.appendLog(t.id, { did: `Auto-continue: ${off}`, wait: 'The user: look at the input box in the terminal, then continue the task.' });
+    const current = store.get(t.id);
+    if (!current || current.status !== 'stopped' || current.agentError?.auto?.nextAt !== e.auto.nextAt) return;
+    const a = accounts.get(current.account) || accounts.defaultFor(current.agent);
+    // with colors: the box check tells a typed draft from the gray hint text only by its color (type-command.ts typedText)
+    const screen = await tmux.captureStyled(t.session);
+    const box = boxState(screen, t.agent as PromptAgent);
+    const latest = store.get(t.id);
+    if (!latest || latest.status !== 'stopped' || latest.agentError?.auto?.nextAt !== e.auto.nextAt) return;
+    const sameTask = isCodexCapacity(t.agent, e)
+      ? e.auto?.session === latest.session && e.auto?.account === latest.account && e.auto?.model === latest.model
+      : e.auto?.session === undefined || (e.auto.session === latest.session && e.auto.account === latest.account && e.auto.model === latest.model);
+    const decision = continueDecision({
+      enabled: p.enabled && sameTask, status: latest.status, error: e, accountLimited: !!a?.limited, questionOpen: pending.hasOpen(t.id),
+      waitsOnUser: latest.waitingOn?.on === 'user', box, now, maxTries: p.schedule?.maxTries,
+    });
+    if (decision.act === 'wait') {
+      if (e.auto && e.auto.wait !== decision.reason) store.update(t.id, { agentError: { ...e, auto: { ...e.auto, wait: decision.reason } } });
+      return;
+    }
+    if (decision.act === 'off') {
+      store.update(t.id, { agentError: { ...e, auto: { ...e.auto, tries: e.auto?.tries || 0, nextAt: undefined, off: decision.reason } } });
+      store.appendLog(t.id, { did: `Auto-continue did not type the message: ${decision.reason}`, wait: 'The user: continue the task when the model works again.' });
+      return;
+    }
+    const text = machine.get().agentErrors.message;
+    try {
+      typed.set(t.id, { at: Date.now(), text });
+      await deliverText({ session: t.session, agent: t.agent, num: t.num, id: t.id }, text, undefined, { keepDraft: false });
+      if (store.get(t.id)?.status !== 'stopped') { typed.delete(t.id); return; }
+      const tries = (e.auto?.tries || 0) + 1;
+      const maxTries = p.schedule?.maxTries || MAX_TRIES;
+      const next = { ...e, phase: 'resumed' as const, auto: { ...e.auto, tries, maxTries, nextAt: undefined, lastAt: new Date().toISOString() } };
+      store.update(t.id, { status: 'working', agentError: next, stopReason: undefined, statusSource: `Auto-continue at ${clock()}: Taskboard typed "${text}" after ${kindLabel(e)} (try ${tries} of ${maxTries}).` });
+      store.appendLog(t.id, { did: `Auto-continue: typed "${text}" after ${kindLabel(e)} (${e.text}). Try ${tries} of ${maxTries}. It is an ordinary turn of the agent.`, next: tries < maxTries ? 'Taskboard tries again after the next wait if the error comes back.' : 'No more tries for this error.' });
+    } catch (err) {
+      // The text may have reached the agent although the check after Enter failed. Typing again could send it twice, so
+      // auto-continue ends for this error and the task shows why.
+      typed.delete(t.id);
+      const reason = err instanceof Error ? err.message : String(err);
+      const off = `Typing failed, so Taskboard does not try again for this error: ${reason}`.slice(0, 300);
+      store.update(t.id, { agentError: { ...e, auto: { ...e.auto, tries: e.auto?.tries || 0, nextAt: undefined, wait: undefined, off } } });
+      store.appendLog(t.id, { did: `Auto-continue: ${off}`, wait: 'The user: look at the input box in the terminal, then continue the task.' });
+    }
   } finally { typing.delete(t.id); }
 }
 

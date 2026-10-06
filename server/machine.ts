@@ -58,8 +58,8 @@ export interface MachineSettings {
   // model, shows "Stalled" (0: never).
   agentErrors: AgentErrorSettings;
 }
-export interface AgentErrorSettings { autoContinue: boolean; message: string; stallMinutes: number; accounts: Record<string, 'on' | 'off'> }
-export const DEFAULT_AGENT_ERRORS: AgentErrorSettings = { autoContinue: false, message: 'continue', stallMinutes: 5, accounts: {} };
+export interface AgentErrorSettings { autoContinue: boolean; message: string; stallMinutes: number; accounts: Record<string, 'on' | 'off'>; codexCapacity: { enabled: boolean; intervalSeconds: number; maxRetries: number } }
+export const DEFAULT_AGENT_ERRORS: AgentErrorSettings = { autoContinue: false, message: 'continue', stallMinutes: 5, accounts: {}, codexCapacity: { enabled: false, intervalSeconds: 60, maxRetries: 5 } };
 export function readAgentErrors(saved: unknown): AgentErrorSettings {
   const s = (saved && typeof saved === 'object' ? saved : {}) as Partial<AgentErrorSettings>;
   const accounts = Object.fromEntries(Object.entries(s.accounts && typeof s.accounts === 'object' ? s.accounts : {}).filter(([, v]) => v === 'on' || v === 'off')) as Record<string, 'on' | 'off'>;
@@ -68,6 +68,11 @@ export function readAgentErrors(saved: unknown): AgentErrorSettings {
     message: typeof s.message === 'string' && s.message.trim() ? s.message.trim().slice(0, 500) : DEFAULT_AGENT_ERRORS.message,
     stallMinutes: Number.isInteger(s.stallMinutes) && s.stallMinutes! >= 0 && s.stallMinutes! <= 240 ? s.stallMinutes! : DEFAULT_AGENT_ERRORS.stallMinutes,
     accounts,
+    codexCapacity: {
+      enabled: s.codexCapacity?.enabled === true,
+      intervalSeconds: Number.isInteger(s.codexCapacity?.intervalSeconds) && s.codexCapacity!.intervalSeconds >= 5 && s.codexCapacity!.intervalSeconds <= 3600 ? s.codexCapacity!.intervalSeconds : 60,
+      maxRetries: Number.isInteger(s.codexCapacity?.maxRetries) && s.codexCapacity!.maxRetries >= 1 && s.codexCapacity!.maxRetries <= 100 ? s.codexCapacity!.maxRetries : 5,
+    },
   };
 }
 export type ControllerAgent = 'claude' | 'codex' | 'antigravity';
@@ -287,10 +292,15 @@ export function update(patch: { name?: string; routingRules?: string; newTaskDef
     if (a.autoContinue !== undefined && typeof a.autoContinue !== 'boolean') throw new Error('Auto-continue must be on or off.');
     if (a.message !== undefined && (typeof a.message !== 'string' || !a.message.trim() || a.message.length > 500 || /[\r\n]/.test(a.message))) throw new Error('The auto-continue message must be one line of 1 to 500 characters.');
     if (a.stallMinutes !== undefined && !(Number.isInteger(a.stallMinutes) && (a.stallMinutes as number) >= 0 && (a.stallMinutes as number) <= 240)) throw new Error('The stall time must be a whole number of minutes from 0 (never) to 240.');
+    const capacity = a.codexCapacity as Record<string, unknown> | undefined;
+    if (capacity !== undefined && (!capacity || typeof capacity !== 'object' || Array.isArray(capacity))) throw new Error('Codex capacity settings must be an object.');
+    if (capacity?.enabled !== undefined && typeof capacity.enabled !== 'boolean') throw new Error('Codex capacity retry must be on or off.');
+    if (capacity?.intervalSeconds !== undefined && !(Number.isInteger(capacity.intervalSeconds) && (capacity.intervalSeconds as number) >= 5 && (capacity.intervalSeconds as number) <= 3600)) throw new Error('The retry interval must be 5 to 3600 seconds.');
+    if (capacity?.maxRetries !== undefined && !(Number.isInteger(capacity.maxRetries) && (capacity.maxRetries as number) >= 1 && (capacity.maxRetries as number) <= 100)) throw new Error('The retry count must be 1 to 100.');
     if (a.accounts !== undefined && (!a.accounts || typeof a.accounts !== 'object' || Object.values(a.accounts).some(v => !['on', 'off', 'default'].includes(v as string)))) throw new Error('Each account takes on, off or default.');
     const accounts = { ...settings.agentErrors.accounts };
     for (const [id, v] of Object.entries((a.accounts || {}) as Record<string, string>)) { if (v === 'default') delete accounts[id]; else accounts[id] = v as 'on' | 'off'; }
-    settings.agentErrors = { ...settings.agentErrors, ...(a.autoContinue !== undefined ? { autoContinue: a.autoContinue as boolean } : {}), ...(a.message !== undefined ? { message: (a.message as string).trim() } : {}), ...(a.stallMinutes !== undefined ? { stallMinutes: a.stallMinutes as number } : {}), accounts };
+    settings.agentErrors = { ...settings.agentErrors, ...(a.autoContinue !== undefined ? { autoContinue: a.autoContinue as boolean } : {}), ...(a.message !== undefined ? { message: (a.message as string).trim() } : {}), ...(a.stallMinutes !== undefined ? { stallMinutes: a.stallMinutes as number } : {}), accounts, codexCapacity: { ...settings.agentErrors.codexCapacity, ...capacity } };
   }
   if (patch.a2aSlackTeamId !== undefined) {
     if (typeof patch.a2aSlackTeamId !== 'string' || (patch.a2aSlackTeamId.trim() && !/^T[A-Z0-9]{6,20}$/.test(patch.a2aSlackTeamId.trim()))) throw new Error('Give a Slack team ID such as T08LG8BQH1P, or leave it empty.');

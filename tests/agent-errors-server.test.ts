@@ -14,15 +14,15 @@ process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
 process.env.TASKBOARD_TMUX_SOCKET = `tb-agent-errors-${process.pid}`;
 mkdirSync(process.env.TASKBOARD_DIR);
-writeFileSync(join(root, 'state', 'machine.json'), JSON.stringify({ name: 'agent-errors-test', controller: { autostart: false, remoteControl: false }, permissions: { controllerNeedsApproval: false, agentsNeedApproval: false, trustWorkspaces: false, autoReview: false }, agentErrors: { autoContinue: true, message: 'continue', stallMinutes: 10, accounts: {} } }));
+writeFileSync(join(root, 'state', 'machine.json'), JSON.stringify({ name: 'agent-errors-test', controller: { autostart: false, remoteControl: false }, permissions: { controllerNeedsApproval: false, agentsNeedApproval: false, trustWorkspaces: false, autoReview: false }, agentErrors: { autoContinue: true, message: 'continue', stallMinutes: 10, accounts: {}, codexCapacity: { enabled: true, intervalSeconds: 60, maxRetries: 5 } } }));
 const bin = join(root, 'bin'); mkdirSync(bin);
 for (const name of ['claude', 'codex', 'agy']) { writeFileSync(join(bin, name), `#!/bin/sh\n[ "$1" = auth ] && echo '{"loggedIn":true}' || echo 'Logged in using ChatGPT'\n`); chmodSync(join(bin, name), 0o755); }
 const fake = join(root, 'fake.sh');
 // After a line was sent it draws the screen again with an empty box, as the agents do after a submit.
 writeFileSync(fake, `#!/bin/bash\ndraw() { clear; printf '%b' "$(cat "$1")"; printf '\\033[1A\\033[%sG' "$2"; }\ndraw "$1" "\${3:-3}"\nwhile IFS= read -r line; do echo "$line" >> "$2"; draw "$1" 3; done\nsleep 600\n`); chmodSync(fake, 0o755);
-// the retry screen changes to a normal screen after 6 s, as Claude Code does when a retry gets an answer
+// the retry screen changes to a normal screen after 12 s, as Claude Code does when a retry gets an answer
 const retry = join(root, 'retry.sh');
-writeFileSync(retry, `#!/bin/bash\nprintf '⏺ Reading the files.\\n\\n✻ API error · Retrying in 1s · attempt 2/10\\n'\nsleep 6\nclear\nprintf '⏺ Read 3 files. The answer arrived.\\n'\nsleep 600\n`); chmodSync(retry, 0o755);
+writeFileSync(retry, `#!/bin/bash\nprintf '⏺ Reading the files.\\n\\n✻ API error · Retrying in 1s · attempt 2/10\\n'\nsleep 12\nclear\nprintf '⏺ Read 3 files. The answer arrived.\\n'\nsleep 600\n`); chmodSync(retry, 0o755);
 
 const RULE = '─'.repeat(60);
 const claudeScreen = (box: string) => `⏺ Working on the task.\n\n\\033[2m${RULE}\\033[0m\n❯ ${box}\n\\033[2m${RULE}\\033[0m`;
@@ -101,6 +101,15 @@ test('a scratch server shows model errors, retries, stalls and auto-continue, an
     assert.match(store.readLog('cap'), /- Did: Stopped: model at capacity\./);
     // auto-continue is on, so the next try is planned one minute after the stop; nothing was typed yet
     assert.ok(cap.agentError.auto.nextAt); assert.equal(read('cap.in'), '');
+    const changed = await fetch(url + '/api/info', { method: 'PATCH', headers: { 'content-type': 'application/json', origin: url }, body: JSON.stringify({ agentErrors: { codexCapacity: { enabled: false } } }) });
+    assert.equal(changed.status, 200);
+    await until('capacity retry is canceled', async () => !!(await get('cap')).agentError?.auto?.off);
+    assert.equal((await get('cap')).agentError.auto.nextAt, undefined);
+    assert.equal(read('cap.in'), '');
+    const enabled = await fetch(url + '/api/info', { method: 'PATCH', headers: { 'content-type': 'application/json', origin: url }, body: JSON.stringify({ agentErrors: { codexCapacity: { enabled: true } } }) });
+    assert.equal(enabled.status, 200);
+    await until('capacity retry is planned again', async () => !!(await get('cap')).agentError?.auto?.nextAt);
+    assert.equal((await get('cap')).agentError.auto.tries, 0);
 
     // 2. a retry keeps "working" with a calm label, and the label goes when the retry ends
     await until('the retry shows', async () => (await get('retry')).errorLabel === 'Retrying (attempt 2/10)');
@@ -120,6 +129,9 @@ test('a scratch server shows model errors, retries, stalls and auto-continue, an
     assert.equal(hook.status, 200);
     const again = await get('auto');
     assert.equal(again.status, 'stopped'); assert.equal(again.agentError.auto.tries, 1);
+    const repeated = await fetch(url + '/api/hooks/claude', { method: 'POST', headers, body: JSON.stringify({ taskId: 'auto', input: { hook_event_name: 'StopFailure', error: 'overloaded', last_assistant_message: 'API Error: Repeated 529 Overloaded errors.' } }) });
+    assert.equal(repeated.status, 200);
+    assert.equal((await get('auto')).agentError.count, again.agentError.count);
     const wait = Date.parse(again.agentError.auto.nextAt) - Date.now();
     assert.ok(wait > 100000 && wait <= 120000, `next try in ${wait} ms`);
     // a turn that ends without an error ends the episode

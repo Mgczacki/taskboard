@@ -328,11 +328,13 @@ function ScopeList({ t, toast }: { t: Task; toast: Toast }) {
 // A task that stopped on a model or API error (server/agent-error-watch.ts). The notice strip shows the error with
 // Continue and Dismiss (taskNotices.ts). This row in the details says what auto-continue does and changes it.
 function AutoContinueRow({ t, act, message }: { t: Task; act: (p: Promise<unknown>) => void; message: string }) {
+  const capacity = t.agent === 'codex' && /^Selected model is at capacity\b/i.test(t.agentError?.text || '');
   return <div className="ae-row">
     <span className="sub">{autoText(t, message)}</span>
+    {capacity ? <span className="sub">Change Codex capacity retries in Settings.</span> :
     <label className="ae-auto" title="On: after a model error (overloaded, rate limit, server error, lost connection) Taskboard types the message after 1, 2, 5, 10 and 10 minutes, at most 5 times. Each try is an ordinary turn of the agent.">Auto-continue for this task
       <select value={t.autoContinue || 'default'} onChange={ev => act(api.setAutoContinue(t.id, ev.target.value as 'on' | 'off' | 'default'))}>
         <option value="default">{t.autoContinue ? 'Default (account or Settings)' : `Default (${t.autoContinueOn ? 'on' : 'off'})`}</option><option value="on">On</option><option value="off">Off</option>
-      </select></label>
+      </select></label>}
   </div>;
 }

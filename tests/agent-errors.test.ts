@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   applyHit, claudeKind, claudeTranscriptError, codexKind, codexRolloutError, continueDecision, errorFromScreen, kindFromText,
-  MAX_TRIES, nextDue, screenSignature, shortLabel, stalled, type AgentError, type ContinueCheck,
+  isCodexCapacity, MAX_TRIES, nextDue, screenSignature, shortLabel, stalled, type AgentError, type ContinueCheck,
 } from '../server/agent-errors.ts';
 
 // Real texts from this Mac (task 278 study, 2026-10-05). Conversation text is replaced by placeholders.
@@ -146,4 +146,28 @@ test('auto-continue types only into an empty box of a task that stopped on a mod
   assert.equal(continueDecision({ ...base, error: { ...err, kind: 'context' } }).act, 'off');
   assert.equal(continueDecision({ ...base, error: { ...err, auto: { tries: MAX_TRIES } } }).act, 'off');
   assert.equal(continueDecision({ ...base, status: 'working' }).act, 'wait');
+});
+
+test('Codex capacity uses a fixed interval and a configured retry bound', () => {
+  const now = Date.parse('2026-10-05T08:00:00Z');
+  const hit = { kind: 'overloaded' as const, text: 'Selected model is at capacity. Please try a different model.', source: 'transcript' as const };
+  assert.equal(isCodexCapacity('codex', hit), true);
+  assert.equal(isCodexCapacity('claude', hit), false);
+  assert.equal(isCodexCapacity('codex', { ...hit, text: 'Server overloaded' }), false);
+  assert.equal(isCodexCapacity('codex', { ...hit, kind: 'auth' }), false);
+  const schedule = { intervalMs: 5000, maxTries: 2 };
+  let error = applyHit(undefined, hit, now, true, schedule);
+  assert.equal(error.auto?.nextAt, new Date(now + 5000).toISOString());
+  assert.equal(error.auto?.maxTries, 2);
+  error = applyHit({ ...error, phase: 'resumed', auto: { tries: 1 } }, hit, now + 10000, true, schedule);
+  assert.equal(error.auto?.nextAt, new Date(now + 15000).toISOString());
+  error = applyHit({ ...error, phase: 'resumed', auto: { tries: 2 } }, hit, now + 20000, true, schedule);
+  assert.equal(error.auto?.nextAt, undefined);
+  assert.match(error.auto!.off!, /2 times/);
+  const due = { ...error, auto: { tries: 1, nextAt: new Date(now).toISOString() } };
+  const check: ContinueCheck = { enabled: true, status: 'stopped', error: due, accountLimited: false, questionOpen: false, waitsOnUser: false, box: 'empty', now, maxTries: 2 };
+  assert.equal(continueDecision(check).act, 'type');
+  assert.equal(continueDecision({ ...check, enabled: false }).act, 'off');
+  assert.equal(continueDecision({ ...check, status: 'parked' }).act, 'wait');
+  assert.equal(continueDecision({ ...check, error: { ...due, auto: { tries: 2, nextAt: new Date(now).toISOString() } } }).act, 'off');
 });

@@ -40,6 +40,10 @@ export interface AgentError extends ErrorHit {
 }
 export interface AutoState {
   tries: number;      // continue messages that Taskboard typed in this episode
+  maxTries?: number;
+  account?: string;
+  model?: string;
+  session?: string;
   nextAt?: string;    // when the next one is due
   lastAt?: string;
   off?: string;       // why Taskboard does not type one again in this episode (shown on the task)
@@ -247,14 +251,15 @@ export function stalled(i: StallInput): boolean {
 export const BACKOFF_MINUTES = [1, 2, 5, 10, 10];
 export const MAX_TRIES = BACKOFF_MINUTES.length;
 export const DEFAULT_MESSAGE = 'continue';
+export const isCodexCapacity = (agent: Agent, hit: Pick<ErrorHit, 'text' | 'kind'>) => agent === 'codex' && hit.kind === 'overloaded' && /^Selected model is at capacity\b/i.test(hit.text);
 // When the next message is due after `tries` messages, from the time of the stop. A rate limit with a shown wait
 // waits at least that long.
-export function nextDue(stoppedAt: number, tries: number, retryAfterMs = 0): number | null {
-  if (tries >= MAX_TRIES) return null;
-  return stoppedAt + Math.max(BACKOFF_MINUTES[tries] * 60000, retryAfterMs);
+export function nextDue(stoppedAt: number, tries: number, retryAfterMs = 0, schedule?: { intervalMs: number; maxTries: number }): number | null {
+  if (tries >= (schedule?.maxTries ?? MAX_TRIES)) return null;
+  return stoppedAt + Math.max(schedule?.intervalMs ?? BACKOFF_MINUTES[tries] * 60000, retryAfterMs);
 }
 export interface ContinueCheck {
-  enabled: boolean; status: string; error?: AgentError; accountLimited: boolean; questionOpen: boolean;
+  enabled: boolean; status: string; error?: AgentError; accountLimited: boolean; questionOpen: boolean; maxTries?: number;
   waitsOnUser: boolean; box: 'empty' | 'draft' | 'question' | 'no-box'; now: number;
 }
 // What auto-continue does now: 'type' the message, 'wait' (not due, or a dialog shows), or 'off' with the reason that
@@ -266,7 +271,7 @@ export function continueDecision(c: ContinueCheck): { act: 'type' | 'wait' | 'of
   if (!CONTINUABLE.includes(e.kind)) return { act: 'off', reason: `Auto-continue does not retry ${e.kind === 'stalled' ? 'a stall, because the agent may still run' : `a ${KIND_LABEL[e.kind]} error`}.` };
   if (c.accountLimited) return { act: 'off', reason: 'The account has a limit mark. Auto-continue never retries a usage limit or a credit problem.' };
   if (e.auto?.off) return { act: 'off', reason: e.auto.off };
-  if ((e.auto?.tries || 0) >= MAX_TRIES) return { act: 'off', reason: `Taskboard typed the message ${MAX_TRIES} times and the error came back each time.` };
+  if ((e.auto?.tries || 0) >= (c.maxTries ?? MAX_TRIES)) return { act: 'off', reason: `Taskboard typed the message ${c.maxTries ?? MAX_TRIES} times and the error came back each time.` };
   if (c.questionOpen || c.waitsOnUser) return { act: 'off', reason: 'The task waits on a card or a question.' };
   const due = e.auto?.nextAt ? Date.parse(e.auto.nextAt) : NaN;
   if (!(due <= c.now)) return { act: 'wait', reason: 'Not due yet.' };
@@ -279,7 +284,7 @@ export function continueDecision(c: ContinueCheck): { act: 'type' | 'wait' | 'of
 export function shortLabel(e: AgentError | undefined): string {
   if (!e) return '';
   if (e.phase === 'retrying') return `Retrying${e.attempt ? ` (attempt ${e.attempt}${e.maxAttempts ? `/${e.maxAttempts}` : ''})` : ''}`;
-  if (e.phase === 'resumed') return `Continued after ${KIND_LABEL[e.kind]}${e.auto?.tries ? ` (try ${e.auto.tries}/${MAX_TRIES})` : ''}`;
+  if (e.phase === 'resumed') return `Continued after ${KIND_LABEL[e.kind]}${e.auto?.tries ? ` (try ${e.auto.tries}/${e.auto.maxTries || MAX_TRIES})` : ''}`;
   return e.kind === 'stalled' ? 'Stalled: no activity (inferred)' : `Stopped: ${kindLabel(e)}`;
 }
 
@@ -288,7 +293,7 @@ export function shortLabel(e: AgentError | undefined): string {
 // without an error). An episode starts with the first error and ends only when a turn ends without an error, so the
 // auto-continue tries of one episode add up: an error that comes back after "continue" is the same episode.
 // autoOn: auto-continue applies to this task. The next try is planned only for a stop of a kind in CONTINUABLE.
-export function applyHit(prev: AgentError | undefined, hit: ErrorHit, now: number, autoOn: boolean): AgentError {
+export function applyHit(prev: AgentError | undefined, hit: ErrorHit, now: number, autoOn: boolean, schedule?: { intervalMs: number; maxTries: number }): AgentError {
   const iso = new Date(now).toISOString();
   const since = prev?.since || iso;
   if (hit.retrying) return { ...hit, phase: 'retrying', since, seen: iso, count: prev?.count || 0, auto: prev?.auto };
@@ -296,8 +301,9 @@ export function applyHit(prev: AgentError | undefined, hit: ErrorHit, now: numbe
   const tries = prev?.auto?.tries || 0;
   let auto: AutoState | undefined = prev?.auto ? { ...prev.auto, wait: undefined } : undefined;
   if (autoOn && CONTINUABLE.includes(hit.kind) && newStop && !auto?.off) {
-    const due = nextDue(now, tries);
-    auto = due === null ? { ...auto, tries, nextAt: undefined, off: `Taskboard typed the message ${MAX_TRIES} times and the error came back each time.` } : { ...auto, tries, nextAt: new Date(due).toISOString() };
+    const maxTries = schedule?.maxTries ?? MAX_TRIES;
+    const due = nextDue(now, tries, 0, schedule);
+    auto = due === null ? { ...auto, tries, maxTries, nextAt: undefined, off: `Taskboard typed the message ${maxTries} times and the error came back each time.` } : { ...auto, tries, maxTries, nextAt: new Date(due).toISOString() };
   }
   return { ...hit, phase: 'stopped', since, seen: iso, count: (prev?.count || 0) + (newStop ? 1 : 0), ...(auto ? { auto } : {}) };
 }
