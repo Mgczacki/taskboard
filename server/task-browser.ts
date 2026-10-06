@@ -1028,16 +1028,31 @@ export function onAgentEvent(id: string, fn: (e: AgentEvent) => void) {
 }
 const lastAgent = new Map<string, AgentEvent>();
 export const lastAgentEvent = (id: string) => lastAgent.get(id);
+// The page most recently selected through the agent's DevTools connection. A viewer can join after that action.
+const agentPages = new Map<string, string>();
+const agentPageListeners = new Map<string, Set<(target: string) => void>>();
+export const lastAgentPage = (id: string) => agentPages.get(id) || '';
+export function onAgentPage(id: string, fn: (target: string) => void) {
+  let set = agentPageListeners.get(id); if (!set) agentPageListeners.set(id, set = new Set());
+  set.add(fn);
+  return () => { set.delete(fn); if (!set.size) agentPageListeners.delete(id); };
+}
+function markAgentPage(id: string, target: string) {
+  if (!target || agentPages.get(id) === target) return;
+  agentPages.set(id, target);
+  for (const fn of agentPageListeners.get(id) || []) { try { fn(target); } catch { /* listener failed */ } }
+}
 const LOOK = new Set(['Page.captureScreenshot', 'Accessibility.getFullAXTree', 'Accessibility.queryAXTree', 'DOMSnapshot.captureSnapshot']);
 export function agentWatch(id: string) {
-  const sessions = new Map<string, string>(), attaching = new Map<number, string>();
+  const sessions = new Map<string, string>(), attaching = new Map<number, string>(), creating = new Set<number>();
   // typed characters wait up to TYPE_MS, so a burst of keys is one event
   let typed: AgentEvent | null = null, typeTimer: NodeJS.Timeout | undefined;
   const TYPE_MS = 300;
-  const emit = (e: AgentEvent) => { lastAgent.set(id, e); for (const fn of activity.get(id) || []) { try { fn(e); } catch { /* listener failed */ } } };
+  const emit = (e: AgentEvent) => { if (e.target && e.kind !== 'type') markAgentPage(id, e.target); lastAgent.set(id, e); for (const fn of activity.get(id) || []) { try { fn(e); } catch { /* listener failed */ } } };
   const flushTyped = () => { clearTimeout(typeTimer); typeTimer = undefined; if (typed) { const e = typed; typed = null; emit(e); } };
   const type = (target: string | undefined, chars: number) => {
     if (typed && typed.target !== target) flushTyped();
+    if (target) markAgentPage(id, target);
     typed = typed ? { ...typed, chars: (typed.chars || 0) + chars, at: Date.now() } : { kind: 'type', target, chars, at: Date.now() };
     typeTimer ??= setTimeout(flushTyped, TYPE_MS);
   };
@@ -1047,6 +1062,8 @@ export function agentWatch(id: string) {
       let m: { id?: number; method?: string; params?: any; sessionId?: string };
       try { m = JSON.parse(text); } catch { return; }
       const method = m.method || '', p = m.params || {}, target = m.sessionId ? sessions.get(m.sessionId) : undefined, at = Date.now();
+      if (target && (method === 'Runtime.evaluate' || method === 'Runtime.callFunctionOn' || method === 'Page.getLayoutMetrics')) markAgentPage(id, target);
+      if (method === 'Target.activateTarget' && typeof p.targetId === 'string') markAgentPage(id, p.targetId);
       if (method === 'Target.attachToTarget' && typeof m.id === 'number' && typeof p.targetId === 'string') attaching.set(m.id, p.targetId);
       else if (method === 'Input.dispatchMouseEvent') {
         if (p.type === 'mousePressed') { flushTyped(); emit({ kind: 'click', target, x: Number(p.x) || 0, y: Number(p.y) || 0, at }); }
@@ -1060,18 +1077,19 @@ export function agentWatch(id: string) {
       else if (method === 'Input.dispatchDragEvent' && p.type === 'drop') emit({ kind: 'drag', target, x: Number(p.x) || 0, y: Number(p.y) || 0, at });
       else if (method === 'Page.navigate' && typeof p.url === 'string') { flushTyped(); emit({ kind: 'navigate', target, url: p.url.slice(0, 300), at }); }
       else if (method === 'Page.reload') emit({ kind: 'navigate', target, url: '', at });
-      else if (method === 'Target.createTarget') emit({ kind: 'newTab', url: String(p.url || '').slice(0, 300), at });
+      else if (method === 'Target.createTarget') { if (typeof m.id === 'number') creating.add(m.id); emit({ kind: 'newTab', url: String(p.url || '').slice(0, 300), at }); }
       else if (method === 'DOM.setFileInputFiles') emit({ kind: 'upload', target, chars: Array.isArray(p.files) ? p.files.length : 0, at });
       else if (LOOK.has(method)) emit({ kind: 'look', target, at });
     },
     answer(text: string) {
       // only the attach events, and the answers to an attach command that waits, are read (the answer has no method)
-      if (!text.includes('attach') && !(attaching.size && text.includes('sessionId'))) return;
+      if (!text.includes('attach') && !(attaching.size && text.includes('sessionId')) && !(creating.size && text.includes('targetId'))) return;
       let m: { id?: number; method?: string; params?: any; result?: any };
       try { m = JSON.parse(text); } catch { return; }
       if (m.method === 'Target.attachedToTarget' && m.params?.sessionId && m.params?.targetInfo?.targetId) sessions.set(m.params.sessionId, m.params.targetInfo.targetId);
       else if (m.method === 'Target.detachedFromTarget' && m.params?.sessionId) sessions.delete(m.params.sessionId);
       else if (typeof m.id === 'number' && attaching.has(m.id)) { if (m.result?.sessionId) sessions.set(m.result.sessionId, attaching.get(m.id)!); attaching.delete(m.id); }
+      else if (typeof m.id === 'number' && creating.has(m.id)) { creating.delete(m.id); if (typeof m.result?.targetId === 'string') markAgentPage(id, m.result.targetId); }
     },
   };
 }
@@ -1253,11 +1271,20 @@ export const autoSwitchOn = (id: string) => readMeta(id).autoSwitch ?? machine.g
 export function attachViewer(client: WebSocket, id: string, autostart: boolean) {
   // opening: the tab of the open() that runs now, so a poll does not start a second open() of it
   let page: PageConn | null = null, active = '', seeded = false, closed = false, openSeq = 0, opening = '';
+  let followAgent = false, lastUserClick = 0;
+  const follow = (target: string) => {
+    if (followAgent && target && target !== active && target !== opening) void open(target, { from: active, reason: 'agent' }).catch(() => {});
+  };
   // New tabs and popups, and the tab that closed (tab-switch.ts). A switch opens the tab and tells the view why
   // ('active' with auto), so the view shows one line with a Go back button. An offer is a badge in the view.
   const sw = new TabSwitch(d => {
     if (closed) return;
-    if (d.kind === 'switch') void open(d.id, { from: d.from, reason: d.reason }).catch(() => {});
+    if (d.kind === 'switch') {
+      if (d.id !== opening) {
+        if (!followAgent || d.id === lastAgentPage(id) || d.reason === 'back' && d.from === lastAgentPage(id)) void open(d.id, { from: d.from, reason: d.reason }).catch(() => {});
+        else send({ type: 'offer', id: d.id, reason: 'off' });
+      }
+    }
     else send({ type: 'offer', id: d.id, reason: d.reason });
     soon();
   }, () => autoSwitchOn(id));
@@ -1392,7 +1419,12 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
   const targetEvent = (e: { method: string; params: any }) => {
     if (!seeded) return;
     if (e.method === 'Page.windowOpen') return sw.windowOpen(e.params.openerId, String(e.params.url || ''));
-    if (e.method === 'Target.targetCreated') sw.created(e.params.targetInfo);
+    if (e.method === 'Target.targetCreated') {
+      const info = e.params.targetInfo;
+      const last = lastAgentEvent(id);
+      if (followAgent && info?.type === 'page' && info.openerId === lastAgentPage(id) && last?.kind === 'click' && last.target === info.openerId && Date.now() - last.at < 1500 && last.at > lastUserClick) markAgentPage(id, info.targetId);
+      sw.created(info);
+    }
     else if (e.method === 'Target.targetInfoChanged') { if (e.params.targetInfo.type === 'page') { sw.changed(e.params.targetInfo); soon(); } return; }
     else if (e.method === 'Target.targetDestroyed') { if (!sw.known(e.params.targetId)) return; sw.destroyed(e.params.targetId); }
     soon();
@@ -1417,7 +1449,8 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     const meta = readMeta(id);
     send({ type: 'tabs', tabs: list, active, agents: agentCount(id), muted: mutedNow(meta, true), ...soundStateOf(meta, true), autoSwitch: autoSwitchOn(id), autoSwitchOwn: meta.autoSwitch !== undefined, ask: askOf(id), scale: meta.scale || 1, wantScale: meta.window ? 1 : startScale(), window: !!meta.window });
     // the first tab when the view shows none; a shown tab that closed is handled by the switch (sw.destroyed)
-    const target = active && list.some(t => t.id === active) ? active : sw.back() || list[0]?.id || '';
+    const agentTarget = followAgent && lastAgentPage(id);
+    const target = agentTarget && list.some(t => t.id === agentTarget) ? agentTarget : active && list.some(t => t.id === active) ? active : sw.back() || list[0]?.id || '';
     if (target && target !== opening && (target !== active || !page)) await open(target);
   }
   const timer = setInterval(() => { void poll(); }, 1000);
@@ -1432,17 +1465,19 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
     }
     send({ type: 'agent', ...e, ...(label ? { label } : {}), shown: !e.target || e.target === active });
   });
+  const stopAgentPage = onAgentPage(id, follow);
   const askChanged = (b: string) => { if (b === id) send({ type: 'ask', ask: askOf(id) }); };
   const downloaded = (b: string, d: Download) => { if (b === id) send({ type: 'download', ...d }); };
   downloadListeners.add(downloaded);
   for (const d of recentDownloads(id)) send({ type: 'download', ...d, old: true });
   onAsk(askChanged);
-  client.on('close', () => { if (closed) return; closed = true; stopAgent(); askListeners.delete(askChanged); downloadListeners.delete(downloaded); count(viewers, id, -1); clearInterval(timer); clearTimeout(soonTimer); clearTimeout(cursorTimer); closePage(); sw.seed([]); const dw = dialogWatch.get(id); dw?.listeners.delete(dialogChanged); dw?.targetListeners.delete(targetEvent); });
+  client.on('close', () => { if (closed) return; closed = true; stopAgent(); stopAgentPage(); askListeners.delete(askChanged); downloadListeners.delete(downloaded); count(viewers, id, -1); clearInterval(timer); clearTimeout(soonTimer); clearTimeout(cursorTimer); closePage(); sw.seed([]); const dw = dialogWatch.get(id); dw?.listeners.delete(dialogChanged); dw?.targetListeners.delete(targetEvent); });
   client.on('message', async d => {
     let m: any; try { m = JSON.parse(d.toString()); } catch { return; }
     try {
       // a failed start shows in the state that poll() sends (status().error), not as a second message
-      if (m.type === 'hello') { acks = !!m.acks; helloed = true; if (m.dpr) noteScreen(m.dpr); }
+      if (m.type === 'hello') { acks = !!m.acks; helloed = true; if (m.dpr) noteScreen(m.dpr); followAgent = !!m.followAgent; follow(lastAgentPage(id)); }
+      else if (m.type === 'followAgent') { followAgent = !!m.on; send({ type: 'followAgent', on: followAgent }); if (followAgent) follow(lastAgentPage(id)); }
       // a restart at the screen's pixel density (the view offers it when the running factor differs): the pages reopen
       else if (m.type === 'restartScale') { await stop(id); void ensure(id).then(() => poll(), () => poll()); await poll(); }
       // a view that shows again gets a frame at once: Chrome sends one at each start of a screencast
@@ -1450,13 +1485,13 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
       else if (m.type === 'drawn') { undrawn = Math.max(0, undrawn - 1); drain(); }
       else if (m.type === 'start') { void ensure(id).then(() => poll(), () => poll()); await poll(); }
       else if (m.type === 'stop') { await stop(id); await poll(); }
-      else if (m.type === 'select' && typeof m.id === 'string') await open(m.id);
+      else if (m.type === 'select' && typeof m.id === 'string') { if (followAgent && m.id !== active) { followAgent = false; send({ type: 'followAgent', on: false }); } await open(m.id); }
       // the switch of this browser (the More menu): a choice that differs from Settings is kept for this browser, and the
       // same choice as Settings (or null) follows Settings again
       else if (m.type === 'autoSwitch') { const on = typeof m.on === 'boolean' && m.on !== (machine.get().browser?.autoSwitch ?? true) ? m.on : undefined; updateMeta(id, { autoSwitch: on }); await poll(); }
       else if (m.type === 'size' && m.w > 100 && m.h > 100) { size = { w: Math.min(3840, Math.round(m.w)), h: Math.min(2160, Math.round(m.h)) }; await viewport(); }
       else if (m.type === 'mouse') {
-        if (m.event === 'mousePressed') sw.userClick(m.button, m.modifiers || 0);
+        if (m.event === 'mousePressed') { lastUserClick = Date.now(); sw.userClick(m.button, m.modifiers || 0); }
         await call('Input.dispatchMouseEvent', { type: m.event, x: m.x, y: m.y, button: m.button || 'none', buttons: m.buttons || 0, clickCount: m.clickCount || 0, modifiers: m.modifiers || 0, ...(m.event === 'mouseWheel' ? { deltaX: m.dx || 0, deltaY: m.dy || 0 } : {}) });
         if (m.event === 'mouseMoved' || m.event === 'mouseReleased') cursorAt(m.x, m.y);
       }
@@ -1497,7 +1532,7 @@ export function attachViewer(client: WebSocket, id: string, autostart: boolean) 
           if (entry) await call('Page.navigateToHistoryEntry', { entryId: entry.id });
         }
       }
-      else if (m.type === 'new') { sw.userNewTab(); const t = await openTab(id, typeof m.url === 'string' && m.url ? m.url : 'about:blank'); await open(t.id); }
+      else if (m.type === 'new') { if (followAgent) { followAgent = false; send({ type: 'followAgent', on: false }); } sw.userNewTab(); const t = await openTab(id, typeof m.url === 'string' && m.url ? m.url : 'about:blank'); await open(t.id); }
       else if (m.type === 'close' && typeof m.id === 'string') await closeTab(id, m.id);
       else if (m.type === 'dialog' && typeof m.id === 'string') {
         // answer the dialog of that tab: OK or Cancel, with the text for a prompt()

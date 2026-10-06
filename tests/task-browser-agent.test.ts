@@ -95,3 +95,37 @@ test('agentWatch maps sessions to targets from the answers of Chrome', () => {
   off();
   assert.deepEqual(events.map(e => [e.kind, e.target]), [['click', 'T1'], ['navigate', 'T2'], ['look', 'T2']]);
 });
+
+test('follow mode tracks an agent tab, pauses on manual selection, and resumes after reconnect', { skip, timeout: 30000 }, async () => {
+  const first = seen.find(s => s.type === 'active').id;
+  view.emit('message', JSON.stringify({ type: 'followAgent', on: true }));
+  await until(() => seen.some(s => s.type === 'followAgent' && s.on === true), 'follow mode is on');
+  const create = cmd('Target.createTarget', { url: 'about:blank' });
+  await until(() => answers.some(a => a.id === create), 'the agent opened a tab');
+  const second = answers.find(a => a.id === create).result.targetId;
+  await until(() => seen.some(s => s.type === 'active' && s.id === second), 'the view follows the new tab');
+  const attachSecond = cmd('Target.attachToTarget', { targetId: second, flatten: true });
+  await until(() => answers.some(a => a.id === attachSecond), 'the agent attached to the new tab');
+  const sessionSecond = answers.find(a => a.id === attachSecond).result.sessionId;
+  cmd('Page.navigate', { url: 'data:text/html,<title>Agent page</title><p>Moved</p>' }, sessionSecond);
+  await until(() => seen.some(s => s.type === 'tabs' && s.tabs.some((t: any) => t.id === second && t.url.startsWith('data:text/html'))), 'the followed page navigates');
+  view.emit('message', JSON.stringify({ type: 'select', id: first }));
+  await until(() => seen.some(s => s.type === 'followAgent' && s.on === false), 'manual selection turns follow off');
+  await until(() => [...seen].reverse().find(s => s.type === 'active')?.id === first, 'the manual tab is shown');
+  cmd('Page.captureScreenshot', {}, sessionSecond);
+  await wait(200);
+  assert.equal([...seen].reverse().find(s => s.type === 'active')?.id, first, 'agent activity does not override manual selection');
+
+  view.emit('close');
+  const reconnected: any[] = [];
+  const again = socket(m => reconnected.push(m));
+  browser.attachViewer(again as any, ID, false);
+  again.emit('message', JSON.stringify({ type: 'hello', followAgent: true }));
+  await until(() => reconnected.some(s => s.type === 'active' && s.id === second), 'reconnected view follows the last agent page');
+  const attachFirst = cmd('Target.attachToTarget', { targetId: first, flatten: true });
+  await until(() => answers.some(a => a.id === attachFirst), 'the agent attached to the first tab');
+  const sessionFirst = answers.find(a => a.id === attachFirst).result.sessionId;
+  cmd('Page.captureScreenshot', {}, sessionFirst);
+  await until(() => [...reconnected].reverse().find(s => s.type === 'active')?.id === first, 'the reconnected view follows the agent switch');
+  again.emit('close');
+});

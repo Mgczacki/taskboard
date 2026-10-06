@@ -89,6 +89,24 @@ test('a popup from a click takes the view within 150 ms, and a frame of the popu
   assert.equal(shown(), popup?.id);
 });
 
+test('follow mode tracks a popup opened by an agent click', { skip, timeout: 30000 }, async () => {
+  await reset();
+  const answers: any[] = [];
+  const agent = Object.assign(new EventEmitter(), { readyState: WebSocket.OPEN, bufferedAmount: 0, send: (d: string | Buffer) => { if (typeof d === 'string') answers.push(JSON.parse(d)); }, close() {} });
+  browser.proxyAgent(agent as unknown as WebSocket, ID);
+  emit({ type: 'followAgent', on: true });
+  await until(() => sent.some(m => m.type === 'followAgent' && m.on === true), 'follow mode is on');
+  agent.emit('message', JSON.stringify({ id: 1, method: 'Target.attachToTarget', params: { targetId: mainId, flatten: true } }), false);
+  await until(() => answers.some(a => a.id === 1), 'the agent attached to the main tab');
+  const sessionId = answers.find(a => a.id === 1).result.sessionId;
+  agent.emit('message', JSON.stringify({ id: 2, sessionId, method: 'Input.dispatchMouseEvent', params: { type: 'mousePressed', x: 100, y: 40, button: 'left', clickCount: 1 } }), false);
+  agent.emit('message', JSON.stringify({ id: 3, sessionId, method: 'Input.dispatchMouseEvent', params: { type: 'mouseReleased', x: 100, y: 40, button: 'left', clickCount: 1 } }), false);
+  await until(() => !!switched(), 'the view follows the agent popup');
+  assert.equal(shown(), (await pages()).find(t => t.url.endsWith('/popup?click'))?.id);
+  emit({ type: 'followAgent', on: false });
+  agent.emit('close');
+});
+
 test('a link with target=_blank, a timer popup and a sized popup take the view', { skip, timeout: 30000 }, async () => {
   for (const [y, url] of [[290, '/target'], [90, '/popup?timer'], [140, '/popup?sized']] as const) {
     await reset();
