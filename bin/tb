@@ -143,6 +143,7 @@ const HELP = `tb — Taskboard command line
   tb new --agent auto|claude|codex|antigravity --folder <path> [--account <id>] [--model <name>] [--title <t>] [--worktree <branch>|--no-worktree] [--group <name>] "<prompt>"
                                      [--after <task>] [--replaces <task> [--folded]] [--follows <task>] [--related <task>]
                                      link the new task to others (several tasks: 12,14). The prompt gets one line per link
+                                     A group manager uses its managed group by default. If it manages several groups, give --group.
   tb new --batch <plan.json>         [{ agent, folder, title, prompt, account?, model?, worktree?, group?, after?, replaces?, follows?, related? }, …]
   tb ask spin-off <task> [--answer n] [--title <t>] [--agent claude|codex|antigravity] [--account <id>] [--folder <path>] [--worktree <branch>]
                                      start from a completed BTW answer; n is its 1-based position

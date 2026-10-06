@@ -56,7 +56,23 @@ const audit = (entry: Omit<ManagerAudit, 'at'>) => {
 // stay in the audit file and are left out here.
 export const actions = (group: string) => recent.filter(x => x.group === group && x.action !== 'to-manager').slice(-100).reverse();
 // The group that `actor` manages: the group names it as manager, it is still a task of the group and it is not archived.
-export const role = (actor: string) => groups.all().find(g => g.manager === actor && g.tasks.includes(actor) && !!store.get(actor) && store.get(actor)?.status !== 'archived');
+export const roles = (actor: string) => groups.all().filter(g => g.manager === actor && g.tasks.includes(actor) && !!store.get(actor) && store.get(actor)?.status !== 'archived');
+export const role = (actor: string) => roles(actor)[0];
+// A manager with several groups must name one when starting a task. Prefer an id over a name when both match.
+export function newTaskGroup(actor: string, groupRef?: string): groups.Group | undefined {
+  const managed = roles(actor);
+  if (!managed.length) return undefined;
+  if (!groupRef) {
+    if (managed.length > 1) throw new Error('This task manages more than one group. Set --group on the new task.');
+    return managed[0];
+  }
+  const byId = managed.find(g => g.id === groupRef);
+  if (byId) return byId;
+  const byName = managed.filter(g => g.name === groupRef);
+  if (byName.length > 1) throw new Error('More than one managed group has this name. Set --group to a group id.');
+  if (!byName.length) throw new Error('The action names another group.');
+  return byName[0];
+}
 export const inGroup = (g: groups.Group, task: string) => g.tasks.includes(task);
 const count = (actor: string, action: string, ms: number) => recent.filter(x => x.actor === actor && x.action === action && x.result === 'done' && Date.now() - Date.parse(x.at) < ms).length;
 
@@ -84,14 +100,15 @@ export const reported = (actor: string, g: groups.Group, kind: 'message' | 'doc'
   audit({ actor, group: g.id, action: 'to-controller', target: 'controller', result: `${kind} ${state}` });
 
 export function check(actor: string, action: ManagerAction, target: string, groupRef?: string): { ok: boolean; reason: string; group?: groups.Group } {
-  const g = role(actor);
+  let g: groups.Group | undefined;
+  try { g = action === 'new' ? newTaskGroup(actor, groupRef) : role(actor); }
+  catch (e) { return { ok: false, reason: (e as Error).message }; }
   if (!g) return { ok: false, reason: 'This task is not a group manager.' };
-  if (groupRef && ![g.id, g.name].includes(groupRef)) return { ok: false, reason: 'The action names another group.', group: g };
+  if (action !== 'new' && groupRef && ![g.id, g.name].includes(groupRef)) return { ok: false, reason: 'The action names another group.', group: g };
   if (action !== 'new' && action !== 'group-add' && !inGroup(g, target)) return { ok: false, reason: 'The target is outside the manager group.', group: g };
   const preset = presetOf(g);
   if (!ALLOWS[preset].includes(action)) return { ok: false, reason: `The preset ${PRESETS[preset].name} of this manager does not allow this action without a card.`, group: g };
   if (action === 'new') {
-    if (!groupRef) return { ok: false, reason: 'A manager must set --group on a new task.', group: g };
     if (count(actor, 'new', 86400000) >= DEFAULT_CAPS.newPerDay) return { ok: false, reason: 'The manager reached 8 new tasks today.', group: g };
     const working = g.tasks.map(id => store.get(id)).filter(t => t?.status === 'working').length;
     if (working >= DEFAULT_CAPS.working) return { ok: false, reason: 'The group has 8 active tasks.', group: g };

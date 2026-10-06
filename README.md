@@ -199,6 +199,8 @@ A move between windows never changes a task's groups. A new task goes after the 
 - **Your files into an inbox:** drop files from Finder on a task's panel or its board card, or use "Add files…" on the
   Inbox tab. The agent is told like for documents from other tasks.
 - **Groups** are notes in `~/AgentVault/groups/`. A task can be in any number of groups.
+  When a group manager runs `tb new` without `--group`, Taskboard adds the new task to its managed group.
+  A manager of more than one group must use `--group` to choose one. Taskboard keeps an explicit choice.
 - **Resume:** Claude sessions get a fixed `--session-id`; Codex thread ids come from its notify events. If tmux or the
   machine restarts, tasks show *Suspended*. Opening one runs `claude --resume` / `codex resume`.
 - **Import:** "Import sessions" lists Claude Code and Codex sessions from the last 14 days (read-only).
