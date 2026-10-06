@@ -36,9 +36,21 @@ const socket = process.env.TASKBOARD_TMUX_SOCKET || 'taskboard';
 // each part of a command line separated by ; && || | or a newline is checked on its own
 const parts = cmd.split(/;|&&|\|\||\||\n/);
 const reasons = [];
+let attached = [];
+try {
+  const value = JSON.parse(process.env.TASK_ATTACHED_WORKTREES || '[]');
+  if (Array.isArray(value)) attached = value.filter(s => typeof s?.name === 'string' && typeof s?.path === 'string');
+} catch { /* an older session may have no scope list */ }
+const gitWrite = /^(?:add|commit|rebase|merge|reset|checkout|switch|push|pull|cherry-pick|revert|worktree|update-ref|stash|branch|tag)$/;
+const gitCommand = /^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:\S*\/)?git\s+(?:(?:-C|--git-dir|--work-tree)\s+\S+\s+)*([a-z-]+)\b(.*)$/;
 for (const p of parts) {
-  if (process.env.TASK_ID && process.env.TASK_ID !== 'controller' && /^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:\S*\/)?git\s+(?:(?:-C|--git-dir|--work-tree)\s+\S+\s+)*(?:add|commit|rebase|merge|reset|checkout|switch|push|pull|cherry-pick|revert|worktree|update-ref|stash|branch|tag)\b/.test(p))
-    reasons.push(process.env.TASK_WORKTREE
+  const match = p.match(gitCommand);
+  // `git branch --show-current` reads the branch name. Other branch forms can change refs.
+  if (process.env.TASK_ID && process.env.TASK_ID !== 'controller' && match && gitWrite.test(match[1]) &&
+      !(match[1] === 'branch' && /^\s+--show-current\s*$/.test(match[2])))
+    reasons.push(attached.length
+      ? `run \`tb git commit\`, \`tb git rebase\`, \`tb git repair\`, or \`tb git merge-request\` for Git writes. This task has attached worktrees: ${attached.map(s => s.name).join(', ')}. Select one with \`--worktree <name>\`. The main checkouts and other tasks' worktrees are outside this task's write scope`
+      : process.env.TASK_WORKTREE
       ? 'run `tb git commit`, `tb git rebase`, `tb git repair`, or `tb git merge-request` for Git writes in a Taskboard task. To change another repository, run `tb scope request worktree --repo <main checkout> --base origin/<branch> --branch <new branch> --reason "<why>"` and then use `tb git commit --worktree <name>`'
       : 'this task has no worktree. Run `tb scope request worktree --repo <main checkout> --base origin/<branch> --branch <new branch> --reason "<why>"`, for example `tb scope request worktree --repo ~/code/app --base origin/master --branch task/fix-login --reason "Fix the login bug"`. The user approves it on the dashboard. Then run `tb git commit`, `tb git rebase`, `tb git repair`, or `tb git merge-request` with `--worktree <name>`');
   if (/\b(pkill|killall)\b/.test(p) && /server\/index|taskboard|\btsx\b|\bnode\b|\bnpx\b/i.test(p))

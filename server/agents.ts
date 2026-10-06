@@ -675,6 +675,7 @@ export function baseEnv(t: Task): Record<string, string> {
   const env: Record<string, string> = {
     TASK_ID: t.id, TASK_DIR: store.taskDir(t.id), TASK_NUM: String(t.num),
     ...(t.worktree ? { TASK_WORKTREE: t.cwd } : {}),
+    TASK_ATTACHED_WORKTREES: JSON.stringify(worktreeScopes(t).map(s => ({ name: s.name, path: realpathSync(s.path) }))),
     TB_URL: URL_BASE, TB_TOKEN_FILE: t.id === 'controller' ? TOKEN_FILE : taskToken.fileFor(t.id), TASKBOARD_VAULT: VAULT,
     // the agy plugin "taskboard" runs its scripts from here (it is the same plugin for every Taskboard server)
     TB_HOOKS_DIR: join(TB_DIR, 'hooks'),

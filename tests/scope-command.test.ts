@@ -45,6 +45,7 @@ test('each agent gets --add-dir for an attached worktree, and Claude Code gets a
     assert.match(text, /Attached worktree app: branch task\/app-fix/);
     assert.match(text, /Add --worktree app to the tb git commands, or leave it out/);
     assert.match(text, new RegExp(`You may read the folder ${docs}. Do not write there.`));
+    assert.deepEqual(JSON.parse(agents.baseEnv(store.get('scoped-codex')!).TASK_ATTACHED_WORKTREES), [{ name: 'app', path: wt }]);
     assert.match(agents.controllerGuide('approvals')!, /tb scope approve ID --user-request/);
     assert.match(agents.controllerMd(), /tb dep add <new> --replaces <old> --folded/);
     assert.match(agents.controllerMd(), /tb deps --group <group>/);
