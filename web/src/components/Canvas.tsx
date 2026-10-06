@@ -28,7 +28,7 @@ import { PopMenu } from './PopMenu';
 import { GroupNeeds, ManagerBadge, ManagerMark, ManagerRoleButton, ManagerScope, WaitLabel, useBoards } from './ManagerBoard';
 import { groupManager } from '../managerBoard';
 import { loadAccounts, type Account } from './Accounts';
-import { CanvasAccountChip } from './CanvasAccountChip';
+import { CanvasAccountChip, CanvasFailureChip } from './CanvasAccountChip';
 
 type Layout = 'columns' | 'grid' | 'rows';
 const MINW = 640;
@@ -636,7 +636,7 @@ const CanvasWin = memo(function CanvasWin({ t, accounts, i, act, linkTasks, cls,
         <span className="grip" title={`Drag to move this window between two others, or onto a group tab. Move it one place: ${keysText('windowEarlier')} / ${keysText('windowLater')}`}>⠿</span><span className="ix">{i + 1}</span><LinkPorts t={t} tasks={linkTasks} onGo={id => a().goTask(id)} side="left" /><Dot s={t.status} /><span className="n">#{t.num}</span><span className="ti">{t.title}</span><ManagerBadge id={t.id} /><LinkPorts t={t} tasks={linkTasks} onGo={id => a().goTask(id)} side="right" />
         <PendingMarker taskId={t.id} small><WaitLabel taskId={t.id}><span className={`st st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span></WaitLabel></PendingMarker>
         {narrow ? <ErrorMark t={t} /> : <ErrorChip t={t} />}
-        {!narrow && <AgentChip a={t.agent} />}<CanvasAccountChip task={t} accounts={accounts} />
+        {!narrow && <AgentChip a={t.agent} />}<CanvasAccountChip task={t} accounts={accounts} /><CanvasFailureChip task={t} accounts={accounts} />
         {!narrow && <><MachineChip t={t} /><WhereChip t={t} /><BrowserAskChip t={t} /><RuntimeButton t={t} small onOpen={tab => a().openPanel(t.id, tab)} /></>}
         {ending ? <><span className="sel-warn">End & archive?</span><button className="b" onClick={() => a().endTask(t)}>Yes, end it</button><button className="b" onClick={() => a().setEnding(null)}>Cancel</button></> : <>
         {(t.status === 'suspended' || t.openElsewhere) && <button className="b" onClick={() => a().openPanel(t.id)}>{t.openElsewhere ? 'Options…' : 'Resume…'}</button>}
@@ -644,7 +644,7 @@ const CanvasWin = memo(function CanvasWin({ t, accounts, i, act, linkTasks, cls,
         {!narrow ? acts.map(x => <button key={x.k} className={`b ${x.on ? 'on' : ''}`} title={x.title} aria-label={x.aria} onClick={x.fn}>{x.icon}</button>)
           : <button ref={moreRef} className={`b wmore ${menuOpen ? 'on' : ''}`} aria-haspopup="true" aria-expanded={menuOpen} aria-label="Window menu" title={`The buttons of this window: ${acts.map(x => x.text).join(', ')}`} onClick={() => setMenuOpen(o => !o)}>⋯</button>}
         {narrow && menuOpen && <PopMenu anchor={moreRef.current} close={closeMenu} className="wmenu" label={`Window #${t.num}`}>
-          <div className="wmenu-chips"><AgentChip a={t.agent} /><CanvasAccountChip task={t} accounts={accounts} /><MachineChip t={t} /><WhereChip t={t} /><BrowserAskChip t={t} /><RuntimeButton t={t} small onOpen={tab => { setMenuOpen(false); a().openPanel(t.id, tab); }} /></div>
+          <div className="wmenu-chips"><AgentChip a={t.agent} /><CanvasAccountChip task={t} accounts={accounts} /><CanvasFailureChip task={t} accounts={accounts} /><MachineChip t={t} /><WhereChip t={t} /><BrowserAskChip t={t} /><RuntimeButton t={t} small onOpen={tab => { setMenuOpen(false); a().openPanel(t.id, tab); }} /></div>
           {acts.map(x => <button key={x.k} className={`mi ${x.on ? 'on' : ''}`} title={x.title} aria-label={x.aria} onClick={() => { setMenuOpen(false); x.fn(); }}><span className="mi-ico">{x.icon}</span>{x.text}</button>)}
           <ManagerRoleButton t={t} variant="menu" toast={m => { setMenuOpen(false); a().toast(m); }} />
         </PopMenu>}</>}

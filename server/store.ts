@@ -5,6 +5,7 @@ import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renam
 import { basename, join } from 'node:path';
 import { TASKS_DIR, TB_DIR } from './config.ts';
 import type { AgentError } from './agent-errors.ts';
+import { failureAccountFromLog, failureAccountOnStop, type FailureAccount } from './failure-account.ts';
 
 export type Status = 'working' | 'needs-you' | 'unread' | 'idle' | 'stopped' | 'review' | 'suspended' | 'parked' | 'archived';
 export type Agent = 'claude' | 'codex' | 'antigravity';
@@ -33,6 +34,7 @@ export interface Task {
   ask?: string;            // what it waits for
   waitingOn?: WaitingOn;
   stopReason?: string;
+  lastFailure?: FailureAccount; // the account on the most recent stop, kept when the task moves
   // a model or API error that stopped the agent or that it retries (server/agent-error-watch.ts)
   agentError?: AgentError;
   errorSeenAt?: string;    // the time of the newest error record that Taskboard acted on; older records are not read again
@@ -124,7 +126,9 @@ export function loadAll() {
     try {
       const { data, content } = matter(readFileSync(join(TASKS_DIR, f), 'utf8'));
       const desc = content.replace(/^# .*\n+/, '').trim();
-      tasks.set(data.id, { ...(data as Task), desc });
+      const task = { ...(data as Task), desc };
+      task.lastFailure ||= failureAccountFromLog(readLog(task.id));
+      tasks.set(data.id, task);
     } catch (e) { console.error('could not read task', f, e); }
   }
   changed(true);
@@ -152,6 +156,7 @@ export function create(t: Omit<Task, 'created' | 'updated' | 'statusAt'>): Task 
 export function update(id: string, patch: Partial<Task>): Task | undefined {
   const t = tasks.get(id); if (!t) return;
   const statusChanged = patch.status && patch.status !== t.status;
+  if (patch.status === 'stopped' && patch.stopReason && !patch.lastFailure) patch.lastFailure = failureAccountOnStop(t, patch.stopReason);
   Object.assign(t, patch, { updated: now() }, statusChanged ? { statusAt: now() } : {});
   changed('num' in patch);
   write(t);

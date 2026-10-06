@@ -14,6 +14,7 @@ import * as taskToken from './task-token.ts';
 import type { Agent, Task } from './store.ts';
 import * as tmux from './tmux.ts';
 import * as accounts from './accounts.ts';
+import { failureAccountAfterMove } from './failure-account.ts';
 import { chooseAuto } from './auto-choice.ts';
 import * as machine from './machine.ts';
 import { controllerMailToken } from './a2anotes/auth.ts';
@@ -1182,6 +1183,7 @@ export async function moveAccount(task: Task, toId: string, instruction = '', op
     const source = `Moved from ${from.name} (${old.agent}) to ${to.name} (${to.agent}). ${resume ? 'Resumed the conversation.' : 'Started a new conversation with a handoff.'}`;
     store.update(t.id, {
       agent: to.agent, account: to.id, transcript: copied, handoff, accountChosen: opts.auto ? 'auto' : 'user',
+      lastFailure: failureAccountAfterMove(old.lastFailure, from),
       sessionId: resume ? old.sessionId : to.agent === 'claude' ? randomUUID() : undefined,
       pastSessions: !resume && old.sessionId ? [...new Set([...(old.pastSessions || []), old.sessionId])] : old.pastSessions,
       status: 'working', statusSource: source, stopReason: undefined, agentError: undefined, ask: undefined, now: undefined,
