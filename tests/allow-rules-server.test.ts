@@ -35,6 +35,8 @@ for (const [id, num, title] of TASKS) {
 }
 taskNote({ id: 'controller', num: 0, title: 'Controller', agent: 'claude', role: 'controller', status: 'idle', cwd: workspace, folder: workspace, session: 'controller' });
 writeFileSync(join(tbdir, 'machine.json'), JSON.stringify({ name: 'allow-test', controller: { autostart: false, remoteControl: false } }));
+const TOKENS: Record<string, string> = { 'task-a': 'a'.repeat(64), 'task-b': 'b'.repeat(64), 'task-c': 'c'.repeat(64) };
+writeFileSync(join(tbdir, 'task-tokens.json'), JSON.stringify(TOKENS));
 const submitted = (id: string) => { const f = join(vault, 'tasks', id, 'submitted.jsonl'); return existsSync(f) ? readFileSync(f, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l).text as string) : []; };
 const pause = (ms: number) => new Promise(r => setTimeout(r, ms));
 const until = async (check: () => boolean | Promise<boolean>, ms = 15000) => { for (let i = 0; i < ms / 100; i++) { if (await check()) return true; await pause(100); } return false; };
@@ -49,7 +51,10 @@ test('allow always: the user adds a rule on the card, later messages skip the ca
     assert.ok(await until(async () => { if (child.exitCode !== null) throw new Error(output); try { return (await fetch(base + '/api/info')).ok; } catch { return false; } }), output);
     for (const [id] of TASKS) assert.ok(await until(() => /for shortcuts/.test(tmux('capture-pane', '-p', '-t', id).stdout)), `the stand-in agent of ${id} draws its box`);
     const token = readFileSync(join(tbdir, 'token'), 'utf8').trim();
-    const as = (actor: string) => ({ 'content-type': 'application/json', 'x-taskboard-token': token, 'x-tb-actor': actor });
+    const controllerToken = readFileSync(join(tbdir, 'mail-controller.token'), 'utf8').trim();
+    const as = (actor: string) => actor === 'controller'
+      ? { 'content-type': 'application/json', 'x-taskboard-token': token, 'x-tb-actor': actor, 'x-tb-mail-controller': controllerToken }
+      : { 'content-type': 'application/json', 'x-taskboard-token': token, 'x-tb-task-token': TOKENS[actor] };
     const user = { 'content-type': 'application/json', origin: base };
     const req = async (method: string, path: string, body: unknown, headers: Record<string, string>) => {
       const r = await fetch(base + path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body) });
@@ -57,7 +62,7 @@ test('allow always: the user adds a rule on the card, later messages skip the ca
     };
     const post = (path: string, body: unknown, headers: Record<string, string>) => req('POST', path, body, headers);
     const tb = (args: string[], actor: string) => new Promise<{ code: number | null; out: string }>(resolve => {
-      const p = spawn(process.execPath, ['bin/tb', ...args], { cwd: process.cwd(), env: { ...clean, TB_URL: base, TB_TOKEN_FILE: join(tbdir, 'token'), TASK_ID: actor }, stdio: ['ignore', 'pipe', 'pipe'] });
+      const p = spawn(process.execPath, ['bin/tb', ...args], { cwd: process.cwd(), env: { ...clean, TB_URL: base, TB_TOKEN_FILE: join(tbdir, 'token'), ...(actor === 'controller' ? { TB_MAIL_CONTROLLER_TOKEN: controllerToken } : { TB_TASK_TOKEN: TOKENS[actor] }), TASK_ID: actor }, stdio: ['ignore', 'pipe', 'pipe'] });
       let out = ''; p.stdout.on('data', b => { out += b; }); p.stderr.on('data', b => { out += b; }); p.on('close', code => resolve({ code, out }));
     });
     const openCard = async () => (await req('GET', '/api/approvals', undefined, {})).data.find((a: { state: string; action: string }) => a.state === 'pending' && a.action === 'send');
@@ -89,7 +94,7 @@ test('allow always: the user adds a rule on the card, later messages skip the ca
     assert.equal(click.status, 200, JSON.stringify(click.data));
     assert.equal(click.data.approval.state, 'approved');
     const r1 = await first;
-    assert.equal(r1.code, 0, r1.out);
+    assert.equal(r1.code, 2, r1.out);
     assert.ok(await until(() => submitted('task-b').includes('First message from the writer')), 'the approved message arrives as written');
     let list = await rules();
     assert.equal(list.length, 1);
@@ -114,7 +119,7 @@ test('allow always: the user adds a rule on the card, later messages skip the ca
     let backCard: { id: string } | undefined;
     assert.ok(await until(async () => !!(backCard = await openCard())));
     assert.equal((await post(`/api/approvals/${backCard!.id}/deny`, {}, user)).status, 200);
-    assert.equal((await back).code, 3);
+    assert.equal((await back).code, 2);
     const other = await post('/api/tasks/task-b/send', { text: 'From the third task' }, as('task-c'));
     assert.equal(other.status, 202);
     assert.equal((await post(`/api/approvals/${other.data.approval.id}/deny`, {}, user)).status, 200);
@@ -169,7 +174,7 @@ test('allow always: the user adds a rule on the card, later messages skip the ca
     assert.equal((await post(`/api/approvals/${docCard!.id}/allow-always`, { scope: 'pair' }, as('task-a'))).status, 403);
     assert.equal((await post(`/api/approvals/${docCard!.id}/allow-always`, { scope: 'pair' }, user)).status, 200);
     const d1 = await docFirst;
-    assert.equal(d1.code, 0, d1.out);
+    assert.equal(d1.code, 2, d1.out);
     assert.ok(existsSync(join(vault, 'tasks', 'task-b', 'inbox', 'notes.md')));
     const d2 = await tb(['doc', 'send', '12:notes.md', '15'], 'task-a');
     assert.equal(d2.code, 0, d2.out);
