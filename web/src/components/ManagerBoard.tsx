@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode, type Ref } from 'react';
 import { api, useStore, useStoreValue } from '../api';
 import { CONFIRM_MS, cardTime, needsConfirm } from '../clickGuard';
 import { badgeTitle, boardOf, loadBoards, boardSummary, fmtAge, loadScope, managerGroupsOf, managerMenu, managersVersion, needAction, refreshManagerDetails, rowOf, scopeOf, setManager, subscribeManagers, waitLabel, watchBoards, type Audit, type BoardRow, type FindCard, type ManagerChoice, type ManagerMenu, type PresetKey, type Scope } from '../managerBoard';
@@ -56,9 +56,20 @@ export function WaitLabel({ taskId, group, children }: { taskId: string; group?:
   return <span className={`st st-label wait-label ${at.column === 'needsYou' ? 'needs-you' : at.column === 'blocked' ? 'stopped' : ''}`} title={`${w?.needs || w?.reason || text} · ${fmtAge(at.row.ageMinutes)}`}>{text}</span>;
 }
 
-// "3 need you" on a group tab of a group with a manager. A click opens a drop-down with two tabs:
+// "3!" on a group tab of a group with a manager. A click opens a drop-down with two tabs:
 // Need you (the rows that wait for the user, with Approve and Deny when one click decides the card) and
 // Manager did (the actions of the manager, server/manager-role.ts actions()).
+export function GroupNeedsButton({ count, groupName, shown, buttonRef, toggle }: {
+  count: number; groupName: string; shown: boolean; buttonRef?: Ref<HTMLButtonElement>; toggle: () => void;
+}) {
+  const description = count
+    ? `${count} ${count === 1 ? 'task needs' : 'tasks need'} you in ${groupName}. Click for the list and for what the manager did.`
+    : `Nothing in ${groupName} needs you. Click for what the manager did.`;
+  return <button ref={buttonRef} className={`need-chip ${count ? 'hot' : ''} ${shown ? 'on' : ''}`}
+    aria-label={description} aria-haspopup="dialog" aria-expanded={shown} title={description}
+    onPointerDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); toggle(); }}>{count}!</button>;
+}
+
 export function GroupNeeds({ group, open, toast }: { group: string; open: (id: string) => void; toast: (text: string) => void }) {
   useManagers();
   const b = boardOf(group);
@@ -67,9 +78,7 @@ export function GroupNeeds({ group, open, toast }: { group: string; open: (id: s
   if (!b?.group.manager) return null;
   const n = boardSummary(b).counts.needsYou;
   return <>
-    <button ref={btn} className={`need-chip ${n ? 'hot' : ''} ${shown ? 'on' : ''}`} aria-haspopup="dialog" aria-expanded={shown}
-      title={n ? `${n} ${n === 1 ? 'task needs' : 'tasks need'} you in this group. Click for the list and for what the manager did.` : 'Nothing in this group needs you. Click for what the manager did.'}
-      onPointerDown={e => e.stopPropagation()} onClick={e => { e.stopPropagation(); setShown(x => !x); }}>{n ? `${n} need you` : '0 need you'}</button>
+    <GroupNeedsButton count={n} groupName={b.group.name} shown={shown} buttonRef={btn} toggle={() => setShown(x => !x)} />
     {shown && <PopMenu anchor={btn.current} close={() => setShown(false)} className="need-pop" align="left" label={`${b.group.name}: need you`}>
       <NeedsPanel group={group} rows={b.columns.needsYou || []} manager={b.group.manager} open={id => { setShown(false); open(id); }} toast={toast} />
     </PopMenu>}
