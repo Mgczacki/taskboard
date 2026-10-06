@@ -5,6 +5,7 @@
 //   node --import tsx scripts/check-drag-regions.mjs <Taskboard URL>            headless Chrome, the page acts as the app
 //   node --import tsx scripts/check-drag-regions.mjs <Taskboard URL> --cdp 9396 a running test app (TASKBOARD_APP_DEBUG_PORT)
 //   ... --browser-window                                                         only the pop-out browser window
+//   ... --document-window                                                        only the HTML document window in the URL
 //
 // Use a test Taskboard (pnpm sandbox), never the real one: the check opens the controller and changes saved view
 // settings of that page (header folded or open, transparency).
@@ -19,6 +20,7 @@ const args = process.argv.slice(2);
 const url = args.find(a => /^https?:/.test(a));
 const cdpPort = args.includes('--cdp') ? Number(args[args.indexOf('--cdp') + 1]) : 0;
 const onlyBrowserWindow = args.includes('--browser-window');
+const onlyDocumentWindow = args.includes('--document-window');
 if (!url) { console.error('usage: node --import tsx scripts/check-drag-regions.mjs <Taskboard URL> [--cdp <port>]'); process.exit(2); }
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -81,7 +83,7 @@ try {
   for (const w of cdpPort ? [0] : [1600, 900]) {
     await width(w);
     const at = w ? ` at ${w} px` : '';
-    if (!onlyBrowserWindow) {
+    if (!onlyBrowserWindow && !onlyDocumentWindow) {
       for (const view of ['list', 'board', 'graph', 'canvas:live', 'waiting', 'settings']) {
         await load(`${base}#${view}`); await check(`${view}${at}`);
       }
@@ -98,14 +100,28 @@ try {
       // a pop-out canvas window has no top bar: its own toolbar is at the top edge
       await load(`${base}?solo=1#canvas:live`); await check(`pop-out canvas window${at}`);
     }
-    // the pop-out browser window has no title bar: its header moves the window, the view below gets every click.
-    // Its toolbars are below the header, so the controls are checked down to 160 px.
-    await load(`${base}?browser=template&title=Template%20browser&sub=check`); await check(`pop-out browser window${at}`, 160);
-    const h = await run(header);
-    states.push(`pop-out browser window header${at}`);
-    for (const i of h.items) console.log(`     ${i.what}: ${i.region}${i.control ? ' (control)' : ''}`);
-    if (h.problems.length) { failed++; console.log(`FAIL pop-out browser window header${at}:`); for (const p of h.problems) console.log(`  ${p}`); }
-    else console.log(`ok   pop-out browser window header${at}: header drag, ${h.samples} points checked`);
+    // Pop-out windows have no native title bar. Their shared header moves the window, and the view gets every click.
+    // The browser toolbars are below the header, so their controls are checked down to 160 px.
+    if (!onlyDocumentWindow) {
+      await load(`${base}?browser=template&title=Template%20browser&sub=check`); await check(`pop-out browser window${at}`, 160);
+      const h = await run(header);
+      states.push(`pop-out browser window header${at}`);
+      for (const i of h.items) console.log(`     ${i.what}: ${i.region}${i.control ? ' (control)' : ''}`);
+      if (h.problems.length) { failed++; console.log(`FAIL pop-out browser window header${at}:`); for (const p of h.problems) console.log(`  ${p}`); }
+      else console.log(`ok   pop-out browser window header${at}: header drag, ${h.samples} points checked`);
+    }
+    if (onlyDocumentWindow) {
+      await load(url); await check(`HTML document window${at}`, 100);
+      const h = await run(header);
+      const d = await run(`(() => { const h = document.querySelector('.bw-window-h'), f = document.querySelector('.document-window-frame'); return { height: h?.getBoundingClientRect().height, frame: !!f, sandbox: f?.getAttribute('sandbox') }; })()`);
+      states.push(`HTML document window header${at}`);
+      const problems = [...h.problems];
+      if (d.height < 44) problems.push(`header height is ${d.height} px`);
+      if (!d.frame) problems.push('no document iframe');
+      if (d.sandbox !== 'allow-scripts allow-popups') problems.push(`iframe sandbox is ${d.sandbox}`);
+      if (problems.length) { failed++; console.log(`FAIL HTML document window header${at}:`); for (const p of problems) console.log(`  ${p}`); }
+      else console.log(`ok   HTML document window header${at}: ${d.height} px header drag, ${h.samples} points checked`);
+    }
   }
   await setLs('tb-ctl-header', 'collapsed'); await setLs('tb-ctl-see', JSON.stringify({ see: 0 }));
 } finally { ws.close(); cleanup(); }

@@ -5,7 +5,7 @@ import { marked } from 'marked';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Task } from '../api';
 import { fmtWait } from '../api';
-import { fileUrl } from './Docs';
+import { documentWindowUrl, fileUrl } from './Docs';
 import { ManagerBadge } from './ManagerBoard';
 import { AgentChip, Kbd } from './ui';
 import { hit, useKeymap } from '../keys';
@@ -211,7 +211,7 @@ export function InboxPage({ tasks, open, documentLink }: { tasks: Task[]; open: 
           <div className="rv-sub">From #{item.taskNum} {item.taskTitle} · <code>{item.path.replace(/^\/Users\/[^/]+/, '~')}</code></div>
           <div className="rv-actions">
             <button className="btn" onClick={() => open(item.task, 'terminal')} disabled={!task}>Open agent terminal</button>
-            <a className="btn" href={fileUrl(item.path)} target="_blank" rel="noreferrer" title="Open the file at full size in its own browser tab. It runs in a sandbox without access to Taskboard.">Open in new tab ↗</a>
+            <a className="btn" href={isHtml(item.name) ? documentWindowUrl(item.path, item.name) : fileUrl(item.path)} target="_blank" rel="noreferrer" title="Open the file at full size in its own browser tab. HTML runs in a sandbox without access to Taskboard.">Open in new tab ↗</a>
             {item.version > 1 && !isHtml(item.name) && <button className={`btn ${compare ? 'on' : ''}`} onClick={() => setCompare(c => !c)}>{compare ? `Show v${item.version} only` : `Compare v${item.version - 1} → v${item.version}`}</button>}
             <span style={{ flex: 1 }} />
             {item.dismissedAt ? <button className="btn" onClick={() => act(send('POST', `/api/review/${item.id}/restore`))}>Restore to inbox</button> : item.state === 'accepted'
