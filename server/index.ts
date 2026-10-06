@@ -287,7 +287,7 @@ function needsCard(req: express.Request) {
 async function guarded(req: express.Request, res: express.Response, summary: string, detail: string, action: approvals.Approval['action'], run: () => Promise<unknown>, describe: (r: any) => string, extra: { allow?: allowRules.AllowOffer; note?: string } = {}) {
   const actor = req.get('x-tb-actor') || '';
   let forceCard = false;
-  const manager = managerRole.role(actor);
+  const manager = action === 'new' ? managerRole.newTaskGroup(actor, req.body?.group) : managerRole.role(actor);
   const managerAction = action === 'new' ? 'new' : action === 'send' ? 'send' : action === 'status' && req.body?.status === 'parked' ? 'park' : action === 'status' && req.body?.status === 'idle' ? 'resume' : undefined;
   if (manager && ['status', 'move', 'kill', 'release', 'restart', 'git-merge'].includes(action) && !managerAction)
     return res.status(403).json({ error: 'A group manager cannot take this action.' });
@@ -1320,18 +1320,24 @@ app.post('/api/tasks', async (req, res) => {
   try {
     const { title, desc, agent, folder, worktree, branch, parent, account, model } = req.body;
     if (!title || !folder || !['claude', 'codex', 'antigravity', 'auto'].includes(agent)) throw new Error('title, folder and agent are required');
+    const actor = req.get('x-tb-actor') || '';
+    const managedGroup = managerRole.newTaskGroup(actor, req.body.group);
+    const groupRef = managedGroup?.id || req.body.group;
     const startBy = links.actorFrom(req.get('x-tb-actor'));
     const startLinks = links.planStart(req.body.links, startBy);
     const prompt = (req.body.spinOff ? spinOffPrompt(req.body.spinOff) : (desc || title)) + (startLinks.length ? '\n\n' + startLinks.map(l => l.line).join('\n') : '');
     const images = agents.checkImages(req.body.images);
     await guarded(req, res, `start “${title}” (${agent === 'auto' ? 'Auto' : agents.agentName(agent)})`, `Folder: ${folder} · worktree: ${worktree === false ? 'no' : worktree === true ? 'yes' : 'automatic'}${branch ? ` · branch ${branch}` : ''}\nAccount: ${account && account !== 'auto' ? account : 'automatic'}\nModel: ${model || 'agent default'}\nPrompt: ${prompt}${images.length ? `\nImages: ${images.length} attached` : ''}`, 'new',
       async () => {
-        const t = await agents.startTask({ title, desc: prompt, agent, folder, worktree, branch, parent: managerRole.role(req.get('x-tb-actor') || '') ? req.get('x-tb-actor') : parent, account, model, images });
-        if (req.body.group) { const g = groups.all().find(x => x.name === req.body.group || x.id === req.body.group) || groups.create(String(req.body.group)); groups.update(g.id, { tasks: [...g.tasks, t.id] }); }
+        const t = await agents.startTask({ title, desc: prompt, agent, folder, worktree, branch, parent: managedGroup ? actor : parent, account, model, images });
+        if (groupRef) { const g = managedGroup || groups.all().find(x => x.name === groupRef || x.id === groupRef) || groups.create(String(groupRef)); groups.update(g.id, { tasks: [...g.tasks, t.id] }); }
         const linkProblems = links.addAtStart(t.id, startLinks, startBy);
         return { ...view(store.get(t.id) || t), ...(linkProblems.length ? { linkProblems } : {}) };
-      }, (t: any) => `Started #${t.num} ${t.title} with ${t.agent} on ${t.account} in ${t.cwd}${req.body.group ? ` (group ${req.body.group})` : ''}`);
-  } catch (e) { fail(res, e); }
+      }, (t: any) => `Started #${t.num} ${t.title} with ${t.agent} on ${t.account} in ${t.cwd}${groupRef ? ` (group ${groupRef})` : ''}`);
+  } catch (e) {
+    if (e instanceof Error && e.message === 'The action names another group.') return res.status(403).json({ error: e.message });
+    fail(res, e);
+  }
 });
 app.post('/api/tasks/:id/status', async (req, res) => {
   const s = req.body.status;
