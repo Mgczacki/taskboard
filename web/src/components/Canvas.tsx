@@ -15,7 +15,7 @@ import { runGroupChange } from '../groupActions';
 import { inOrder, moveBy, moveToSlot, slotAt, slotHint } from '../groupOrder';
 import { orderKey, renderOrder, slotNear, tileHint, withSavedOrder } from '../tileOrder';
 import { GroupRuntime } from './GroupRuntime';
-import { RuntimeButton, canBrowse, canRun, type RuntimeTab } from './TaskRuntime';
+import { RuntimeButton, canBrowse, canRun } from './TaskRuntime';
 import { panelHolds, type PanelTab } from '../panelShare';
 import { BrowserView } from './TaskBrowser';
 import { readSplit, writeSplit, type Split } from '../browserSplit';
@@ -60,7 +60,7 @@ export function openInWindow(view: string) {
 }
 
 interface Props {
-  tasks: Task[]; groups: Group[]; view: string; setView: (v: string) => void; openPanel: (id: string | null, tab?: RuntimeTab) => void;
+  tasks: Task[]; groups: Group[]; view: string; setView: (v: string) => void; openPanel: (id: string | null, tab?: PanelTab) => void;
   panelTaskId?: string | null; // the task whose panel is open
   panelTab?: PanelTab; // the tab in front in that panel: its tile yields only the part that tab shows (panelShare.ts)
   selected: Set<string>; toggleSel: (id: string) => void; clearSel: () => void; solo: boolean;
@@ -603,7 +603,7 @@ interface WinProps {
 const CanvasWin = memo(function CanvasWin({ t, accounts, i, act, linkTasks, cls, span, ending, asking, maxed, splitOpen, splitSide, heldTerminal, heldBrowser, font, hideButton }: WinProps) {
   const a = () => act.current!;
   const sp: Split = { open: splitOpen, side: splitSide };
-  // The buttons of the header. A window too narrow for all of them shows ⋯ in their place, and they show in its menu
+  // The buttons of the header. Every window has a menu for its Outbox. A narrow window moves its other buttons there
   // with the agent and runtime chips. narrow starts when the header's content is wider than the header (scrollWidth),
   // and ends when the header is again as wide as that content was.
   const showBrowser = canBrowse(t) && !t.openElsewhere && t.status !== 'suspended' && !heldTerminal && !heldBrowser;
@@ -641,12 +641,13 @@ const CanvasWin = memo(function CanvasWin({ t, accounts, i, act, linkTasks, cls,
         {ending ? <><span className="sel-warn">End & archive?</span><button className="b" onClick={() => a().endTask(t)}>Yes, end it</button><button className="b" onClick={() => a().setEnding(null)}>Cancel</button></> : <>
         {(t.status === 'suspended' || t.openElsewhere) && <button className="b" onClick={() => a().openPanel(t.id)}>{t.openElsewhere ? 'Options…' : 'Resume…'}</button>}
         {!narrow && <ManagerRoleButton t={t} variant="head" toast={m => a().toast(m)} />}
-        {!narrow ? acts.map(x => <button key={x.k} className={`b ${x.on ? 'on' : ''}`} title={x.title} aria-label={x.aria} onClick={x.fn}>{x.icon}</button>)
-          : <button ref={moreRef} className={`b wmore ${menuOpen ? 'on' : ''}`} aria-haspopup="true" aria-expanded={menuOpen} aria-label="Window menu" title={`The buttons of this window: ${acts.map(x => x.text).join(', ')}`} onClick={() => setMenuOpen(o => !o)}>⋯</button>}
-        {narrow && menuOpen && <PopMenu anchor={moreRef.current} close={closeMenu} className="wmenu" label={`Window #${t.num}`}>
-          <div className="wmenu-chips"><AgentChip a={t.agent} /><CanvasAccountChip task={t} accounts={accounts} /><CanvasFailureChip task={t} accounts={accounts} /><MachineChip t={t} /><WhereChip t={t} /><BrowserAskChip t={t} /><RuntimeButton t={t} small onOpen={tab => { setMenuOpen(false); a().openPanel(t.id, tab); }} /></div>
-          {acts.map(x => <button key={x.k} className={`mi ${x.on ? 'on' : ''}`} title={x.title} aria-label={x.aria} onClick={() => { setMenuOpen(false); x.fn(); }}><span className="mi-ico">{x.icon}</span>{x.text}</button>)}
-          <ManagerRoleButton t={t} variant="menu" toast={m => { setMenuOpen(false); a().toast(m); }} />
+        {!narrow && acts.map(x => <button key={x.k} className={`b ${x.on ? 'on' : ''}`} title={x.title} aria-label={x.aria} onClick={x.fn}>{x.icon}</button>)}
+        <button ref={moreRef} className={`b wmore ${menuOpen ? 'on' : ''}`} aria-haspopup="true" aria-expanded={menuOpen} aria-label="Window menu" title={narrow ? `The buttons of this window: Open Outbox, ${acts.map(x => x.text).join(', ')}` : 'Open this task’s Outbox'} onClick={() => setMenuOpen(o => !o)}>⋯</button>
+        {menuOpen && <PopMenu anchor={moreRef.current} close={closeMenu} className="wmenu" label={`Window #${t.num}`}>
+          {narrow && <div className="wmenu-chips"><AgentChip a={t.agent} /><CanvasAccountChip task={t} accounts={accounts} /><CanvasFailureChip task={t} accounts={accounts} /><MachineChip t={t} /><WhereChip t={t} /><BrowserAskChip t={t} /><RuntimeButton t={t} small onOpen={tab => { setMenuOpen(false); a().openPanel(t.id, tab); }} /></div>}
+          <button className="mi" onClick={() => { setMenuOpen(false); a().openPanel(t.id, 'docs'); }}><span className="mi-ico" aria-hidden="true">▤</span>Open Outbox</button>
+          {narrow && acts.map(x => <button key={x.k} className={`mi ${x.on ? 'on' : ''}`} title={x.title} aria-label={x.aria} onClick={() => { setMenuOpen(false); x.fn(); }}><span className="mi-ico">{x.icon}</span>{x.text}</button>)}
+          {narrow && <ManagerRoleButton t={t} variant="menu" toast={m => { setMenuOpen(false); a().toast(m); }} />}
         </PopMenu>}</>}
       </div>
       {t.restartWhenDone && t.restartFor && <div className="win-note" title={t.restartWait}>{t.restartOverdue ? t.restartWait : `Waiting for the end of the turn ${t.restartFor}.`}{t.restartOverdue && <button className="b" onClick={() => api.restart(t.id, 'now').catch(e => a().toast(String(e.message || e)))}>Restart now</button>}</div>}
