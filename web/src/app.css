@@ -29,6 +29,8 @@
 .three.fixed .now span { min-height: 2.9em; }
 .three.fixed .w span { -webkit-line-clamp: 1; }
 .three.fixed .w.none span { color: var(--dim); }
+.task-file-link { color: var(--accent) !important; text-decoration: underline; text-underline-offset: 2px; cursor: pointer; }
+.task-file-link:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .dr-status > div { min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .dr-bar { white-space: nowrap; }
 .dr-bar-t { min-width: 0; overflow: hidden; text-overflow: ellipsis; }

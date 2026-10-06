@@ -27,6 +27,7 @@ import { TransferPanel } from './TransferPanel';
 import { BrowserView } from './TaskBrowser';
 import { openBrowserSplit } from '../browserSplit';
 import { ProcList } from './TaskProcs';
+import { TaskFileText } from './TaskFileText';
 import { RuntimeButton } from './TaskRuntime';
 import type { PanelTab } from '../panelShare';
 import { BAR_ALPHA, applyWindowOpacity, clickThroughHeld, glassAlpha, headerCollapsed, onWindowSeeChange, presetOf, setHeaderCollapsed, stepGlass, windowSee, windowSeeSupported } from '../controllerView';
@@ -291,7 +292,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
         {tab === 'terminal' && t.openElsewhere && <div className="empty" style={{ padding: 20 }}>The terminal for this session belongs to {t.openElsewhere?.tty}. Last message from the agent:<pre className="logtext" style={{ marginTop: 10 }}>{t.now || '—'}</pre></div>}
         {tab === 'terminal' && !t.openElsewhere && (t.status === 'suspended'
           ? <div className="empty" style={{ padding: 20 }}>Resuming with {t.agent === 'claude' ? 'claude --resume' : t.agent === 'codex' ? 'codex resume' : 'agy --conversation'} {t.sessionId}…</div>
-          : <div className="term-wrap">{!collapsed && <div className={`term-brief ${briefOpen ? 'open' : ''}`} onClick={() => setBriefOpen(o => !o)} title={briefOpen ? 'Click to show only the first lines' : 'Click to show the whole task description'}><b>Task</b><span>{desc}</span><i className="more">{briefOpen ? 'less' : 'more'}</i></div>}<Terminal taskId={t.id} autoFocus glass={see ? glassAlpha(see) : 1} tint={see ? see.tint : 'panel'} /></div>)}
+          : <div className="term-wrap">{!collapsed && <div className={`term-brief ${briefOpen ? 'open' : ''}`} onClick={() => setBriefOpen(o => !o)} title={briefOpen ? 'Click to show only the first lines' : 'Click to show the whole task description'}><b>Task</b><span><TaskFileText taskId={t.id} text={desc} /></span><i className="more">{briefOpen ? 'less' : 'more'}</i></div>}<Terminal taskId={t.id} autoFocus glass={see ? glassAlpha(see) : 1} tint={see ? see.tint : 'panel'} /></div>)}
         {tab === 'log' && <>{noticeHistory(t.id).length > 0 && <div className="ns-history"><b>Notices in this panel since the page loaded</b><ul>{noticeHistory(t.id).map(h => <li key={h.key}><span className="sub">{new Date(h.at).toLocaleTimeString()}</span> {h.title}: {h.reason}</li>)}</ul></div>}<pre className="logtext">{log || 'No log entries yet.'}</pre></>}
         {tab === 'browser' && <BrowserView key={t.id} id={t.id} title={`#${t.num} ${t.title}`} archived={t.status === 'archived'} remote={t.machine?.name} onCanvas={() => { openBrowserSplit(t.id); onCanvas(t.id); }} />}
         {tab === 'procs' && <ProcList key={t.id} scope="tasks" id={t.id} cwd={t.cwd} />}

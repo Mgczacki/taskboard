@@ -1,11 +1,12 @@
 // Inbox and outbox. Each task folder has outbox/ (documents the agent writes for you or other agents)
 // and inbox/ (documents sent to it). Sending copies the file, so the agent reads it like any local file.
 // inbox/.sent.json records where each inbox file came from.
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { basename, extname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HOME, TASKS_DIR, VAULT } from './config.ts';
 import * as store from './store.ts';
+import * as groups from './groups.ts';
 
 export interface DocInfo { name: string; path: string; kind: 'md' | 'html' | 'other'; size: number; mtime: string; from?: { task: string; num: number; title: string; at: string }; sentTo?: { task: string; num: number; at: string }[]; pending?: boolean }
 
@@ -248,4 +249,24 @@ export function resolveDocumentLink(sourceTask: string, input: string): (DocInfo
   const doc = list(join(store.taskDir(task), box)).find(x => x.name === name && x.path === full);
   if (!doc) return null;
   return { ...doc, kind: kindOf(name), task, box: box as 'inbox' | 'outbox', ...(line && line > 0 ? { line } : {}), ...(heading ? { heading } : {}) };
+}
+
+// Task text names files without paths. Search only regular files in the task's Outbox,
+// then accept a group result only when one other task owns that name.
+export function resolveTaskTextFile(sourceTask: string, name: string): ReturnType<typeof resolveDocumentLink> {
+  if (!store.get(sourceTask) || !name || name.length > 255 || name === '.' || name === '..' || /[\\/\0]/.test(name)) return null;
+  const find = (task: string) => {
+    if (!store.get(task)) return null;
+    const dir = outboxDir(task), path = join(dir, name);
+    try {
+      if (!lstatSync(path).isFile() || !realpathSync(path).startsWith(realpathSync(dir) + sep)) return null;
+      return resolveDocumentLink(sourceTask, path);
+    } catch { return null; }
+  };
+  const own = find(sourceTask);
+  if (own) return own;
+  const members = new Set(groups.groupsOf(sourceTask).flatMap(g => g.tasks));
+  members.delete(sourceTask);
+  const matches = [...members].map(find).filter((doc): doc is NonNullable<typeof doc> => !!doc);
+  return matches.length === 1 ? matches[0] : null;
 }

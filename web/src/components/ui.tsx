@@ -3,6 +3,7 @@ import { AGENT_NAME, ATTN, STATUS_LABEL, api, fmtWait } from '../api';
 import { useEffect, useState } from 'react';
 import { keyLabel } from '../keys';
 import { errorDetail, errorTone } from '../agentErrorText';
+import { TaskFileText } from './TaskFileText';
 
 // the first key of an action in keys.ts (nothing when the user removed its keys); the caller calls useKeymap()
 export const Kbd = ({ id }: { id: string }) => keyLabel(id) ? <kbd>{keyLabel(id)}</kbd> : null;
@@ -42,9 +43,9 @@ export function ThreeLines({ t, fixed = false }: { t: Task; fixed?: boolean }) {
   const now = t.now || (t.status === 'working' ? 'Working on it…' : '—');
   return (
     <div className={`three ${fixed ? 'fixed' : ''}`}>
-      <div><b>Goal</b><span title={fixed ? t.goal || t.title : undefined}>{t.goal || t.title}</span></div>
-      <div className="now"><b>Now</b><span title={fixed ? now : undefined}>{now}</span></div>
-      {waiting ? <div className="w"><b>Waiting</b><span title={fixed ? waiting : undefined}>{waiting} <em>· {fmtWait(t.waitMin)}</em></span></div>
+      <div><b>Goal</b><span title={fixed ? t.goal || t.title : undefined}><TaskFileText taskId={t.id} text={t.goal || t.title} /></span></div>
+      <div className="now"><b>Now</b><span title={fixed ? now : undefined}><TaskFileText taskId={t.id} text={now} /></span></div>
+      {waiting ? <div className="w"><b>Waiting</b><span title={fixed ? waiting : undefined}><TaskFileText taskId={t.id} text={waiting} /> <em>· {fmtWait(t.waitMin)}</em></span></div>
         : fixed && <div className="w none"><b>Waiting</b><span>—</span></div>}
     </div>
   );
