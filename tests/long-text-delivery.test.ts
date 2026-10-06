@@ -145,12 +145,13 @@ test('failure 2: a Codex task with a 7,000 character prompt in a worktree starts
   } finally { await tmux.killSession(t.session); }
 });
 
-test('a start that tmux refuses reports a short, clear error and does not keep the task', { timeout: 60000 }, async () => {
-  // a title of 20 KB goes into the task instructions on the command line, so even without the prompt it is too long
-  await assert.rejects(agents.startTask({ title: 'T'.repeat(20000), desc: 'Short prompt', agent: 'codex', folder: root, worktree: false, account: 'codex-fixture' }),
-    (e: Error) => /^Codex did not start, so Taskboard did not keep task #\d+: The command that starts the agent has \d+ bytes, and tmux accepts at most about 16000\.$/.test(e.message));
-  // a task that did not start is removed (commit f2226ac1)
-  assert.equal(store.all().find(x => x.title.length === 20000), undefined);
+test('a title above the tmux limit starts, and tmux errors omit command data', { timeout: 60000 }, async () => {
+  const t = await agents.startTask({ title: 'T'.repeat(20000), desc: 'Short prompt', agent: 'codex', folder: root, worktree: false, account: 'codex-fixture' });
+  try {
+    assert.equal(await tmux.hasSession(t.session), true);
+    const argv = JSON.parse(readFileSync(join(store.taskDir(t.id), 'argv.json'), 'utf8')) as string[];
+    assert.ok(argv.some(arg => arg.includes('T'.repeat(20000))));
+  } finally { await tmux.killSession(t.session); }
   // a tmux error names the command, not the whole command line
   await assert.rejects(tmux.tmux('send-keys', '-t', '=no-such-session:', 'x'.repeat(5000)), (e: Error) => e.message.length < 300 && /^tmux send-keys failed: /.test(e.message));
 });
