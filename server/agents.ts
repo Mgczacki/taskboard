@@ -10,6 +10,7 @@ import { hostname } from 'node:os';
 import { promisify } from 'node:util';
 import { GUARD_SCRIPT, STATUSLINE_SCRIPT, ROOT, TB_DIR, CLAUDE_SETTINGS_FILE, CODEX_NOTIFY_SCRIPT, HOME, HOOK_SCRIPT, TOKEN_FILE, URL_BASE, VAULT, DOCS_DIR, AGY_PLUGIN_DIR, agyBin } from './config.ts';
 import * as store from './store.ts';
+import * as answerHistory from './answer-history.ts';
 import * as taskToken from './task-token.ts';
 import type { Agent, Task } from './store.ts';
 import * as tmux from './tmux.ts';
@@ -833,7 +834,7 @@ const scopeDirs = (t: Task) => worktreeScopes(t).flatMap(s => ['--add-dir', real
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'task';
 
-export interface NewTask { title: string; desc: string; agent: Agent | 'auto'; folder: string; worktree?: boolean; branch?: string; parent?: string; account?: string; model?: string; images?: NewTaskImage[] }
+export interface NewTask { title: string; desc: string; agent: Agent | 'auto'; folder: string; worktree?: boolean; branch?: string; parent?: string; account?: string; model?: string; images?: NewTaskImage[]; captureQuestion?: boolean }
 // An image pasted into the New task form: its media type and its bytes as base64.
 export interface NewTaskImage { type: string; data: string }
 const IMAGE_EXT: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' };
@@ -894,7 +895,8 @@ export async function startTask(n: NewTask): Promise<Task> {
     statusSource: n.parent === 'controller' ? 'Started by the controller (tb new) just now.' : 'Started just now.', goal: n.title, desc: n.desc, parent: n.parent, account: acct.id, model: n.model,
     accountChosen: explicit ? 'user' : 'auto',
   });
-  try { await launch(t, attachImages(t, n.desc, images), false); }
+  const firstPrompt = n.captureQuestion ? answerHistory.prepare(t, n.desc).text : n.desc;
+  try { await launch(t, attachImages(t, firstPrompt, images), false); }
   catch (e) {
     const why = e instanceof Error ? e.message : String(e);
     // A task without a worktree has nothing to keep: remove it (store.remove moves its files to the trash folder), so

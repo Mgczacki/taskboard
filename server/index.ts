@@ -1350,7 +1350,8 @@ app.post('/api/tasks', async (req, res) => {
     const images = agents.checkImages(req.body.images);
     await guarded(req, res, `start “${title}” (${agent === 'auto' ? 'Auto' : agents.agentName(agent)})`, `Folder: ${folder} · worktree: ${worktree === false ? 'no' : worktree === true ? 'yes' : 'automatic'}${branch ? ` · branch ${branch}` : ''}\nAccount: ${account && account !== 'auto' ? account : 'automatic'}\nModel: ${model || 'agent default'}\nPrompt: ${prompt}${images.length ? `\nImages: ${images.length} attached` : ''}`, 'new',
       async () => {
-        const t = await agents.startTask({ title, desc: prompt, agent, folder, worktree, branch, parent: managedGroup ? actor : parent, account, model, images });
+        const t = await agents.startTask({ title, desc: prompt, agent, folder, worktree, branch, parent: managedGroup ? actor : parent, account, model, images,
+          captureQuestion: !!req.get('origin') && !req.get('x-tb-actor') && answerHistory.isQuestion(prompt) });
         if (groupRef) { const g = managedGroup || groups.all().find(x => x.name === groupRef || x.id === groupRef) || groups.create(String(groupRef)); groups.update(g.id, { tasks: [...g.tasks, t.id] }); }
         const linkProblems = links.addAtStart(t.id, startLinks, startBy);
         return { ...view(store.get(t.id) || t), ...(linkProblems.length ? { linkProblems } : {}) };
