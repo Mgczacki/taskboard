@@ -86,9 +86,8 @@ export function InboxPage({ tasks, open, documentLink }: { tasks: Task[]; open: 
   const [text, setText] = useState<string | null>(null);
   const [prevText, setPrevText] = useState<string | null>(null);
   const [compare, setCompare] = useState(false);
-  const [draft, setDraft] = useState<{ block: number; quote: string } | null>(null);
-  const [draftText, setDraftText] = useState('');
-  const [general, setGeneral] = useState('');
+  const [drafts, setDrafts] = useState<Record<string, { general: string; inline?: { block: number; quote: string; text: string } }>>({});
+  const [commentEdits, setCommentEdits] = useState<Record<string, string>>({});
   const [selBtn, setSelBtn] = useState<{ x: number; y: number; block: number; quote: string } | null>(null);
   const [msg, setMsg] = useState('');
   const [sending, setSending] = useState(false);
@@ -104,7 +103,7 @@ export function InboxPage({ tasks, open, documentLink }: { tasks: Task[]; open: 
 
   const item = items?.find(i => i.id === sel);
   useEffect(() => {
-    setText(null); setPrevText(null); setCompare(false); setDraft(null);
+    setText(null); setPrevText(null); setCompare(false); setSelBtn(null);
     if (!item) return;
     fetch(`/api/review/${item.id}/v/${item.version}`).then(r => r.ok ? r.text() : fetch(fileUrl(item.path)).then(x => x.text())).then(setText);
     if (item.version > 1) fetch(`/api/review/${item.id}/v/${item.version - 1}`).then(r => r.ok ? r.text() : null).then(setPrevText);
@@ -126,14 +125,42 @@ export function InboxPage({ tasks, open, documentLink }: { tasks: Task[]; open: 
   }, [shown, item?.path]);
   const current = item ? item.comments.filter(c => c.v === item.version) : [];
   const unsent = current.filter(c => !c.sent);
+  const draftKey = item ? `${item.id}:${item.version}` : '';
+  const local = drafts[draftKey];
+  const draft = local?.inline;
+  const general = local?.general || '';
+  const pendingEdits = current.filter(c => commentEdits[c.id] !== undefined && commentEdits[c.id] !== c.text);
+  const pendingText = !!(general.trim() || draft?.text.trim() || pendingEdits.length);
+  const hasPendingComments = !!(unsent.length || pendingText);
   const task = item && tasks.find(t => t.id === item.task);
 
   const act = async (p: Promise<unknown>, ok?: string) => { try { await p; if (ok) setMsg(ok); load(); } catch (e) { setMsg((e as Error).message); } };
-  const addComment = async (block: number, quote: string, t: string) => { if (!item || !t.trim()) return; await act(send('POST', `/api/review/${item.id}/comment`, { block, quote, text: t.trim() })); };
+  const changeDraft = (id: string, change: (value: { general: string; inline?: { block: number; quote: string; text: string } }) => { general: string; inline?: { block: number; quote: string; text: string } }) =>
+    setDrafts(all => ({ ...all, [id]: change(all[id] || { general: '' }) }));
+  const saveComment = async (id: string, key: string, block: number, quote: string, value: string) => {
+    if (!value.trim()) return;
+    await send('POST', `/api/review/${id}/comment`, { block, quote, text: value.trim() });
+    await load();
+    changeDraft(key, old => block < 0
+      ? { ...old, general: old.general === value ? '' : old.general }
+      : { ...old, inline: old.inline?.block === block && old.inline.text === value ? undefined : old.inline });
+  };
+  const saveDraft = async (block: number, quote: string, value: string) => {
+    if (!item || sending) return;
+    try { await saveComment(item.id, draftKey, block, quote, value); }
+    catch (e) { setMsg((e as Error).message); }
+  };
   const sendFeedback = async () => {
-    if (!item || item.dismissedAt || sending) return;
+    if (!item || item.dismissedAt || sending || !hasPendingComments) return;
     setSending(true); setMsg('Resuming or contacting the agent…'); setMoveOpen(false);
     try {
+      for (const c of pendingEdits) {
+        if (!commentEdits[c.id].trim()) throw new Error('Write a comment before sending it.');
+        await send('PATCH', `/api/review/${item.id}/comment/${c.id}`, { text: commentEdits[c.id].trim() });
+        setCommentEdits(all => { const next = { ...all }; delete next[c.id]; return next; });
+      }
+      if (draft?.text.trim()) await saveComment(item.id, draftKey, draft.block, draft.quote, draft.text);
+      if (general.trim()) await saveComment(item.id, draftKey, -1, '', general);
       const result = await send('POST', `/api/review/${item.id}/feedback`) as { resumed: boolean; delivery?: string; reason?: string };
       setMsg(result.delivery === 'queued' ? `Queued, not typed yet: ${result.reason} Taskboard types it when the agent's input box is empty.` : result.resumed ? 'Sent. The task resumed.' : 'Sent. The agent received the comments.');
       load();
@@ -146,7 +173,7 @@ export function InboxPage({ tasks, open, documentLink }: { tasks: Task[]; open: 
       }
     } finally { setSending(false); }
   };
-  const accept = () => item && !item.dismissedAt && act(send('POST', `/api/review/${item.id}/accept`), 'Accepted.');
+  const accept = () => item && !item.dismissedAt && !sending && !hasPendingComments && act(send('POST', `/api/review/${item.id}/accept`), 'Accepted.');
 
   // select text in a block → "Comment" button next to it
   const onMouseUp = () => {
@@ -156,18 +183,23 @@ export function InboxPage({ tasks, open, documentLink }: { tasks: Task[]; open: 
     const r = s.getRangeAt(0).getBoundingClientRect(), d = docRef.current.getBoundingClientRect();
     setSelBtn({ x: r.right - d.left + docRef.current.scrollLeft, y: r.top - d.top + docRef.current.scrollTop - 6, block: Number(b.dataset.block), quote: s.toString().trim() });
   };
-  const startDraft = (block: number, quote: string) => { setDraft({ block, quote }); setDraftText(''); setSelBtn(null); window.getSelection()?.removeAllRanges(); };
+  const startDraft = (block: number, quote: string) => {
+    if (!item) return;
+    if (draft?.text.trim()) { setMsg('Save or cancel your current comment first.'); return; }
+    changeDraft(draftKey, old => ({ ...old, inline: { block, quote, text: '' } }));
+    setSelBtn(null); window.getSelection()?.removeAllRanges();
+  };
 
   useEffect(() => {
     const on = (e: KeyboardEvent) => {
       // keys.ts: hit() leaves out keys typed into a text field or a terminal
-      if (hit(e, 'reviewSend')) { e.preventDefault(); sendFeedback(); return; }
+      if (hit(e, 'reviewSend')) { if (hasPendingComments && !sending) { e.preventDefault(); sendFeedback(); } return; }
       if (!items?.length) return;
       const i = items.findIndex(x => x.id === sel);
       if (hit(e, 'reviewNext')) setSel(items[Math.min(items.length - 1, i + 1)].id);
       else if (hit(e, 'reviewPrev')) setSel(items[Math.max(0, i - 1)].id);
       else if (hit(e, 'reviewComment') && selBtn) { e.preventDefault(); startDraft(selBtn.block, selBtn.quote); }
-      else if (hit(e, 'reviewAccept') && item && !item.dismissedAt && item.state !== 'accepted') accept();
+      else if (hit(e, 'reviewAccept') && item && !item.dismissedAt && item.state !== 'accepted' && !hasPendingComments && !sending) { e.preventDefault(); accept(); }
     };
     addEventListener('keydown', on); return () => removeEventListener('keydown', on);
   });
@@ -216,8 +248,8 @@ export function InboxPage({ tasks, open, documentLink }: { tasks: Task[]; open: 
             <span style={{ flex: 1 }} />
             {item.dismissedAt ? <button className="btn" onClick={() => act(send('POST', `/api/review/${item.id}/restore`))}>Restore to inbox</button> : item.state === 'accepted'
               ? <button className="btn" onClick={() => act(send('POST', `/api/review/${item.id}/reopen`))}>Reopen</button>
-              : <><button className="btn" onClick={accept}>Accept <Kbd id="reviewAccept" /></button>
-                <button className="btn primary" disabled={!unsent.length || sending} onClick={sendFeedback}>{sending ? 'Resuming…' : `Send feedback to #${item.taskNum}`} {unsent.length > 0 && `(${unsent.length})`} <Kbd id="reviewSend" /></button></>}
+              : <><button className="btn" disabled={hasPendingComments || sending} onClick={accept}>Accept <Kbd id="reviewAccept" /></button>
+                <button className="btn primary" disabled={!hasPendingComments || sending} onClick={sendFeedback}>{sending ? 'Sending…' : `Send comment to agent #${item.taskNum}`} <Kbd id="reviewSend" /></button></>}
           </div>
           {item.state === 'changes' && <div className="banner">You sent comments on version {item.version}. The agent is revising; the next version appears here when it runs <code>tb review</code> again.</div>}
           {item.state === 'accepted' && <div className="banner">Accepted.</div>}
@@ -260,17 +292,17 @@ export function InboxPage({ tasks, open, documentLink }: { tasks: Task[]; open: 
             <fieldset disabled={!!item.dismissedAt} style={{ border: 0, padding: 0, margin: 0, minWidth: 0 }}>
             {draft && <div className="rv-c draft">
               <div className="rv-q">“{draft.quote.slice(0, 160)}”</div>
-              <textarea autoFocus value={draftText} onChange={e => setDraftText(e.target.value)} placeholder="Your comment" onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.stopPropagation(); addComment(draft.block, draft.quote, draftText).then(() => setDraft(null)); } if (e.key === 'Escape') setDraft(null); }} />
-              <div className="rv-row"><button className="btn ghost" onClick={() => setDraft(null)}>Cancel</button><button className="btn primary" onClick={() => addComment(draft.block, draft.quote, draftText).then(() => setDraft(null))}>Save <kbd>⌘↩</kbd></button></div>
+              <textarea autoFocus value={draft.text} onChange={e => changeDraft(draftKey, old => ({ ...old, inline: { ...draft, text: e.target.value } }))} placeholder="Your comment" onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.stopPropagation(); void saveDraft(draft.block, draft.quote, draft.text); } if (e.key === 'Escape') changeDraft(draftKey, old => ({ ...old, inline: undefined })); }} />
+              <div className="rv-row"><button className="btn ghost" onClick={() => changeDraft(draftKey, old => ({ ...old, inline: undefined }))}>Cancel</button><button className="btn primary" disabled={!draft.text.trim() || sending} onClick={() => void saveDraft(draft.block, draft.quote, draft.text)}>Save <kbd>⌘↩</kbd></button></div>
             </div>}
-            {current.filter(c => c.block >= 0).sort((a, b) => a.block - b.block).map(c => <CommentCard key={c.id} c={c} item={item} reload={load} onJump={() => docRef.current?.querySelector(`[data-block="${c.block}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })} />)}
+            {current.filter(c => c.block >= 0).sort((a, b) => a.block - b.block).map(c => <CommentCard key={c.id} c={c} item={item} reload={load} editText={commentEdits[c.id]} setEditText={value => setCommentEdits(all => { const next = { ...all }; if (value === undefined) delete next[c.id]; else next[c.id] = value; return next; })} onJump={() => docRef.current?.querySelector(`[data-block="${c.block}"]`)?.scrollIntoView({ behavior: 'smooth', block: 'center' })} />)}
             <div className="rv-general">
               <div className="rv-qh">General comment</div>
-              {current.filter(c => c.block < 0).map(c => <CommentCard key={c.id} c={c} item={item} reload={load} />)}
-              <textarea value={general} onChange={e => setGeneral(e.target.value)} placeholder={isHtml(item.name) ? 'Comments on this page' : 'A comment about the whole document'} onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.stopPropagation(); addComment(-1, '', general).then(() => setGeneral('')); } }} />
-              <div className="rv-row"><button className="btn" disabled={!general.trim()} onClick={() => addComment(-1, '', general).then(() => setGeneral(''))}>Add</button></div>
+              {current.filter(c => c.block < 0).map(c => <CommentCard key={c.id} c={c} item={item} reload={load} editText={commentEdits[c.id]} setEditText={value => setCommentEdits(all => { const next = { ...all }; if (value === undefined) delete next[c.id]; else next[c.id] = value; return next; })} />)}
+              <textarea value={general} onChange={e => changeDraft(draftKey, old => ({ ...old, general: e.target.value }))} placeholder={isHtml(item.name) ? 'Comments on this page' : 'A comment about the whole document'} onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.stopPropagation(); void saveDraft(-1, '', general); } }} />
+              <div className="rv-row"><button className="btn" disabled={!general.trim() || sending} onClick={() => void saveDraft(-1, '', general)}>Add</button></div>
             </div>
-            {!current.length && !draft && <div className="rv-hint">Select text and press <Kbd id="reviewComment" />, hover a paragraph and click ＋, or click a diagram to comment on it. Comments stay here until you press <b>Send feedback</b>.</div>}
+            {!current.length && !draft && <div className="rv-hint">Select text and press <Kbd id="reviewComment" />, hover a paragraph and click ＋, or click a diagram to comment on it. Save a comment or send it to the agent.</div>}
             </fieldset>
           </aside>
         </div>
@@ -279,16 +311,19 @@ export function InboxPage({ tasks, open, documentLink }: { tasks: Task[]; open: 
   );
 }
 
-function CommentCard({ c, item, reload, onJump }: { c: Comment; item: Item; reload: () => void; onJump?: () => void }) {
-  const [edit, setEdit] = useState(false);
-  const [t, setT] = useState(c.text);
-  const save = async () => { await send('PATCH', `/api/review/${item.id}/comment/${c.id}`, { text: t }); setEdit(false); reload(); };
+function CommentCard({ c, item, reload, editText, setEditText, onJump }: { c: Comment; item: Item; reload: () => void; editText?: string; setEditText: (text?: string) => void; onJump?: () => void }) {
+  const edit = editText !== undefined;
+  const save = async () => {
+    if (!editText?.trim()) return;
+    await send('PATCH', `/api/review/${item.id}/comment/${c.id}`, { text: editText.trim() });
+    setEditText(undefined); reload();
+  };
   return (
     <div className={`rv-c ${c.sent ? 'sent' : ''}`}>
       {c.quote && <div className="rv-q" onClick={onJump}>“{c.quote.slice(0, 160)}”</div>}
-      {edit ? <><textarea value={t} onChange={e => setT(e.target.value)} autoFocus /><div className="rv-row"><button className="btn ghost" onClick={() => setEdit(false)}>Cancel</button><button className="btn primary" onClick={save}>Save</button></div></>
+      {edit ? <><textarea value={editText} onChange={e => setEditText(e.target.value)} autoFocus /><div className="rv-row"><button className="btn ghost" onClick={() => setEditText(undefined)}>Cancel</button><button className="btn primary" disabled={!editText?.trim()} onClick={save}>Save</button></div></>
         : <div className="rv-t">{c.text}</div>}
-      {!edit && <div className="rv-cm">{c.sent ? 'sent' : 'not sent yet'}{!c.sent && <> · <button className="btn ghost" onClick={() => setEdit(true)}>edit</button> · <button className="btn ghost" onClick={async () => { await send('DELETE', `/api/review/${item.id}/comment/${c.id}`); reload(); }}>delete</button></>}</div>}
+      {!edit && <div className="rv-cm">{c.sent ? 'sent' : 'not sent yet'}{!c.sent && <> · <button className="btn ghost" onClick={() => setEditText(c.text)}>edit</button> · <button className="btn ghost" onClick={async () => { await send('DELETE', `/api/review/${item.id}/comment/${c.id}`); reload(); }}>delete</button></>}</div>}
     </div>
   );
 }

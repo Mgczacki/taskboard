@@ -54,7 +54,7 @@ export const ACTIONS: KeyAction[] = [
   { id: 'reviewPrev', ctx: 'review', label: 'Previous document', keys: ['Ctrl+Alt+ArrowUp'] },
   { id: 'reviewComment', ctx: 'review', label: 'Comment on the selected text', keys: ['Ctrl+Alt+KeyC'] },
   { id: 'reviewAccept', ctx: 'review', label: 'Accept the document', keys: ['Ctrl+Alt+KeyA'] },
-  { id: 'reviewSend', ctx: 'review', label: 'Send feedback to the task', keys: ['Meta+Enter', 'Ctrl+Enter'], inFields: false },
+  { id: 'reviewSend', ctx: 'review', label: 'Send comment to agent', keys: ['Meta+Enter', 'Ctrl+Enter'], inFields: false },
   // Waiting.tsx; not in a text field, where ⌘⌫ deletes the line
   { id: 'waitingDismiss', ctx: 'waiting', label: 'Dismiss the selected item (it shows again when something new happens)', keys: ['Meta+Backspace'], inFields: false },
   { id: 'graphFit', ctx: 'graph', label: 'Fit the graph to the window', keys: ['Ctrl+Alt+KeyF'] },
