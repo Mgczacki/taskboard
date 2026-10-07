@@ -12,7 +12,9 @@ import { SettingItem } from './SettingsLayout';
 export interface Account {
   id: string; agent: Agent; name: string; dir: string; isDefault?: boolean; maxParallel: number;
   routingRules?: string;
-  limited?: { at: string; note: string }; health?: string; status: { signedIn: boolean; who?: string }; running: number;
+  limited?: { at: string; note: string }; health?: string;
+  probe?: { at: string; result: 'accepted' | 'rejected' | 'failed'; note: string; manual?: boolean }; nextProbeAt?: number; probing?: boolean; // server/account-probe.ts
+  status: { signedIn: boolean; who?: string }; running: number;
   usage?: { windows: { label: string; usedPct: number; resetsAt?: number }[]; at: string; source: string; plan?: string };
   usageStale?: boolean; usageStaleHours?: number; // data older than usageStaleHours counts as unknown (server/accounts.ts)
 }
@@ -21,6 +23,17 @@ const resetText = (ms?: number) => {
   const d = new Date(ms), mins = Math.round((ms - Date.now()) / 60000);
   return mins < 0 ? 'reset' : mins < 60 * 20 ? `resets in ${fmtWait(mins)} (${d.toTimeString().slice(0, 5)})` : `resets ${d.toLocaleDateString(undefined, { weekday: 'short' })} ${d.toTimeString().slice(0, 5)}`;
 };
+// The last check of a limit mark and the time of the next one (server/account-probe.ts).
+const PROBE_TEXT = { accepted: 'a model answered, so the mark was cleared', rejected: 'the provider refused the request, so the mark stays', failed: 'no answer, so the mark stays' };
+const hhmm = (ms: number) => new Date(ms).toDateString() === new Date().toDateString() ? new Date(ms).toTimeString().slice(0, 5) : `${new Date(ms).toLocaleDateString(undefined, { weekday: 'short' })} ${new Date(ms).toTimeString().slice(0, 5)}`;
+function ProbeNote({ a }: { a: Account }) {
+  const p = a.probe, ago = p ? Math.round((Date.now() - Date.parse(p.at)) / 60000) : 0;
+  if (!p && !a.limited) return null;
+  return <div className="sub probe-note">
+    {p ? <>Last check {ago < 1 ? 'just now' : fmtWait(ago) + ' ago'}{p.manual ? ' (started by you)' : ''}: {PROBE_TEXT[p.result]}.{p.result !== 'accepted' && p.note ? ` ${p.note}` : ''}</> : a.limited ? 'Not checked yet.' : ''}
+    {a.limited && (a.probing ? ' A check runs now.' : a.nextProbeAt ? ` Next check ${a.nextProbeAt <= Date.now() ? 'in the next 5 minutes' : 'at about ' + hhmm(a.nextProbeAt)}.` : ' Automatic checks are off.')}
+  </div>;
+}
 function UsageBars({ a }: { a: Account }) {
   if (!a.usage) return <span className="sub">{a.agent === 'claude' ? 'Shows up once a Taskboard Claude Code session on this account runs (read from its status line).' : a.agent === 'codex' ? 'Shows up once this account has a Codex session (read from its session files).' : 'Shows up once a Taskboard Antigravity session runs (read from its status line).'}</span>;
   const ago = Math.round((Date.now() - Date.parse(a.usage.at)) / 60000);
@@ -153,6 +166,12 @@ export function AccountsPage({ tasks }: { tasks: Task[] }) {
       setTerm({ title: `Limit reset: ${a.name}`, session: r.session, note: 'Claude Code runs /limit-reset here. It clears the 5-hour limit once a week; the weekly limit still applies. Close this window when it is done.' });
     } catch (e) { setErr(String((e as Error).message)); }
   };
+  const [checking, setChecking] = useState('');
+  const check = async (a: Account) => {
+    setChecking(a.id);
+    try { await post(`/api/accounts/${a.id}/probe`); } catch (e) { setErr(String((e as Error).message)); }
+    setChecking(''); void load();
+  };
   const tasksOn = (a: Account) => tasks.filter(t => (t.account || `${t.agent}-default`) === a.id && t.status !== 'archived');
   const saveMax = async (a: Account, maxParallel: number) => {
     const r = await fetch(`/api/accounts/${a.id}`, { method: 'PATCH', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ maxParallel }) });
@@ -193,7 +212,7 @@ export function AccountsPage({ tasks }: { tasks: Task[] }) {
           <tr key={a.id} className="r">
             <td><span className={`chip agent-${a.agent}`}>{AGENT_NAME[a.agent]}</span> <b>{a.name}</b><div className="mono" style={{ marginTop: 4 }}>{short(a.dir)}</div><label className="sub">Routing rule<input className="routing-rule" type="text" maxLength={500} defaultValue={a.routingRules || ''} key={`${a.id}:${a.routingRules || ''}`} placeholder="When should the controller use this account?" onBlur={e => { if (e.target.value !== (a.routingRules || '')) void saveRule(a, e.target.value); }} onKeyDown={e => { if (e.key === 'Enter') e.currentTarget.blur(); }} /></label></td>
             <td>{a.status.signedIn ? <span className="st-label unread">✓ signed in</span> : <span className="st-label needs-you">not signed in</span>}<div className="sub">{a.status.who || ''}</div></td>
-            <td>{a.health && <div className="sub ae-health" title="Several tasks of this account stopped on an overloaded model in the last 15 minutes. It usually passes. Taskboard does not switch accounts or models because of it.">Health note, not a limit: {a.health}</div>}{a.limited && <><span className="st-label stopped">stopped by a limit</span><div className="sub">since {fmtWait(Math.round((Date.now() - Date.parse(a.limited.at)) / 60000))} ago · {a.limited.note}</div></>}<UsageBars a={a} /></td>
+            <td>{a.health && <div className="sub ae-health" title="Several tasks of this account stopped on an overloaded model in the last 15 minutes. It usually passes. Taskboard does not switch accounts or models because of it.">Health note, not a limit: {a.health}</div>}{a.limited && <><span className="st-label stopped">stopped by a limit</span><div className="sub">since {fmtWait(Math.round((Date.now() - Date.parse(a.limited.at)) / 60000))} ago · {a.limited.note}</div></>}<ProbeNote a={a} /><UsageBars a={a} /></td>
             <td className="max-cell"><span className="mono">{a.running} / </span><MaxTasksInput value={a.maxParallel} label={`Maximum number of tasks for ${a.name}`} onSave={n => saveMax(a, n)} /> <span className="sub">tasks</span>
               <div className="sub mono">{tasksOn(a).map(t => '#' + t.num).slice(0, 6).join(' ')}</div>
               {a.running >= a.maxParallel && <div className="sub">{a.running > a.maxParallel ? `${a.running} run, which is more than the maximum. They keep running.` : 'At the maximum.'} New tasks on this account are refused until fewer than {a.maxParallel} run.</div>}</td>
@@ -201,6 +220,7 @@ export function AccountsPage({ tasks }: { tasks: Task[] }) {
               {!a.status.signedIn && <button className="btn primary" onClick={() => signIn(a)}>Sign in</button>}
               {a.status.signedIn && <button className="btn" onClick={() => signIn(a)} title="Sign in again or switch the login in this folder">Sign in again</button>}
               <button className="btn" onClick={() => setConfirm(a)} title="Only you can use resets; the controller cannot">↺ Limit reset…</button>
+              {a.limited && <button className="btn ghost" disabled={checking === a.id || a.probing} title="Sends one small request on this account. A reply from a model clears the limit mark. A limit or credit error keeps it." onClick={() => check(a)}>{checking === a.id || a.probing ? 'Checking…' : 'Check now'}</button>}
               {a.limited && <button className="btn ghost" onClick={() => post(`/api/accounts/${a.id}/clear-limit`).then(() => load())}>Clear limit mark</button>}
               {!a.isDefault && <button className="btn ghost" onClick={() => { if (confirmRemove(a)) fetch(`/api/accounts/${a.id}`, { method: 'DELETE' }).then(() => load()); }}>Remove</button>}
             </td>
@@ -208,7 +228,7 @@ export function AccountsPage({ tasks }: { tasks: Task[] }) {
         ))}
       </tbody></table></div>
       <p className="sub" style={{ marginTop: 14 }}>The number after “/” is the maximum number of running tasks for the account (1 to 100). Taskboard refuses a new task, a resume or a move onto an account at its maximum. When you lower it below the number that runs now, the running tasks keep running. Only new starts are refused. Only you can change it here; <code>tb</code>, agents and the controller cannot. Accounts that you add start with the default maximum on the Settings page.</p>
-      <p className="sub">Limits are detected when a task stops with a rate-limit error; the mark clears when a turn on that account succeeds. Removing an account only removes it from Taskboard; its folder and login stay on disk.</p>
+      <p className="sub">Limits are detected when a task stops with a limit or credit error. New tasks do not go to an account with a limit mark. The mark clears when a turn on that account succeeds, or when a check gets a reply from a model. A check is one small request that Taskboard sends outside every task: after the reset time of a full window, then at most once an hour for a usage limit and once in 6 hours for no credit, with a longer wait after each check that fails. A sign-in or an empty usage bar does not clear a mark. Removing an account only removes it from Taskboard; its folder and login stay on disk.</p>
 
       {adding && <div className="scrim open" onMouseDown={e => { if (e.target === e.currentTarget) setAdding(null); }}>
         <div className="modal" style={{ width: 460 }}>

@@ -117,7 +117,7 @@ test('a task without credit stops with its reason; an automatic choice moves onc
     // (a) your choice of an account with a mark is refused with the cause and the other accounts; no task is created
     const refused = await tb(['new', '--agent', 'codex', '--account', 'codex-nocredit', '--folder', root, '--no-worktree', '--title', 'Chosen', 'Do the work.']);
     assert.equal(refused.code, 1);
-    assert.match(refused.out, /tb: Account codex-nocredit stopped at a usage limit at \d\d:\d\d \(.*out of credits.*\)\. Clear the limit mark on the Accounts page after the limit resets\. Choose another Codex account: codex-default \(Codex \(default\), 1 running, usage unknown\); codex-stale \(Codex stale, 0 running, usage unknown, data 48 h old\)\./);
+    assert.match(refused.out, /tb: Account codex-nocredit stopped at a usage limit at \d\d:\d\d \(.*out of credits.*\)\. Taskboard checks the account again at about \d\d:\d\d and clears the mark when the provider accepts a request\. You can also clear the limit mark on the Accounts page\. Choose another Codex account: codex-default \(Codex \(default\), 1 running, usage unknown\); codex-stale \(Codex stale, 0 running, usage unknown, data 48 h old\)\./);
     assert.equal(await task(2), undefined);
 
     // (d) you clear the mark on the Accounts page. Your choice is then used; on no credit the task stops and stays there.

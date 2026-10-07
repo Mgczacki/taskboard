@@ -30,7 +30,8 @@ export interface MachineSettings {
   review: { account: string; model: string };
   // the maximum number of running tasks for an account added later (server/accounts.ts create); the default accounts
   // keep their own maximum until the user applies this value to all accounts
-  accounts: { defaultMaxParallel: number };
+  // probeLimited: false stops the automatic checks of limit marks (server/account-probe.ts); it is on when not set
+  accounts: { defaultMaxParallel: number; probeLimited?: boolean };
   // the browser for each task (server/task-browser.ts); chromePath empty means the installed Google Chrome;
   // idleStopMinutes: a task browser without an agent command or a viewer for this time stops (0: never)
   // scale: the pixels of a task browser for each CSS pixel, set with --force-device-scale-factor at its start. 'screen'

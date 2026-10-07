@@ -107,7 +107,7 @@ test('old usage counts as unknown, not as free, and its age is shown', async () 
 test('an account you chose is refused with the cause and the accounts that can run the task', async () => {
   accounts.markLimited('codex-work', 'Codex: Your workspace is out of credits. (workspace_member_credits_depleted)');
   await assert.rejects(agents.startTask({ title: 'Chosen', desc: 'x', agent: 'codex', folder: root, account: 'codex-work' }),
-    /^Error: Account codex-work stopped at a usage limit at \d\d:\d\d \(Codex: Your workspace is out of credits\. \(workspace_member_credits_depleted\)\)\. Clear the limit mark on the Accounts page after the limit resets\. Choose another Codex account: codex-default \(Codex \(default\), 0 running, 39% used\)\.$/);
+    /^Error: Account codex-work stopped at a usage limit at \d\d:\d\d \(Codex: Your workspace is out of credits\. \(workspace_member_credits_depleted\)\)\. Taskboard checks the account again at about \d\d:\d\d and clears the mark when the provider accepts a request\. You can also clear the limit mark on the Accounts page\. Choose another Codex account: codex-default \(Codex \(default\), 0 running, 39% used\)\.$/);
   assert.equal(store.all().length, 0, 'no task was created');
   // resume and move check the account before they start the agent
   const t = store.create({ id: 'on-work-1', num: 1, title: 'On work', agent: 'codex', account: 'codex-work', status: 'suspended', cwd: root, folder: root, session: 'task-1', sessionId: 'thread-1', desc: 'x' });

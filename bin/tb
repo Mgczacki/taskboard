@@ -434,7 +434,7 @@ switch (cmd) {
       const info = await call('GET', '/api/info');
       const lines = list.map(a => {
         const windows = (a.usage?.windows || []).map(w => `${w.label} ${w.resetsAt && w.resetsAt < Date.now() ? 'reset' : w.usedPct + '%'}${w.resetsAt ? ` (resets ${new Date(w.resetsAt).toISOString()})` : ''}`).join(', ');
-        return `${a.id} (${a.name}; ${a.agent}): ${a.status.signedIn ? 'signed in' : 'not signed in'}; ${a.running}/${a.maxParallel} tasks; ${a.limited ? `limited (${a.limited.note}); ` : ''}${a.health ? `health note, not a limit: ${a.health}; ` : ''}${windows || 'usage unknown'}; as of ${a.usage?.at || 'unknown'}${a.usage && a.usageStale ? ` (STALE: older than ${a.usageStaleHours} h, counted as unknown)` : ''}${a.routingRules ? `; rule: ${a.routingRules}` : ''}`;
+        return `${a.id} (${a.name}; ${a.agent}): ${a.status.signedIn ? 'signed in' : 'not signed in'}; ${a.running}/${a.maxParallel} tasks; ${a.limited ? `limited (${a.limited.note}${a.probe && a.probe.at >= a.limited.at ? `; check at ${a.probe.at}: ${a.probe.result}` : ''}${a.nextProbeAt ? `; next check ${new Date(Math.max(a.nextProbeAt, Date.now())).toISOString()}` : ''}); ` : ''}${a.health ? `health note, not a limit: ${a.health}; ` : ''}${windows || 'usage unknown'}; as of ${a.usage?.at || 'unknown'}${a.usage && a.usageStale ? ` (STALE: older than ${a.usageStaleHours} h, counted as unknown)` : ''}${a.routingRules ? `; rule: ${a.routingRules}` : ''}`;
       });
       console.log(`Machine rules: ${info.settings.routingRules || '(none)'}\n${lines.join('\n')}`);
     }
