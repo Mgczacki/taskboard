@@ -1,7 +1,9 @@
 // Allow always rules: the user lets one task type messages into another task (tb send), or send documents to it
 // (tb doc send), without an approval card. A rule covers one of these two kinds.
-// The user adds a rule with the Allow always button on a "type into" card (web ApprovalCard), and revokes rules on the
-// Settings page. Tasks and the controller only read the rules (tb allow list). index.ts holds the routes and checks
+// The user adds a rule with an Always allow button on a "type into" card (web ApprovalCard), and revokes rules on the
+// Settings page. Three message cards offer a rule: the ordinary card, the card for a message between two groups and
+// the card of a group manager that reached its hourly limit (index.ts, the send route). The last two offer only the
+// rules that name both tasks (TASK_SCOPES). Tasks and the controller only read the rules (tb allow list). index.ts holds the routes and checks
 // that a request to add or revoke a rule comes from the dashboard; this file holds the rules and the match logic.
 //
 // A rule names the target task by its task id, and the sender by its task id (scope 'pair' or 'both') or not at all
@@ -30,6 +32,9 @@ const VERB: Record<AllowKind, [string, string, string]> = {
 export type AllowScope = 'pair' | 'both' | 'any';
 export const SCOPES: AllowScope[] = ['pair', 'both', 'any'];
 export const DEFAULT_SCOPE: AllowScope = 'pair';
+// The scopes of a rule that names both tasks. A message between two groups, and a message of a group manager past its
+// hourly limit, get a card that offers only these two. Only a rule with one of these scopes delivers such a message.
+export const TASK_SCOPES: AllowScope[] = ['pair', 'both'];
 export const LIMIT_PER_HOUR = 30;
 const HOUR = 3_600_000;
 
@@ -44,7 +49,8 @@ export interface AllowRule {
   lastAt?: string;
 }
 // What the card offers before the click: the sender, the target and the plain words of each choice.
-export interface AllowOffer { kind: AllowKind; from: string; to: string; choices: { scope: AllowScope; text: string }[]; limitText: string }
+// fromNum and toNum: the task numbers when the card was made, for the text of the buttons.
+export interface AllowOffer { kind: AllowKind; from: string; to: string; fromNum: number; toNum: number; choices: { scope: AllowScope; text: string }[]; limitText: string }
 
 const name = (t: Pick<TaskRef, 'num' | 'title'>) => `#${t.num} "${t.title}"`;
 // The rule in plain words, for the card, the Settings page and tb allow list.
@@ -62,10 +68,10 @@ export const LIMIT_TEXT = `Each rule allows at most ${LIMIT_PER_HOUR} deliveries
 const usable = (t: TaskRef | undefined): t is TaskRef => !!t && t.role !== 'controller' && t.status !== 'archived';
 
 // The offer for a "type into" or "send a document" card, or undefined when the card cannot get a rule (the controller,
-// or the same task).
-export function offer(from: TaskRef | undefined, to: TaskRef | undefined, kind: AllowKind = 'message'): AllowOffer | undefined {
+// or the same task). scopes: the choices that this card offers.
+export function offer(from: TaskRef | undefined, to: TaskRef | undefined, kind: AllowKind = 'message', scopes: AllowScope[] = SCOPES): AllowOffer | undefined {
   if (!usable(from) || !usable(to) || from.id === to.id) return undefined;
-  return { kind, from: from.id, to: to.id, choices: SCOPES.map(scope => ({ scope, text: ruleText(scope, from, to, kind) })), limitText: LIMIT_TEXT };
+  return { kind, from: from.id, to: to.id, fromNum: from.num, toNum: to.num, choices: scopes.map(scope => ({ scope, text: ruleText(scope, from, to, kind) })), limitText: LIMIT_TEXT };
 }
 
 // True when the rule covers a message from `from` to `to`. Only task ids count.
@@ -77,9 +83,10 @@ export function covers(r: AllowRule, kind: AllowKind, from: string, to: string):
 }
 
 // The first rule that covers the message, or undefined. Both tasks must still be usable.
-export function match(rules: AllowRule[], kind: AllowKind, from: TaskRef | undefined, to: TaskRef | undefined): AllowRule | undefined {
+// scopes: only a rule with one of these scopes counts.
+export function match(rules: AllowRule[], kind: AllowKind, from: TaskRef | undefined, to: TaskRef | undefined, scopes: AllowScope[] = SCOPES): AllowRule | undefined {
   if (!usable(from) || !usable(to)) return undefined;
-  return rules.find(r => covers(r, kind, from.id, to.id));
+  return rules.find(r => scopes.includes(r.scope) && covers(r, kind, from.id, to.id));
 }
 
 // The delivery times of the rule in the last hour.
