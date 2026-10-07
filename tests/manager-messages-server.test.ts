@@ -119,7 +119,9 @@ test('group manager rule: a manager and the tasks of its group message each othe
     assert.equal(outsideSend.status, 202);
     assert.match(outsideSend.data.approval.detail, /Source: #216 Manager task\nTarget: #299 Outside task/);
     assert.match(outsideSend.data.approval.detail, /Message text:\nDo this for me\./);
-    assert.equal(outsideSend.data.approval.allow, undefined);
+    // the card offers a rule for these two tasks only (one way or both ways), never a rule for any sender
+    assert.deepEqual(outsideSend.data.approval.allow.choices.map((c: { scope: string }) => c.scope), ['pair', 'both']);
+    assert.equal(outsideSend.data.approval.allow.fromNum, 216); assert.equal(outsideSend.data.approval.allow.toNum, 299);
     assert.equal(submitted('outside').length, 0);
     const changedSend = await send('manager', 'outside', 'Another message for #299.');
     assert.equal(changedSend.status, 202);
@@ -152,17 +154,18 @@ test('group manager rule: a manager and the tasks of its group message each othe
     assert.equal((await post(`/api/approvals/${updated.data.approval.id}/approve`, {}, user)).data.state, 'approved');
     assert.ok(existsSync(join(vault, 'tasks', 'outside', 'inbox', 'report.md')));
 
-    // 5. a task outside the group to the manager: a normal card, with Allow always offered as before
+    // 5. a task outside the group to the manager: a card for this one send, which offers a rule for these two tasks
     const fromOutside = await send('outside', 'manager', 'Can you help?');
     assert.equal(fromOutside.status, 202);
     const outsideCard = (await cards()).find(c => c.actor === 'outside')!;
     assert.ok(outsideCard, 'a card waits for the user');
-    assert.equal(fromOutside.data.approval.allow, undefined);
+    assert.deepEqual(fromOutside.data.approval.allow.choices.map((c: { scope: string }) => c.scope), ['pair', 'both']);
     const managerInbox = join(vault, 'tasks', 'manager', 'inbox', 'report.md');
     const inboxBefore = readFileSync(managerInbox, 'utf8');
     const outsideDoc = await doc('outside', 'manager');
     assert.equal(outsideDoc.status, 202);
     assert.match(outsideDoc.data.approval.detail, /Source: #299 Outside task\nTarget: #216 Manager task/);
+    assert.equal(outsideDoc.data.approval.allow, undefined, 'a document between two groups keeps its one-use card without a rule choice');
     assert.equal((await post(`/api/approvals/${outsideDoc.data.approval.id}/deny`, {}, user)).data.state, 'denied');
     assert.equal(readFileSync(managerInbox, 'utf8'), inboxBefore);
     assert.equal(existsSync(join(vault, 'tasks', 'manager', 'inbox', 'report-2.md')), false);

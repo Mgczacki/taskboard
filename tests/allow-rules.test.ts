@@ -147,3 +147,23 @@ test('a rule covers one kind: a message rule does not cover documents, and a doc
   assert.equal(allow.all().find(r => r.id === doc.id)!.text, 'Task #12 "Task 12" may send documents to task #15 "Task 15" without a card. Documents in the other direction still need a card.');
   assert.throws(() => allow.add('pair', a, b, 'c3', 'status' as never), /only messages or documents/);
 });
+
+test('a card can offer only the two choices that name both tasks, with the task numbers of each side', () => {
+  fresh();
+  const o = allow.offer(a, b, 'message', allow.TASK_SCOPES)!;
+  assert.deepEqual(o.choices.map(x => x.scope), ['pair', 'both']);
+  assert.equal(o.fromNum, 12); assert.equal(o.toNum, 15);
+  assert.equal(o.from, 'task-a'); assert.equal(o.to, 'task-b');
+});
+
+test('a match that accepts only pair and both rules ignores a rule for any sender', () => {
+  fresh();
+  const anyRule = allow.add('any', c, b, 'card1');
+  assert.equal(allow.match(allow.all(), 'message', a, b)?.id, anyRule.id);
+  assert.equal(allow.match(allow.all(), 'message', a, b, allow.TASK_SCOPES), undefined);
+  const pair = allow.add('pair', a, b, 'card2');
+  assert.equal(allow.match(allow.all(), 'message', a, b, allow.TASK_SCOPES)?.id, pair.id);
+  assert.equal(allow.match(allow.all(), 'message', b, a, allow.TASK_SCOPES), undefined, 'the one-way rule does not cover the reverse direction');
+  assert.equal(allow.match(allow.all(), 'message', c, b, allow.TASK_SCOPES), undefined, 'the rule does not cover another sender');
+});
+
