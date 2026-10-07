@@ -1,4 +1,5 @@
-import { useState } from 'react';
+import { useRef, useState, type ReactNode } from 'react';
+import { useScrollPosition } from '../scrollPosition';
 import { hasFiles, uploadAll } from '../drop';
 import type { Group, Task } from '../api';
 import { ATTN, ORDER, STATUS_LABEL, api, fmtWait, shortPath } from '../api';
@@ -68,6 +69,12 @@ const COLS: [string, string, Task['status'][]][] = [
 ];
 const MANUAL = ['idle', 'parked'];
 
+function ScrollCards({ name, children }: { name: string; children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useScrollPosition(ref, `board:${name}`);
+  return <div className="cards" ref={ref}>{children}</div>;
+}
+
 export function BoardView({ tasks, groups, open, openDocs, selected, toggleSel, newGroup, toast }: { tasks: Task[]; groups: Group[]; open: (id: string) => void; openDocs: (id: string) => void; selected: Set<string>; toggleSel: (id: string) => void; newGroup: () => void; toast: Toast }) {
   const [by, setBy] = useState<'status' | 'groups'>(() => (localStorage.getItem('tb-board-by') as 'status' | 'groups') || 'status');
   const [over, setOver] = useState<{ key: string; refused?: string } | null>(null); // the column under a dragged card
@@ -129,13 +136,13 @@ export function BoardView({ tasks, groups, open, openDocs, selected, toggleSel, 
       <div className="cols">
         {by === 'status' ? COLS.map(([k, label, sts]) => {
           const list = tasks.filter(t => sts.includes(t.status)).sort(sortTasks(k));
-          return <div key={k} {...colProps(k)}><h3><Dot s={k as Task['status']} />{label}<span className="c">{list.length}</span></h3><div className="cards">{list.map(t => card(t, k))}</div></div>;
+          return <div key={k} {...colProps(k)}><h3><Dot s={k as Task['status']} />{label}<span className="c">{list.length}</span></h3><ScrollCards name={`status:${k}`}>{list.map(t => card(t, k))}</ScrollCards></div>;
         }) : <>
           {groups.map(g => {
             const list = g.tasks.map(id => live.find(t => t.id === id)).filter(Boolean) as Task[];
-            return <div key={g.id} {...colProps('g:' + g.id)}><h3 style={{ borderBottom: `2px solid ${g.color}` }}><span className="dot" style={{ background: g.color, borderRadius: 3 }} />{g.name}<span className="c">{list.length}</span></h3><div className="cards">{list.sort(sortTasks('')).map(t => card(t, 'g:' + g.id))}</div></div>;
+            return <div key={g.id} {...colProps('g:' + g.id)}><h3 style={{ borderBottom: `2px solid ${g.color}` }}><span className="dot" style={{ background: g.color, borderRadius: 3 }} />{g.name}<span className="c">{list.length}</span></h3><ScrollCards name={`group:${g.id}`}>{list.sort(sortTasks('')).map(t => card(t, 'g:' + g.id))}</ScrollCards></div>;
           })}
-          {(() => { const none = live.filter(t => !groups.some(g => g.tasks.includes(t.id))); return <div {...colProps('none')}><h3><span className="dot idle" />Ungrouped<span className="c">{none.length}</span></h3><div className="cards">{none.map(t => card(t, 'none'))}</div></div>; })()}
+          {(() => { const none = live.filter(t => !groups.some(g => g.tasks.includes(t.id))); return <div {...colProps('none')}><h3><span className="dot idle" />Ungrouped<span className="c">{none.length}</span></h3><ScrollCards name="group:ungrouped">{none.map(t => card(t, 'none'))}</ScrollCards></div>; })()}
           <div className="col newcol" onClick={newGroup}>＋ New group</div>
         </>}
       </div>

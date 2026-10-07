@@ -29,6 +29,7 @@ import { GroupNeeds, ManagerBadge, ManagerMark, ManagerRoleButton, ManagerScope,
 import { groupManager } from '../managerBoard';
 import { loadAccounts, type Account } from './Accounts';
 import { CanvasAccountChip, CanvasFailureChip } from './CanvasAccountChip';
+import { useScrollPosition } from '../scrollPosition';
 
 type Layout = 'columns' | 'grid' | 'rows';
 const MINW = 640;
@@ -149,6 +150,7 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
   // terminals) mount only then: with a guessed width each terminal attached at the wrong size, and the agent drew its
   // screen twice (one window per screen at 1200 px, then two at the real width).
   const [measuredW, setW] = useState<number | null>(null);
+  useScrollPosition(stage, `canvas:${view}:${layout}:${page}`, measuredW !== null);
   const W = measuredW ?? 1200;
   useKeymap();
 
