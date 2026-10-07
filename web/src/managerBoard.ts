@@ -51,7 +51,8 @@ export function rowOf(taskId: string, group?: string): { row: BoardRow; column: 
 }
 
 // The cards that the dashboard knows (approvals and questions in the store), found by the card id of a wait
-export interface CardRef { kind: 'approval'; action: string; pushId?: string; permitId?: string }
+// stale: a merge card whose branch head or master head moved (staleCard.ts)
+export interface CardRef { kind: 'approval'; action: string; pushId?: string; permitId?: string; stale?: boolean }
 export type FindCard = (id: string) => CardRef | { kind: 'question' } | undefined;
 const ACTION_WORD: Record<string, string> = {
   'git-push': 'Approve push', 'git-merge': 'Approve merge', release: 'Approve release', restart: 'Approve restart', scope: 'Approve scope',
@@ -79,13 +80,15 @@ export function waitLabel(row: BoardRow, column: BoardKey, find: FindCard): stri
 
 // The buttons of a "Need you" row in the group drop-down. Approve and Deny only for the cards that the approval card
 // on the Waiting page also decides with one click; a permit, a refused command or a message needs its full card.
-export type NeedAction = { kind: 'push'; pushId: string } | { kind: 'decide'; id: string } | { kind: 'review' } | { kind: 'open' };
+// A stale merge card has Ask task to refresh in place of Approve, as on its card.
+export type NeedAction = { kind: 'push'; pushId: string } | { kind: 'decide'; id: string } | { kind: 'refresh'; id: string } | { kind: 'review' } | { kind: 'open' };
 const FULL_CARD = ['permit', 'external', 'tool-refusal', 'mail-in', 'mail-out', 'send'];
 export function needAction(row: BoardRow, find: FindCard): NeedAction {
   const w = row.waitingOn;
   const card = w?.card ? find(w.card) : undefined;
   if (card?.kind === 'approval') {
     if (card.action === 'git-push') return card.pushId ? { kind: 'push', pushId: card.pushId } : { kind: 'open' };
+    if (card.stale) return { kind: 'refresh', id: w!.card };
     return FULL_CARD.includes(card.action) ? { kind: 'open' } : { kind: 'decide', id: w!.card };
   }
   if (w?.reason === 'Review requested') return { kind: 'review' };

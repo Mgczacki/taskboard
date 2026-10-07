@@ -57,7 +57,8 @@ import * as push from './push.ts';
 import * as restart from './restart.ts';
 import * as permits from './permits.ts';
 import * as taskProcs from './task-procs.ts';
-import { archivedResult, cardsToCloseOnArchive, permitCardClose, quickLine, statusAfterCards } from './card-close.ts';
+import { archivedResult, cardsToCloseOnArchive, clock, permitCardClose, quickLine, statusAfterCards } from './card-close.ts';
+import * as mergeStale from './merge-stale.ts';
 import * as scopeRestart from './scope-restart.ts';
 import * as pending from './pending.ts';
 import * as dismiss from './dismiss.ts';
@@ -157,6 +158,22 @@ setInterval(() => {
     }
   }
 }, 5000).unref();
+// A pending merge card whose branch head or master head moved gets the reason (staleFacts) without a click on Approve,
+// and loses it when the heads match the card again. The status line of the task says the same.
+const STALE_CHECK_MS = Number(process.env.TASKBOARD_STALE_CHECK_MS) || 10_000;
+let mergeCheckRuns = false;
+async function recheckMergeCards() {
+  for (const card of await approvals.recheck(a => a.action === 'git-merge')) {
+    const t = store.get(card.actor);
+    if (t?.status !== 'needs-you' || !t.ask?.startsWith('Approve: merge ')) continue;
+    store.update(t.id, { statusSource: card.staleFacts ? `The merge card is stale. ${card.staleFacts} Use "Ask task to refresh" on the card.` : 'Waiting for your approval on the dashboard.' });
+  }
+}
+setInterval(() => {
+  if (mergeCheckRuns) return;
+  mergeCheckRuns = true;
+  void recheckMergeCards().catch(e => console.error('merge card check', e)).finally(() => { mergeCheckRuns = false; });
+}, STALE_CHECK_MS).unref();
 groups.load();
 managerEvents.start();
 // several tasks of one account stop on an overloaded model: tell the controller once (agent-error-watch.ts health)
@@ -568,6 +585,16 @@ app.post('/api/approvals/:id/:decision', async (req, res, next) => {
   // the same for the archive request of a group manager (server/manager-archive.ts)
   if (managerArchive.requestOf(current) && !fromDashboard(req)) return res.status(403).json({ error: managerArchive.USER_ONLY });
   const a = await approvals.decide(req.params.id, req.params.decision === 'approve', { by: 'user' }, origin); a ? res.json(a) : res.status(404).end();
+});
+// "Ask task to refresh" on a stale merge card: close the card in state stale, not denied (approvals.refresh). Nothing
+// is merged. approvals.onDecision below tells the task what moved and asks it for a new tb git merge-request.
+app.post('/api/approvals/:id/refresh', async (req, res) => {
+  if (!fromDashboard(req)) return res.status(403).json({ error: 'Only the user can do this, on the dashboard.' });
+  const worktree = (approvals.get(req.params.id)?.payload as { worktree?: string } | undefined)?.worktree;
+  try {
+    const a = await approvals.refresh(req.params.id, approvals.cleanOrigin(req.body?.origin, req.get('user-agent')), facts => mergeStale.refreshResult(facts, worktree));
+    a ? res.json(a) : res.status(404).end();
+  } catch (e) { res.status(409).json({ error: e instanceof Error ? e.message : String(e) }); }
 });
 // Send a message card back with a comment: to the controller (incoming) or to the agent that wrote the draft (outgoing).
 app.post('/api/approvals/:id/return', async (req, res) => {
@@ -1070,7 +1097,8 @@ app.post('/api/git/merge-request', async (req, res) => {
     const task = gitTask(actorTask, req.body.worktree);
     const expected = await taskGit.mergeState(task);
     const approval = approvals.request({ actor, action: 'git-merge', summary: `merge ${expected.branch} into local master${task.scopeKey ? ` of ${task.folder}` : ''}`,
-      detail: `Task: #${task.num} ${task.title}\nBranch head: ${expected.source}\nMaster head: ${expected.target}\nRange: ${expected.target}..${expected.source}\nRepository: ${task.folder}${task.scopeKey ? `\nAttached worktree: ${task.scopeKey} (${task.cwd})` : ''}`, payload: expected },
+      detail: `Task: #${task.num} ${task.title}\nBranch head: ${expected.source}\nMaster head: ${expected.target}\nRange: ${expected.target}..${expected.source}\nRepository: ${task.folder}${task.scopeKey ? `\nAttached worktree: ${task.scopeKey} (${task.cwd})` : ''}`,
+      payload: { ...expected, ...(task.scopeKey ? { worktree: task.scopeKey } : {}) } },
       async () => {
         try {
           const result = await taskGit.mergeTask(task, expected);
@@ -1082,9 +1110,10 @@ app.post('/api/git/merge-request', async (req, res) => {
         }
       }, { check: async () => {
         // the controller approves only the card that it listed: a moved branch or master stops it before anything runs
-        const now = await taskGit.mergeState(task);
-        return JSON.stringify(now) === JSON.stringify(expected) ? undefined
-          : `The branch or master moved after the card was made. Branch head now ${now.source}, master head now ${now.target}. The card shows ${expected.source} and ${expected.target}. Ask the task to run tb git merge-request again.`;
+        // The 10 second timer below (recheckMergeCards) runs the same check, so the card says that it is stale before a click.
+        let now: taskGit.MergeState;
+        try { now = await taskGit.mergeState(task); } catch (e) { return mergeStale.checkFailed(e instanceof Error ? e.message : String(e)); }
+        return mergeStale.staleFacts(expected, now);
       } });
     store.update(actor, { status: 'needs-you', ask: `Approve: merge ${expected.branch} into local master`, statusSource: 'Waiting for your approval on the dashboard.' });
     res.status(202).json({ approval });
@@ -2291,8 +2320,22 @@ approvals.onApprovalsChange(() => {
 approvals.onDecision(card => {
   // A dismissed refused-command card holds no decision: the task is not told (server/approvals.ts dismiss).
   if (card.state === 'dismissed') { managerEvents.record(card.actor, 'card', `${card.action} ${card.id} dismissed. ${card.result || ''}`, true); return; }
-  const line = [`Taskboard card ${card.id} version ${card.version || 'unknown'}: ${card.state}. ${card.result || ''}`.trim(), quickLine(card)].filter(Boolean).join('\n');
   const requester = store.get(card.actor);
+  // "Ask task to refresh" closed a stale merge card. The message says "not denied" first. A parked task keeps the
+  // message in its queue until the user resumes it. The card records what happened to the message.
+  if (card.state === 'stale') {
+    const line = `Taskboard card ${card.id} version ${card.version || 'unknown'}: closed as stale, not denied. ${card.result || ''}`.trim();
+    const told = (text: string) => approvals.setDelivery(card.id, text);
+    if (!requester || requester.status === 'archived') told('The task is archived or gone. No message was sent.');
+    else void messageQueue.send(requester, line, { from: 'taskboard', kind: 'approval', holdWhenParked: true }).then(r => told(
+      r.state === 'delivered' ? `Taskboard typed the message into task #${requester.num} at ${clock(new Date().toISOString())}${r.resumed ? ', after it resumed the task' : ''}.`
+        : r.state === 'queued' ? `The message waits in the queue of task #${requester.num}. ${r.reason || ''}`.trim()
+        : `The message was not delivered to task #${requester.num}. ${r.reason || ''} Open the task to type it again.`.trim()),
+    e => { console.error('card refresh message', e); told(`The message was not delivered. ${e instanceof Error ? e.message : String(e)}`); });
+    managerEvents.record(card.actor, 'card', `${card.action} ${card.id} closed as stale, not denied. ${card.staleFacts || ''}`, true);
+    return;
+  }
+  const line = [`Taskboard card ${card.id} version ${card.version || 'unknown'}: ${card.state}. ${card.result || ''}`.trim(), quickLine(card)].filter(Boolean).join('\n');
   if (requester) void messageQueue.send(requester, line, { from: 'taskboard', kind: 'approval' }).catch(e => console.error('card result message', e));
   for (const ref of card.unblocks || []) {
     const task = store.all().find(t => t.id === ref || String(t.num) === ref.replace(/^#/, ''));

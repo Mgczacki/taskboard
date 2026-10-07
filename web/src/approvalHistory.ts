@@ -8,5 +8,6 @@ export function decidedByLine(a: Pick<Approval, 'state' | 'decidedBy'>): string 
   if (!d) return '';
   if (d.by === 'controller') return d.userRequest ? controllerHistoryText(d.userRequest) : 'Approved by the controller under the low risk rule in Settings.';
   if (a.state === 'dismissed') return 'Closed by you without a decision.';
+  if (a.state === 'stale') return 'Closed by you as stale, not denied. You asked the task for a new merge request.';
   return a.state === 'denied' ? 'Denied by you.' : 'Approved by you.';
 }
