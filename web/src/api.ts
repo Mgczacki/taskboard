@@ -147,6 +147,14 @@ export interface PushRecord { id: string; at: string; taskId: string; branch: st
 // questions about a task, answered by a separate read-only agent (server/ask.ts)
 export interface AskItem { q: string; a?: string; state: 'running' | 'done' | 'failed' | 'stopped'; steps: string[]; costUsd?: number; ms?: number; agent?: 'claude' | 'codex'; model: string; account: string; at: string }
 export interface AskThread { sessionId?: string; items: AskItem[] }
+// A document of a task as the viewers show it (server/document-context.ts describe)
+export interface DocumentContext {
+  path: string; name: string; kind: 'md' | 'html'; box?: 'inbox' | 'outbox'; at: string;
+  task: { id: string; num: number; title: string; agent: Agent; status: Status };
+  review: { id: string; version: number; state: 'pending' | 'changes' | 'accepted' } | null;
+  btw: { agent: 'claude' | 'codex'; configured: string; taskAgent: string; taskModel: string; matches: boolean; model: string; options: string[]; account: string };
+}
+export interface DocumentCommentResult { via: 'review' | 'task'; path: string; taskNum: number; version?: number; comments: number; resumed: boolean; delivery: 'delivered' | 'queued'; reason?: string }
 export interface SpinOffExchange { sourceNum: number; question: string; answer: string }
 export interface Group { id: string; name: string; color: string; tasks: string[]; created: string; order?: number; manager?: string; managerPreset?: 'watch' | 'direct' | 'create' }
 
@@ -410,6 +418,13 @@ export const api = {
   ask: (id: string, question: string) => call<AskThread>('POST', `/api/tasks/${encodeURIComponent(id)}/ask`, { question }),
   askStop: (id: string) => call('POST', `/api/tasks/${encodeURIComponent(id)}/ask/stop`, {}),
   askClear: (id: string) => call<AskThread>('DELETE', `/api/tasks/${encodeURIComponent(id)}/ask`),
+  documentContext: (path: string) => call<DocumentContext>('GET', `/api/document-context?path=${encodeURIComponent(path)}`),
+  documentComment: (path: string, text: string, version?: number) => call<DocumentCommentResult>('POST', '/api/document-feedback', { path, text, version }),
+  documentAcceptReview: (id: string) => call('POST', `/api/review/${encodeURIComponent(id)}/accept`, {}),
+  documentAskThread: (path: string) => call<AskThread>('GET', `/api/document-ask?path=${encodeURIComponent(path)}`),
+  documentAsk: (path: string, question: string, model?: string) => call<AskThread>('POST', '/api/document-ask', { path, question, model }),
+  documentAskStop: (path: string) => call('POST', '/api/document-ask/stop', { path }),
+  documentAskClear: (path: string) => call<AskThread>('DELETE', `/api/document-ask?path=${encodeURIComponent(path)}`),
   procs: (scope: ProcScope, id: string) => call<Proc[]>('GET', `/api/${scope}/${encodeURIComponent(id)}/procs`),
   startProc: (scope: ProcScope, id: string, b: { name: string; command: string; cwd?: string; stop?: string; port?: number }) => call<Proc>('POST', `/api/${scope}/${encodeURIComponent(id)}/procs`, b),
   procAction: (scope: ProcScope, id: string, name: string, action: 'stop' | 'restart' | 'remove') => call<unknown>('POST', `/api/${scope}/${encodeURIComponent(id)}/procs/${encodeURIComponent(name)}/${action}`, {}),

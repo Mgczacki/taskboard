@@ -81,7 +81,10 @@ test('HTML documents open in the shared pop-out frame with a sandboxed, no-drag 
   const desktop = readFileSync('desktop/main.cjs', 'utf8');
   const css = readFileSync('web/src/app.css', 'utf8');
   assert.ok(docs.includes('documentWindowUrl(path, name) : fileUrl(path)'));
-  assert.match(review, /isHtml\(item\.name\) \? documentWindowUrl\(item\.path, item\.name\)/);
+  // HTML and Markdown both open in the document window, which has the comment and BTW controls
+  assert.ok(docs.includes("inDocumentWindow(path) ? documentWindowUrl(path, name) : fileUrl(path)"));
+  assert.match(review, /inDocumentWindow\(item\.name\) \? documentWindowUrl\(item\.path, item\.name\)/);
+  assert.match(page, /<DocumentTools path=\{path\}>/);
   assert.match(main, /page\.has\('document'\) \? <DocumentWindowPage \/>/);
   assert.match(page, /<PopoutWindow title=\{title\}>/);
   assert.match(page, /sandbox="allow-scripts allow-popups"/);

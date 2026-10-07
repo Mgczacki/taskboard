@@ -12,6 +12,7 @@ import type { DocumentLink } from '../documentLinks';
 import { decorateDocument } from '../documentContent';
 import { inBrowser } from '../keys';
 import { clampFloat, keepOnScreen, startFloatDrag } from '../floatWindow';
+import { DocumentTools } from './DocumentTools';
 
 export interface DocInfo { name: string; path: string; kind: 'md' | 'html' | 'other'; size: number; mtime: string; from?: { task: string; num: number; title: string; at: string }; sentTo?: { task: string; num: number; at: string }[]; pending?: boolean }
 // files of tasks on another machine are fetched through this server (?machine=)
@@ -30,7 +31,9 @@ export function openDoc(d: { path: string; name: string; kind: string }, locatio
 }
 export const documentWindowUrl = (path: string, name = path.split('/').pop() || 'HTML document') =>
   `/?${new URLSearchParams({ document: fileUrl(path), title: name })}`;
-export const openInBrowser = (path: string, name?: string) => window.open(/\.html?$/i.test(path) ? documentWindowUrl(path, name) : fileUrl(path), '_blank');
+// HTML and Markdown open in the document window (DocumentWindow.tsx), which has the comment and BTW controls.
+export const inDocumentWindow = (path: string) => /\.(html?|md|markdown)$/i.test(path);
+export const openInBrowser = (path: string, name?: string) => window.open(inDocumentWindow(path) ? documentWindowUrl(path, name) : fileUrl(path), '_blank');
 
 export function DocsTab({ t, tasks, documentLink }: { t: Task; tasks: Task[]; documentLink?: DocumentLink | null }) {
   const [d, setD] = useState<{ inbox: DocInfo[]; outbox: DocInfo[] } | null>(null);
@@ -104,7 +107,7 @@ function FloatWin({ title, sub, path, close, host, body }: { title: string; sub:
         <button className="btn" onClick={() => openInBrowser(path, title)} title="Open at full size in its own browser tab">Open in new tab ↗</button>
         <button className="btn icon" onClick={close} title="Close (Esc)">✕</button>
       </div>
-      <div className="fw-b" ref={inner} />
+      <DocumentTools path={path}><div className="fw-b" ref={inner} /></DocumentTools>
     </>
   );
 }
@@ -114,7 +117,11 @@ export function previewHtml(path: string, name: string, heading?: string) {
   });
 }
 export function readMarkdown(path: string, name: string, location?: { line?: number; heading?: string }) {
-  floating(name, path.replace(/^\/Users\/[^/]+/, '~'), path, async el => {
+  floating(name, path.replace(/^\/Users\/[^/]+/, '~'), path, el => { void renderMarkdown(el, path, location); });
+}
+// Draws a Markdown file into el: sanitized, one section for each top-level block.
+export async function renderMarkdown(el: HTMLElement, path: string, location?: { line?: number; heading?: string }) {
+  {
     const text = await fetch(fileUrl(path)).then(r => r.text());
     const div = document.createElement('div'); div.className = 'md doc';
     const tokens = marked.lexer(text).filter(t => t.type !== 'space');
@@ -132,5 +139,5 @@ export function readMarkdown(path: string, name: string, location?: { line?: num
       ? [...div.querySelectorAll<HTMLElement>('h1,h2,h3,h4,h5,h6')].find(h => h.textContent?.trim().toLowerCase().replace(/\s+/g, '-') === location.heading?.toLowerCase())
       : location?.line ? [...div.querySelectorAll<HTMLElement>('section')].reverse().find(s => Number(s.dataset.line) <= location.line!) : null;
     target?.scrollIntoView({ block: 'start' });
-  });
+  }
 }

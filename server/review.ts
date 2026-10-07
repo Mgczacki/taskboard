@@ -36,6 +36,53 @@ export function pendingForPath(path: string): ReviewItem | undefined {
   return Object.values(load()).find(x => x.path === path && x.state === 'pending' && !x.dismissedAt);
 }
 
+// The review item of a file that is still in the user Inbox (not dismissed), in any state.
+export function itemForPath(path: string): ReviewItem | undefined {
+  return Object.values(load()).find(x => x.path === path && !x.dismissedAt);
+}
+
+export function addComment(id: string, input: { block?: number; quote?: string; text: string }): Comment | undefined {
+  const all = load(); const x = all[id]; if (!x) return;
+  const c: Comment = { id: newId(), v: x.version, block: Number(input.block ?? -1), quote: String(input.quote || '').slice(0, 600), text: String(input.text || ''), at: now() };
+  x.comments.push(c); x.updated = now(); save(all);
+  return c;
+}
+export function removeComment(id: string, commentId: string) {
+  const all = load(); const x = all[id]; if (!x) return;
+  x.comments = x.comments.filter(y => y.id !== commentId); save(all);
+}
+
+// Sends the unsent comments of the current version to the task that asked for the review: a file in its inbox, and
+// a typed notice. The Inbox page and the document viewers (server/document-context.ts) both use it.
+export async function sendFeedback(id: string): Promise<{ status: number; body: Record<string, unknown> }> {
+  const all = load(); const x = all[id]; if (!x) return { status: 404, body: {} };
+  const t = store.get(x.task); if (!t) return { status: 400, body: { error: 'The task that asked for this review no longer exists.' } };
+  const open = x.comments.filter(c => c.v === x.version && !c.sent);
+  if (!open.length) return { status: 400, body: { error: 'Write at least one comment first.' } };
+  const general = open.filter(c => c.block < 0), anchored = open.filter(c => c.block >= 0).sort((a, b) => a.block - b.block);
+  const md = [
+    `# Review comments: ${x.name} (version ${x.version})`, '',
+    `From the user, on ${new Date().toLocaleString('en-GB')}. Task: #${t.num} ${t.title}. File: ${x.path}`, '',
+    ...anchored.flatMap(c => [`## On: "${c.quote.replace(/\s+/g, ' ').slice(0, 200)}"`, '', c.text, '']),
+    ...(general.length ? ['## General', '', ...general.map(c => `- ${c.text}`), ''] : []),
+  ].join('\n');
+  const dir = docs.inboxDir(t.id); mkdirSync(dir, { recursive: true });
+  const fname = `review-${basename(x.name, extname(x.name))}-v${x.version}.md`;
+  const target = join(dir, fname);
+  writeFileSync(target, md);
+  const sentFile = join(dir, '.sent.json');
+  let sent: Record<string, unknown> = {}; try { sent = JSON.parse(readFileSync(sentFile, 'utf8')); } catch { /* none yet */ }
+  sent[fname] = { task: '__review', at: now(), orig: fname };
+  writeFileSync(sentFile, JSON.stringify(sent, null, 2));
+  // typed now, or queued until the agent's input box is empty (message-queue.ts); the comments count as sent then
+  const delivery = await messageQueue.send(t, `Review comments on ${x.name} (version ${x.version}) are in your inbox: ${target}. Revise the document, then run tb review ${x.path} again.`, { from: 'you', kind: 'review' });
+  if (delivery.state === 'failed') return { status: 409, body: { error: delivery.reason, path: target } };
+  open.forEach(c => { c.sent = true; });
+  x.state = 'changes'; x.updated = now(); save(all);
+  store.touch(t.id);
+  return { status: 200, body: { path: target, version: x.version, comments: open.length, resumed: !!delivery.resumed, delivery: delivery.state, ...(delivery.reason ? { reason: delivery.reason } : {}) } };
+}
+
 export function mountReview(app: Express) {
   app.post('/api/review/request', (req, res) => {
     const path = docs.safePath(String(req.body.path || ''));
@@ -101,8 +148,7 @@ export function mountReview(app: Express) {
 
   app.post('/api/review/:id/comment', (req, res) => {
     const all = load(); const x = all[req.params.id]; if (!x) return res.status(404).end();
-    const c: Comment = { id: newId(), v: x.version, block: Number(req.body.block ?? -1), quote: String(req.body.quote || '').slice(0, 600), text: String(req.body.text || ''), at: now() };
-    x.comments.push(c); x.updated = now(); save(all); res.json(c);
+    res.json(addComment(x.id, req.body));
   });
   app.patch('/api/review/:id/comment/:cid', (req, res) => {
     const all = load(); const c = all[req.params.id]?.comments.find(y => y.id === req.params.cid); if (!c) return res.status(404).end();
@@ -114,32 +160,9 @@ export function mountReview(app: Express) {
   });
 
   app.post('/api/review/:id/feedback', async (req, res) => {
-    const all = load(); const x = all[req.params.id]; if (!x) return res.status(404).end();
-    const t = store.get(x.task); if (!t) return res.status(400).json({ error: 'The task that asked for this review no longer exists.' });
-    const open = x.comments.filter(c => c.v === x.version && !c.sent);
-    if (!open.length) return res.status(400).json({ error: 'Write at least one comment first.' });
-    const general = open.filter(c => c.block < 0), anchored = open.filter(c => c.block >= 0).sort((a, b) => a.block - b.block);
-    const md = [
-      `# Review comments: ${x.name} (version ${x.version})`, '',
-      `From the user, on ${new Date().toLocaleString('en-GB')}. File: ${x.path}`, '',
-      ...anchored.flatMap(c => [`## On: "${c.quote.replace(/\s+/g, ' ').slice(0, 200)}"`, '', c.text, '']),
-      ...(general.length ? ['## General', '', ...general.map(c => `- ${c.text}`), ''] : []),
-    ].join('\n');
-    const dir = docs.inboxDir(t.id); mkdirSync(dir, { recursive: true });
-    const fname = `review-${basename(x.name, extname(x.name))}-v${x.version}.md`;
-    const target = join(dir, fname);
-    writeFileSync(target, md);
-    const sentFile = join(dir, '.sent.json');
-    let sent: Record<string, unknown> = {}; try { sent = JSON.parse(readFileSync(sentFile, 'utf8')); } catch { /* none yet */ }
-    sent[fname] = { task: '__review', at: now(), orig: fname };
-    writeFileSync(sentFile, JSON.stringify(sent, null, 2));
-    // typed now, or queued until the agent's input box is empty (message-queue.ts); the comments count as sent then
-    const delivery = await messageQueue.send(t, `Review comments on ${x.name} (version ${x.version}) are in your inbox: ${target}. Revise the document, then run tb review ${x.path} again.`, { from: 'you', kind: 'review' });
-    if (delivery.state === 'failed') return res.status(409).json({ error: delivery.reason, path: target });
-    open.forEach(c => { c.sent = true; });
-    x.state = 'changes'; x.updated = now(); save(all);
-    store.touch(t.id);
-    res.json({ path: target, resumed: !!delivery.resumed, delivery: delivery.state, ...(delivery.reason ? { reason: delivery.reason } : {}) });
+    const r = await sendFeedback(req.params.id);
+    if (r.status === 404) return res.status(404).end();
+    res.status(r.status).json(r.body);
   });
 
   app.post('/api/review/:id/accept', (req, res) => {

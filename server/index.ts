@@ -47,6 +47,7 @@ import * as inboxDelivery from './inbox-delivery.ts';
 import * as messageQueue from './message-queue.ts';
 import * as answerHistory from './answer-history.ts';
 import { mountReview, pendingFor, pendingForPath } from './review.ts';
+import { mountDocumentContext } from './document-context.ts';
 import { attach, terminalViewerCount } from './pty.ts';
 import * as store from './store.ts';
 import * as stats from './stats.ts';
@@ -900,7 +901,7 @@ async function restartImpact() {
   const t = await restart.tmuxProcess();
   return restart.restartImpact({
     tasks: store.all(), liveSessions: ((await tmux.listSessions()) || []).filter(s => !s.dead).map(s => s.name),
-    askRunning: ask.runningTasks(), permitsRunning: permits.all().filter(p => p.state === 'running').map(p => ({ taskId: p.taskId, id: p.id })),
+    askRunning: ask.runningTasks(), askDocuments: ask.runningDocuments(), permitsRunning: permits.all().filter(p => p.state === 'running').map(p => ({ taskId: p.taskId, id: p.id })),
     moving: [...events.movingTasks], pendingApprovals: approvals.pendingCount(), tmuxPid: t.pid, tmuxGroup: t.group, ownGroup: await restart.ownGroup(),
   });
 }
@@ -1462,6 +1463,7 @@ app.post('/api/tasks/:id/restart', async (req, res) => {
   after.restartFailed ? fail(res, `Restart failed: ${after.restartFailed}`) : res.json(view(after));
 });
 mountReview(app);
+mountDocumentContext(app, fromDashboard);
 // Messages between people and their agents, through A2A Notes (github.com/Mgczacki/a2a-notes) and its MCP server.
 // A file from it (a comment from an approval card, a routed message, a notice for the controller) goes into the task's
 // Taskboard inbox, and server/inbox-delivery.ts tells the agent, for every agent and status.

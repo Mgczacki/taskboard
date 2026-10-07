@@ -3,6 +3,8 @@
 // terminal tail in its prompt and reads the task's transcript only when those do not answer the question.
 // Follow-up questions resume the separate agent's own conversation, never the task's.
 // The thread is saved in ~/AgentVault/tasks/<id>/ask.json; the dashboard polls GET /api/tasks/:id/ask while it runs.
+// A question about one document (server/document-context.ts) uses the same process, settings and limits through run().
+// Its thread has its own key and file, and its agent gets no folder of the task.
 import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -34,23 +36,29 @@ export interface AskItem {
 export interface AskThread { sessionId?: string; accountId?: string; agent?: 'claude' | 'codex'; model?: string; items: AskItem[] }
 
 const file = (id: string) => join(store.taskDir(id), 'ask.json');
+// by thread key: a task id, or the key of a document thread (it starts with DOC_KEY)
 const running = new Map<string, ChildProcess>();
+export const DOC_KEY = 'doc-';
 
-export function get(id: string): AskThread {
+// The thread with this key, saved in this file.
+export function read(key: string, path: string): AskThread {
   let t: AskThread = { items: [] };
-  try { if (existsSync(file(id))) t = JSON.parse(readFileSync(file(id), 'utf8')); } catch { /* unreadable: start a new thread */ }
+  try { if (existsSync(path)) t = JSON.parse(readFileSync(path, 'utf8')); } catch { /* unreadable: start a new thread */ }
   // a question that was running when Taskboard stopped has no process any more
-  if (!running.has(id)) for (const i of t.items) if (i.state === 'running') { i.state = 'failed'; i.a = i.a || 'Taskboard restarted before the answer came back.'; }
+  if (!running.has(key)) for (const i of t.items) if (i.state === 'running') { i.state = 'failed'; i.a = i.a || 'Taskboard restarted before the answer came back.'; }
   return t;
 }
-const save = (id: string, t: AskThread) => writeFileSync(file(id), JSON.stringify(t, null, 2));
+export const get = (id: string) => read(id, file(id));
+const write = (path: string, t: AskThread) => { mkdirSync(dirname(path), { recursive: true }); writeFileSync(path, JSON.stringify(t, null, 2)); };
 
-export const runningTasks = () => [...running.keys()];
-export function clear(id: string) { stop(id); save(id, { items: [] }); return get(id); }
-export function stop(id: string) { const p = running.get(id); if (p) p.kill('SIGTERM'); }
+export const runningTasks = () => [...running.keys()].filter(k => !k.startsWith(DOC_KEY));
+export const runningDocuments = () => [...running.keys()].filter(k => k.startsWith(DOC_KEY)).length;
+export const isRunning = (key: string) => running.has(key);
+export function clear(id: string) { stop(id); write(file(id), { items: [] }); return get(id); }
+export function stop(key: string) { const p = running.get(key); if (p) p.kill('SIGTERM'); }
 
 // The transcript path: recorded by the hooks (Claude) or by the task watcher (Codex); else searched in the account folder.
-function transcriptOf(t: Task): string | undefined {
+export function transcriptOf(t: Task): string | undefined {
   if (t.transcript && existsSync(t.transcript)) return t.transcript;
   if (!t.sessionId) return;
   const acct = accounts.get(t.account) || accounts.defaultFor(t.agent);
@@ -93,43 +101,67 @@ function step(name: string, input: Record<string, unknown>): string {
 }
 
 export async function ask(t: Task, question: string): Promise<AskThread> {
-  if (running.has(t.id)) throw new Error('A question about this task is still running. Wait for it, or stop it.');
+  const tr = transcriptOf(t);
+  return run({
+    key: t.id, file: file(t.id), cwd: join(ASK_DIR, t.id), rules: RULES, dirs: [t.cwd, ...(tr ? [dirname(tr)] : [])],
+    busy: 'A question about this task is still running. Wait for it, or stop it.',
+    prompt: async first => message(t, await tmux.capture(t.session, TAIL_LINES), question, first),
+  }, question);
+}
+
+// What one thread is about. prompt(first) builds the message of a question; first is true when the separate agent
+// starts a new conversation. dirs are the folders the agent may read besides cwd. onlyCwd: the agent's permission
+// mode is set to "default", so a setting of the account that allows every read does not apply.
+export interface Subject {
+  key: string; file: string; cwd: string; rules: string; dirs: string[]; busy: string;
+  prompt: (first: boolean) => string | Promise<string>;
+  model?: string; onlyCwd?: boolean; done?: () => void;
+}
+// The arguments of the separate Claude Code process: three read tools, no MCP servers, a cost limit.
+export function claudeArgs(prompt: string, model: string, s: Pick<Subject, 'rules' | 'dirs' | 'onlyCwd'>, sessionId?: string): string[] {
+  return ['-p', prompt, '--model', model, '--tools', 'Read,Grep,Glob',
+    '--append-system-prompt', s.rules, '--strict-mcp-config', '--output-format', 'stream-json', '--verbose', '--max-budget-usd', MAX_BUDGET_USD,
+    ...(s.onlyCwd ? ['--permission-mode', 'default'] : []),
+    ...s.dirs.flatMap(d => ['--add-dir', d]), ...(sessionId ? ['--resume', sessionId] : [])];
+}
+
+export async function run(subject: Subject, question: string): Promise<AskThread> {
+  const key = subject.key, rules = subject.rules;
+  const save = (t: AskThread) => write(subject.file, t);
+  if (running.has(key)) throw new Error(subject.busy);
   const settings = machine.get().ask;
   const agent = settings.agent;
-  const model = settings.model;
+  const model = subject.model || settings.model;
   const acct = accounts.get(settings.account) || accounts.defaultFor(agent);
   if (acct.agent !== agent) throw new Error('The BTW account does not match its agent. Change it in Settings.');
-  const thread = get(t.id);
+  const thread = read(key, subject.file);
   // a conversation lives in one account's folder and uses one model
   if (thread.accountId !== acct.id || thread.agent !== agent || thread.model !== model) {
     thread.sessionId = undefined; thread.accountId = acct.id; thread.agent = agent; thread.model = model;
   }
-  const tail = await tmux.capture(t.session, TAIL_LINES);
-  const tr = transcriptOf(t);
-  const cwd = join(ASK_DIR, t.id); mkdirSync(cwd, { recursive: true });
-  const prompt = message(t, tail, question, !thread.sessionId);
-  const claudeArgs = ['-p', prompt, '--model', model, '--tools', 'Read,Grep,Glob',
-    '--append-system-prompt', RULES, '--strict-mcp-config', '--output-format', 'stream-json', '--verbose', '--max-budget-usd', MAX_BUDGET_USD,
-    '--add-dir', t.cwd, ...(tr ? ['--add-dir', dirname(tr)] : []), ...(thread.sessionId ? ['--resume', thread.sessionId] : [])];
+  const cwd = subject.cwd; mkdirSync(cwd, { recursive: true });
+  const prompt = await subject.prompt(!thread.sessionId);
+  if (running.has(key)) throw new Error(subject.busy);
+  const claude = claudeArgs(prompt, model, subject, thread.sessionId);
   // Codex loads no user configuration, plugins, or ChatGPT apps. Its read-only sandbox applies to every turn.
   const codexLimits = ['--ignore-user-config', '--ignore-rules', '--skip-git-repo-check', '--json', '-c', 'mcp_servers={}',
     '--disable', 'apps', '--disable', 'plugins', '--disable', 'remote_plugin',
     '--disable', 'skill_mcp_dependency_install', '--disable', 'tool_call_mcp_elicitation',
     '--disable', 'mcp_2026_07_28', '--disable', 'codex_apps_mcp_2026_07_28', '--disable', 'enable_mcp_apps'];
   const codexArgs = thread.sessionId
-    ? ['exec', 'resume', ...codexLimits, '-c', 'sandbox_mode="read-only"', '-c', 'approval_policy="never"', '-m', model, thread.sessionId, `${RULES}\n\n${prompt}`]
-    : ['exec', ...codexLimits, '--sandbox', 'read-only', '-c', 'approval_policy="never"', '-m', model, `${RULES}\n\n${prompt}`];
+    ? ['exec', 'resume', ...codexLimits, '-c', 'sandbox_mode="read-only"', '-c', 'approval_policy="never"', '-m', model, thread.sessionId, `${rules}\n\n${prompt}`]
+    : ['exec', ...codexLimits, '--sandbox', 'read-only', '-c', 'approval_policy="never"', '-m', model, `${rules}\n\n${prompt}`];
   // the task's own variables are left out, so `tb` or a hook cannot act as the task
   const env: Record<string, string | undefined> = { ...process.env, ...accounts.envFor(acct) };
   for (const k of ['TASK_ID', 'TASK_DIR', 'TASK_NUM', 'TB_URL', 'TB_TOKEN_FILE', 'CLAUDECODE', 'CLAUDE_CODE_ENTRYPOINT']) delete env[k];
   if (acct.isDefault) delete env.CLAUDE_CONFIG_DIR;
   if (acct.isDefault) delete env.CODEX_HOME;
   const item: AskItem = { q: question, state: 'running', steps: [], agent, model, account: acct.name, at: new Date().toISOString() };
-  thread.items.push(item); save(t.id, thread);
+  thread.items.push(item); save(thread);
   const started = Date.now();
   const bin = agent === 'claude' ? 'claude' : 'codex';
-  const p = spawn(bin, agent === 'claude' ? claudeArgs : codexArgs, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
-  running.set(t.id, p);
+  const p = spawn(bin, agent === 'claude' ? claude : codexArgs, { cwd, env, stdio: ['ignore', 'pipe', 'pipe'] });
+  running.set(key, p);
   let buf = '', err = '', result: { text?: string; cost?: number; isError?: boolean } = {};
   p.stdout!.on('data', d => {
     buf += d; if (buf.length > 2_000_000) buf = buf.slice(-2_000_000);
@@ -140,13 +172,13 @@ export async function ask(t: Task, question: string): Promise<AskThread> {
         if (m.session_id && !thread.sessionId) thread.sessionId = m.session_id;
         if (m.type === 'assistant') {
           if (m.message?.model) item.model = m.message.model;
-          for (const c of m.message?.content || []) if (c.type === 'tool_use') { item.steps.push(step(c.name, c.input || {})); item.steps = item.steps.slice(-200); save(t.id, thread); }
+          for (const c of m.message?.content || []) if (c.type === 'tool_use') { item.steps.push(step(c.name, c.input || {})); item.steps = item.steps.slice(-200); save(thread); }
         }
         if (m.type === 'result') result = { text: m.result, cost: m.total_cost_usd, isError: m.is_error };
       } else {
         if (m.type === 'thread.started' && m.thread_id) thread.sessionId = m.thread_id;
         if (m.type === 'item.started' && m.item?.type === 'command_execution') {
-          item.steps.push(String(m.item.command || 'Read files').slice(0, 160)); item.steps = item.steps.slice(-200); save(t.id, thread);
+          item.steps.push(String(m.item.command || 'Read files').slice(0, 160)); item.steps = item.steps.slice(-200); save(thread);
         }
         if (m.type === 'item.completed' && m.item?.type === 'agent_message') result.text = m.item.text;
         if (m.type === 'turn.failed') { result.isError = true; result.text = m.error?.message; }
@@ -155,13 +187,14 @@ export async function ask(t: Task, question: string): Promise<AskThread> {
   });
   p.stderr!.on('data', d => { err = (err + d).slice(-16_384); });
   p.on('close', (code, signal) => {
-    running.delete(t.id);
+    running.delete(key);
     item.ms = Date.now() - started; item.costUsd = result.cost;
     if (signal) { item.state = 'stopped'; item.a = 'Stopped.'; }
     else if (code === 0 && result.text && !result.isError) { item.state = 'done'; item.a = result.text; }
     else { item.state = 'failed'; item.a = result.text || err.trim().split('\n').slice(-3).join('\n') || `${bin} exited with code ${code}.`; }
-    save(t.id, thread);
+    save(thread);
+    subject.done?.();
   });
-  p.on('error', e => { running.delete(t.id); item.state = 'failed'; item.a = `Could not start ${bin}: ${e.message}`; save(t.id, thread); });
+  p.on('error', e => { running.delete(key); item.state = 'failed'; item.a = `Could not start ${bin}: ${e.message}`; save(thread); subject.done?.(); });
   return thread;
 }

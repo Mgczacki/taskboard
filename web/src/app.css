@@ -1223,3 +1223,26 @@ table.procs tr.proc-group td { padding-top: 10px; }
 .ae-health { color: var(--st-needs); }
 .chip.errchip { white-space: normal; max-width: 100%; }
 .errchip-row { margin-top: 4px; }
+
+/* Comment and BTW for a document (DocumentTools.tsx), in the floating viewer and the document window */
+.dt { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.dt-bar { flex: none; display: flex; align-items: center; gap: 6px; padding: 4px 8px 4px 12px; border-bottom: 1px solid var(--line); background: var(--panel); font-size: 12px; }
+.dt-owner { color: var(--muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dt-owner b { color: var(--text); }
+.dt .sp { flex: 1; }
+.dt-row { flex: 1; min-height: 0; display: flex; }
+.dt-doc { flex: 1; min-width: 0; min-height: 0; display: flex; }
+.dt-side { flex: none; width: 360px; max-width: 55%; min-height: 0; display: flex; flex-direction: column; border-left: 1px solid var(--line); background: var(--panel); }
+.dt-h { flex: none; display: flex; align-items: center; gap: 8px; padding: 5px 8px 5px 10px; border-bottom: 1px solid var(--line); font-size: 12px; }
+.dt-body { flex: 1; min-height: 0; overflow-y: auto; padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.dt-body .banner { margin: 0; }
+.dt-facts { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; font-size: 12px; }
+.dt-facts dt { color: var(--dim); }
+.dt-facts dd { margin: 0; min-width: 0; overflow-wrap: anywhere; }
+.dt-text { width: 100%; min-height: 130px; box-sizing: border-box; resize: vertical; font: 12.5px var(--sans); }
+.dt-sub { color: var(--dim); font-size: 11.5px; }
+.dt-pad { padding: 6px 10px 0; }
+.dt-model .banner { margin: 0; }
+.dt-actions { display: flex; align-items: center; gap: 6px; }
+.dt-side .ask-list { min-height: 0; }
+.document-window-md { flex: 1; min-width: 0; overflow: auto; display: flex; }

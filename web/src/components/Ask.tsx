@@ -1,13 +1,27 @@
 // Ask panel on a canvas tile, labeled BTW in the interface: questions about the task, answered by a separate read-only agent (server/ask.ts).
 // The task's own agent gets no input. The panel polls the thread while an answer is on its way.
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import DOMPurify from 'dompurify';
 import { marked } from 'marked';
-import type { AskThread, SpinOffExchange, Task } from '../api';
+import type { AskItem, AskThread, SpinOffExchange, Task } from '../api';
 import { api } from '../api';
 
 const md = (s: string) => DOMPurify.sanitize(marked.parse(s, { async: false }) as string);
 const secs = (ms?: number) => ms === undefined ? '' : `${(ms / 1000).toFixed(1)} s`;
+
+// The questions and answers of one thread. The task panel and the document viewers (DocumentTools.tsx) show it.
+export function AskItems({ thread, stop, extra }: { thread: AskThread; stop: () => void; extra?: (item: AskItem) => ReactNode }) {
+  return <>{thread.items.map((i, n) => (
+    <div key={n} className="ask-item">
+      <div className="ask-q">{i.q}</div>
+      {i.steps.length > 0 && <div className="ask-steps">{i.steps.map((s, k) => <div key={k}>{s}</div>)}</div>}
+      {i.state === 'running' ? <div className="ask-wait">Working… <button className="btn" onClick={stop}>Stop</button></div>
+        : <div className={`ask-a md ${i.state}`} dangerouslySetInnerHTML={{ __html: md(i.a || '') }} />}
+      {i.state !== 'running' && <div className="ask-meta">{[i.costUsd !== undefined ? `$${i.costUsd.toFixed(3)}` : '', secs(i.ms), i.agent === 'codex' ? 'Codex' : 'Claude Code', i.model, i.account].filter(Boolean).join(' · ')}</div>}
+      {extra?.(i)}
+    </div>
+  ))}</>;
+}
 
 export function AskPanel({ task, close, onSpinOff }: { task: Task; close: () => void; onSpinOff: (exchange: SpinOffExchange, task: Task) => void }) {
   const [thread, setThread] = useState<AskThread>({ items: [] });
@@ -42,16 +56,7 @@ export function AskPanel({ task, close, onSpinOff }: { task: Task; close: () => 
       </div>
       <div className="ask-list" ref={list}>
         {!count && <div className="ask-empty">For example: “What has it done so far?”, “Why is it waiting?”, “Which files did it change?”</div>}
-        {thread.items.map((i, n) => (
-          <div key={n} className="ask-item">
-            <div className="ask-q">{i.q}</div>
-            {i.steps.length > 0 && <div className="ask-steps">{i.steps.map((s, k) => <div key={k}>{s}</div>)}</div>}
-            {i.state === 'running' ? <div className="ask-wait">Working… <button className="btn" onClick={() => api.askStop(task.id)}>Stop</button></div>
-              : <div className={`ask-a md ${i.state}`} dangerouslySetInnerHTML={{ __html: md(i.a || '') }} />}
-            {i.state !== 'running' && <div className="ask-meta">{[i.costUsd !== undefined ? `$${i.costUsd.toFixed(3)}` : '', secs(i.ms), i.agent === 'codex' ? 'Codex' : 'Claude Code', i.model, i.account].filter(Boolean).join(' · ')}</div>}
-            {i.state === 'done' && i.a && <button className="btn" onClick={() => onSpinOff({ sourceNum: task.num, question: i.q, answer: i.a! }, task)}>Start task</button>}
-          </div>
-        ))}
+        <AskItems thread={thread} stop={() => api.askStop(task.id)} extra={i => i.state === 'done' && i.a ? <button className="btn" onClick={() => onSpinOff({ sourceNum: task.num, question: i.q, answer: i.a! }, task)}>Start task</button> : null} />
       </div>
       {err && <div className="ask-err">{err}</div>}
       <div className="ask-in field">

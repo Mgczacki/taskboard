@@ -5,7 +5,7 @@ import { marked } from 'marked';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Task } from '../api';
 import { fmtWait } from '../api';
-import { documentWindowUrl, fileUrl } from './Docs';
+import { documentWindowUrl, fileUrl, inDocumentWindow } from './Docs';
 import { ManagerBadge } from './ManagerBoard';
 import { AgentChip, Kbd } from './ui';
 import { hit, useKeymap } from '../keys';
@@ -14,6 +14,7 @@ import { loadAccounts, type Account } from './Accounts';
 import '../review.css';
 import type { DocumentLink } from '../documentLinks';
 import { decorateDocument } from '../documentContent';
+import { draftKey as savedDraftKey, readDraft, useDraft, writeDraft } from '../documentDraft';
 
 interface Comment { id: string; v: number; block: number; quote: string; text: string; at: string; sent?: boolean }
 interface Item {
@@ -128,7 +129,8 @@ export function InboxPage({ tasks, open, documentLink }: { tasks: Task[]; open: 
   const draftKey = item ? `${item.id}:${item.version}` : '';
   const local = drafts[draftKey];
   const draft = local?.inline;
-  const general = local?.general || '';
+  // the general comment is saved (documentDraft.ts), so the floating viewer and the document window show the same text
+  const [general, setGeneral] = useDraft('comment', item?.path, item?.version);
   const pendingEdits = current.filter(c => commentEdits[c.id] !== undefined && commentEdits[c.id] !== c.text);
   const pendingText = !!(general.trim() || draft?.text.trim() || pendingEdits.length);
   const hasPendingComments = !!(unsent.length || pendingText);
@@ -141,9 +143,8 @@ export function InboxPage({ tasks, open, documentLink }: { tasks: Task[]; open: 
     if (!value.trim()) return;
     await send('POST', `/api/review/${id}/comment`, { block, quote, text: value.trim() });
     await load();
-    changeDraft(key, old => block < 0
-      ? { ...old, general: old.general === value ? '' : old.general }
-      : { ...old, inline: old.inline?.block === block && old.inline.text === value ? undefined : old.inline });
+    if (block < 0) { const saved = items?.find(i => i.id === id); if (saved && readDraft(savedDraftKey('comment', saved.path, saved.version)) === value) writeDraft(savedDraftKey('comment', saved.path, saved.version), ''); }
+    else changeDraft(key, old => ({ ...old, inline: old.inline?.block === block && old.inline.text === value ? undefined : old.inline }));
   };
   const saveDraft = async (block: number, quote: string, value: string) => {
     if (!item || sending) return;
@@ -243,7 +244,7 @@ export function InboxPage({ tasks, open, documentLink }: { tasks: Task[]; open: 
           <div className="rv-sub">From #{item.taskNum} {item.taskTitle} · <code>{item.path.replace(/^\/Users\/[^/]+/, '~')}</code></div>
           <div className="rv-actions">
             <button className="btn" onClick={() => open(item.task, 'terminal')} disabled={!task}>Open agent terminal</button>
-            <a className="btn" href={isHtml(item.name) ? documentWindowUrl(item.path, item.name) : fileUrl(item.path)} target="_blank" rel="noreferrer" title="Open the file at full size in its own browser tab. HTML runs in a sandbox without access to Taskboard.">Open in new tab ↗</a>
+            <a className="btn" href={inDocumentWindow(item.name) ? documentWindowUrl(item.path, item.name) : fileUrl(item.path)} target="_blank" rel="noreferrer" title="Open the file at full size in its own browser tab, with the comment and BTW controls. HTML runs in a sandbox without access to Taskboard.">Open in new tab ↗</a>
             {item.version > 1 && !isHtml(item.name) && <button className={`btn ${compare ? 'on' : ''}`} onClick={() => setCompare(c => !c)}>{compare ? `Show v${item.version} only` : `Compare v${item.version - 1} → v${item.version}`}</button>}
             <span style={{ flex: 1 }} />
             {item.dismissedAt ? <button className="btn" onClick={() => act(send('POST', `/api/review/${item.id}/restore`))}>Restore to inbox</button> : item.state === 'accepted'
@@ -299,7 +300,7 @@ export function InboxPage({ tasks, open, documentLink }: { tasks: Task[]; open: 
             <div className="rv-general">
               <div className="rv-qh">General comment</div>
               {current.filter(c => c.block < 0).map(c => <CommentCard key={c.id} c={c} item={item} reload={load} editText={commentEdits[c.id]} setEditText={value => setCommentEdits(all => { const next = { ...all }; if (value === undefined) delete next[c.id]; else next[c.id] = value; return next; })} />)}
-              <textarea value={general} onChange={e => changeDraft(draftKey, old => ({ ...old, general: e.target.value }))} placeholder={isHtml(item.name) ? 'Comments on this page' : 'A comment about the whole document'} onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.stopPropagation(); void saveDraft(-1, '', general); } }} />
+              <textarea value={general} onChange={e => setGeneral(e.target.value)} placeholder={isHtml(item.name) ? 'Comments on this page' : 'A comment about the whole document'} onKeyDown={e => { if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); e.stopPropagation(); void saveDraft(-1, '', general); } }} />
               <div className="rv-row"><button className="btn" disabled={!general.trim() || sending} onClick={() => void saveDraft(-1, '', general)}>Add</button></div>
             </div>
             {!current.length && !draft && <div className="rv-hint">Select text and press <Kbd id="reviewComment" />, hover a paragraph and click ＋, or click a diagram to comment on it. Save a comment or send it to the agent.</div>}

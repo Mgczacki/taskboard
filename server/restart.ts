@@ -28,6 +28,7 @@ export interface ImpactInput {
   tasks: Task[];
   liveSessions: string[];        // tmux session names with a live pane
   askRunning: string[];          // task ids with a running Ask question
+  askDocuments?: number;         // running BTW questions about a document
   permitsRunning: { taskId: string; id: string }[];
   moving: string[];              // task ids in an account move
   pendingApprovals: number;
@@ -50,6 +51,7 @@ export function restartImpact(i: ImpactInput): RestartImpact {
   for (const id of i.moving) add(id, 'the move to another account is cut off; check the task after the restart');
   for (const t of i.tasks) if (t.transfer?.state === 'starting') add(t.id, 'the transfer to another machine is cut off; check the task after the restart');
   const notes: string[] = [];
+  if (i.askDocuments) notes.push(`The answer to ${i.askDocuments} running BTW question${i.askDocuments === 1 ? '' : 's'} about a document is lost.`);
   if (i.pendingApprovals) notes.push(`${i.pendingApprovals} approval card${i.pendingApprovals === 1 ? '' : 's'} on the dashboard expire${i.pendingApprovals === 1 ? 's' : ''}. Nothing runs, and the agents ask again.`);
   notes.push('Status updates that agents send during the restart are not received. The new server reads each task again from tmux and the transcripts.');
   return { sessions, stops, notes, tmuxPid: i.tmuxPid, tmuxStops };
