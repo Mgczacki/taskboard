@@ -1,3 +1,4 @@
+import { isStaleMerge, REFRESH_LABEL } from '../staleCard';
 import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode, type Ref } from 'react';
 import { api, useStore, useStoreValue } from '../api';
 import { CONFIRM_MS, cardTime, needsConfirm } from '../clickGuard';
@@ -22,7 +23,7 @@ function useFindCard(): FindCard {
   const pending = useStoreValue(s => s.pending);
   return id => {
     const a = approvals.find(x => x.id === id);
-    if (a) return { kind: 'approval', action: a.action, pushId: a.payload?.pushId, permitId: a.payload?.permitId };
+    if (a) return { kind: 'approval', action: a.action, pushId: a.payload?.pushId, permitId: a.payload?.permitId, stale: isStaleMerge(a) };
     if (pending.some(x => x.id === id)) return { kind: 'question' };
   };
 }
@@ -108,6 +109,7 @@ function NeedsPanel({ group, rows, manager, open, toast }: { group: string; rows
         <span className="need-acts">
           {act.kind === 'push' && <><button className="btn primary" onClick={() => void api.decidePush(act.pushId, true, '', { from: 'manager-board', target: 'approve' }).then(() => loadBoards(), fail)}>Approve</button><DenyButton card={r.waitingOn?.card} run={() => api.decidePush(act.pushId, false, '', { from: 'manager-board', target: 'deny' }).then(() => loadBoards(), fail)} /></>}
           {act.kind === 'decide' && <><button className="btn primary" onClick={() => void api.decide(act.id, true, { from: 'manager-board', target: 'approve' }).then(() => loadBoards(), fail)}>Approve</button><DenyButton card={act.id} run={() => api.decide(act.id, false, { from: 'manager-board', target: 'deny' }).then(() => loadBoards(), fail)} /></>}
+          {act.kind === 'refresh' && <><button className="btn primary" title="The merge card is stale. Close it as stale, not denied, and ask the task to run tb git merge-request again. Nothing is merged." onClick={() => void api.refreshCard(act.id, { from: 'manager-board', target: 'refresh' }).then(() => loadBoards(), fail)}>{REFRESH_LABEL}</button><DenyButton card={act.id} run={() => api.decide(act.id, false, { from: 'manager-board', target: 'deny' }).then(() => loadBoards(), fail)} /></>}
           {act.kind === 'review' && <button className="btn" onClick={() => { location.hash = 'inbox:documents'; }}>Open review</button>}
           {act.kind === 'open' && <button className="btn" onClick={() => open(r.id)}>Open task</button>}
         </span>

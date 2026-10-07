@@ -39,6 +39,7 @@ type StatusPatch = Pick<Task, 'status' | 'ask' | 'statusSource'>;
 //   - the last card expired or closed without a decision: working, and the status source says why. The agent is in
 //     its turn while it waits in `tb scope request`. When the turn has ended, the transcript check in index.ts sets
 //     the status from the transcript.
+//   - the user closed a stale merge card with "Ask task to refresh" (state stale): working, and the status source says so
 //   - any other end: working, "Your decision was sent back to the task.", as before
 export const DISMISSED_STATUS = 'You closed the refused-command card. Nothing was decided and the task was not told.';
 export function statusAfterCards(t: Pick<Task, 'status' | 'ask' | 'statusSource'>, o: { open: number; last?: Pick<Approval, 'state'> & { result?: string }; refusalDenied?: boolean; refusalDismissed?: boolean }): StatusPatch | undefined {
@@ -51,6 +52,8 @@ export function statusAfterCards(t: Pick<Task, 'status' | 'ask' | 'statusSource'
   if (!CARD_ASKS.some(x => t.ask?.startsWith(x))) return;
   if (o.last && (o.last.state === 'expired' || o.last.state === 'unknown'))
     return { status: 'working', ask: '', statusSource: `The approval card closed without a decision. ${o.last.result || ''}`.trim() };
+  if (o.last?.state === 'stale')
+    return { status: 'working', ask: '', statusSource: 'You asked the task to refresh its stale merge card. The merge was not denied.' };
   return { status: 'working', ask: '', statusSource: 'Your decision was sent back to the task.' };
 }
 

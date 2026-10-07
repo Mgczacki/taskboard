@@ -9,6 +9,9 @@
 // TB_DIR/approvals.json; after a restart, a pending one is marked expired (nothing ran) and a running one unknown.
 // Message cards (mail-in, mail-out) are made again from A2A Notes after a restart (server/a2anotes/cards.ts). They can also
 // be sent back with a comment (pending → returned), and close when the message is decided in the Inbox.
+// A merge card whose branch head or master head moved is stale (staleFacts). recheck finds that without a click. Approve
+// runs nothing on it. "Ask task to refresh" (refresh below) closes it (pending → stale): the card keeps its old heads,
+// the facts and who closed it, the task is told that this is not a denial, and its next request makes a new card.
 import { createHash, randomUUID } from 'node:crypto';
 import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -17,7 +20,7 @@ import type { AllowOffer } from './allow-rules.ts';
 
 export interface Approval {
   id: string; actor: string; action: 'new' | 'send' | 'status' | 'kill' | 'move' | 'release' | 'restart' | 'git-merge' | 'git-push' | 'tool-refusal' | 'permit' | 'external' | 'plan' | 'scope' | 'mail-in' | 'mail-out'; summary: string; detail: string;
-  created: string; state: 'pending' | 'running' | 'approved' | 'denied' | 'failed' | 'expired' | 'unknown' | 'returned' | 'dismissed'; result?: string; payload: unknown;
+  created: string; state: 'pending' | 'running' | 'approved' | 'denied' | 'failed' | 'expired' | 'unknown' | 'returned' | 'dismissed' | 'stale'; result?: string; payload: unknown;
   // the card has a comment box and Send back
   returnable?: boolean;
   // a "type into" card from one task to another: the card offers Allow always with these choices (allow-rules.ts)
@@ -37,6 +40,8 @@ export interface Approval {
   validUntil?: string;
   plan?: string;
   staleFacts?: string;
+  // a card in state stale: what happened to the message that asks the task for a new request (index.ts onDecision)
+  delivery?: string;
   updated?: string;
   notifyMe?: boolean;
 }
@@ -179,6 +184,44 @@ export async function decide(id: string, approve: boolean, d: Decider = { by: 'u
   x.state = 'running'; x.decidedBy = by; forget(id); audit(x, 'approve', origin, ageMs); emit(); // from here on, no second decision is accepted
   try { x.result = await run(d); x.state = 'approved'; } catch (e) { x.state = 'failed'; x.result = e instanceof Error ? e.message : String(e); }
   emit(); decided(x); return x;
+}
+// Run the check of each pending card that has one and that `only` accepts. Write the reason on a card that no longer
+// matches, and remove the reason from a card that matches again. Returns the cards that changed.
+export async function recheck(only: (x: Approval) => boolean = () => true): Promise<Approval[]> {
+  const changed: Approval[] = [];
+  for (const x of open()) {
+    if (!checkers.has(x.id) || !only(x)) continue;
+    const version = x.version;
+    const now = await stale(x.id);
+    // the card was decided, or a new request replaced its facts, while the check ran
+    if (x.state !== 'pending' || x.version !== version || now === x.staleFacts) continue;
+    x.staleFacts = now; x.updated = new Date().toISOString(); changed.push(x);
+  }
+  if (changed.length) emit();
+  return changed;
+}
+// Close a stale merge card without a denial: the user asks the task for a new request. Nothing runs. The card keeps its
+// detail (the old heads) and the facts, and DECISIONS_FILE gets a line. result: the text for the task, from the facts.
+// A card that matches again is not closed. A second call finds the card closed and changes nothing.
+export async function refresh(id: string, origin?: DecisionOrigin, result: (facts: string) => string = facts => `The user closed this card because it is stale. This is not a denial. ${facts}`): Promise<Approval | undefined> {
+  const x = items.get(id); if (!x || x.state !== 'pending') return x;
+  if (x.action !== 'git-merge') throw new Error('Only a merge card can be refreshed. Decide this card with its own buttons.');
+  const version = x.version;
+  const changed = await stale(id);
+  if (x.state !== 'pending' || x.version !== version) return x;
+  if (!changed) {
+    if (x.staleFacts) { x.staleFacts = undefined; x.updated = new Date().toISOString(); emit(); }
+    throw new Error('This card matches the branch and master now. Approve it or deny it.');
+  }
+  const ageMs = cardAge(x);
+  x.staleFacts = changed; x.state = 'stale'; x.result = result(changed);
+  x.decidedBy = { by: 'user', at: new Date().toISOString(), ...(origin ? { origin } : {}), ageMs };
+  forget(id); audit(x, 'refresh', origin, ageMs); emit(); decided(x); return x;
+}
+// What happened to the message that tells the task about a card in state stale.
+export function setDelivery(id: string, text: string) {
+  const x = items.get(id); if (!x || x.state !== 'stale') return;
+  x.delivery = text; emit();
 }
 // Close a refused-command card without a decision. The task gets no message (index.ts onDecision skips this state).
 export function dismiss(id: string, origin?: DecisionOrigin): Approval | undefined {

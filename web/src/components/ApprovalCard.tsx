@@ -5,6 +5,7 @@
 // second click. A refused-command card has no decision: Taskboard cannot override the agent's own permission check, so
 // it has Dismiss (close without telling the task) instead of Deny. A card that you denied less than a minute ago shows
 // Undo in the Answered view and in the stack (NoticeStack.tsx RecentDenials).
+// A merge card whose branch head or master head moved (staleCard.ts) has Ask task to refresh in place of Approve.
 import { useState } from 'react';
 import type { AllowScope, Approval, DecisionOrigin, Task } from '../api';
 import { api } from '../api';
@@ -15,6 +16,7 @@ import { isMessage, resultLine } from '../messageCard';
 import { decidedByLine } from '../approvalHistory';
 import { cardTime, needsConfirm, useCardGuard, type CardGuard } from '../clickGuard';
 import { refusalText } from '../refusalText';
+import { deliveryText, isStaleMerge, REFRESH_LABEL, STALE_HELP } from '../staleCard';
 
 export function ApprovalCard({ a, allTasks, setOpenId, openController, toast, from = 'waiting' }: { a: Approval; allTasks: Task[]; setOpenId: (id: string) => void; openController: () => void; toast: (s: string) => void; from?: DecisionOrigin['from'] }) {
   const [cardComments, setCardComments] = useState<Record<string, string>>({});
@@ -26,12 +28,14 @@ export function ApprovalCard({ a, allTasks, setOpenId, openController, toast, fr
   const fail = (e: unknown) => toast(String((e as Error).message || e));
   const newCard = () => needsConfirm(cardTime(a));
   const denyLabel = (target = 'deny') => guard.confirming === target ? 'Confirm deny' : 'Deny';
+  const staleMerge = isStaleMerge(a);
   // a decided card in the Answered view: what it was, who decided it, and the result
   if (a.state !== 'pending' && a.state !== 'running') return (
     <div className="approval">
-      <div className="ap-h"><b>{a.action === 'tool-refusal' ? `${who} had a tool call refused` : `${who} asked to ${a.summary}`}</b><span className="sub">{a.state}{a.decidedBy ? ` · ${new Date(a.decidedBy.at).toLocaleTimeString()}` : ''}</span></div>
+      <div className="ap-h"><b>{a.action === 'tool-refusal' ? `${who} had a tool call refused` : `${who} asked to ${a.summary}`}</b><span className="sub">{a.state === 'stale' ? 'stale, not denied' : a.state}{a.decidedBy ? ` · ${new Date(a.decidedBy.at).toLocaleTimeString()}` : ''}</span></div>
       <pre className="ap-d">{a.detail}</pre>
       <div className={`pc-note ${a.state === 'approved' ? 'ok' : a.state === 'failed' ? 'bad' : 'info'}`}>{decidedByLine(a) && <><b>{decidedByLine(a)}</b><br /></>}{resultLine(a)}</div>
+      {a.state === 'stale' && <div className="sub">{a.delivery || 'Taskboard sends the message to the task now.'}</div>}
       <UndoLine a={a} toast={toast} from={from} />
       <div className="ap-a">{a.action === 'tool-refusal' && <CopyCommand a={a} toast={toast} />}<button className="btn ghost" onClick={() => a.actor === 'controller' ? openController() : setOpenId(a.actor)}>{a.actor === 'controller' ? 'Open controller' : 'Open task'}</button></div>
     </div>
@@ -40,13 +44,16 @@ export function ApprovalCard({ a, allTasks, setOpenId, openController, toast, fr
         <div className={`approval${a.action === 'git-push' ? ' push-card' : ''}`}>
           {guard.bar}
           {(a.action === 'permit' || a.action === 'external') && a.payload?.permitId ? <PermitDetails id={a.payload.permitId} decision openTask={setOpenId} guard={guard} newCard={newCard} /> : a.action === 'git-push' && a.payload?.pushId ? <><div className="ap-h"><span className="dot needs-you" /><b>Task #{allTasks.find(t => t.id === a.actor)?.num || a.actor} asks to push</b><span className="sub">Valid until the facts change</span></div><pre className="ap-d">{a.detail}</pre><textarea className="routing-rule" rows={2} aria-label="Push decision comment" placeholder="Comment for the task" value={cardComments[a.id] || ''} onChange={e => setCardComments(c => ({ ...c, [a.id]: e.target.value }))} /><div className="ap-a"><button {...guard.button('approve', o => void api.decidePush(a.payload!.pushId!, true, cardComments[a.id] || '', o).catch(fail), { className: 'btn primary' })}>{a.payload?.state?.forcePush ? 'Approve force push' : 'Approve push'}</button><button {...guard.button('deny', o => void api.decidePush(a.payload!.pushId!, false, cardComments[a.id] || '', o).catch(fail), { confirm: newCard })}>{denyLabel()}</button><button {...guard.button('open', () => setOpenId(a.actor), { className: 'btn ghost' })}>Open task</button></div></> : a.action === 'tool-refusal' ? <RefusalCard a={a} task={allTasks.find(t => t.id === a.actor)} guard={guard} setOpenId={setOpenId} toast={toast} /> : <>
-          <div className="ap-h"><span className="dot needs-you" /><b>{a.actor === 'controller' ? 'The controller' : `Task #${allTasks.find(t => t.id === a.actor)?.num || a.actor}`} wants to {a.summary}</b>{a.action === 'scope' && <span className="sub">Scope request {a.id}</span>}</div>
+          <div className="ap-h"><span className="dot needs-you" /><b>{a.actor === 'controller' ? 'The controller' : `Task #${allTasks.find(t => t.id === a.actor)?.num || a.actor}`} wants to {a.summary}</b>{a.action === 'scope' && <span className="sub">Scope request {a.id}</span>}{staleMerge && <span className="chip warn">stale</span>}</div>
           {a.detail && (a.action === 'mail-out' && a.payload?.body
             ? <><pre className="ap-d">{a.detail.slice(0, a.detail.lastIndexOf(a.payload.body))}</pre><FlaggedBody body={a.payload.body} quality={a.payload.quality} /></>
             : <pre className="ap-d">{a.detail}</pre>)}
           {a.returnable && <textarea className="routing-rule" rows={2} aria-label="Comment for Send back" placeholder={a.action === 'mail-in' ? 'What is wrong with the message or the task? The controller receives this comment.' : 'What should change in the draft? The agent that wrote it receives this comment.'} value={cardComments[a.id] || ''} onChange={e => setCardComments(c => ({ ...c, [a.id]: e.target.value }))} />}
           {a.allow && <AllowChoices a={a} allTasks={allTasks} />}
-          <div className="ap-a"><button {...guard.button('approve', o => void api.decide(a.id, true, o).then(r => { if (a.returnable && r.result) toast(r.result); }).catch(fail), { className: 'btn primary' })}>{a.allow ? 'Approve once' : 'Approve'}</button>
+          {staleMerge && <div className="pc-note warn"><b>This card is stale. {a.staleFacts}</b>{STALE_HELP.map(line => <span key={line}><br />{line}</span>)}<br />{deliveryText(allTasks.find(t => t.id === a.actor))}</div>}
+          <div className="ap-a">{staleMerge
+            ? <button {...guard.button('refresh', o => void api.refreshCard(a.id, o).then(r => toast(r.state === 'stale' ? 'The card closed as stale, not denied. The task was asked for a new merge request.' : 'The card changed. Read it again.')).catch(fail), { className: 'btn primary' })} title="Close this card as stale, not denied, and ask the task to run tb git merge-request again. Nothing is merged.">{REFRESH_LABEL}</button>
+            : <button {...guard.button('approve', o => void api.decide(a.id, true, o).then(r => { if (a.returnable && r.result) toast(r.result); }).catch(fail), { className: 'btn primary' })}>{a.allow ? 'Approve once' : 'Approve'}</button>}
             {a.allow?.choices.map(c => { const target = `allow-${c.scope}`; return <button key={c.scope} title={c.text} {...guard.button(target, o => void api.allowAlways(a.id, c.scope, o).then(r => toast(r.approval?.state === 'failed' ? `Rule saved: ${r.rule.text} This message was not delivered: ${r.approval.result}` : `Rule saved: ${r.rule.text}`)).catch(fail), { confirm: () => true })}>{guard.confirming === target ? 'Confirm: ' : ''}{allowLabel(a, c.scope, allTasks)}</button>; })}
             {a.action === 'mail-out' && a.payload?.quality?.flags.length && <button className="btn" onClick={() => void (async () => {
               await messageRequest(`/messages/${a.payload!.message}/remove-flagged`, { hash: a.payload!.hash });
@@ -57,7 +64,7 @@ export function ApprovalCard({ a, allTasks, setOpenId, openController, toast, fr
             <button {...guard.button('deny', o => void api.decide(a.id, false, o).catch(fail), { confirm: newCard })}>{denyLabel()}</button><button {...guard.button('open', () => a.actor === 'controller' ? openController() : setOpenId(a.actor), { className: 'btn ghost' })}>{a.actor === 'controller' ? 'Open controller' : 'Open task'}</button></div></>}
           {guard.confirming === 'deny' && <div className="pc-note warn">This card appeared a few seconds ago. Click Confirm deny to deny it.</div>}
           {a.allow?.choices.filter(c => guard.confirming === `allow-${c.scope}`).map(c => <div key={c.scope} className="pc-note warn">Click Confirm to save this rule and send this message: {c.text}</div>)}
-          {a.staleFacts && <div className="pc-note warn">Facts changed: {a.staleFacts}</div>}
+          {a.staleFacts && !staleMerge && <div className="pc-note warn">Facts changed: {a.staleFacts}</div>}
           {a.reopened && <div className="pc-note info">You reopened this card with Undo at {new Date(a.reopened.at).toLocaleTimeString()}. The task was told.</div>}
           <label className="opt"><input type="checkbox" checked={!!a.notifyMe} onChange={e => void fetch(`/api/approvals/${a.id}/notify`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ enabled: e.target.checked }) }).catch(err => toast(String(err)))} /> Notify me on my phone</label>
         </div>

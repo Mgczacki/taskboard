@@ -560,7 +560,7 @@ export function taskInstructions(t: Task, inlineRules = true) {
     `You are running as task #${t.num} ("${t.title}") in Taskboard, which shows the user many agents at once.`,
     ...(t.worktree ? [
       `Your Git branch is ${t.branch} in ${t.cwd}. Use \`${gitCli} git commit "<message>"\` to commit and \`${gitCli} git rebase\` to rebase it. Resolve rebase conflicts there, then run \`${gitCli} git rebase --continue\` or \`${gitCli} git rebase --abort\`.`,
-      `To merge your branch into local master, run \`${gitCli} git merge-request\`. The user approves that merge on the dashboard.`,
+      `To merge your branch into local master, run \`${gitCli} git merge-request\`. The user approves that merge on the dashboard. A card that closes as stale is not a denial: master or your branch moved, so rebase or inspect, then run the command again.`,
       `When the user asks for a push, run \`${gitCli} git push-request --reason "<reason>"\`. Read the result with \`${gitCli} git push-result ID\`.`,
       'Do not run raw git commands that change refs. Do not change another task branch. Do not push unless the user asks for that push.',
     ] : []),

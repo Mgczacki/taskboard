@@ -197,7 +197,9 @@ const HELP = `tb — Taskboard command line
   tb scope approve ID --user-request "the user's chat message"   controller only
   tb git … --worktree <name or path> run a tb git command in an attached worktree. Without it, tb git uses your
                                      own worktree, or the only attached worktree
-  tb git merge-request               ask the user to merge your worktree branch into local master
+  tb git merge-request               ask the user to merge your worktree branch into local master. When master or
+                                     the branch moves before the approval, the user can close the card as stale.
+                                     That is not a denial: run tb git rebase, then tb git merge-request again
   tb git commit "<message>"           commit changes in your own worktree
   tb git rebase [BASE]                rebase your own branch onto local master, or onto a remote branch such as
                                      origin/master or origin/prod (runs git fetch first). It saves the old
