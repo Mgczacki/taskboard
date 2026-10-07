@@ -565,6 +565,7 @@ export function taskInstructions(t: Task, inlineRules = true) {
     ] : []),
     ...scopeLines(t),
     ...log,
+    'When a dashboard user message includes "Taskboard question <id>", answer the question in your normal reply. If answered, end your final reply with "TASKBOARD_ANSWER <id>: <one short sentence>". Replace <id> with that message\'s ID. Do not emit the line for a question you have not answered. Keep the line outside quotes and code blocks.',
     `Documents meant for the user or for other agents (handoffs, designs, reviews, diagrams, HTML pages) go in ${dir}/outbox/ as Markdown or HTML files. Files others send you arrive in ${dir}/inbox/.`,
     `To wait for a file another agent or the user will send you, run: tb inbox wait [--timeout seconds]. It prints the path and sender of each new file (exit 0), or exits 2 on timeout.`,
     `Use tb mail submit <subject> <body> to send a message to your own user's Inbox.`,
