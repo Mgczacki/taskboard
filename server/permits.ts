@@ -9,9 +9,11 @@ import * as machine from './machine.ts';
 import * as taskGit from './task-git.ts';
 import { scopeHint } from './task-git.ts';
 import { taskWorktrees, worktreeScopes } from './scopes.ts';
+import * as procs from './task-procs.ts';
+import * as approvals from './approvals.ts';
 
 export type StepState = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled';
-export type PermitState = 'pending' | 'running' | 'succeeded' | 'failed' | 'denied' | 'expired' | 'unknown';
+export type PermitState = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'denied' | 'expired' | 'unknown';
 export interface PermitStep {
   command: string; argv: string[]; cwd: string; timeoutSeconds: number; network: boolean;
   scriptHash?: string;
@@ -24,6 +26,7 @@ export interface Permit {
   createdAt: string; expiresAt: string; state: PermitState; stepHash: string; riskFlags: string[];
   steps: PermitStep[]; approvedBy?: 'user' | 'controller'; approvalRule?: string; riskClass?: 'low' | 'high'; controllerRequestText?: string; statedRisk?: string;
   decidedAt?: string; decisionComment?: string; startedAt?: string; finishedAt?: string; error?: string;
+  supervised?: { name: string };
 }
 export interface StepInput { command: string; cwd?: string; timeoutSeconds?: number; network?: boolean; continueOnFailure?: boolean }
 const DIR = join(TB_DIR, 'permits');
@@ -47,7 +50,8 @@ export function load() {
     if (!/^[a-f0-9-]+\.json$/.test(name)) continue;
     try {
       const p = JSON.parse(readFileSync(join(DIR, name), 'utf8')) as Permit;
-      if (p.state === 'running') { p.state = 'unknown'; p.error = 'Taskboard restarted during execution. Check effects before asking again.'; p.finishedAt = now(); save(p); }
+      if (p.state === 'running' && !p.supervised) { p.state = 'unknown'; p.error = 'Taskboard restarted during execution. Check effects before asking again.'; p.finishedAt = now(); save(p); }
+      if (p.state === 'pending' && p.supervised) { p.state = 'expired'; p.error = 'Taskboard restarted before approval. Nothing ran.'; p.finishedAt = now(); save(p); }
       records.set(p.id, p);
     } catch { /* skip a damaged record */ }
   }
@@ -223,7 +227,61 @@ export function request(task: Task, reason: string, inputs: StepInput[], refusal
   records.set(id, p); save(p); return p;
 }
 export function expire(p: Permit) {
-  return false;
+  if (p.state !== 'pending' || !p.expiresAt || Date.parse(p.expiresAt) > Date.now()) return false;
+  p.state = 'expired'; p.finishedAt = now();
+  p.steps.forEach(s => s.state = 'cancelled'); save(p); return true;
+}
+export function requestSupervised(task: Task, name: string, reason: string, command: string, cwd: string, network: boolean, statedRisk: string): Permit {
+  procs.checkName(name);
+  if (name.length > 24) throw new Error('Use a run name with at most 24 characters.');
+  if (!statedRisk.trim()) throw new Error('Describe the risk before asking for an approved run.');
+  const p = request(task, reason, [{ command, cwd, network }], undefined, statedRisk);
+  if (!p.steps[0].scriptHash) { cancel(p, 'A supervised command must name an existing script file.'); throw new Error('A supervised command must name an existing script file.'); }
+  p.supervised = { name: `permit-${p.id.slice(0, 8)}-${name}` };
+  p.expiresAt = new Date(Date.now() + 15 * 60_000).toISOString();
+  save(p); return p;
+}
+export async function runSupervised(p: Permit, task: Task, starter: typeof procs.start = procs.start, env: Record<string, string> = { PATH: process.env.PATH || '/usr/bin:/bin' }): Promise<Permit> {
+  if (!p.supervised || p.state !== 'pending' || expire(p)) return p;
+  const card = p.approvalId ? approvals.get(p.approvalId) : undefined;
+  if (card?.state !== 'running' || card.decidedBy?.by !== 'user' || card.actor !== task.id) throw new Error('The user has not approved this run.');
+  if (p.taskId !== task.id || task.status === 'archived') throw new Error('The task cannot start this run.');
+  const step = p.steps[0];
+  try {
+    const checked = validate(task, [{ command: step.command, cwd: step.cwd, network: step.network }]).steps[0];
+    const hash = createHash('sha256').update(JSON.stringify({ taskId: task.id, steps: [[checked.command, checked.cwd, checked.timeoutSeconds, checked.network, checked.scriptHash]] })).digest('hex');
+    if (hash !== p.stepHash || checked.scriptHash !== step.scriptHash) throw new Error('The approved command, folder, or script changed.');
+    await guard(task, step);
+    p.state = 'running'; p.approvedBy = 'user'; p.approvalRule = 'dashboard Run'; p.decidedAt = now(); p.startedAt = now();
+    step.state = 'running'; step.startedAt = p.startedAt; save(p);
+    const command = step.argv.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(' ');
+    await starter(procs.taskOwner(task, env), {
+      name: p.supervised.name, command, cwd: step.cwd, startedBy: 'user', permitId: p.id,
+    });
+  } catch (e) {
+    p.state = 'failed'; p.error = e instanceof Error ? e.message : String(e);
+    step.state = step.state === 'running' ? 'failed' : 'cancelled'; step.error = p.error;
+    p.finishedAt = now(); step.finishedAt = p.finishedAt; save(p);
+  }
+  return p;
+}
+export function syncSupervised(p: Permit, proc?: procs.Proc, output = ''): Permit {
+  if (!p.supervised || p.state !== 'running') return p;
+  if (!proc && p.startedAt && Date.now() - Date.parse(p.startedAt) < 10_000) return p;
+  if (!proc) { p.state = 'unknown'; p.error = 'No process record exists after approval. Check the script effects before requesting another run.'; }
+  else if (proc.state === 'running' || proc.state === 'starting') return p;
+  else if (proc.state === 'exited') {
+    p.state = proc.exitCode === undefined ? 'unknown' : proc.exitCode === 0 ? 'succeeded' : 'failed';
+    p.steps[0].exitCode = proc.exitCode;
+    if (proc.exitCode === undefined) p.error = 'The process ended without an exit code. Check the script effects before requesting another run.';
+  }
+  else if (proc.state === 'stopped' && !proc.stopNote?.includes('tmux window is gone')) { p.state = 'cancelled'; p.error = proc.stopNote || 'The run was stopped.'; }
+  else { p.state = 'unknown'; p.error = `The process ${proc.state}. Check cleanup and script effects before requesting another run.`; }
+  p.finishedAt = proc?.ended || now();
+  p.steps[0].state = p.state === 'succeeded' ? 'succeeded' : 'failed';
+  p.steps[0].finishedAt = p.finishedAt;
+  p.steps[0].outputTail = redactOutput(output.slice(-65536));
+  save(p); return p;
 }
 // End a pending permit without a decision, for example because its task was archived. Nothing runs.
 export function cancel(p: Permit, reason: string) {
@@ -279,7 +337,7 @@ export function userWroteCount(transcript: string | undefined, agent: string, wo
 export function notice(p: Permit): string {
   const comment = p.decisionComment ? ` User comment: ${p.decisionComment}.` : '';
   const result = p.steps.map((s, i) => `Step ${i + 1}: ${s.state}, exit ${s.exitCode ?? 'none'}.`).join(' ');
-  return `Suggestion ${p.id} ${p.state}.${comment} ${result} Read the last 200 output lines in your inbox.`;
+  return `Suggestion ${p.id} ${p.state}.${comment} ${result} ${p.supervised ? `Read the process log with tb proc logs ${p.supervised.name}.` : 'Read the last 200 output lines in your inbox.'}`;
 }
 export function classify(steps: PermitStep[], task: Task): 'low' | 'high' {
   const read = /^(pwd|rg|ls|cat|head|tail|wc|stat|echo|true|false|test)$/;

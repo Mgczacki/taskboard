@@ -98,7 +98,7 @@ export function writeClaudeSettings() {
   hooks.PreToolUse = [{ matcher: 'Bash', hooks: [{ type: 'command', command: `node ${tmux.quote(GUARD_SCRIPT)}`, timeout: 5 }] }];
   // The log and documents live in the vault, outside the project folder; allow writing there without a prompt each turn.
   const vault = VAULT.replace(HOME, '~');
-  const permissions = { allow: [`Edit(${vault}/**)`, `Read(${vault}/**)`, 'Bash(tb review:*)', 'Bash(tb inbox wait:*)', 'Bash(tb suggest:*)', 'Bash(tb permit request:*)', 'Bash(tb permit result:*)', 'Bash(tb permit list)', `Bash(python3 ${WORDING_SCRIPT}:*)`, 'Bash(tb run:*)', 'Bash(tb ps:*)', 'Bash(tb top:*)', 'Bash(tb proc:*)', 'Bash(tb browser:*)', 'mcp__task-browser'] }; // Edit rules cover every file-writing tool
+  const permissions = { allow: [`Edit(${vault}/**)`, `Read(${vault}/**)`, 'Bash(tb review:*)', 'Bash(tb inbox wait:*)', 'Bash(tb suggest:*)', 'Bash(tb permit request:*)', 'Bash(tb permit run-request:*)', 'Bash(tb permit result:*)', 'Bash(tb permit list)', `Bash(python3 ${WORDING_SCRIPT}:*)`, 'Bash(tb run:*)', 'Bash(tb ps:*)', 'Bash(tb top:*)', 'Bash(tb proc:*)', 'Bash(tb browser:*)', 'mcp__task-browser'] }; // Edit rules cover every file-writing tool
   // status line: shows the model and usage in the terminal and reports the account's usage windows to Taskboard
   const statusLine = { type: 'command', command: `node ${tmux.quote(STATUSLINE_SCRIPT)}` };
   writeFileSync(CLAUDE_SETTINGS_FILE, JSON.stringify({ hooks, permissions, statusLine }, null, 2));
@@ -575,6 +575,7 @@ export function taskInstructions(t: Task, inlineRules = true) {
     `Do not paste a command into chat and ask the user to run it.`,
     `Use tb suggest --steps <file> --why "<reason>" for an ordered sequence.`,
     `The server stops after the first failed step. Read the result with tb permit result <id> --wait.`,
+    'For one long script that needs user approval, run `tb permit run-request <name> --reason "<reason>" --risk "<risk>" --command "<script command>" --cwd <folder> [--network]`. Taskboard starts it after dashboard approval. Read the result with `tb permit result <id> --wait`.',
     `Do not rerun an approved command yourself.`,
     `If the Taskboard guard blocks a command, stop and tell the user what it said.`,
     ...(t.agent === 'codex' ? [
@@ -646,7 +647,7 @@ function claudeTaskSettings(t: Task): string {
   const gitCli = join(TB_DIR, 'bin', 'tb');
   if (worktrees.length) settings.permissions.allow.push(`Bash(${gitCli} git rebase --worktree:*)`, `Bash(${gitCli} git merge-request --worktree:*)`, `Bash(${gitCli} git check:*)`, `Bash(${gitCli} git commit:*)`, `Bash(${gitCli} git push-request:*)`, `Bash(${gitCli} git push-result:*)`, `Bash(${gitCli} scope list)`);
   if (!t.worktree || !t.branch) { writeFileSync(file, JSON.stringify(settings, null, 2), { mode: 0o600 }); return file; }
-  settings.permissions.allow.push(`Bash(${gitCli} git commit:*)`, `Bash(${gitCli} git rebase)`, `Bash(${gitCli} git rebase --continue)`, `Bash(${gitCli} git rebase --abort)`, `Bash(${gitCli} git check:*)`, `Bash(${gitCli} git merge-request)`, `Bash(${gitCli} git push-request:*)`, `Bash(${gitCli} git push-result:*)`, `Bash(${gitCli} suggest:*)`, `Bash(${gitCli} permit request:*)`, `Bash(${gitCli} permit result:*)`);
+  settings.permissions.allow.push(`Bash(${gitCli} git commit:*)`, `Bash(${gitCli} git rebase)`, `Bash(${gitCli} git rebase --continue)`, `Bash(${gitCli} git rebase --abort)`, `Bash(${gitCli} git check:*)`, `Bash(${gitCli} git merge-request)`, `Bash(${gitCli} git push-request:*)`, `Bash(${gitCli} git push-result:*)`, `Bash(${gitCli} suggest:*)`, `Bash(${gitCli} permit request:*)`, `Bash(${gitCli} permit run-request:*)`, `Bash(${gitCli} permit result:*)`);
   writeFileSync(file, JSON.stringify(settings, null, 2), { mode: 0o600 });
   return file;
 }

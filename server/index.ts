@@ -54,6 +54,7 @@ import * as taskRepair from './task-repair.ts';
 import * as push from './push.ts';
 import * as restart from './restart.ts';
 import * as permits from './permits.ts';
+import * as taskProcs from './task-procs.ts';
 import { archivedResult, cardsToCloseOnArchive, permitCardClose, quickLine, statusAfterCards } from './card-close.ts';
 import * as scopeRestart from './scope-restart.ts';
 import * as pending from './pending.ts';
@@ -104,6 +105,15 @@ startRotation(join(TB_DIR, 'server.log'));
 store.loadAll();
 links.start();
 permits.load();
+async function refreshSupervised(p: permits.Permit) {
+  if (!p.supervised || p.state !== 'running') return p;
+  const task = store.get(p.taskId);
+  if (!task) return permits.syncSupervised(p);
+  const owner = taskProcs.taskOwner(task, agents.baseEnv(task));
+  const proc = (await taskProcs.refresh(owner)).find(x => x.permitId === p.id);
+  return permits.syncSupervised(p, proc, proc ? taskProcs.readTail(taskProcs.logFile(owner, proc.name)) : '');
+}
+for (const p of permits.all()) if (p.supervised && p.state === 'running') void refreshSupervised(p).catch(e => console.error('could not recover approved run', e));
 for (const p of push.allPushes()) if (p.state === 'pending' && p.approvalId) {
   const card = approvals.get(p.approvalId);
   if (card?.state !== 'pending') {
@@ -117,7 +127,7 @@ permits.onChange(p => {
   const card = p.approvalId ? approvals.get(p.approvalId) : undefined;
   const close = permitCardClose(p, card);
   if (card && close) approvals.close(card.id, close.state, close.result);
-  if (!['succeeded', 'failed', 'denied', 'expired', 'unknown'].includes(p.state) || permitNotices.has(p.id)) return;
+  if (!['succeeded', 'failed', 'cancelled', 'denied', 'expired', 'unknown'].includes(p.state) || permitNotices.has(p.id)) return;
   permitNotices.add(p.id);
   if (permitNotices.size > 1000) permitNotices.delete(permitNotices.values().next().value!);
   const task = store.get(p.taskId);
@@ -134,6 +144,7 @@ permits.onChange(p => {
 setInterval(() => {
   // permits.onChange closes the card of an expired permit
   for (const p of permits.all()) if (p.state === 'pending') permits.expire(p);
+  for (const p of permits.all()) if (p.supervised && p.state === 'running') void refreshSupervised(p).catch(e => console.error('could not read approved run', e));
   for (const p of push.allPushes()) if (p.state === 'pending' && p.approvalId) {
     const card = approvals.get(p.approvalId);
     if (card?.state === 'pending' && push.pushExpired(card.created)) {
@@ -779,6 +790,26 @@ app.post('/api/permits', (req, res) => {
     fail(res, e);
   }
 });
+app.post('/api/permits/supervised', (req, res) => {
+  const task = store.get(req.get('x-tb-actor') || '');
+  if (!task || task.role === 'controller') return res.status(403).json({ error: 'A task must request its own run.' });
+  try {
+    const p = permits.requestSupervised(task, String(req.body.name || ''), String(req.body.reason || ''), String(req.body.command || ''), String(req.body.cwd || task.cwd), req.body.network === true, String(req.body.risk || ''));
+    const step = p.steps[0];
+    const card = approvals.request({ actor: task.id, action: 'permit', summary: `start approved run ${p.supervised!.name}`,
+      detail: `Task: #${task.num} ${task.title}\nOwner: ${task.id}\nReason: ${p.reason}\nRisk: ${p.statedRisk || p.riskFlags.join(', ')}\nCommand: ${step.command}\nScript SHA-256: ${step.scriptHash}\nFolder: ${step.cwd}\nNetwork: ${step.network ? 'Yes' : 'No'}\nExpires: ${p.expiresAt}`,
+      payload: { permitId: p.id }, validUntil: p.expiresAt }, async decider => {
+        if (decider.by !== 'user') throw new Error('A supervised run needs a dashboard decision by the user.');
+        const result = await permits.runSupervised(p, task, undefined, agents.baseEnv(task));
+        if (result.state !== 'running') throw new Error(result.error || result.state);
+        return `Approved run ${p.id} started. Read its logs and result with tb permit result ${p.id}.`;
+      }, { onDeny: () => { permits.deny(p, 'Denied on the dashboard.'); }, onReopen: () => { permits.reopen(p); },
+        check: async () => permits.expire(p) ? 'The run request expired.' : undefined });
+    permits.attachApproval(p, card.id);
+    store.update(task.id, { status: 'needs-you', ask: `Approve run ${p.id}`, statusSource: 'Waiting for a supervised run decision on the dashboard.' });
+    res.status(202).json({ permit: p });
+  } catch (e) { fail(res, e); }
+});
 app.post('/api/refusals/:id/permit', (req, res) => {
   if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Use the dashboard.' });
   const card = approvals.get(req.params.id);
@@ -801,7 +832,9 @@ app.get('/api/permits/:id', (req, res) => {
   if (!req.get('referer')?.startsWith(URL_BASE + '/') && !tokenOk(req)) return res.status(403).end();
   const p = permits.get(req.params.id);
   if (!p || (req.get('x-tb-actor') && !['controller', p.taskId].includes(req.get('x-tb-actor')!))) return res.status(404).end();
-  permits.expire(p); res.json(p);
+  permits.expire(p);
+  if (p.supervised && p.state === 'running') { void refreshSupervised(p).then(() => res.json(p)).catch(e => fail(res, e)); return; }
+  res.json(p);
 });
 app.post('/api/permits/:id/decide', async (req, res) => {
   if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Decide on the dashboard.' });
@@ -826,6 +859,7 @@ app.post('/api/permits/:id/controller-approve', async (req, res) => {
     return res.status(403).json({ error: 'Only the controller may use this route.' });
   const p = permits.get(req.params.id); const task = p && store.get(p.taskId);
   if (!p || !task) return res.status(404).end();
+  if (p.supervised) return res.status(403).json({ error: 'Approve a supervised run on the dashboard.' });
   const requestText = String(req.body.userRequest || '').trim();
   if (requestText.length > 2000) return res.status(400).json({ error: 'Keep the user request under 2000 characters.' });
   const lowRule = permits.controllerRule(p, task, machine.get().permissions.controllerCanApprovePermits);

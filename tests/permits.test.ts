@@ -13,6 +13,7 @@ const store = await import('../server/store.ts');
 const { taskDir } = store;
 const { GUARD_SCRIPT } = await import('../server/config.ts');
 const permits = await import('../server/permits.ts');
+const approvals = await import('../server/approvals.ts');
 const machine = await import('../server/machine.ts');
 type Task = import('../server/store.ts').Task;
 mkdirSync(join(root, 'work'), { recursive: true });
@@ -78,6 +79,12 @@ test('a refused MCP tool cannot create a shell permit', () => {
   assert.equal(permits.canPermitRefusal(task, { command: 'echo allowed', toolName: 'Bash' }), true);
 });
 
+test('a permit cannot run another Taskboard command', () => {
+  const task = freshTask('nested-tb');
+  assert.throws(() => permits.request(task, 'Nested command', [{ command: 'tb run job -- echo hello' }]), /cannot run another Taskboard command/);
+  assert.throws(() => permits.requestSupervised(task, 'job', 'Nested command', 'tb run job', task.cwd, false, 'Starts a process.'), /cannot run another Taskboard command/);
+});
+
 test('a signal failure names the signal and cancels later steps', async () => {
   const task = freshTask('abort');
   const p = permits.request(task, 'Check a child process signal', [{ command: 'echo first' }, { command: 'echo later' }]);
@@ -133,6 +140,78 @@ test('a changed script does not run', async () => {
   assert.equal(ran, false);
   assert.equal(p.state, 'failed');
   assert.deepEqual(p.steps.map(s => s.state), ['cancelled']);
+});
+
+test('a supervised script starts once only after user approval and keeps its exit result', async () => {
+  const task = freshTask('supervised-success');
+  writeFileSync(join(task.cwd, 'supervised-success.sh'), 'echo approved\n');
+  const p = permits.requestSupervised(task, 'dev-check', 'Run one script', 'bash supervised-success.sh', task.cwd, true, 'Dev resources change for this run.');
+  const starts: string[] = [];
+  const start = (async (_owner: unknown, input: { command: string }) => { starts.push(input.command); return {} as any; }) as any;
+  await assert.rejects(permits.runSupervised(p, task, start), /not approved/);
+  const card = approvals.request({ actor: task.id, action: 'permit', summary: p.id, detail: p.steps[0].command, payload: { permitId: p.id } }, async () => {
+    await permits.runSupervised(p, task, start); return 'Started.';
+  });
+  permits.attachApproval(p, card.id);
+  await approvals.decide(card.id, true, { by: 'user' });
+  assert.equal(starts.length, 1);
+  assert.equal(p.state, 'running');
+  await permits.runSupervised(p, task, start);
+  assert.equal(starts.length, 1);
+  permits.syncSupervised(p, { state: 'exited', exitCode: 0, ended: new Date().toISOString() } as any, 'approved\n');
+  assert.equal(p.state, 'succeeded');
+  assert.equal(p.steps[0].exitCode, 0);
+  assert.equal(p.steps[0].outputTail, 'approved\n');
+});
+
+test('denial, expiry, and a changed script never start a supervised process', async () => {
+  const task = freshTask('supervised-denied');
+  const script = join(task.cwd, 'supervised-denied.sh');
+  writeFileSync(script, 'echo original\n');
+  const denied = permits.requestSupervised(task, 'denied', 'Check denial', 'bash supervised-denied.sh', task.cwd, false, 'No network.');
+  permits.deny(denied, 'No');
+  assert.equal(denied.state, 'denied');
+  const expired = permits.requestSupervised(task, 'expired', 'Check expiry', 'bash supervised-denied.sh', task.cwd, false, 'No network.');
+  expired.expiresAt = new Date(Date.now() - 1000).toISOString();
+  assert.equal(permits.expire(expired), true);
+  assert.equal(expired.state, 'expired');
+  const changed = permits.requestSupervised(task, 'changed', 'Check hash', 'bash supervised-denied.sh', task.cwd, false, 'No network.');
+  writeFileSync(script, 'echo changed\n');
+  const card = approvals.request({ actor: task.id, action: 'permit', summary: changed.id, detail: changed.steps[0].command, payload: { permitId: changed.id } }, async () => {
+    await permits.runSupervised(changed, task, (async () => { throw new Error('started'); }) as any);
+    if (changed.state !== 'running') throw new Error(changed.error);
+    return 'Started.';
+  });
+  permits.attachApproval(changed, card.id);
+  await approvals.decide(card.id, true, { by: 'user' });
+  assert.equal(changed.state, 'failed');
+  assert.match(changed.error || '', /changed/);
+});
+
+test('an approved run reports interruption without starting again after load', () => {
+  const task = freshTask('supervised-recovery');
+  writeFileSync(join(task.cwd, 'supervised-recovery.sh'), 'echo recovery\n');
+  const p = permits.requestSupervised(task, 'recovery', 'Check recovery', 'bash supervised-recovery.sh', task.cwd, false, 'No network.');
+  p.state = 'running';
+  p.startedAt = new Date(Date.now() - 30_000).toISOString();
+  writeFileSync(join(root, 'tbdir', 'permits', p.id + '.json'), JSON.stringify(p));
+  permits.load();
+  assert.equal(permits.get(p.id)?.state, 'running');
+  permits.syncSupervised(p);
+  assert.equal(p.state, 'unknown');
+});
+
+test('a stopped approved run reports cancellation and a lost window needs inspection', () => {
+  const task = freshTask('supervised-stop');
+  writeFileSync(join(task.cwd, 'supervised-stop.sh'), 'echo stop\n');
+  const cancelled = permits.requestSupervised(task, 'cancel', 'Check stop', 'bash supervised-stop.sh', task.cwd, false, 'No network.');
+  cancelled.state = 'running';
+  permits.syncSupervised(cancelled, { state: 'stopped', stopNote: 'Stopped by the user.', ended: new Date().toISOString() } as any);
+  assert.equal(cancelled.state, 'cancelled');
+  const lost = permits.requestSupervised(task, 'lost', 'Check loss', 'bash supervised-stop.sh', task.cwd, false, 'No network.');
+  lost.state = 'running';
+  permits.syncSupervised(lost, { state: 'stopped', stopNote: 'Its tmux window is gone.', ended: new Date().toISOString() } as any);
+  assert.equal(lost.state, 'unknown');
 });
 
 test('a restart marks a running record unknown without retrying it', () => {
