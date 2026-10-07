@@ -222,6 +222,7 @@ const HELP = `tb — Taskboard command line
   tb inbox wait [--timeout seconds]  wait until a file arrives in your inbox (uses TASK_ID; default 3600 s);
                                      prints each file's path and sender; exit 0 = files, 2 = timed out
   tb park|archive <task>             set aside a task or end and archive it
+                                     a group manager: tb archive <task of its group> asks the user on a card each time
   tb run [--port n] [--stop "<command>"] [--cwd dir] [--task <task>] <name> -- <command…>
                                      start a dev server, database or other process for your task;
                                      Taskboard ends it when the task is archived or suspended
@@ -959,6 +960,6 @@ Example: tb scope request worktree --repo ~/code/app --base origin/master --bran
     break;
   }
   // archive = done: ends the agent's session too (otherwise its next turn would bring the task back)
-  case 'archive': { const t = await task(rest[0]); await call('POST', `/api/tasks/${t.id}/kill`, {}); console.log(`#${t.num} ended and archived.`); break; }
+  case 'archive': { const t = await task(rest[0]); const r = await call('POST', `/api/tasks/${t.id}/kill`, {}); if (!r?.approval) console.log(`#${t.num} ended and archived.`); break; }
   default: console.log(HELP);
 }

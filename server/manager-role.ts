@@ -13,7 +13,7 @@ export type ManagerPreset = NonNullable<groups.Group['managerPreset']>;
 export const DEFAULT_PRESET: ManagerPreset = 'direct';
 export const PRESETS: Record<ManagerPreset, { name: string; may: string[]; not: string[] }> = {
   watch: { name: 'Watch only',
-    may: ['Read the board and the events of the group', 'Write its own notes and reports', 'Receive messages and documents from the tasks of this group without a card', 'Ask you, with a card'],
+    may: ['Read the board and the events of the group', 'Write its own notes and reports', 'Receive messages and documents from the tasks of this group without a card', 'Ask you, with a card', 'Ask you to archive a task of this group. A card asks you each time'],
     not: ['Send messages or documents to tasks', 'Stop, park, resume or start tasks'] },
   direct: { name: 'Direct the group',
     may: ['Everything in Watch only', 'Send up to 30 messages and documents an hour to the tasks of this group', 'Stop up to 3 tasks an hour, park and resume tasks of this group', 'Add and remove links between tasks of this group'],
@@ -23,7 +23,7 @@ export const PRESETS: Record<ManagerPreset, { name: string; may: string[]; not: 
     not: [] },
 };
 // What a manager never does, in every preset.
-export const NEVER = ['Approve a card, a push, a merge, a release or a deploy', 'Send to a task outside this group without your approval on a card', 'Change Settings, rules or roles'];
+export const NEVER = ['Approve a card, a push, a merge, a release or a deploy', 'Archive a task without your approval on a card, or ask to archive itself, the controller or a task outside this group', 'Send to a task outside this group without your approval on a card', 'Change Settings, rules or roles'];
 const ALLOWS: Record<ManagerPreset, ManagerAction[]> = {
   watch: ['waiting'],
   direct: ['send', 'doc', 'dep', 'park', 'resume', 'waiting', 'stop'],
@@ -143,6 +143,10 @@ export function usage(g: groups.Group) {
 export function used(actor: string, group: groups.Group, action: ManagerAction, target: string, result = 'done') {
   return audit({ actor, group: group.id, action, target, result });
 }
+// One line for each step of an archive request of the manager (server/manager-archive.ts): the card, a refusal at
+// approval time, or the archive.
+export const archiveAudit = (actor: string, group: groups.Group, target: string, result: string) =>
+  audit({ actor, group: group.id, action: 'archive-request', target, result });
 export function set(group: groups.Group, task: store.Task | undefined, by: 'user' | 'controller', userRequest?: string, preset?: ManagerPreset) {
   if (task && (task.id === 'controller' || task.status === 'archived' || !group.tasks.includes(task.id)))
     throw new Error('Choose a live task in this group. The controller cannot manage a group.');

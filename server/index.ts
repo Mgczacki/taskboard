@@ -82,6 +82,7 @@ import * as waitingBoard from './waiting-board.ts';
 import * as managerEvents from './manager-events.ts';
 import * as agentErrorWatch from './agent-error-watch.ts';
 import * as managerRole from './manager-role.ts';
+import * as managerArchive from './manager-archive.ts';
 import * as standing from './standing-approvals.ts';
 
 const execFileP = promisify(execFile);
@@ -487,6 +488,8 @@ app.post('/api/plan/request', (req, res) => {
   const steps = req.body.steps;
   if (!Array.isArray(steps) || !steps.length || steps.length > 20 || steps.some((s: any) => !s.card || !approvals.get(String(s.card))))
     return res.status(400).json({ error: 'Give 1 to 20 steps with existing card ids.' });
+  // the archive request of a group manager gets its own decision by the user (server/manager-archive.ts)
+  if (steps.some((s: any) => managerArchive.requestOf(approvals.get(String(s.card))))) return res.status(403).json({ error: managerArchive.USER_ONLY });
   const id = randomUUID().slice(0, 8);
   const detail = steps.map((s: any, i: number) => `${i + 1}. ${approvals.get(String(s.card))?.summary} (card ${s.card})${s.askAgain ? ' · ask again' : ''}`).join('\n');
   const card = approvals.request({ actor, action: 'plan', target: id, summary: String(req.body.title || 'approve plan').slice(0, 200), detail,
@@ -495,7 +498,7 @@ app.post('/api/plan/request', (req, res) => {
       for (const step of steps) {
         const item = approvals.get(String(step.card));
         if (!item || item.state !== 'pending') { results.push(`${step.card}: no longer pending`); continue; }
-        if (step.askAgain || /\bprod(?:uction)?\b/i.test(JSON.stringify(item.covers || {}))) { results.push(`${step.card}: asks again`); continue; }
+        if (step.askAgain || managerArchive.requestOf(item) || /\bprod(?:uction)?\b/i.test(JSON.stringify(item.covers || {}))) { results.push(`${step.card}: asks again`); continue; }
         const result = await approvals.decide(item.id, true, decider);
         results.push(`${item.id}: ${result?.staleFacts ? `stale, ${result.staleFacts}` : result?.state}`);
         if (result?.staleFacts || result?.state === 'failed') break;
@@ -562,6 +565,8 @@ app.post('/api/approvals/:id/:decision', async (req, res, next) => {
   // a task cannot decide its own scope request: tb sends the token and x-tb-actor, the dashboard sends neither
   if (current?.action === 'scope' && (req.get('x-tb-actor') || req.get('x-taskboard-token')))
     return res.status(403).json({ error: 'Only the user decides a scope request, on the dashboard.' });
+  // the same for the archive request of a group manager (server/manager-archive.ts)
+  if (managerArchive.requestOf(current) && !fromDashboard(req)) return res.status(403).json({ error: managerArchive.USER_ONLY });
   const a = await approvals.decide(req.params.id, req.params.decision === 'approve', { by: 'user' }, origin); a ? res.json(a) : res.status(404).end();
 });
 // Send a message card back with a comment: to the controller (incoming) or to the agent that wrote the draft (outgoing).
@@ -1781,20 +1786,62 @@ runtime.watchResume();
 runtime.watchBrowserIdle();
 const endingTasks = new Set<string>();
 const activeRestarts = new Map<string, Promise<void>>();
+// End the agent session, the processes, the test servers and the browser of a task, then archive it.
+async function endAndArchive(t: store.Task) {
+  endingTasks.add(t.id);
+  try {
+    await activeRestarts.get(t.id);
+    await tmux.killSession(t.session);
+    await stopTaskSandboxes(t.id);
+    await runtime.stopTaskRuntime(t, 'stopped');
+    trimTerminalLog(store.terminalLog(t.id));
+    return view(store.update(t.id, { status: 'archived', statusSource: 'Session ended and archived.' })!);
+  } finally { endingTasks.delete(t.id); }
+}
+// A group manager asks to archive a task of its group (server/manager-archive.ts). The request always makes a card
+// that only the user decides: needsCard() and the preset of the manager are not read here. Nothing is archived before
+// the approval. The action of the card checks the card, the manager role, the group and the target again.
+function managerArchiveRequest(res: express.Response, actor: string, targetId: string) {
+  const first = managerArchive.check(actor, targetId);
+  if (!first.ok) { managerEvents.record(actor, 'manager archive', first.reason, true); return res.status(first.status).json({ error: first.reason }); }
+  const manager = store.get(actor)!;
+  const { group, target } = first;
+  const request: managerArchive.ArchiveRequest = { manager: actor, group: group.id, target: target.id };
+  const key = managerArchive.cardTarget(request);
+  // the id and the version of the card of this request, set after approvals.request returns
+  const made: { id?: string; version?: string } = {};
+  let card: approvals.Approval;
+  try {
+    card = approvals.request({ actor, action: 'kill', target: key, summary: managerArchive.summary(target),
+      detail: managerArchive.detail(manager, group, target, { openCards: approvals.pendingFor(target.id).length }),
+      payload: { managerArchive: request } }, async () => {
+        // the card that runs must be the card of this request, unchanged
+        const now = made.id ? approvals.get(made.id) : undefined;
+        const stored = managerArchive.requestOf(now);
+        if (!now || now.state !== 'running' || now.actor !== actor || now.target !== key || now.version !== made.version
+          || stored?.manager !== actor || stored.group !== group.id || stored.target !== target.id)
+          throw new Error('The card does not match this archive request. Nothing was archived.');
+        if (now.decidedBy?.by !== 'user') throw new Error('Only the user approves the archive request of a manager. Nothing was archived.');
+        const again = managerArchive.check(actor, target.id, group.id);
+        if (!again.ok) {
+          managerRole.archiveAudit(actor, group, target.id, `refused at approval: ${again.reason}`);
+          throw new Error(`${again.reason} Nothing was archived.`);
+        }
+        await endAndArchive(again.target);
+        managerRole.archiveAudit(actor, group, target.id, `archived, card ${now.id}`);
+        return `#${again.target.num} ended and archived.`;
+      });
+  } catch (e) { return fail(res, e); }
+  made.id = card.id; made.version = card.version;
+  managerRole.archiveAudit(actor, group, target.id, `card ${card.id}`);
+  if (manager.status !== 'parked') store.update(actor, { status: 'needs-you', ask: `Approve: ${card.summary}`, statusSource: 'Waiting for your approval on the dashboard.' });
+  res.status(202).json({ approval: card });
+}
 app.post('/api/tasks/:id/kill', async (req, res) => {
   const t = store.get(req.params.id); if (!t) return res.status(404).end();
-  await guarded(req, res, `end and archive #${t.num} ${t.title}`, '', 'kill',
-    async () => {
-      endingTasks.add(t.id);
-      try {
-        await activeRestarts.get(t.id);
-        await tmux.killSession(t.session);
-        await stopTaskSandboxes(t.id);
-        await runtime.stopTaskRuntime(t, 'stopped');
-        trimTerminalLog(store.terminalLog(t.id));
-        return view(store.update(t.id, { status: 'archived', statusSource: 'Session ended and archived.' })!);
-      } finally { endingTasks.delete(t.id); }
-    }, () => `#${t.num} ended and archived.`);
+  const actor = req.get('x-tb-actor') || '';
+  if (managerRole.roles(actor).length) return managerArchiveRequest(res, actor, t.id);
+  await guarded(req, res, `end and archive #${t.num} ${t.title}`, '', 'kill', () => endAndArchive(t), () => `#${t.num} ended and archived.`);
 });
 // Remove a task from Taskboard (dashboard only). Ends its tmux session unless it runs in another terminal; the note
 // and folder go to ~/.taskboard/trash, and the conversation files of Claude Code / Codex stay where they are.
