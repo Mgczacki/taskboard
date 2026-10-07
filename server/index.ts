@@ -44,6 +44,7 @@ import WebSocket from 'ws';
 import { mountA2ANotes } from './a2anotes/routes.ts';
 import * as inboxDelivery from './inbox-delivery.ts';
 import * as messageQueue from './message-queue.ts';
+import * as answerHistory from './answer-history.ts';
 import { mountReview, pendingFor, pendingForPath } from './review.ts';
 import { attach, terminalViewerCount } from './pty.ts';
 import * as store from './store.ts';
@@ -1274,7 +1275,7 @@ app.delete('/api/machines/:id', (req, res) => { machines.remove(req.params.id); 
 // waitSig: the signature of the task row on the Waiting page, for a dismiss (dismiss.ts taskSignature)
 const WAITS_ON_USER = ['needs-you', 'stopped', 'review'];
 const waitSig = (t: store.Task) => WAITS_ON_USER.includes(t.status) ? dismiss.taskSignature(t, t.status === 'review' ? pendingFor(t.id) : undefined) : undefined;
-const view = (t: store.Task) => ({ ...t, browserAsk: runtime.browserAsk(t.id), waitSig: waitSig(t), link: links.info(t), docs: docs.counts(t.id), queue: messageQueue.forView(t.id), waitMin: Math.round((Date.now() - Date.parse(t.statusAt)) / 60000), errorLabel: agentErrorWatch.errorLabel(t) || undefined, autoContinueOn: agentErrorWatch.errorAutoContinueOn(t), attach: `tmux -L taskboard attach -t ${t.session}`, ...(t.agent === 'antigravity' ? { tokenEstimate: stats.taskEstimate(t) } : {}) });
+const view = (t: store.Task) => ({ ...t, answerCount: answerHistory.answers(t.id).length, browserAsk: runtime.browserAsk(t.id), waitSig: waitSig(t), link: links.info(t), docs: docs.counts(t.id), queue: messageQueue.forView(t.id), waitMin: Math.round((Date.now() - Date.parse(t.statusAt)) / 60000), errorLabel: agentErrorWatch.errorLabel(t) || undefined, autoContinueOn: agentErrorWatch.errorAutoContinueOn(t), attach: `tmux -L taskboard attach -t ${t.session}`, ...(t.agent === 'antigravity' ? { tokenEstimate: stats.taskEstimate(t) } : {}) });
 pending.setIo({
   capture: session => tmux.capture(session, 0),
   key: async (session, key, literal) => { await tmux.tmux('send-keys', '-t', '=' + session + ':', ...(literal ? ['-l', key] : [key])); },
@@ -1349,7 +1350,8 @@ app.post('/api/tasks', async (req, res) => {
     const images = agents.checkImages(req.body.images);
     await guarded(req, res, `start “${title}” (${agent === 'auto' ? 'Auto' : agents.agentName(agent)})`, `Folder: ${folder} · worktree: ${worktree === false ? 'no' : worktree === true ? 'yes' : 'automatic'}${branch ? ` · branch ${branch}` : ''}\nAccount: ${account && account !== 'auto' ? account : 'automatic'}\nModel: ${model || 'agent default'}\nPrompt: ${prompt}${images.length ? `\nImages: ${images.length} attached` : ''}`, 'new',
       async () => {
-        const t = await agents.startTask({ title, desc: prompt, agent, folder, worktree, branch, parent: managedGroup ? actor : parent, account, model, images });
+        const t = await agents.startTask({ title, desc: prompt, agent, folder, worktree, branch, parent: managedGroup ? actor : parent, account, model, images,
+          captureQuestion: !!req.get('origin') && !req.get('x-tb-actor') && answerHistory.isQuestion(prompt) });
         if (groupRef) { const g = managedGroup || groups.all().find(x => x.name === groupRef || x.id === groupRef) || groups.create(String(groupRef)); groups.update(g.id, { tasks: [...g.tasks, t.id] }); }
         const linkProblems = links.addAtStart(t.id, startLinks, startBy);
         return { ...view(store.get(t.id) || t), ...(linkProblems.length ? { linkProblems } : {}) };
@@ -1600,6 +1602,15 @@ app.post('/api/tasks/:id/send', async (req, res) => {
   // The result is delivered (typed, Enter pressed), queued (nothing typed yet, with the reason; message-queue.ts types
   // it when the input box is empty) or an error (failed, with the reason).
   const from = req.get('origin') ? 'you' : req.get('x-tb-actor') || 'you';
+  // Record only a direct dashboard question. The ID travels with the message through typing or a queue hook.
+  const question = from === 'you' && t.role !== 'controller' && answerHistory.isQuestion(text) ? answerHistory.prepare(t, text) : null;
+  if (question) {
+    try {
+      const result = await messageQueue.send(t, question.text, { from, kind: 'message' });
+      if (result.state === 'failed') answerHistory.cancel(t.id, question.id);
+      return res.json(result);
+    } catch (e) { answerHistory.cancel(t.id, question.id); return fail(res, e); }
+  }
   const manager = managerRole.role(from);
   // A manager reports to the controller like every task: no card. The line in manager-actions.jsonl records it.
   if (manager && t.role === 'controller' && req.body.priority !== 'stop') {
@@ -1951,6 +1962,15 @@ app.get('/api/tasks/:id/since', async (req, res) => {
 });
 
 app.get('/api/tasks/:id/log', (req, res) => res.type('text/markdown').send(store.readLog(req.params.id)));
+app.get('/api/tasks/:id/answers', (req, res) => {
+  if (!store.get(req.params.id)) return res.status(404).end();
+  res.json(answerHistory.answers(req.params.id));
+});
+app.get('/api/tasks/:id/answers/:answer/transcript', (req, res) => {
+  if (!store.get(req.params.id)) return res.status(404).end();
+  const record = answerHistory.transcriptRecord(req.params.id, req.params.answer, req.query.at === 'question' ? 'question' : 'answer');
+  return record ? res.json(record) : res.status(404).end();
+});
 // Questions about a task, answered by a separate read-only agent (server/ask.ts). The dashboard asks, directly or through
 // another machine's Taskboard server (which sends no origin and no x-tb-actor); agents do not, because each question
 // uses the account's usage.
@@ -2451,6 +2471,7 @@ async function reconcile(first = false) {
   for (const name of loopScreens.keys()) if (!byName.has(name)) loopScreens.delete(name);
   for (const t of store.all()) {
     if (t.role === 'controller') { await keepController(t, byName.get(t.session)); continue; }
+    try { answerHistory.scan(t); } catch (error) { console.error('answer history scan', t.id, error); }
     if (t.openElsewhere && !['archived', 'parked'].includes(t.status)) { watchElsewhere(t); continue; }
     // a task that no longer runs, or that was set aside, has no open question cards
     if (pending.hasOpen(t.id) && !['needs-you', 'working', 'idle', 'unread', 'review'].includes(t.status)) pending.forgetTask(t.id);

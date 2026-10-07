@@ -14,7 +14,7 @@ export type Status = 'working' | 'needs-you' | 'unread' | 'idle' | 'stopped' | '
 export interface Task {
   id: string; num: number; title: string; agent: Agent; status: Status;
   cwd: string; folder: string; branch?: string; worktree?: boolean; session: string; sessionId?: string;
-  created: string; updated: string; statusAt: string; statusSource?: string;
+  created: string; updated: string; statusAt: string; statusSource?: string; answerCount?: number;
   goal?: string; now?: string; ask?: string; stopReason?: string; interrupted?: string; desc: string;
   lastFailure?: { account?: string; name?: string; agent: Agent; reason: string; at?: string };
   // the length of the whole description when desc has only its start (the /ws/events task list, server/index.ts listView)
@@ -30,6 +30,7 @@ export interface Task {
   // "Stopped: model overloaded" on a stopped task, "Retrying (attempt 3/10)" on a working one
   agentError?: AgentError; errorLabel?: string; autoContinue?: 'on' | 'off'; autoContinueOn?: boolean;
 }
+export interface AnswerRecord { id: string; taskId: string; question: string; askedAt: string; answeredAt: string; answer: string; transcript: string; sessionId?: string; questionOffset: number; answerOffset: number }
 export type ErrorKind = 'overloaded' | 'rate_limited' | 'server_error' | 'network' | 'auth' | 'context' | 'refused' | 'stalled' | 'other';
 export interface AgentError {
   kind: ErrorKind; text: string; source: 'hook' | 'transcript' | 'screen' | 'stall'; at?: string; attempt?: number; maxAttempts?: number; retryIn?: string;
@@ -346,6 +347,8 @@ export const api = {
   takeover: (id: string, when: 'now' | 'after-turn' | 'cancel' = 'now') => call<Task>('POST', `/api/tasks/${id}/takeover`, { when }),
   since: (id: string) => call<{ since: string; first: boolean; entries: string[]; files: string[]; commits: string[] }>('GET', `/api/tasks/${id}/since`),
   log: (id: string) => call<string>('GET', `/api/tasks/${id}/log`),
+  answers: (id: string) => call<AnswerRecord[]>('GET', `/api/tasks/${encodeURIComponent(id)}/answers`),
+  answerTranscript: (id: string, answer: string, at: 'question' | 'answer') => call<{ available: boolean; text: string }>('GET', `/api/tasks/${encodeURIComponent(id)}/answers/${encodeURIComponent(answer)}/transcript?at=${at}`),
   tokenEstimate: (id: string) => call<{ tokens: number | null }>('GET', `/api/tasks/${encodeURIComponent(id)}/token-estimate`),
   addMachine: (name: string, url: string, token: string) => call<Machine>('POST', '/api/machines', { name, url, token }),
   removeMachine: (id: string) => call('DELETE', `/api/machines/${id}`),

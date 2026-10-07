@@ -12,6 +12,7 @@ import { countText, infoOpen, isHookNote, lasting, middleEllipsis, noticeHistory
 import { ManagerBadge, ManagerRoleButton } from './ManagerBoard';
 import { AgentChip, ByController, Dot, ErrorChip, useAutoMessage, MachineChip, ThreeLines, WhereChip, BrowserAskChip } from './ui';
 import { Terminal } from './Terminal';
+import { AnswerHistory } from './AnswerHistory';
 import { PendingMarker } from './PendingCard';
 import { DocsTab } from './Docs';
 import { LinksSection } from './Links';
@@ -283,6 +284,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
           {t.role !== 'controller' && <button className={tab === 'browser' ? 'on' : ''} onClick={() => setTab('browser')} title={t.machine ? `This task's own Chrome, on ${t.machine.name}` : "This task's own Chrome, which its agent uses"}>Browser</button>}
           {!t.machine && t.role !== 'controller' && <button className={tab === 'procs' ? 'on' : ''} onClick={() => setTab('procs')} title="Dev servers, databases and other processes of this task">Processes</button>}
           <button className={tab === 'log' ? 'on' : ''} onClick={() => setTab('log')}>Log</button>
+          <button className={tab === 'answers' ? 'on' : ''} onClick={() => setTab('answers')}>Answers{(t.answerCount || 0) > 0 && <span className="n">{t.answerCount}</span>}</button>
           <button className={tab === 'docs' ? 'on' : ''} onClick={() => setTab('docs')}>Inbox / Outbox<span className="n">{(t.docs?.inbox || 0) + (t.docs?.outbox || 0)}</span></button>
           <span className="tabs-sp" /><RuntimeButton t={t} onOpen={setTab} />
         </div>
@@ -294,6 +296,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
           ? <div className="empty" style={{ padding: 20 }}>Resuming with {t.agent === 'claude' ? 'claude --resume' : t.agent === 'codex' ? 'codex resume' : 'agy --conversation'} {t.sessionId}…</div>
           : <div className="term-wrap">{!collapsed && <div className={`term-brief ${briefOpen ? 'open' : ''}`} onClick={() => setBriefOpen(o => !o)} title={briefOpen ? 'Click to show only the first lines' : 'Click to show the whole task description'}><b>Task</b><span><TaskFileText taskId={t.id} text={desc} /></span><i className="more">{briefOpen ? 'less' : 'more'}</i></div>}<Terminal taskId={t.id} autoFocus glass={see ? glassAlpha(see) : 1} tint={see ? see.tint : 'panel'} /></div>)}
         {tab === 'log' && <>{noticeHistory(t.id).length > 0 && <div className="ns-history"><b>Notices in this panel since the page loaded</b><ul>{noticeHistory(t.id).map(h => <li key={h.key}><span className="sub">{new Date(h.at).toLocaleTimeString()}</span> {h.title}: {h.reason}</li>)}</ul></div>}<pre className="logtext">{log || 'No log entries yet.'}</pre></>}
+        {tab === 'answers' && <AnswerHistory taskId={t.id} count={t.answerCount || 0} />}
         {tab === 'browser' && <BrowserView key={t.id} id={t.id} title={`#${t.num} ${t.title}`} archived={t.status === 'archived'} remote={t.machine?.name} onCanvas={() => { openBrowserSplit(t.id); onCanvas(t.id); }} />}
         {tab === 'procs' && <ProcList key={t.id} scope="tasks" id={t.id} cwd={t.cwd} />}
       </div>
