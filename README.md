@@ -190,8 +190,9 @@ A move between windows never changes a task's groups. A new task goes after the 
 - **Terminals:** tmux mouse mode is on, so the mouse wheel scrolls: Claude Code scrolls its own view, and Codex (started
   with `--no-alt-screen`) scrolls through tmux's history. Drag to select copies to the clipboard; ⌥-drag selects directly.
   Terminals draw with WebGL, and output is sent in batches every 8 ms.
-- **Answers:** The task panel's Answers tab lists short answers to questions sent from the dashboard. Open an answer
-  to see its question, answer, and time. Jump to question or Jump to answer opens the matching transcript record.
+- **Answers:** The task panel's Answers tab lists short answers to questions sent from the dashboard, including a new
+  task's first prompt. Open an answer to see its question, answer, and time. Jump to question or Jump to answer opens
+  the matching transcript record.
   Taskboard stores the question and short answer in `answer-history.json` beside the task. It keeps the agent's full
   transcript in the agent's own session file. An unanswered question does not appear in the list.
 - **Managing tasks:** select tasks with their checkboxes (list) or ⌘-click (board, canvas), then use the bar at the bottom:
