@@ -12,6 +12,7 @@ export function permitHeadline(p: Pick<Permit, 'state' | 'expiresAt' | 'decidedA
     case 'denied': return { state: `Denied at ${time(p.decidedAt || p.finishedAt)}`, open: false, when: '', note: 'Nothing ran. No action is possible on this card.' };
     case 'succeeded': return { state: `Done at ${time(p.finishedAt)}`, open: false, when: '' };
     case 'failed': return { state: `Failed at ${time(p.finishedAt)}`, open: false, when: '' };
+    case 'cancelled': return { state: `Stopped at ${time(p.finishedAt)}`, open: false, when: '', note: p.error };
     default: return { state: 'Result unknown', open: false, when: '' };
   }
 }

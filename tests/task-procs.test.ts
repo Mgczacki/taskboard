@@ -60,6 +60,25 @@ test('a process that exits is shown as exited with its code', async () => {
   assert.equal((await procs.refresh(o)).find(x => x.name === 'fail')!.exitCode, 3);
 });
 
+test('an approved process cannot start twice or restart after exit', async () => {
+  const o = owner('approved-once');
+  await procs.start(o, { name: 'permit-one', command: 'echo done; exit 4', cwd: root, startedBy: 'user', permitId: 'permit-one' });
+  assert.ok(await until(async () => (await procs.refresh(o)).find(x => x.name === 'permit-one')?.state === 'exited'));
+  assert.equal((await procs.refresh(o))[0].exitCode, 4);
+  await assert.rejects(procs.start(o, { name: 'permit-one', command: 'echo again', cwd: root, startedBy: 'user', permitId: 'permit-one' }), /only once/);
+  await assert.rejects(procs.restart(o, 'permit-one'), /cannot restart/);
+  await assert.rejects(procs.stop(o, 'permit-one', true), /cannot be removed/);
+});
+
+test('suspending a task leaves an approved process running until it ends', async () => {
+  const o = owner('approved-suspend');
+  await procs.start(o, { name: 'permit-wait', command: 'sleep 2; echo finished', cwd: root, startedBy: 'user', permitId: 'permit-wait' });
+  await procs.stopAll(o, 'suspended');
+  assert.ok(['starting', 'running'].includes((await procs.refresh(o))[0].state));
+  assert.ok(await until(async () => (await procs.refresh(o))[0].state === 'exited', 5000));
+  assert.equal(await procs.resumeSuspended(o), 0);
+});
+
 test('stopAll also ends a child that left the process group, and runs the stop command first', async () => {
   const o = owner('t3');
   const marker = join(root, 'stopped-by-command');

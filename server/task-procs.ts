@@ -20,6 +20,7 @@ export interface Proc {
   startedBy: 'agent' | 'user'; state: ProcState; exitCode?: number; started?: string; ended?: string;
   window?: string; pid?: number; stopNote?: string;
   path?: string; // the PATH of the shell that ran tb run, so the command finds the same programs as the agent
+  permitId?: string; // an approved run starts once and cannot restart after it ends
 }
 export interface Owner { kind: 'task'; id: string; session: string; dir: string; env: Record<string, string> }
 
@@ -50,7 +51,8 @@ const queues = new Map<string, Promise<unknown>>();
 function serial<T>(o: Owner, fn: () => Promise<T>): Promise<T> {
   const key = ownerTag(o);
   const next = (queues.get(key) || Promise.resolve()).catch(() => {}).then(fn);
-  queues.set(key, next.finally(() => { if (queues.get(key) === next) queues.delete(key); }));
+  const queued = next.finally(() => { if (queues.get(key) === queued) queues.delete(key); }).catch(() => {});
+  queues.set(key, queued);
   return next;
 }
 
@@ -102,6 +104,7 @@ async function refreshNow(o: Owner): Promise<Proc[]> {
   let dirty = false;
   for (const p of list) {
     if (p.state !== 'running' && p.state !== 'starting') continue;
+    if (p.state === 'starting' && !p.window && p.permitId && p.started && Date.now() - Date.parse(p.started) < 10_000) continue;
     const pane = p.window ? map.get(p.window) : undefined;
     if (!pane) { Object.assign(p, { state: 'stopped', ended: new Date().toISOString(), stopNote: 'Its tmux window is gone (Taskboard or the Mac restarted, or it was closed outside Taskboard).' }); dirty = true; continue; }
     if (pane.dead) { Object.assign(p, { state: 'exited', exitCode: pane.status ?? undefined, ended: new Date().toISOString() }); dirty = true; continue; }
@@ -115,7 +118,7 @@ async function refreshNow(o: Owner): Promise<Proc[]> {
   return list;
 }
 
-export interface StartInput { name: string; command: string; cwd: string; stop?: string; port?: number; startedBy: 'agent' | 'user'; path?: string }
+export interface StartInput { name: string; command: string; cwd: string; stop?: string; port?: number; startedBy: 'agent' | 'user'; path?: string; permitId?: string }
 export function start(o: Owner, input: StartInput): Promise<Proc> {
   checkName(input.name);
   if (typeof input.command !== 'string' || !input.command.trim() || input.command.length > 4000) throw new Error('Give the command to run (up to 4000 characters).');
@@ -125,11 +128,19 @@ export function start(o: Owner, input: StartInput): Promise<Proc> {
   return serial(o, async () => {
     const list = await refreshNow(o);
     const old = list.find(p => p.name === input.name);
+    if (old?.permitId || (input.permitId && list.some(p => p.permitId === input.permitId))) throw new Error('An approved run can start only once.');
     if (old && (old.state === 'running' || old.state === 'starting')) throw new Error(`A process named ${input.name} is already running. Stop it first, or use another name.`);
     if (old?.window) await tmux('kill-window', '-t', old.window).catch(() => {});
-    const p: Proc = { name: input.name, command: input.command.trim(), cwd: input.cwd, stop: input.stop?.trim() || undefined, port: input.port, startedBy: input.startedBy, state: 'starting', started: new Date().toISOString(), path: typeof input.path === 'string' && input.path.length < 8000 ? input.path : undefined };
-    await launch(o, p);
-    save(o, [...list.filter(x => x.name !== p.name), p]);
+    const p: Proc = { name: input.name, command: input.command.trim(), cwd: input.cwd, stop: input.stop?.trim() || undefined, port: input.port, startedBy: input.startedBy, state: 'starting', started: new Date().toISOString(), path: typeof input.path === 'string' && input.path.length < 8000 ? input.path : undefined, permitId: input.permitId };
+    const next = [...list.filter(x => x.name !== p.name), p];
+    if (p.permitId) save(o, next); // reserve this approval before tmux can start the command
+    try { await launch(o, p); }
+    catch (e) {
+      if (p.window) await tmux('kill-window', '-t', p.window).catch(() => {});
+      if (p.permitId) { p.state = 'stopped'; p.ended = new Date().toISOString(); p.stopNote = `Start failed: ${(e as Error).message}`; save(o, next); }
+      throw e;
+    }
+    save(o, next);
     changed(o);
     return p;
   });
@@ -152,7 +163,7 @@ async function launch(o: Owner, p: Proc) {
     // tmux ignores -c when its own working directory was deleted (see inFolder in tmux.ts), so the script changes folder
     `cd ${quote(resolve(p.cwd))} || exit 1`,
     ...Object.entries(env).filter(([k]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(k)).map(([k, v]) => `export ${k}=${quote(v)}`),
-    `i=0; while [ ! -e ${quote(ready)} ] && [ $i -lt 100 ]; do sleep 0.05; i=$((i+1)); done; rm -f ${quote(ready)}`,
+    `i=0; while [ ! -e ${quote(ready)} ] && [ $i -lt 100 ]; do sleep 0.05; i=$((i+1)); done; [ -e ${quote(ready)} ] || exit 1; rm -f ${quote(ready)}`,
     `exec /bin/sh -c ${quote(p.command)}`, '',
   ].join('\n'), { mode: 0o600 });
   const exists = (await panes(o.session))?.size ? true : false;
@@ -204,9 +215,14 @@ async function stopOne(o: Owner, p: Proc, state: 'stopped' | 'suspended', note?:
     } catch (e) { notes.push(`Stop command failed: ${(e as Error).message.split('\n')[0]}`); }
   }
   if (p.pid) {
-    signalGroup(p.pid, 'SIGTERM');
-    for (let i = 0; i < 50 && alive(p.pid); i++) await new Promise(r => setTimeout(r, 100));
-    if (alive(p.pid)) { signalGroup(p.pid, 'SIGKILL'); notes.push('Force-stopped after 5 s.'); }
+    signalGroup(p.pid, p.permitId ? 'SIGINT' : 'SIGTERM');
+    const grace = p.permitId ? 1200 : 50;
+    for (let i = 0; i < grace && alive(p.pid); i++) await new Promise(r => setTimeout(r, 100));
+    if (alive(p.pid) && p.permitId) {
+      signalGroup(p.pid, 'SIGTERM');
+      for (let i = 0; i < 50 && alive(p.pid); i++) await new Promise(r => setTimeout(r, 100));
+    }
+    if (alive(p.pid)) { signalGroup(p.pid, 'SIGKILL'); notes.push(p.permitId ? 'Force-stopped after 125 s. Check cleanup.' : 'Force-stopped after 5 s.'); }
   }
   // children that left the pane's process group
   const left = await marked(ownerTag(o), p.name);
@@ -226,6 +242,7 @@ export function stop(o: Owner, name: string, remove = false): Promise<Proc[]> {
     const list = await refreshNow(o);
     const p = list.find(x => x.name === name);
     if (!p) throw new Error(`No process named ${name}.`);
+    if (remove && p.permitId) throw new Error('An approved run record cannot be removed.');
     if (p.state === 'running' || p.state === 'starting' || p.window) await stopOne(o, p, 'stopped');
     const next = remove ? list.filter(x => x !== p) : list;
     save(o, next); changed(o);
@@ -238,6 +255,7 @@ export function restart(o: Owner, name: string): Promise<Proc> {
     const list = await refreshNow(o);
     const p = list.find(x => x.name === name);
     if (!p) throw new Error(`No process named ${name}.`);
+    if (p.permitId) throw new Error('An approved run cannot restart. Request a new approval.');
     if (p.state === 'running' || p.state === 'starting' || p.window) await stopOne(o, p, 'stopped');
     if (!existsSync(p.cwd)) throw new Error(`The folder ${p.cwd} does not exist any more.`);
     Object.assign(p, { state: 'starting', started: new Date().toISOString(), ended: undefined, exitCode: undefined, stopNote: undefined });
@@ -254,14 +272,18 @@ export function stopAll(o: Owner, state: 'stopped' | 'suspended'): Promise<numbe
     const list = await refreshNow(o);
     let n = 0;
     for (const p of list) {
+      if (state === 'suspended' && p.permitId) continue;
       if (p.state === 'running' || p.state === 'starting') { await stopOne(o, p, state); n++; }
       // an exited process keeps its state and exit code: a resume must not start it again
       else if (p.window) { await tmux('kill-window', '-t', p.window).catch(() => {}); p.window = undefined; p.pid = undefined; }
     }
-    // anything left with this owner's mark (for example from a window that was closed by hand)
-    const left = await marked(ownerTag(o));
-    for (const pid of left) { try { process.kill(pid, 'SIGKILL'); } catch { /* ended */ } }
-    await tmux('kill-session', '-t', '=' + o.session).catch(() => {});
+    // A suspended task does not end an approved run. Its finally block must have time to complete.
+    const keep = state === 'suspended' && list.some(p => p.permitId && (p.state === 'running' || p.state === 'starting'));
+    if (!keep) {
+      const left = await marked(ownerTag(o));
+      for (const pid of left) { try { process.kill(pid, 'SIGKILL'); } catch { /* ended */ } }
+      await tmux('kill-session', '-t', '=' + o.session).catch(() => {});
+    }
     if (n || list.length) { save(o, list); changed(o); }
     return n;
   });
@@ -274,6 +296,7 @@ export function resumeSuspended(o: Owner): Promise<number> {
     let n = 0;
     for (const p of list) {
       if (p.state !== 'suspended') continue;
+      if (p.permitId) { p.state = 'stopped'; p.stopNote = 'An approved run cannot restart after suspension.'; continue; }
       if (!existsSync(p.cwd)) { p.state = 'stopped'; p.stopNote = `The folder ${p.cwd} does not exist any more.`; continue; }
       Object.assign(p, { state: 'starting', started: new Date().toISOString(), ended: undefined, exitCode: undefined, stopNote: undefined });
       if (p.portFromLog) { p.port = undefined; p.portFromLog = undefined; }
@@ -283,4 +306,3 @@ export function resumeSuspended(o: Owner): Promise<number> {
     return n;
   });
 }
-

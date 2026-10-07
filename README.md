@@ -266,6 +266,13 @@ A move between windows never changes a task's groups. A new task goes after the 
   group, sends SIGKILL after 5 s, and then ends processes that left the group (found by `TB_PROC_OWNER` in their
   environment). Resume starts the processes that the suspend ended. Deleting a group, or taking a task out of it,
   stops nothing.
+- **Approved task run:** `tb permit run-request <name> --reason "text" --risk "text" --command "python3 /absolute/script.py" --cwd /absolute/folder --network`
+  asks the user to start one script. The card shows the command, script SHA-256 hash, folder, network flag, task owner,
+  and risk. Taskboard checks these facts again after approval. It starts the script as a task process without the short
+  permit timeout. `tb permit result <id> --wait` reports its exit code and log tail. `tb proc logs <process-name>` shows
+  more output. `tb proc stop <process-name>` sends SIGINT and allows 120 seconds for cleanup before stronger signals.
+  An approved run stays active during idle suspension. It cannot restart or be removed from the process list.
+  If its process is missing after a server restart, its result becomes unknown and requires inspection.
 - **What runs for a task:** the task panel's tab row and each Canvas window header show a count, for example
   "1 browser · 2 processes", and nothing when nothing runs. A click shows the items with their memory and opens the
   Browser tab, the Processes tab or the pop-out. Canvas → Browsers & processes lists the items of every task in the
