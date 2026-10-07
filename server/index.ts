@@ -23,6 +23,7 @@ import * as approvals from './approvals.ts';
 import * as ask from './ask.ts';
 import { spinOffPrompt } from './ask-spin-off.ts';
 import * as accounts from './accounts.ts';
+import * as accountProbe from './account-probe.ts';
 import * as load from './load.ts';
 import * as external from './external.ts';
 import * as machines from './machines.ts';
@@ -1469,7 +1470,7 @@ inboxDelivery.start();
 messageQueue.start();
 
 // ---------- accounts ----------
-const acctView = async (a: accounts.Account, fresh = false) => ({ ...a, health: agentErrorWatch.health().find(h => h.account === a.id)?.note, status: await accounts.status(a, fresh), usageStale: accounts.usageStale(a), usageStaleHours: accounts.USAGE_STALE_MS / 3600000, running: store.all().filter(t => (t.account || accounts.defaultFor(t.agent).id) === a.id && !['archived', 'parked', 'suspended'].includes(t.status)).length });
+const acctView = async (a: accounts.Account, fresh = false) => ({ ...a, health: agentErrorWatch.health().find(h => h.account === a.id)?.note, status: await accounts.status(a, fresh), usageStale: accounts.usageStale(a), nextProbeAt: accounts.probeEnabled() ? accounts.nextProbeAt(a) : undefined, probing: accountProbe.runningProbe() === a.id, usageStaleHours: accounts.USAGE_STALE_MS / 3600000, running: store.all().filter(t => (t.account || accounts.defaultFor(t.agent).id) === a.id && !['archived', 'parked', 'suspended'].includes(t.status)).length });
 app.get('/api/accounts', async (req, res) => res.json(await Promise.all(accounts.all().map(a => acctView(a, req.query.fresh === '1')))));
 app.post('/api/accounts', async (req, res) => { try { const { agent, name } = req.body; if (!['claude', 'codex', 'antigravity'].includes(agent) || !name) throw new Error('agent and name are required'); const a = await accounts.create(agent, String(name)); if (a.agent === 'antigravity') await agents.installAgyPlugin(a); res.json(await acctView(a)); } catch (e) { fail(res, e); } });
 // The maximum number of tasks protects an account's usage, so only the dashboard changes it (not tb, agents or the controller).
@@ -1481,6 +1482,8 @@ app.get('/api/agent-load', async (_req, res) => res.json(await load.agentLoad(st
 app.delete('/api/accounts/:id', (req, res) => { try { accounts.remove(req.params.id); res.json({}); } catch (e) { fail(res, e); } });
 app.post('/api/accounts/:id/login', async (req, res) => { const a = accounts.get(req.params.id); if (!a) return res.status(404).end(); try { res.json({ session: await agents.utilSession('login', a) }); } catch (e) { fail(res, e); } });
 app.post('/api/accounts/:id/clear-limit', (req, res) => { accounts.clearLimited(req.params.id); res.json({}); });
+// "Check now": one small request to the provider for a marked account (account-probe.ts). It answers with the result.
+app.post('/api/accounts/:id/probe', async (req, res) => { try { res.json(await accountProbe.probe(req.params.id, true)); } catch (e) { fail(res, e); } });
 // Limit resets are used only by you, from the dashboard: requests without a browser origin (tb, agents) are refused.
 app.post('/api/accounts/:id/reset', async (req, res) => {
   if (!req.get('origin')) return res.status(403).json({ error: 'Limit resets can only be used from the dashboard.' });
@@ -2596,6 +2599,8 @@ if (machine.get().controller.autostart && store.get('controller')?.status !== 'a
 // Codex usage: read from each Codex account's newest session file every minute
 accounts.refreshCodexUsage();
 setInterval(() => accounts.refreshCodexUsage(), 60000);
+// limit marks: one small request checks whether a marked account works again (account-probe.ts)
+accountProbe.start();
 let reconciling = false;
 setInterval(() => {
   if (reconciling) return;

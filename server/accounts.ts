@@ -14,11 +14,18 @@ export type AgentKind = 'claude' | 'codex' | 'antigravity';
 export interface Account {
   id: string; agent: AgentKind; name: string; dir: string; isDefault?: boolean; maxParallel: number;
   routingRules?: string;
-  limited?: { at: string; note: string };   // hit a usage limit or ran out of credit; cleared when a turn on it succeeds
+  limited?: { at: string; note: string };   // hit a usage limit or ran out of credit; cleared when a turn on it succeeds or a check is accepted
   limitClearedAt?: string;                    // when the mark was last cleared: older limit reports do not set it again
+  probe?: Probe;                              // the last small request that server/account-probe.ts sent to check the mark
   usage?: Usage;                              // latest usage windows reported for this account
   created: string;
 }
+// The last check of a limit mark (server/account-probe.ts). accepted: a model answered, so the mark was cleared.
+// rejected: the provider refused the request with a limit or credit error, so the mark stays. failed: no answer that
+// proves either (a timeout, a CLI error, an account that is not signed in), so the mark stays. failures counts the
+// checks in a row that did not end in accepted; the wait before the next check doubles with it.
+export type ProbeResult = 'accepted' | 'rejected' | 'failed';
+export interface Probe { at: string; result: ProbeResult; note: string; ms: number; failures: number; manual?: boolean }
 // Usage windows as the CLIs report them: Claude Code passes them to its status line, Codex writes them into its
 // session files. usedPct is 0–100; resetsAt is a time in ms.
 export interface UsageWindow { label: string; usedPct: number; resetsAt?: number }
@@ -124,6 +131,28 @@ export const reportApplies = (a: Account, at: string) => !a.limitClearedAt || Da
 export const codexLimitNote = (type: string, message?: string) =>
   `Codex: ${message || (/credits?_depleted|credits/.test(type) ? 'the workspace is out of credits' : 'usage limit reached')} (${type})`;
 
+export function setProbe(id: string | undefined, p: Probe) { const a = get(id); if (a) { a.probe = p; save(); } }
+// A mark for no credit or a billing problem. No usage window says when such a mark ends.
+export const creditMark = (a: Account) => /credit|billing|balance|payment/i.test(a.limited?.note || '');
+// The waits between checks of a limit mark. A usage limit: first 30 minutes after the mark, then 1 hour, doubled after
+// each check that did not clear the mark, up to 12 hours. No credit: first after 6 hours, then doubled up to 24 hours.
+// A window at 100% is not checked before its reset time plus 5 minutes.
+export const PROBE = { limitFirstMs: 30 * 60000, limitBaseMs: 3600000, limitMaxMs: 12 * 3600000, creditBaseMs: 6 * 3600000, creditMaxMs: 24 * 3600000, resetMarginMs: 5 * 60000, disprovedMs: 2 * 3600000 };
+// The earliest time for the next check of this account's limit mark, in ms; undefined when it has no mark.
+export function nextProbeAt(a: Account): number | undefined {
+  if (!a.limited) return;
+  const marked = Date.parse(a.limited.at) || 0, credit = creditMark(a), p = a.probe, probed = p ? Date.parse(p.at) || 0 : 0;
+  const until = fullUntil(a), afterReset = until ? until + PROBE.resetMarginMs : 0;
+  const base = credit ? PROBE.creditBaseMs : PROBE.limitBaseMs, max = credit ? PROBE.creditMaxMs : PROBE.limitMaxMs;
+  // a check of this mark already ran: wait base, 2 x base, 4 x base ... after it
+  if (p && probed >= marked && p.result !== 'accepted') return Math.max(probed + Math.min(max, base * 2 ** Math.max(0, p.failures - 1)), afterReset);
+  // The mark came back less than 2 hours after a check cleared it: that check did not prove that tasks work (for
+  // example a limit for one model only), so the first check of the new mark waits as long as a credit mark.
+  const disproved = !!p && p.result === 'accepted' && marked > probed && marked - probed < PROBE.disprovedMs;
+  return Math.max(marked + (credit || disproved ? PROBE.creditBaseMs : PROBE.limitFirstMs), afterReset);
+}
+export const probeEnabled = () => machine.get().accounts.probeLimited !== false;
+
 export function setUsage(id: string | undefined, u: Usage) {
   const a = get(id); if (!a) return;
   const same = a.usage && JSON.stringify(a.usage.windows) === JSON.stringify(u.windows);
@@ -152,7 +181,7 @@ const clock = (ms: number) => new Date(ms).toDateString() === new Date().toDateS
 export function unavailable(a: Account, running: number): string | undefined {
   const until = fullUntil(a);
   if (until) return `Account ${a.id} is at 100% usage until ${clock(until)}.`;
-  if (a.limited) return `Account ${a.id} stopped at a usage limit at ${clock(Date.parse(a.limited.at))} (${a.limited.note}). Clear the limit mark on the Accounts page after the limit resets.`;
+  if (a.limited) return `Account ${a.id} stopped at a usage limit at ${clock(Date.parse(a.limited.at))} (${a.limited.note}). ${probeEnabled() ? `Taskboard checks the account again at about ${clock(Math.max(nextProbeAt(a)!, Date.now()))} and clears the mark when the provider accepts a request. You can also` : 'After the limit resets,'} clear the limit mark on the Accounts page.`;
   if (running >= a.maxParallel) return `Account ${a.id} is at its limit of ${a.maxParallel} tasks (raise it on the Accounts page).`;
 }
 // The highest used share of the open windows, or undefined when the data is missing or stale (unknown, not free).
@@ -241,7 +270,7 @@ export function usageSummary(running: (id: string) => number): string {
       return `${w.label}=${w.resetsAt && w.resetsAt <= Date.now() ? 'reset' : `${w.usedPct}%`}${reset}`;
     }).join(', ') || 'usage unknown';
     const stale = a.usage && usageStale(a) ? ` STALE (${ageText(usageAge(a)!)} old; count as unknown)` : '';
-    return `${a.id} (${a.name}; ${a.agent}) ${running(a.id)}/${a.maxParallel} ${a.limited ? `limited (${a.limited.note}) ` : ''}${windows} data=${a.usage?.at.slice(5, 16) || 'unknown'}${stale}`;
+    return `${a.id} (${a.name}; ${a.agent}) ${running(a.id)}/${a.maxParallel} ${a.limited ? `limited (${a.limited.note}${a.probe && Date.parse(a.probe.at) >= Date.parse(a.limited.at) ? `; check at ${a.probe.at.slice(5, 16)}Z: ${a.probe.result}` : ''}) ` : ''}${windows} data=${a.usage?.at.slice(5, 16) || 'unknown'}${stale}`;
   });
   return `[Account usage]\n${lines.join('\n')}`;
 }
