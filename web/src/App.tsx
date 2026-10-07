@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import type { Group, MachineInfo, SpinOffExchange, Task } from './api';
 import { AGENT_NAME, ATTN, api, dismissBanner, fmtWait, setViewing, useStore } from './api';
 import { awayBanner, linkText } from './serverStatus';
@@ -38,6 +38,7 @@ import { archiveTriageTask, confirmTriageArchive } from './triageArchive';
 import { cancelHold, holdView, subscribeHold } from './holdRun';
 import { HOLD_MS, SHOW_MS } from './bangCommand';
 import type { PanelTab } from './panelShare';
+import { useScrollPosition } from './scrollPosition';
 
 type Page = 'list' | 'board' | 'canvas' | 'graph' | 'waiting' | 'inbox' | 'permits' | 'accounts' | 'stats' | 'settings';
 // #list · #board · #canvas · #canvas:<view>  (view = g:<group> | needs | live | t:<id,id>) · #settings:<section>
@@ -127,6 +128,10 @@ export function App() {
   const tasks = useMemo(() => allTasks.filter(t => t.role !== 'controller'), [allTasks]);
   const init = parseHash();
   const [page, setPage] = useState<Page>(SOLO ? 'canvas' : init.page);
+  const pageScroll = useRef<HTMLDivElement>(null);
+  const railScroll = useRef<HTMLDivElement>(null);
+  useScrollPosition(pageScroll, `page:${page}`);
+  useScrollPosition(railScroll, 'rail');
   const [view, setViewState] = useState<string>(init.view || localStorage.getItem('tb-view') || 'live');
   // the open task panel is kept in the address (?open=<id>&tab=…), so a reload or a reopened window shows it again
   const initParams = new URLSearchParams(location.search);
@@ -286,7 +291,7 @@ export function App() {
         <nav className="nav">
           {(['list', 'board', 'graph', 'canvas', 'waiting', 'inbox', 'permits', 'accounts', 'stats', 'settings'] as Page[]).map(p => <a key={p} href={p === 'canvas' ? `#canvas:${encodeURIComponent(view)}` : `#${p}`} className={page === p ? 'on' : ''} onClick={() => go(p)}>{p[0].toUpperCase() + p.slice(1)}{p === 'list' && <span className="n">{tasks.filter(t => t.status !== 'archived').length}</span>}{p === 'waiting' && waitingCount > 0 && <span className="n needs" title={itemsText(waitingCount)}>{waitingCount}</span>}{p === 'inbox' && reviewCount > 0 && <span className="n" style={{ color: 'var(--st-review)' }}>{reviewCount}</span>}</a>)}
         </nav>
-        <div className="rail-scroll">
+        <div className="rail-scroll" ref={railScroll}>
           <div className="rail-sec"><h6>Needs you{needs.length ? (w => <button type="button" className="rail-count" onClick={() => actWait(w, 'needs')} aria-label={`${needs.length} ${needs.length === 1 ? 'task needs' : 'tasks need'} you. ${targetText(w)}`} title={targetText(w)}>{needs.length}</button>)(waitTarget(waitRows.filter(r => rowMatches('needs', r, tasks, pending)), 'needs')) : <span>0</span>}</h6>{needs.map(item)}{!needs.length && <div className="rail-empty">Nothing waiting</div>}</div>
           <div className="rail-sec"><h6>Done · unread<span>{unread.length}</span></h6>{unread.map(item)}{!unread.length && <div className="rail-empty">All read</div>}</div>
           {<div className="rail-sec"><h6>Machines<span className="addg" title="Add a machine" onClick={() => setAddMachine(true)}>＋</span></h6>
@@ -319,7 +324,7 @@ export function App() {
           {page === 'list' && <label className="opt" title="Show archived tasks"><input type="checkbox" checked={showArchived} onChange={e => setShowArchived(e.target.checked)} /> <span className="opt-text">Show archived</span></label>}
           <StyleSwitcher />
         </header>}
-        <div className="view">
+        <div className="view" ref={pageScroll}>
           {page === 'list' && <ListView tasks={tasks} groups={groups} open={setOpenId} showArchived={showArchived} selected={selected} toggleSel={toggleSel} />}
           {page === 'board' && <BoardView tasks={tasks} groups={groups} open={setOpenId} openDocs={id => setOpenId(id, 'docs')} selected={selected} toggleSel={toggleSel} newGroup={() => setGroupPrompt([])} toast={toast} />}
           {page === 'accounts' && <AccountsPage tasks={allTasks} />}
