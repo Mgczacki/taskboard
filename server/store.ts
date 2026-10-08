@@ -47,6 +47,7 @@ export interface Task {
   limitRetry?: string;     // the account a failed first start left (set once, so the retry happens only one time)
   model?: string;          // model selected for this task
   role?: 'controller';     // the controller agent is a task with this role; it is kept out of the task lists
+  computerUse?: boolean;   // true only when the user chose OS computer use in the New task dialog
   parent?: string;         // task id that started this one (the controller)
   links?: TaskLink[];      // links from this task to other tasks (server/links.ts); the other direction is computed
   imported?: string;       // where the session came from, when it was imported

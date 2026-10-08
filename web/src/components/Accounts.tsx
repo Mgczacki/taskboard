@@ -90,7 +90,7 @@ export function ControllerBox({ ctl, setErr }: { ctl?: Task; setErr: (s: string)
   const [switching, setSwitching] = useState(false);
   useEffect(() => { api.info().then(i => { setInfo(i); setName(i.machine); }); }, [ctl?.remoteUrl, ctl?.agent]);
   if (!info) return null;
-  const save = async (p: { name?: string; autostart?: boolean; remoteControl?: boolean; controllerSkipPermissions?: Partial<Record<Agent, boolean>>; controllerModels?: Partial<Record<Agent, string>> }) => {
+  const save = async (p: { name?: string; autostart?: boolean; remoteControl?: boolean; controllerComputerUse?: boolean; controllerSkipPermissions?: Partial<Record<Agent, boolean>>; controllerModels?: Partial<Record<Agent, string>> }) => {
     setBusy(true); try { const i = await api.updateInfo(p); setInfo(i); setName(i.machine); } catch (e) { setErr(String((e as Error).message || e)); } setBusy(false);
   };
   const s = info.settings.controller, agent = (ctl?.agent || s.agent || 'claude') as Agent, isClaude = agent === 'claude';
@@ -124,6 +124,7 @@ export function ControllerBox({ ctl, setErr }: { ctl?: Task; setErr: (s: string)
           </ul>
           <div className="ctl-row"><button className="btn primary" onClick={() => void doSwitch(switchTo)}>Switch to {AGENT_NAME[switchTo]}</button><button className="btn ghost" onClick={() => setSwitchTo(null)}>Cancel</button></div>
         </div>}</SettingItem>
+      <SettingItem id="controllerComputerUse"><label className="opt"><input type="checkbox" checked={agent !== 'antigravity' && s.computerUse} disabled={busy || agent === 'antigravity'} onChange={e => save({ controllerComputerUse: e.target.checked })} /> Allow the controller to control Mac apps</label><div className="sub">On by default for Claude Code and Codex. Antigravity has no per-session computer-use control. A change restarts the controller between turns. Task browser tools are separate.</div></SettingItem>
       <SettingItem id="controllerAutostart"><label className="opt" title="When the Taskboard server starts, it starts the controller; if the controller exits, Taskboard starts it again within a minute"><input type="checkbox" checked={s.autostart} disabled={busy} onChange={e => save({ autostart: e.target.checked })} /> Start the controller with Taskboard and keep it running</label></SettingItem>
       <SettingItem id="controllerSkipPermissions"><label className="opt"><input type="checkbox" checked={skip} disabled={busy || switching} onChange={e => setSkip(e.target.checked)} /> Controller: skip permission prompts ({AGENT_NAME[agent]}: <code>{SKIP_TEXT[agent].flag}</code>)</label>
         <div className="sub">Off by default. Each agent keeps its own value. {SKIP_TEXT[agent].what} A change restarts the controller between turns.</div>

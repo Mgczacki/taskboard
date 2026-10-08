@@ -206,6 +206,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
         {!collapsed && <NoticeStrip list={notices} ctx={{ t, pending, act, toast, autoMessage, clearError: () => setErr(''), clearDrop: () => setDropMsg(''),
           moveAccount: isCtl ? undefined : () => { setMoveError(''); setMoveOpen(true); }, resumeAnyway: () => { setErr(''); act(api.resume(t.id, true)); } }} />}
         <div id={infoId} className="dr-info" hidden={collapsed}>
+        <div className="sub">OS computer use: {t.computerUse === true ? (isCtl ? 'On in Controller settings' : 'Allowed at launch') : 'Off'}. Task browser access is separate.</div>
         {isCtl && <div className="banner intro">The controller is {t.agent === 'antigravity' ? 'an' : 'a'} {AGENT_NAME[t.agent]} session in <code>~/AgentVault/controller</code> (choose its account and agent on the Accounts page).{t.remoteUrl && <> Remote Control is on: <a href={t.remoteUrl} target="_blank" rel="noreferrer">open it on claude.ai or the Claude app</a>.</>} It manages agents with the <code>tb</code> command: reading and organising run without asking; starting agents, typing into them and archiving wait for your approval here. Try: “what needs me?” or “split X into three parallel tasks”.</div>}
         <div className="dr-actions">
           {t.status === 'suspended' && !t.transfer && <button className="btn primary" onClick={() => act(api.resume(t.id))} title="Start the agent again in tmux and continue its saved conversation">Resume</button>}
