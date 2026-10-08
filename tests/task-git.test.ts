@@ -96,6 +96,40 @@ test('a task can abort a rebase with conflicts', async () => {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+test('a task stages one resolved path after Git has no unmerged paths', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'tb-task-stage-'));
+  const main = join(root, 'main'), work = join(root, 'task');
+  mkdirSync(main);
+  try {
+    git(main, 'init', '-b', 'master');
+    git(main, 'config', 'user.email', 'taskboard-test@example.invalid');
+    git(main, 'config', 'user.name', 'Taskboard Test');
+    writeFileSync(join(main, 'shared.txt'), 'base\n');
+    git(main, 'add', '-A'); git(main, 'commit', '-m', 'base');
+    git(main, 'worktree', 'add', '-b', 'task/stage', work);
+    const task = { cwd: work, folder: main, branch: 'task/stage', worktree: true, role: 'task' } as Task;
+    writeFileSync(join(work, 'shared.txt'), 'task\n');
+    await commitTask(task, 'Task change');
+    writeFileSync(join(main, 'shared.txt'), 'master\n');
+    git(main, 'add', '-A'); git(main, 'commit', '-m', 'Master change');
+    await assert.rejects(rebaseTask(task), /tb git rebase --continue/);
+    writeFileSync(join(work, 'shared.txt'), 'resolved\n');
+    git(work, 'add', '--', 'shared.txt');
+    git(work, 'reset', '--', 'shared.txt');
+    writeFileSync(join(work, 'unrelated.txt'), 'leave me alone\n');
+    mkdirSync(join(work, 'unrelated'));
+    writeFileSync(join(work, 'unrelated', 'file.txt'), 'leave this alone too\n');
+    assert.equal(git(work, 'diff', '--name-only', '--diff-filter=U'), '');
+    await assert.rejects(rebaseTask(task, 'continue'), /Git could not continue the rebase: [\s\S]+/);
+    assert.equal(git(work, 'status', '--short').includes('?? unrelated.txt'), true);
+    await assert.rejects(rebaseTask(task, 'continue', undefined, undefined, '../unrelated.txt'), /relative to the task worktree/);
+    await assert.rejects(rebaseTask(task, 'continue', undefined, undefined, 'unrelated'), /not a directory/);
+    assert.match(await rebaseTask(task, 'continue', undefined, undefined, 'shared.txt'), /Finished the rebase/);
+    assert.equal(git(work, 'show', 'HEAD:shared.txt'), 'resolved');
+    assert.equal(git(work, 'status', '--short'), '?? unrelated.txt\n?? unrelated/');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test('a failed merge restores master before reporting the next command', async () => {
   const root = mkdtempSync(join(tmpdir(), 'tb-merge-failure-'));
   const main = join(root, 'main'), work = join(root, 'task');
