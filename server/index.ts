@@ -11,6 +11,7 @@ import { promisify } from 'node:util';
 import { basename, join } from 'node:path';
 import { WebSocketServer } from 'ws';
 import * as agents from './agents.ts';
+import { dashboardComputerUseGrant } from './computer-use.ts';
 import { HOME, HOST, machineId, PORT, ROOT, STABLE_DIR, TB_DIR, TOKEN, URL_BASE } from './config.ts';
 import * as docs from './docs.ts';
 import * as releasePermit from './release-permit.ts';
@@ -1271,9 +1272,10 @@ app.use('/api', async (req, res, next) => {
   const transferAction = /\/transfer\/(move|recover)$/.test(target.path);
   // A browser action that only the dashboard may take (sound, reset, a file upload, sign-ins) goes signed, like a transfer: the other
   // machine accepts it only from a machine that it is paired with (runtime-routes.ts dashboardOnly).
-  const fromDashboard = !!req.get('origin') && !req.get('x-tb-actor') && !req.get('x-taskboard-token');
+  const fromDashboard = dashboardComputerUseGrant(req.get('origin'), req.get('x-tb-actor'), req.get('x-taskboard-token'));
   const browserAction = fromDashboard && /^\/api\/tasks\/[^/]+\/browser\/(sound|reset|upload|signins\/[a-z-]+)$/.test(target.path);
-  const relay = (transferAction || browserAction) && body ? transfer.signedRequest(path, body) : null;
+  const computerUseLaunch = fromDashboard && target.path === '/api/tasks' && body?.computerUse === true;
+  const relay = (transferAction || browserAction || computerUseLaunch) && body ? transfer.signedRequest(path, body) : null;
   const forward = async () => { const r = await machines.call(mc, req.method, path, relay?.payload || body, relay?.headers); if (r.status >= 400) throw new Error(typeof r.data === 'object' ? r.data.error : String(r.data)); return r; };
   try {
     if (req.method !== 'GET' && req.get('x-tb-actor') === 'controller' && GUARDED.test(target.path.replace(/\/api\/tasks\/[^/]+/, '/api/tasks/x'))) {
@@ -1314,7 +1316,7 @@ app.get('/api/server', async (_req, res) => { const h = life.health(); res.json(
 app.patch('/api/info', async (req, res) => {
   if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Machine settings are changed on the dashboard.' });
   try {
-    const { name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerSkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, allTaskCommunication: allTaskCommunicationOn, trustWorkspaces, autoReview, controllerCanApprovePermits, holdPermissionHook, permitFolders, permitRequestLimits, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, confirmLowerControl, defaultMaxParallel, newTaskDefaultAgent, applyMaxParallelToAll, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp, browserScale, browserAutoSwitch, claudeInChromeTasks, claudeInChromeController, confirmRisk, a2aSlackClientId, a2aSlackTeamId, controllerApprovals, agentErrors } = req.body;
+    const { name, routingRules, autostart, remoteControl, controllerComputerUse, dangerouslySkipPermissions, controllerSkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, allTaskCommunication: allTaskCommunicationOn, trustWorkspaces, autoReview, controllerCanApprovePermits, holdPermissionHook, permitFolders, permitRequestLimits, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, confirmLowerControl, defaultMaxParallel, newTaskDefaultAgent, applyMaxParallelToAll, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp, browserScale, browserAutoSwitch, claudeInChromeTasks, claudeInChromeController, confirmRisk, a2aSlackClientId, a2aSlackTeamId, controllerApprovals, agentErrors } = req.body;
     // Letting the controller approve permits gives the user less control. The page asks first and then sends confirmLowerControl.
     if (confirmLowerControl !== true && controllerCanApprovePermits === true && !machine.get().permissions.controllerCanApprovePermits)
       return res.status(400).json({ error: 'Confirm on the Settings page before you give the controller more control.' });
@@ -1325,7 +1327,7 @@ app.patch('/api/info', async (req, res) => {
       return res.status(400).json({ error: 'Pick a valid model for questions.' });
     if (reviewAccount && accounts.get(reviewAccount)?.agent !== 'claude') return res.status(400).json({ error: 'Pick a Claude Code account for auto review.' });
     if (defaultMaxParallel !== undefined) machine.checkMaxParallel(defaultMaxParallel); // refuse before anything is saved
-    machine.update({ name, routingRules, autostart, remoteControl, dangerouslySkipPermissions, controllerSkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, allTaskCommunication: allTaskCommunicationOn, trustWorkspaces, autoReview, controllerCanApprovePermits, holdPermissionHook, permitFolders, permitRequestLimits, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, defaultMaxParallel, newTaskDefaultAgent, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp, browserScale, browserAutoSwitch, claudeInChromeTasks, claudeInChromeController, confirmRisk, a2aSlackClientId, a2aSlackTeamId, controllerApprovals, agentErrors });
+    machine.update({ name, routingRules, autostart, remoteControl, controllerComputerUse, dangerouslySkipPermissions, controllerSkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, allTaskCommunication: allTaskCommunicationOn, trustWorkspaces, autoReview, controllerCanApprovePermits, holdPermissionHook, permitFolders, permitRequestLimits, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, defaultMaxParallel, newTaskDefaultAgent, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp, browserScale, browserAutoSwitch, claudeInChromeTasks, claudeInChromeController, confirmRisk, a2aSlackClientId, a2aSlackTeamId, controllerApprovals, agentErrors });
     // the Settings page confirms first; running tasks keep running, only new starts check the new maximum
     if (applyMaxParallelToAll === true) accounts.setAllMaxParallel(machine.get().accounts.defaultMaxParallel);
     if (trustWorkspaces === false) trust.restore();
@@ -1358,7 +1360,7 @@ app.delete('/api/machines/:id', (req, res) => { machines.remove(req.params.id); 
 // waitSig: the signature of the task row on the Waiting page, for a dismiss (dismiss.ts taskSignature)
 const WAITS_ON_USER = ['needs-you', 'stopped', 'review'];
 const waitSig = (t: store.Task) => WAITS_ON_USER.includes(t.status) ? dismiss.taskSignature(t, t.status === 'review' ? pendingFor(t.id) : undefined) : undefined;
-const view = (t: store.Task) => ({ ...t, answerCount: answerHistory.answers(t.id).length, browserAsk: runtime.browserAsk(t.id), waitSig: waitSig(t), link: links.info(t), docs: docs.counts(t.id), queue: messageQueue.forView(t.id), waitMin: Math.round((Date.now() - Date.parse(t.statusAt)) / 60000), errorLabel: agentErrorWatch.errorLabel(t) || undefined, autoContinueOn: agentErrorWatch.errorAutoContinueOn(t), attach: `tmux -L taskboard attach -t ${t.session}`, ...(t.agent === 'antigravity' ? { tokenEstimate: stats.taskEstimate(t) } : {}) });
+const view = (t: store.Task) => ({ ...t, computerUse: agents.computerUseAllowed(t), answerCount: answerHistory.answers(t.id).length, browserAsk: runtime.browserAsk(t.id), waitSig: waitSig(t), link: links.info(t), docs: docs.counts(t.id), queue: messageQueue.forView(t.id), waitMin: Math.round((Date.now() - Date.parse(t.statusAt)) / 60000), errorLabel: agentErrorWatch.errorLabel(t) || undefined, autoContinueOn: agentErrorWatch.errorAutoContinueOn(t), attach: `tmux -L taskboard attach -t ${t.session}`, ...(t.agent === 'antigravity' ? { tokenEstimate: stats.taskEstimate(t) } : {}) });
 pending.setIo({
   capture: session => tmux.capture(session, 0),
   key: async (session, key, literal) => { await tmux.tmux('send-keys', '-t', '=' + session + ':', ...(literal ? ['-l', key] : [key])); },
@@ -1422,8 +1424,15 @@ app.post('/api/controller/account', async (req, res) => {
 });
 app.post('/api/tasks', async (req, res) => {
   try {
-    const { title, desc, agent, folder, worktree, branch, parent, account, model } = req.body;
+    const { title, desc, agent, folder, worktree, branch, parent, account, model, computerUse } = req.body;
     if (!title || !folder || !['claude', 'codex', 'antigravity', 'auto'].includes(agent)) throw new Error('title, folder and agent are required');
+    if (computerUse !== undefined && typeof computerUse !== 'boolean') return res.status(400).json({ error: 'computerUse must be true or false.' });
+    if (computerUse === true) {
+      const dashboard = dashboardComputerUseGrant(req.get('origin'), req.get('x-tb-actor'), req.get('x-taskboard-token'));
+      let pairedDashboard = false;
+      if (req.get('x-taskboard-peer-signature')) try { transfer.peer(req); pairedDashboard = true; } catch { /* deny below */ }
+      if (!dashboard && !pairedDashboard) return res.status(403).json({ error: 'Only the user can allow computer use when a task starts on the dashboard.' });
+    }
     const actor = req.get('x-tb-actor') || '';
     const managedGroup = managerRole.newTaskGroup(actor, req.body.group);
     const groupRef = managedGroup?.id || req.body.group;
@@ -1433,7 +1442,7 @@ app.post('/api/tasks', async (req, res) => {
     const images = agents.checkImages(req.body.images);
     await guarded(req, res, `start “${title}” (${agent === 'auto' ? 'Auto' : agents.agentName(agent)})`, `Folder: ${folder} · worktree: ${worktree === false ? 'no' : worktree === true ? 'yes' : 'automatic'}${branch ? ` · branch ${branch}` : ''}\nAccount: ${account && account !== 'auto' ? account : 'automatic'}\nModel: ${model || 'agent default'}\nPrompt: ${prompt}${images.length ? `\nImages: ${images.length} attached` : ''}`, 'new',
       async () => {
-        const t = await agents.startTask({ title, desc: prompt, agent, folder, worktree, branch, parent: managedGroup ? actor : parent, account, model, images,
+        const t = await agents.startTask({ title, desc: prompt, agent, folder, worktree, branch, parent: managedGroup ? actor : parent, account, model, computerUse: computerUse === true, images,
           captureQuestion: !!req.get('origin') && !req.get('x-tb-actor') && answerHistory.isQuestion(prompt) });
         if (groupRef) { const g = managedGroup || groups.all().find(x => x.name === groupRef || x.id === groupRef) || groups.create(String(groupRef)); groups.update(g.id, { tasks: [...g.tasks, t.id] }); }
         const linkProblems = links.addAtStart(t.id, startLinks, startBy);

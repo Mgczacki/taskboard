@@ -14,6 +14,7 @@ export function NewTask({ onClose, onStarted, initialFolder, initialMachine = 'l
   const [folder, setFolder] = useState(initialFolder || '');
   const [group, setGroup] = useState(initialGroup || '');
   const [q, setQ] = useState('');
+  const [computerUse, setComputerUse] = useState(false);
   const [workingCopy, setWorkingCopy] = useState<'auto' | 'folder' | 'worktree'>('auto');
   const [branch, setBranch] = useState('');
   const [folders, setFolders] = useState<{ used: { path: string; uses: number; last: string; pinned?: boolean }[]; found: string[] }>({ used: [], found: [] });
@@ -24,7 +25,7 @@ export function NewTask({ onClose, onStarted, initialFolder, initialMachine = 'l
   const [machineList, setMachineList] = useState<{ id: string; name: string; online: boolean; latency?: number; local?: boolean }[]>([]);
   useEffect(() => { fetch('/api/machines').then(r => r.json()).then(setMachineList).catch(() => {}); }, []);
   useEffect(() => { loadAccounts().then(setAccts).catch(() => {}); api.info().then(i => setAgent(i.settings.newTaskDefaultAgent || 'claude')).catch(() => {}); }, []);
-  useEffect(() => { setAccount('auto'); }, [agent]);
+  useEffect(() => { setAccount('auto'); }, [agent, computerUse]);
   const [err, setErr] = useState('');
   const [mode, setMode] = useState<'recent' | 'browse'>('recent');
   const [br, setBr] = useState<{ path: string; home: string; parent: string | null; git: boolean; dirs: { name: string; git: boolean }[] } | null>(null);
@@ -77,7 +78,7 @@ export function NewTask({ onClose, onStarted, initialFolder, initialMachine = 'l
     if (!title.trim() || !folder) { setErr('A title and a folder are needed.'); return; }
     setBusy(true); setErr('');
     try {
-      const t = await api.create({ title: title.trim(), desc: desc.trim() || title.trim(), agent, folder, worktree: workingCopy === 'auto' ? undefined : workingCopy === 'worktree', branch: workingCopy === 'worktree' ? (branch || undefined) : undefined, account: machine === 'local' ? account : 'auto', machine, group: group || undefined, images: images.length ? images.map(({ type, data }) => ({ type, data })) : undefined, spinOff });
+      const t = await api.create({ title: title.trim(), desc: desc.trim() || title.trim(), agent, folder, worktree: workingCopy === 'auto' ? undefined : workingCopy === 'worktree', branch: workingCopy === 'worktree' ? (branch || undefined) : undefined, account: machine === 'local' ? account : 'auto', computerUse, machine, group: group || undefined, images: images.length ? images.map(({ type, data }) => ({ type, data })) : undefined, spinOff });
       onStarted(t.id, group, agent === 'auto' ? `${AGENT_NAME[t.agent]} on ${accts.find(a => a.id === t.account)?.name || t.account}` : undefined);
     } catch (e) { setErr(String((e as Error).message || e)); setBusy(false); }
   };
@@ -138,7 +139,7 @@ export function NewTask({ onClose, onStarted, initialFolder, initialMachine = 'l
             </div>}
           </div>
           <div className="row2">
-            <div className="field"><label>Agent</label><div className="seg"><button className={agent === 'auto' ? 'on' : ''} onClick={() => setAgent('auto')}>Auto</button>{AGENTS.map(a => <button key={a} className={agent === a ? 'on' : ''} onClick={() => setAgent(a)}>{AGENT_NAME[a]}</button>)}</div></div>
+            <div className="field"><label>Agent</label><div className="seg"><button className={agent === 'auto' ? 'on' : ''} onClick={() => setAgent('auto')}>Auto</button>{AGENTS.map(a => <button key={a} className={agent === a ? 'on' : ''} onClick={() => { setAgent(a); if (a === 'antigravity') setComputerUse(false); }}>{AGENT_NAME[a]}</button>)}</div></div>
             <div className="field"><label>Working copy</label>
               <label className="opt"><input type="radio" checked={workingCopy === 'auto'} onChange={() => setWorkingCopy('auto')} /> New worktree for a Git repository</label>
               <label className="opt"><input type="radio" checked={workingCopy === 'folder'} onChange={() => setWorkingCopy('folder')} /> Use the folder as is</label>
@@ -148,10 +149,11 @@ export function NewTask({ onClose, onStarted, initialFolder, initialMachine = 'l
           <div className="field"><label>Account</label>
             <select className="acct-sel" value={account} onChange={e => setAccount(e.target.value)}>
               <option value="auto">Automatic: choose by usage and task capacity</option>
-              {accts.filter(a => agent === 'auto' || a.agent === agent).map(a => <option key={a.id} value={a.id} disabled={!a.status.signedIn}>{a.name}{a.status.signedIn ? '' : ' (not signed in)'}{a.limited ? ' · at its limit' : ''} · {a.running} running{usageText(a) ? ' · ' + usageText(a) : ''}</option>)}
+              {accts.filter(a => (agent === 'auto' || a.agent === agent) && (!computerUse || a.agent !== 'antigravity')).map(a => <option key={a.id} value={a.id} disabled={!a.status.signedIn}>{a.name}{a.status.signedIn ? '' : ' (not signed in)'}{a.limited ? ' · at its limit' : ''} · {a.running} running{usageText(a) ? ' · ' + usageText(a) : ''}</option>)}
             </select>
             <div className="help">Add accounts and sign in on the Accounts page.</div>
           </div>
+          <div className="field"><label className="opt"><input type="checkbox" checked={computerUse} disabled={agent === 'antigravity'} onChange={e => setComputerUse(e.target.checked)} /> Allow this task to control Mac apps</label><div className="help">Off by default. Available for Claude Code and Codex. With Auto, Taskboard chooses one of those agents. Task browser tools are separate.</div></div>
           <div className="field"><label>What the server will run</label><div className="cmd">{cmd}</div></div>
           {err && <div className="banner stopped">{err}</div>}
         </div>

@@ -353,7 +353,7 @@ const CONTROLLER_GUIDANCE_VERSION = 2;
 // what the controller's command line depends on; when it changes, the running controller is restarted between turns
 export const controllerLaunchKey = (agent: string) => {
   const c = machine.get().controller, a = agent as machine.ControllerAgent, skip = !!c.skipPermissions[a];
-  return JSON.stringify({ mail: 3, credentialGuidance: 1, controllerApprovals: 1, guidance: CONTROLLER_GUIDANCE_VERSION, agent, model: c.models[a] || '', label: machine.controllerLabel(), remote: agent === 'claude' && c.remoteControl, skipPermissions: skip, review: !skip && machine.get().permissions.autoReview, approval: machine.get().permissions.controllerNeedsApproval, ...(agent === 'claude' ? { noChrome: !machine.get().claudeInChrome.controller } : {}), ...(agent === 'codex' ? { codexHooks: CODEX_CONTROLLER_HOOKS.length } : {}) });
+  return JSON.stringify({ mail: 3, credentialGuidance: 1, controllerApprovals: 1, guidance: CONTROLLER_GUIDANCE_VERSION, agent, model: c.models[a] || '', label: machine.controllerLabel(), remote: agent === 'claude' && c.remoteControl, computerUse: c.computerUse, skipPermissions: skip, review: !skip && machine.get().permissions.autoReview, approval: machine.get().permissions.controllerNeedsApproval, ...(agent === 'claude' ? { noChrome: !machine.get().claudeInChrome.controller } : {}), ...(agent === 'codex' ? { codexHooks: CODEX_CONTROLLER_HOOKS.length } : {}) });
 };
 
 // The controller's command line. Claude Code reads CLAUDE.md and gets its hooks from CONTROLLER_SETTINGS_FILE. Codex and
@@ -363,11 +363,13 @@ export const controllerLaunchKey = (agent: string) => {
 export function controllerCommand(t: Task, prompt: string | null, resume: boolean, codexTrust: string[] = []): string[] {
   const c = machine.get().controller, model = c.models[t.agent] || '';
   if (t.agent !== 'claude') return command({ ...t, model }, prompt, resume, codexTrust);
+  const mcp = claudeMcpConfig(t);
   // named after this machine; with Remote Control on it can be reached from claude.ai/code and the Claude mobile app
-  return ['claude', '--settings', CONTROLLER_SETTINGS_FILE, ...(model ? ['--model', model] : []),
+  return ['claude', '--settings', CONTROLLER_SETTINGS_FILE, ...(mcp ? ['--mcp-config', mcp] : []), ...(model ? ['--model', model] : []),
     ...(c.skipPermissions.claude ? [CONTROLLER_SKIP_FLAGS.claude] : ['--permission-mode', machine.get().permissions.autoReview ? 'auto' : 'default']),
     ...(resume && t.sessionId ? ['--resume', t.sessionId] : t.sessionId ? ['--session-id', t.sessionId] : []),
     '--name', machine.controllerLabel(), ...(c.remoteControl ? ['--remote-control', machine.controllerLabel()] : []), ...(claudeNoChrome(t) ? ['--no-chrome'] : []),
+    ...(!computerUseAllowed(t) ? ['--disallowedTools', 'mcp__computer-use__*', 'mcp__cua_repl__*'] : []),
     ...(prompt ? [prompt] : [])];
 }
 
@@ -518,14 +520,43 @@ export function claudeNoChrome(t: Task, taskBrowser = false): boolean {
   return !allowed.tasks || (taskBrowser && browserMode(t) === 'only');
 }
 
-// Claude Code reads the task browser's MCP server from a file (--mcp-config). It holds the task's browser key, so only
-// the user can read it.
+// Older tasks have no grant. The controller reads its persistent machine setting.
+export function computerUseAllowed(t: Pick<Task, 'role' | 'agent' | 'computerUse'>): boolean {
+  if (t.agent === 'antigravity') return false;
+  return t.role === 'controller' ? machine.get().controller.computerUse : t.computerUse === true;
+}
+
+function codexComputerUseFlags(t: Task): string[] {
+  if (computerUseAllowed(t)) {
+    const command = computerUseCommand();
+    return command ? ['-c', `mcp_servers.computer-use.command=${JSON.stringify(command)}`,
+      '-c', 'mcp_servers.computer-use.args=["mcp"]',
+      '-c', 'mcp_servers.computer-use.enabled=true'] : [];
+  }
+  // Account config can enable the bundled plugin or either direct MCP server.
+  // The task-browser MCP server remains available under its own setting.
+  return ['-c', 'plugins.computer-use@openai-bundled.enabled=false',
+    '-c', 'mcp_servers.computer-use.enabled=false', '-c', 'mcp_servers.cua_repl.enabled=false'];
+}
+
+function computerUseCommand(): string | null {
+  const command = join(process.env.CODEX_HOME || join(HOME, '.codex'), 'computer-use', 'Codex Computer Use.app',
+    'Contents', 'SharedSupport', 'SkyComputerUseClient.app', 'Contents', 'MacOS', 'SkyComputerUseClient');
+  return existsSync(command) ? command : null;
+}
+
+// Claude Code reads the task browser and OS computer-use MCP servers from a session file (--mcp-config).
+// The browser entry holds the task's browser key, so only the user can read the file.
 function claudeMcpConfig(t: Task): string | null {
-  const server = taskBrowser.mcpServer(ROOT, t.id);
-  if (!server) return null;
+  const server = browserMode(t) === 'off' ? null : taskBrowser.mcpServer(ROOT, t.id);
+  const computer = computerUseAllowed(t) ? computerUseCommand() : null;
+  if (!server && !computer) return null;
   const dir = join(TB_DIR, 'task-mcp'); mkdirSync(dir, { recursive: true });
   const file = join(dir, `${t.id}.json`);
-  writeFileSync(file, JSON.stringify({ mcpServers: { 'task-browser': { type: 'stdio', ...server, env: { CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS: '1' } } } }, null, 2), { mode: 0o600 });
+  writeFileSync(file, JSON.stringify({ mcpServers: {
+    ...(server ? { 'task-browser': { type: 'stdio', ...server, env: { CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS: '1' } } } : {}),
+    ...(computer ? { 'computer-use': { type: 'stdio', command: computer, args: ['mcp'] } } : {}),
+  } }, null, 2), { mode: 0o600 });
   return file;
 }
 // Codex: the same server as -c settings. In "only" mode the Chrome extension backend is turned off (the feature
@@ -709,12 +740,12 @@ const codexHookSetting = () => `hooks.PreToolUse=[{matcher="^Bash$",hooks=[{type
 // reason (observed in test runs). hooks/list names them userPromptSubmit, postToolUse and stop.
 export const CODEX_CONTROLLER_HOOKS = ['UserPromptSubmit', 'PostToolUse', 'Stop'] as const;
 const codexControllerHookCommand = () => 'node "$TB_HOOKS_DIR/codex-hook.mjs"';
-const codexControllerHookSettings = (_t: Pick<Task, 'role'>) =>
-  CODEX_CONTROLLER_HOOKS.map(e => `hooks.${e}=[{hooks=[{type="command",command=${JSON.stringify(codexControllerHookCommand())},timeout=10}]}]`);
+const codexControllerHookSettings = (t: Pick<Task, 'role'>) =>
+  t.role === 'controller' ? CODEX_CONTROLLER_HOOKS.map(e => `hooks.${e}=[{hooks=[{type="command",command=${JSON.stringify(codexControllerHookCommand())},timeout=10}]}]`) : [];
 // the hooks that Codex must trust, as hooks/list reports them
 function codexExpectedHooks(t: Pick<Task, 'role'>) {
   return [{ eventName: 'preToolUse', command: codexHookCommand() },
-    ...CODEX_CONTROLLER_HOOKS.map(e => ({ eventName: e[0].toLowerCase() + e.slice(1), command: codexControllerHookCommand() }))];
+    ...(t.role === 'controller' ? CODEX_CONTROLLER_HOOKS.map(e => ({ eventName: e[0].toLowerCase() + e.slice(1), command: codexControllerHookCommand() })) : [])];
 }
 async function codexHookTrust(t: Task): Promise<string[]> {
   if (t.agent !== 'codex') return [];
@@ -787,9 +818,10 @@ function buildCommand(t: Task, prompt: string | null, resume: boolean, codexTrus
   if (t.agent === 'claude') {
     const c = ['claude', '--settings', claudeTaskSettings(t), '--add-dir', VAULT, ...scopeDirs(t), '--append-system-prompt', taskInstructions(t, inlineRules)];
     if (t.model) c.push('--model', t.model);
-    const mode = browserMode(t), mcp = mode === 'off' ? null : claudeMcpConfig(t);
+    const mcp = claudeMcpConfig(t);
     if (mcp) c.push('--mcp-config', mcp);
-    if (claudeNoChrome(t, !!mcp)) c.push('--no-chrome');
+    if (claudeNoChrome(t, browserMode(t) !== 'off' && !!taskBrowser.mcpServer(ROOT, t.id))) c.push('--no-chrome');
+    if (!computerUseAllowed(t)) c.push('--disallowedTools', 'mcp__computer-use__*', 'mcp__cua_repl__*');
     c.push('--permission-mode', machine.get().permissions.autoReview ? 'auto' : 'default');
     if (resume && t.sessionId) c.push('--resume', t.sessionId);
     else if (t.sessionId) c.push('--session-id', t.sessionId);
@@ -809,7 +841,7 @@ function buildCommand(t: Task, prompt: string | null, resume: boolean, codexTrus
     }
     return c;
   }
-  const c = ['codex', ...codexFlags(t), ...codexTrust, ...codexBrowserFlags(t)];
+  const c = ['codex', ...codexFlags(t), ...codexTrust, ...codexBrowserFlags(t), ...codexComputerUseFlags(t)];
   // the controller with Settings > Controller: skip permission prompts has no approvals and no sandbox
   if (skipsPermissions(t)) c.push(CONTROLLER_SKIP_FLAGS.codex);
   else c.push('-a', 'on-request', '-s', 'workspace-write', '--add-dir', VAULT, ...scopeDirs(t), '-c', 'sandbox_workspace_write.network_access=true', ...codexKeychainArgs(), '-c', `approvals_reviewer="${machine.get().permissions.autoReview ? 'auto_review' : 'user'}"`);
@@ -840,7 +872,7 @@ const scopeDirs = (t: Task) => worktreeScopes(t).flatMap(s => ['--add-dir', real
 
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40) || 'task';
 
-export interface NewTask { title: string; desc: string; agent: Agent | 'auto'; folder: string; worktree?: boolean; branch?: string; parent?: string; account?: string; model?: string; images?: NewTaskImage[]; captureQuestion?: boolean }
+export interface NewTask { title: string; desc: string; agent: Agent | 'auto'; folder: string; worktree?: boolean; branch?: string; parent?: string; account?: string; model?: string; computerUse?: boolean; images?: NewTaskImage[]; captureQuestion?: boolean }
 // An image pasted into the New task form: its media type and its bytes as base64.
 export interface NewTaskImage { type: string; data: string }
 const IMAGE_EXT: Record<string, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp' };
@@ -867,6 +899,7 @@ export const runningOn = (accountId: string) => store.all().filter(t => (t.accou
 export async function startTask(n: NewTask): Promise<Task> {
   const folder = n.folder.replace(/^~(?=\/|$)/, HOME);
   if (!existsSync(folder)) throw new Error(`Folder does not exist: ${folder}`);
+  if (n.computerUse && !computerUseCommand()) throw new Error('OS computer use is not installed on this machine.');
   if (n.model !== undefined && (typeof n.model !== 'string' || !/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,79}$/.test(n.model))) throw new Error('Invalid model name.');
   const explicit = n.account && n.account !== 'auto' ? accounts.get(n.account) : undefined;
   if (n.account && n.account !== 'auto' && !explicit) throw new Error(`Unknown account ${n.account}.`);
@@ -874,10 +907,11 @@ export async function startTask(n: NewTask): Promise<Task> {
   if (explicit) acct = explicit;
   else if (n.agent === 'auto') {
     accounts.refreshCodexUsage();
-    const inputs = await Promise.all(accounts.all().map(async account => ({ account, running: runningOn(account.id), status: accounts.unavailable(account, runningOn(account.id)) ? { signedIn: false, checkedAt: Date.now() } : await accounts.status(account) })));
+    const inputs = await Promise.all(accounts.all().filter(account => !n.computerUse || account.agent !== 'antigravity').map(async account => ({ account, running: runningOn(account.id), status: accounts.unavailable(account, runningOn(account.id)) ? { signedIn: false, checkedAt: Date.now() } : await accounts.status(account) })));
     acct = chooseAuto(inputs, `${n.title}\n${n.desc}`, machine.get().routingRules).account;
   } else acct = (await accounts.pick(n.agent, runningOn)).account;
   const agent = n.agent === 'auto' ? acct.agent : n.agent;
+  if (n.computerUse && agent === 'antigravity') throw new Error('OS computer use is available for Claude Code and Codex tasks only.');
   if (acct.agent !== agent) throw new Error('That account is for the other agent.');
   // An account you chose is used only when it can run the task; Taskboard never switches it without asking.
   const why = accounts.refusal(acct, runningOn(acct.id), runningOn); if (why) throw new Error(why);
@@ -899,7 +933,7 @@ export async function startTask(n: NewTask): Promise<Task> {
     id, num, title: n.title, agent, status: 'working', cwd, folder, branch, worktree,
     session: `task-${num}`, sessionId: agent === 'claude' ? randomUUID() : undefined,
     statusSource: n.parent === 'controller' ? 'Started by the controller (tb new) just now.' : 'Started just now.', goal: n.title, desc: n.desc, parent: n.parent, account: acct.id, model: n.model,
-    accountChosen: explicit ? 'user' : 'auto',
+    accountChosen: explicit ? 'user' : 'auto', computerUse: n.computerUse === true,
   });
   const firstPrompt = n.captureQuestion ? answerHistory.prepare(t, n.desc).text : n.desc;
   try { await launch(t, attachImages(t, firstPrompt, images), false); }

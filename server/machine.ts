@@ -90,11 +90,11 @@ export function readAgentErrors(saved: unknown): AgentErrorSettings {
 export type ControllerAgent = 'claude' | 'codex' | 'antigravity';
 export const CONTROLLER_AGENTS: ControllerAgent[] = ['claude', 'codex', 'antigravity'];
 export interface ControllerSettings {
-  autostart: boolean; remoteControl: boolean; agent: ControllerAgent;
+  autostart: boolean; remoteControl: boolean; computerUse: boolean; agent: ControllerAgent;
   skipPermissions: Record<ControllerAgent, boolean>; accounts: Partial<Record<ControllerAgent, string>>;
   dangerouslySkipPermissions: boolean; models: Record<ControllerAgent, string>;
 }
-export const DEFAULT_CONTROLLER: ControllerSettings = { autostart: true, remoteControl: true, agent: 'claude', skipPermissions: { claude: false, codex: false, antigravity: false }, accounts: {}, dangerouslySkipPermissions: false, models: { claude: 'claude-sonnet-5-5', codex: '', antigravity: '' } };
+export const DEFAULT_CONTROLLER: ControllerSettings = { autostart: true, remoteControl: true, computerUse: true, agent: 'claude', skipPermissions: { claude: false, codex: false, antigravity: false }, accounts: {}, dangerouslySkipPermissions: false, models: { claude: 'claude-sonnet-5-5', codex: '', antigravity: '' } };
 // A saved controller value. A file written before Settings > Controller agent has no agent: then agentSaved is false,
 // and the server takes the agent of the running controller task (index.ts), so an update switches nothing.
 // The older dangerouslySkipPermissions (Claude Code only) becomes skipPermissions.claude. Codex and Antigravity start off.
@@ -113,6 +113,7 @@ export function readController(saved: unknown): { controller: ControllerSettings
   return { agentSaved, controller: {
     autostart: typeof s.autostart === 'boolean' ? s.autostart : DEFAULT_CONTROLLER.autostart,
     remoteControl: typeof s.remoteControl === 'boolean' ? s.remoteControl : DEFAULT_CONTROLLER.remoteControl,
+    computerUse: typeof s.computerUse === 'boolean' ? s.computerUse : DEFAULT_CONTROLLER.computerUse,
     agent: agentSaved ? s.agent : 'claude', skipPermissions, accounts, dangerouslySkipPermissions: skipPermissions.claude, models,
   } };
 }
@@ -195,7 +196,7 @@ export function checkMaxParallel(value: unknown): number {
   return n;
 }
 export const controllerLabel = () => `Taskboard controller · ${settings.name}`;
-export function update(patch: { name?: string; routingRules?: string; newTaskDefaultAgent?: MachineSettings['newTaskDefaultAgent']; autostart?: boolean; remoteControl?: boolean; dangerouslySkipPermissions?: boolean; controllerSkipPermissions?: Partial<Record<ControllerAgent, boolean>>; controllerModels?: Partial<Record<'claude' | 'codex' | 'antigravity', string>>; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; allTaskCommunication?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; holdPermissionHook?: boolean; permitFolders?: string[]; permitRequestLimits?: Partial<PermitRequestLimits>; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; defaultMaxParallel?: number; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; browserIdleStopMinutes?: number; browserSharp?: boolean; browserScale?: BrowserScale; browserAutoSwitch?: boolean; claudeInChromeTasks?: boolean; claudeInChromeController?: boolean; confirmRisk?: Partial<ConfirmRisk>; a2aSlackClientId?: string; a2aSlackTeamId?: string; controllerApprovals?: Partial<ControllerApprovals>; agentErrors?: Partial<AgentErrorSettings> }) {
+export function update(patch: { name?: string; routingRules?: string; newTaskDefaultAgent?: MachineSettings['newTaskDefaultAgent']; autostart?: boolean; remoteControl?: boolean; controllerComputerUse?: boolean; dangerouslySkipPermissions?: boolean; controllerSkipPermissions?: Partial<Record<ControllerAgent, boolean>>; controllerModels?: Partial<Record<'claude' | 'codex' | 'antigravity', string>>; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; allTaskCommunication?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; holdPermissionHook?: boolean; permitFolders?: string[]; permitRequestLimits?: Partial<PermitRequestLimits>; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; defaultMaxParallel?: number; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; browserIdleStopMinutes?: number; browserSharp?: boolean; browserScale?: BrowserScale; browserAutoSwitch?: boolean; claudeInChromeTasks?: boolean; claudeInChromeController?: boolean; confirmRisk?: Partial<ConfirmRisk>; a2aSlackClientId?: string; a2aSlackTeamId?: string; controllerApprovals?: Partial<ControllerApprovals>; agentErrors?: Partial<AgentErrorSettings> }) {
   if (patch.permitRequestLimits !== undefined) {
     const limits = patch.permitRequestLimits as Record<string, unknown> | null;
     if (!limits || typeof limits !== 'object' || Array.isArray(limits) || Object.entries(limits).some(([key, value]) =>
@@ -254,6 +255,10 @@ export function update(patch: { name?: string; routingRules?: string; newTaskDef
   if (patch.name !== undefined && patch.name.trim()) settings.name = patch.name.trim().slice(0, 40);
   if (patch.autostart !== undefined) settings.controller.autostart = !!patch.autostart;
   if (patch.remoteControl !== undefined) settings.controller.remoteControl = !!patch.remoteControl;
+  if (patch.controllerComputerUse !== undefined) {
+    if (typeof patch.controllerComputerUse !== 'boolean') throw new Error('controllerComputerUse must be true or false.');
+    settings.controller.computerUse = patch.controllerComputerUse;
+  }
   // the older name of the Claude Code switch, from an older dashboard page
   if (patch.dangerouslySkipPermissions !== undefined) {
     if (typeof patch.dangerouslySkipPermissions !== 'boolean') throw new Error('The controller permission setting must be on or off.');
