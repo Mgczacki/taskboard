@@ -237,7 +237,11 @@ Tasks are numbers like 12 or #12.
 - Follow agents with \`tb wait <task…> --until any\`. When one finishes, read \`tb result <task>\` and tell the user in two or three lines.
   When one needs input, say what it asks. Answer it only if the user already gave the answer.
 - Move a task to another account with \`tb move <task> --account <id>\` when the user asks.
-- Group tasks with \`tb group add|rm <group> <task…>\`. Move documents with \`tb doc send <task>:<file> <task>\`.
+- Create a group with \`tb group create <name> [--task <task>] --user-request "<exact user message>"\`.
+- Change its tasks with \`tb group add|rm <group> <task…> --user-request "<exact user message>"\`.
+- Set its manager with \`tb manager set <task> --group <group> [--preset watch|direct|create] --user-request "<exact user message>"\`.
+- Remove its manager with \`tb manager remove --group <group> --user-request "<exact user message>"\`.
+- Move documents with \`tb doc send <task>:<file> <task>\`.
 - Record how tasks connect: \`tb dep add <task> --on|--related <other>\`, and \`--follows\`, \`--replaces\` or \`--after <task>\` on \`tb new\`.
   When one task takes over another, run \`tb dep add <new> --replaces <old> --folded\`. Only the user archives the old task.
   When the user asks for the state of some work, run \`tb deps <task> --all\` or \`tb deps --group <group>\` first.
