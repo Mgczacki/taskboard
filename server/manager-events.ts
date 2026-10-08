@@ -21,7 +21,10 @@ const timers = new Map<string, NodeJS.Timeout>();
 const exec = promisify(execFile);
 const backoff = [60_000, 120_000, 300_000, 600_000];
 const fromManager = (event: ManagerEvent) => groups.get(event.group)?.manager === event.task;
+const groupSnapshot = () => new Map(groups.all().map(g => [g.id, { manager: g.manager, tasks: [...g.tasks], name: g.name }]));
+let lastGroups = groupSnapshot();
 const selfOnlyDigest = (text: string, manager: store.Task) => {
+  if (text.includes('\nCurrent group:\n') || text.includes('\n- group: ')) return false;
   const header = /^\[Taskboard event digest, [^\n]+, group .+, (\d+) events\]/.exec(text);
   if (!header) return false;
   const tasks = [...text.matchAll(/^- #([^\s]+) /gm)].map(x => x[1]);
@@ -44,16 +47,62 @@ export function record(task: string, kind: string, text: string, immediate = fal
   }
 }
 
+function groupChanged() {
+  const current = groupSnapshot();
+  for (const [id, now] of current) {
+    const before = lastGroups.get(id);
+    if (!before || (before.manager === now.manager && before.tasks.length === now.tasks.length && before.tasks.every(task => now.tasks.includes(task)))) continue;
+    const removed = before.tasks.filter(task => !now.tasks.includes(task));
+    const added = now.tasks.filter(task => !before.tasks.includes(task));
+    // An earlier digest can describe a member or manager that no longer belongs to this group.
+    for (const managerId of new Set([before.manager, now.manager].filter((x): x is string => !!x))) {
+      for (const message of messageQueue.list(managerId)) {
+        if (message.state === 'queued' && message.from === 'taskboard' &&
+            [before.name, now.name].some(name => message.text.startsWith(`[Taskboard event digest, `) && message.text.includes(`, group ${name}, `)))
+          messageQueue.remove(managerId, message.id);
+      }
+    }
+    if (before.manager && before.manager !== now.manager) {
+      const previous = store.get(before.manager);
+      if (previous) void messageQueue.send(previous, `You no longer manage group ${before.name}. Read tb board "${before.name}" for its current manager and tasks.`,
+        { from: 'taskboard', kind: 'message', holdWhenParked: true, queueOnError: true }).catch(e => console.error('manager role notice', e));
+    }
+    const kept = queue.filter(event => event.group !== id);
+    queue.splice(0, queue.length, ...kept);
+    if (now.manager && store.get(now.manager)) {
+      const changes = [
+        ...(before.manager !== now.manager ? [`manager changed from ${before.manager || 'none'} to ${now.manager}`] : []),
+        ...removed.map(task => `#${store.get(task)?.num || task} ${store.get(task)?.title || task} left the group`),
+        ...added.map(task => `#${store.get(task)?.num || task} ${store.get(task)?.title || task} joined the group`),
+      ];
+      const event: ManagerEvent = { at: new Date().toISOString(), group: id, task: 'taskboard', kind: 'group', text: changes.join('; ') || 'Membership changed' };
+      appendFileSync(eventFile, JSON.stringify(event) + '\n');
+      queue.push(event);
+      schedule(id);
+    }
+    save();
+  }
+  lastGroups = current;
+}
+
 export async function flush(group: string) {
   const timer = timers.get(group); if (timer) { clearTimeout(timer); timers.delete(group); }
   const g = groups.get(group); const manager = g?.manager && store.get(g.manager);
   if (!manager) return;
-  const events = queue.filter(x => x.group === group && !fromManager(x));
+  const events = queue.filter(x => x.group === group && !fromManager(x) && (x.task === 'taskboard' || g!.tasks.includes(x.task)));
   if (!queue.some(x => x.group === group)) return;
   queue.splice(0, queue.length, ...queue.filter(x => x.group !== group)); save();
   if (!events.length) return;
-  const lines = events.map(x => `- #${store.get(x.task)?.num || x.task} ${x.kind}: ${x.text}`);
-  const digest = `[Taskboard event digest, ${new Date().toISOString()}, group ${g.name}, ${events.length} events]\n${lines.join('\n')}\nBoard: tb board "${g.name}"`;
+  const lines = events.map(x => x.task === 'taskboard' ? `- group: ${x.text}` : `- #${store.get(x.task)?.num || x.task} ${x.kind}: ${x.text}`);
+  let snapshot = '';
+  if (events.some(x => x.task === 'taskboard' || x.kind === 'ready')) {
+    const { board } = await import('./waiting-board.ts');
+    const current = board(g);
+    const rows = Object.values(current.columns).flat() as { num: number; title: string; status: string; state?: string; waitingOn?: { on: string; needs: string; reason: string } }[];
+    snapshot = `\nCurrent group:\n${rows.map(row => `- #${row.num} ${row.title} (${row.status}${row.state ? `, ${row.state}` : ''})${row.waitingOn && row.waitingOn.on !== 'nothing' ? `: ${row.waitingOn.on}: ${row.waitingOn.needs || row.waitingOn.reason}` : ''}`).join('\n') || '- No active tasks'}`;
+  }
+  const digest = `[Taskboard event digest, ${new Date().toISOString()}, group ${g.name}, ${events.length} events]\n${lines.join('\n')}${snapshot}\nBoard: tb board "${g.name}"`;
+  if (groups.get(group)?.manager !== manager.id) return;
   try {
     const result = await messageQueue.send(manager, digest, { from: 'taskboard', kind: 'message', holdWhenParked: true, queueOnError: true });
     if (result.state === 'failed') throw new Error(result.reason || 'The manager message was not queued.');
@@ -93,6 +142,8 @@ async function checkCi() {
 }
 
 export function start() {
+  lastGroups = groupSnapshot();
+  groups.onGroupsChange(groupChanged);
   // Older queue files may hold events from the manager itself. Remove them before scheduling delivery.
   const pending = queue.filter(x => !fromManager(x));
   if (pending.length !== queue.length) { queue.splice(0, queue.length, ...pending); save(); }
@@ -103,9 +154,15 @@ export function start() {
         messageQueue.remove(managerId, message.id);
   }
   const status = new Map(store.all().map(t => [t.id, t.status]));
+  const accounts = new Map(store.all().map(t => [t.id, t.account]));
   store.onTaskChange(t => {
     const before = status.get(t.id); status.set(t.id, t.status);
+    const oldAccount = accounts.get(t.id); accounts.set(t.id, t.account);
     if (before && before !== t.status) record(t.id, 'status', `${before} to ${t.status}`, t.status === 'stopped');
+    if (oldAccount !== t.account) for (const g of groups.all().filter(g => g.manager === t.id)) {
+      const event: ManagerEvent = { at: new Date().toISOString(), group: g.id, task: 'taskboard', kind: 'account', text: `Manager #${t.num} moved to account ${t.account || 'default'}.` };
+      appendFileSync(eventFile, JSON.stringify(event) + '\n'); queue.push(event); save(); schedule(g.id);
+    }
   });
   for (const e of queue) schedule(e.group);
   const warned = new Set<string>();

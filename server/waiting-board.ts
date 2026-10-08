@@ -23,12 +23,15 @@ export function waitFor(t: store.Task): store.WaitingOn | undefined {
   const failed = messageQueue.list(t.id).find(q => q.state === 'failed');
   if (failed) return { on: 'task', target: String(t.num), reason: failed.reason, needs: 'Retry or remove the failed message',
     since: failed.queued, card: '', unblocks: [], source: 'checked' };
-  if (t.waitingOn?.on && t.waitingOn.on !== 'nothing') return t.waitingOn;
+  const ready = links.state(t) === 'ready';
+  if (t.waitingOn?.on && t.waitingOn.on !== 'nothing' && !(ready && t.waitingOn.on === 'task' &&
+      (t.links || []).some(link => link.kind === 'dependsOn' && links.depDone(link) &&
+        [link.to, String(store.get(link.to)?.num), `#${store.get(link.to)?.num}`].includes(t.waitingOn!.target)))) return t.waitingOn;
   if (t.status === 'needs-you' && t.ask) return { on: 'user', target: '', reason: t.ask, needs: t.ask,
     since: t.statusAt, card: '', unblocks: [], source: 'reported' };
   const lines = store.readLog(t.id).split('\n').reverse();
   const line = lines.find(x => x.startsWith('- Waiting:'))?.slice('- Waiting:'.length).trim();
-  if (line && !/^nothing\.?$/i.test(line)) return { on: 'nothing', target: '', reason: line, needs: '',
+  if (line && !ready && !/^nothing\.?$/i.test(line)) return { on: 'nothing', target: '', reason: line, needs: '',
     since: t.updated, card: '', unblocks: [], source: 'log' };
 }
 
@@ -39,7 +42,7 @@ export function board(g: Group) {
     const t = store.get(id); if (!t || t.status === 'archived') continue;
     const waitingOn = waitFor(t);
     const old = t.status !== 'working' && Date.now() - Date.parse(waitingOn?.since || t.updated) > 2 * 60 * 60_000;
-    const row = { id: t.id, num: t.num, title: t.title, status: t.status, now: t.now,
+    const row = { id: t.id, num: t.num, title: t.title, status: t.status, state: links.state(t), now: t.now,
       waitingOn, ageMinutes: Math.max(0, Math.round((Date.now() - Date.parse(waitingOn?.since || t.statusAt)) / 60000)),
       source: old ? 'old' : waitingOn?.source || 'reported' };
     if (waitingOn?.on === 'user') columns.needsYou.push(row);
