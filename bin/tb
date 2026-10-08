@@ -477,7 +477,7 @@ switch (cmd) {
       console.log(board.group.name);
       for (const [key, rows] of Object.entries(board.columns)) {
         console.log(`  ${key}: ${rows.length}`);
-        for (const r of rows) console.log(`    #${r.num} ${r.title} · ${r.ageMinutes} min · ${r.source}${r.waitingOn ? ` · ${r.waitingOn.on}: ${r.waitingOn.needs || r.waitingOn.reason}` : ''}`);
+        for (const r of rows) console.log(`    #${r.num} ${r.title} · ${r.ageMinutes} min · ${r.source}${r.state ? ` · ${r.state}` : ''}${r.waitingOn ? ` · ${r.waitingOn.on}: ${r.waitingOn.needs || r.waitingOn.reason}` : ''}`);
       }
     }
     break;

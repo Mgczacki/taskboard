@@ -19,6 +19,7 @@ import { join } from 'node:path';
 import { TB_DIR } from './config.ts';
 import * as docs from './docs.ts';
 import * as store from './store.ts';
+import * as managerEvents from './manager-events.ts';
 import type { LinkActor, LinkKind, Task, TaskLink } from './store.ts';
 
 export type { LinkActor, LinkKind, TaskLink };
@@ -254,6 +255,7 @@ function tellReady(t: Task, why: string) {
   const text = [`# #${t.num} is no longer blocked`, '', why, '', `No dependsOn link of #${t.num} ${t.title} is open now.`, ''].join('\n');
   tell(t.id, `unblocked-${Date.now()}.md`, text);
   tell('controller', `unblocked-${t.num}-${Date.now()}.md`, text);
+  managerEvents.record(t.id, 'ready', why, true);
 }
 
 // When a task is archived, the tasks that waited on it may become ready. The listener compares the new status with the

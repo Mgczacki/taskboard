@@ -8,7 +8,7 @@
 export type BoardKey = 'needsYou' | 'waitingOther' | 'running' | 'free' | 'blocked';
 export const BOARD_COLUMNS: [BoardKey, string][] = [['needsYou', 'Needs you'], ['waitingOther', 'Waiting on other'], ['running', 'Running'], ['free', 'Free'], ['blocked', 'Blocked']];
 export interface WaitingOn { on: string; target: string; needs: string; reason: string; card: string; unblocks: string[] }
-export interface BoardRow { id: string; num: number; title: string; ageMinutes: number; source: string; now?: string; waitingOn?: WaitingOn }
+export interface BoardRow { id: string; num: number; title: string; ageMinutes: number; source: string; state?: 'done' | 'superseded' | 'blocked' | 'ready'; now?: string; waitingOn?: WaitingOn }
 export interface Board { group: { id: string; name: string; manager?: string }; columns: Partial<Record<BoardKey, BoardRow[]>> }
 
 export function boardSummary(b: Board) {

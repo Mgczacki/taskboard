@@ -34,14 +34,16 @@ const accounts = await import('../server/accounts.ts');
 writeFileSync(join(store.taskDir(manager.id), 'message-queue.json'), JSON.stringify([
   { id: 'self', from: 'taskboard', kind: 'message', state: 'queued', text: `[Taskboard event digest, ${old}, group ${group.name}, 2 events]\n- #1 status: working to unread\n- #1 waiting: The task cleared its reported wait.\nBoard: tb board "${group.name}"` },
   { id: 'worker', from: 'taskboard', kind: 'message', state: 'queued', text: `[Taskboard event digest, ${old}, group ${group.name}, 1 events]\n- #2 status: idle to working\nBoard: tb board "${group.name}"` },
+  { id: 'group', from: 'taskboard', kind: 'message', state: 'queued', text: `[Taskboard event digest, ${old}, group ${group.name}, 1 events]\n- group: manager changed to manager\nCurrent group:\n- #1 manager (idle)\nBoard: tb board "${group.name}"` },
 ]));
 
 test('manager status and waiting changes do not queue or deliver a self-only digest', async () => {
   assert.equal(events.heartbeat(group.id).pending, 0);
   events.start();
   assert.deepEqual(JSON.parse(readFileSync(join(root, 'private', 'manager-event-queue.json'), 'utf8')), []);
-  assert.deepEqual(messageQueue.list(manager.id).map(x => x.id), ['worker']);
+  assert.deepEqual(messageQueue.list(manager.id).map(x => x.id), ['worker', 'group']);
   messageQueue.remove(manager.id, 'worker');
+  messageQueue.remove(manager.id, 'group');
   store.update(manager.id, { status: 'working' });
   store.update(manager.id, { status: 'unread' });
   events.record(manager.id, 'waiting', 'The task cleared its reported wait.');
