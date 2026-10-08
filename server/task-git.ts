@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { isAbsolute, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
 import { TB_DIR } from './config.ts';
 import type { Task } from './store.ts';
@@ -202,9 +202,10 @@ export async function findBase(t: Task, options: { named?: string; remote?: stri
 }
 
 // Without a base, tb git rebase uses local master. A repository without master uses the base that findBase gives.
-export async function rebaseTask(t: Task, action: 'start' | 'continue' | 'abort' = 'start', file = pendingPath(t), base?: string): Promise<string> {
+export async function rebaseTask(t: Task, action: 'start' | 'continue' | 'abort' = 'start', file = pendingPath(t), base?: string, stage?: string): Promise<string> {
   await mergeStateForSource(t, true);
   const active = await rebasing(t.cwd);
+  if (stage !== undefined && action !== 'continue') throw new Error('Give --stage only with tb git rebase --continue.');
   let target: Awaited<ReturnType<typeof resolveBase>> | undefined;
   let backupName = '';
   if (action === 'abort') {
@@ -233,17 +234,30 @@ export async function rebaseTask(t: Task, action: 'start' | 'continue' | 'abort'
     }
   } else {
     if (!active) throw new Error('No rebase is in progress; run tb git rebase to start one.');
+    if (stage !== undefined && (!stage || isAbsolute(stage) || stage.split('/').some(part => !part || part === '.' || part === '..') || stage.includes('\\') || stage.includes('\0')))
+      throw new Error('Give --stage one file path relative to the task worktree.');
+    if (stage !== undefined) {
+      const names = (await exec('git', ['ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', `:(literal)${stage}`], { cwd: t.cwd })).stdout.split('\0').filter(Boolean);
+      if (!names.length || names.some(name => name !== stage)) throw new Error('Give --stage one file path, not a directory or a path that Git does not know.');
+    }
     const unmerged = (await git(t.cwd, 'diff', '--name-only', '--diff-filter=U', '-z')).split('\0').filter(Boolean);
-    for (const name of unmerged) {
+    for (const name of [...new Set([...unmerged, ...(stage === undefined ? [] : [stage])])]) {
       try { if (/^(<<<<<<< |=======|>>>>>>> )/m.test(readFileSync(join(t.cwd, name), 'utf8'))) throw new Error(`Resolve conflict markers in ${name}, then run tb git rebase --continue.`); }
       catch (e) { if (e instanceof Error && e.message.startsWith('Resolve conflict markers')) throw e; }
     }
-    if (unmerged.length) await exec('git', ['add', '-A', '--', ...unmerged], { cwd: t.cwd });
+    if (unmerged.length && stage === undefined) await exec('git', ['add', '-A', '--', ...unmerged], { cwd: t.cwd });
+    if (stage !== undefined) await exec('git', ['add', '--', `:(literal)${stage}`], { cwd: t.cwd });
     // tb git rebase --continue keeps the backup that tb git rebase made, and prints it again.
     const orig = await rebaseOrigHead(t.cwd);
     if (orig) backupName = (await backupsAt(t, orig))[0] || '';
     try { await exec('git', ['-c', 'core.editor=true', 'rebase', '--continue'], { cwd: t.cwd }); }
-    catch (e) { if (await rebasing(t.cwd)) throw new Error('The rebase still has conflicts; resolve them in the task worktree and run tb git rebase --continue.'); throw e; }
+    catch (e) {
+      if (await rebasing(t.cwd)) {
+        const detail = redact(String((e as { stderr?: string }).stderr || (e as Error).message)).trim();
+        throw new Error(`Git could not continue the rebase: ${detail || 'Git gave no error text.'}`);
+      }
+      throw e;
+    }
   }
   const backupText = backupName ? `\n${backupLines(backupName)}` : '';
   const pending = readPending(file);

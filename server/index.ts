@@ -1131,7 +1131,8 @@ app.post('/api/git/rebase', async (req, res) => {
   const action = req.body.action || 'start';
   if (!['start', 'continue', 'abort'].includes(action)) return res.status(400).json({ error: 'Run tb git rebase [BASE], tb git rebase --continue, or tb git rebase --abort.' });
   if (req.body.base !== undefined && (typeof req.body.base !== 'string' || action !== 'start')) return res.status(400).json({ error: 'Give a base only to start a rebase, for example tb git rebase origin/master.' });
-  try { res.json({ result: await taskGit.rebaseTask(gitTask(task, req.body.worktree), action, undefined, req.body.base || undefined) }); } catch (e) { fail(res, e); }
+  if (req.body.stage !== undefined && (typeof req.body.stage !== 'string' || action !== 'continue')) return res.status(400).json({ error: 'Give --stage one path only with tb git rebase --continue.' });
+  try { res.json({ result: await taskGit.rebaseTask(gitTask(task, req.body.worktree), action, undefined, req.body.base || undefined, req.body.stage) }); } catch (e) { fail(res, e); }
 });
 app.post('/api/git/repair', async (req, res) => {
   const actorTask = store.get(req.get('x-tb-actor') || '');

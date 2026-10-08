@@ -205,6 +205,7 @@ const HELP = `tb — Taskboard command line
                                      origin/master or origin/prod (runs git fetch first). It saves the old
                                      head as a backup before it changes the branch
   tb git rebase --continue            stage resolved conflicts and finish the approved merge
+  tb git rebase --continue --stage PATH stage one named file before continuing a rebase
   tb git rebase --abort               stop a rebase in your own worktree
   tb git repair --squash --base BASE -m "<message>"
                                      make your branch one commit over BASE (master or a remote branch)
@@ -894,9 +895,10 @@ switch (cmd) {
     if (rest[0] === 'merge-request') await call('POST', '/api/git/merge-request', wt);
     else if (rest[0] === 'commit') console.log((await call('POST', '/api/git/commit', { message: rest.slice(1).join(' '), ...wt })).result);
     else if (rest[0] === 'rebase') {
-      if (rest.length > 2 || (rest[1]?.startsWith('-') && !['--continue', '--abort'].includes(rest[1]))) { console.error('tb git rebase: run tb git rebase [BASE], tb git rebase --continue, or tb git rebase --abort.'); process.exit(1); }
+      const stage = rest[1] === '--continue' && rest[2] === '--stage' ? rest[3] : undefined;
+      if (rest.length > (stage === undefined ? 2 : 4) || (rest[1]?.startsWith('-') && !['--continue', '--abort'].includes(rest[1])) || (rest[2] === '--stage' && !stage) || (rest.length > 2 && stage === undefined)) { console.error('tb git rebase: run tb git rebase [BASE], tb git rebase --continue [--stage PATH], or tb git rebase --abort.'); process.exit(1); }
       const action = rest[1] === '--continue' ? 'continue' : rest[1] === '--abort' ? 'abort' : 'start';
-      console.log((await call('POST', '/api/git/rebase', { action, ...(action === 'start' && rest[1] ? { base: rest[1] } : {}), ...wt })).result);
+      console.log((await call('POST', '/api/git/rebase', { action, ...(action === 'start' && rest[1] ? { base: rest[1] } : {}), ...(stage !== undefined ? { stage } : {}), ...wt })).result);
     }
     else if (rest[0] === 'repair') {
       const base = flag('--base'); const message = flag('-m'); const commit = flag('--drop'); const backup = flag('--restore');
