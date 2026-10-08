@@ -480,12 +480,14 @@ app.post('/api/manager/:group', (req, res) => {
   const words = String(req.body.userRequest || '').trim();
   const preset = req.body.preset ? String(req.body.preset) as managerRole.ManagerPreset : undefined;
   if (preset && !(preset in managerRole.PRESETS)) return res.status(400).json({ error: 'Choose the preset watch, direct or create.' });
+  if (preset && !task) return res.status(400).json({ error: 'A preset needs a manager task.' });
   if (controller && preset && !words.toLowerCase().includes(managerRole.PRESETS[preset].name.toLowerCase())) return res.status(403).json({ error: 'The user message must name the preset.' });
   if (controller) {
     const transcript = controllerTranscript();
     const count = permits.userWroteCount(transcript.path, transcript.agent, words);
     const used = managerRole.actions(g.id).filter(x => x.userRequest === words).length;
-    if (!words || !/\b(set|make|appoint|revoke|remove)\b/i.test(words) || /\b(no|not|don't|deny|cancel|wait)\b/i.test(words) || !words.includes(g.name) || (task && !new RegExp(`(?:#|task\\s*)${task.num}\\b`, 'i').test(words)) || count <= used)
+    const intent = task ? /\b(set|make|appoint|assign|change)\b/i : /\b(revoke|remove|unset|stop)\b/i;
+    if (!words || !intent.test(words) || /\b(no|not|don't|deny|cancel|wait)\b/i.test(words) || !words.includes(g.name) || (task && !new RegExp(`(?:#|task\\s*)${task.num}\\b`, 'i').test(words)) || count <= used)
       return res.status(403).json({ error: 'Give one exact user message from the controller chat that names this task and group and asks for this role change.' });
   }
   try { res.json({ group: managerRole.set(g, task, dashboard ? 'user' : 'controller', controller ? words : undefined, preset) }); }
@@ -1594,9 +1596,21 @@ app.post('/api/transfer/cancel', async (req, res) => {
 // ---------- groups ----------
 app.get('/api/groups', (_req, res) => res.json(groups.all()));
 app.post('/api/groups', (req, res) => {
-  if (!fromDashboard(req)) return res.status(403).json({ error: 'Only the dashboard creates groups.' });
+  const dashboard = fromDashboard(req), controller = isController(req);
+  if (!dashboard && !controller) return res.status(403).json({ error: 'Only the dashboard or controller on the user request creates groups.' });
   const name = String(req.body.name || '').trim(); if (!name) return fail(res, 'name is required');
-  res.json(groups.create(name, req.body.tasks || []));
+  const ids = req.body.tasks || [];
+  if (!Array.isArray(ids) || ids.some((id: unknown) => typeof id !== 'string' || !store.get(id))) return fail(res, 'tasks must be existing task ids');
+  if (controller) {
+    const words = String(req.body.userRequest || '').trim();
+    const transcript = controllerTranscript();
+    if (!words || !/\b(create|make|add)\b/i.test(words) || /\b(no|not|don't|deny|cancel|wait)\b/i.test(words)
+      || !words.includes(name) || ids.some((id: string) => { const task = store.get(id)!; return task.role === 'controller' || !new RegExp(`(?:#|task\\s*)${task.num}\\b`, 'i').test(words); })
+      || !permits.userWroteCount(transcript.path, transcript.agent, words))
+      return res.status(403).json({ error: 'Give one exact user message from the controller chat that asks to create this group and names each task.' });
+    if (groups.all().some(g => g.name === name)) return res.status(409).json({ error: 'A group with this name already exists.' });
+  }
+  res.json(groups.create(name, ids));
 });
 app.post('/api/groups/move', (req, res) => {
   if (!fromDashboard(req)) return res.status(403).json({ error: 'Only the dashboard moves a task between groups.' });
@@ -1628,7 +1642,20 @@ app.post('/api/canvas/order', (req, res) => {
 });
 app.patch('/api/groups/:id', (req, res) => {
   const { name, color, tasks, add, remove } = req.body; const g = groups.get(req.params.id); if (!g) return res.status(404).end();
-  if (!fromDashboard(req)) {
+  if (isController(req)) {
+    const adding = Array.isArray(add) ? add : add ? [add] : [];
+    const removing = Array.isArray(remove) ? remove : remove ? [remove] : [];
+    const ids = adding.length ? adding : removing;
+    const words = String(req.body.userRequest || '').trim();
+    const transcript = controllerTranscript();
+    const intent = adding.length ? /\b(add|put|include)\b/i : /\b(remove|take|exclude)\b/i;
+    if (name !== undefined || color !== undefined || tasks !== undefined || (adding.length > 0) === (removing.length > 0)
+      || !ids.every((id: unknown) => typeof id === 'string' && !!store.get(id) && store.get(id)?.role !== 'controller') || !words || !intent.test(words)
+      || /\b(no|not|don't|deny|cancel|wait)\b/i.test(words) || !words.includes(g.name)
+      || ids.some((id: string) => !new RegExp(`(?:#|task\\s*)${store.get(id)!.num}\\b`, 'i').test(words))
+      || !permits.userWroteCount(transcript.path, transcript.agent, words))
+      return res.status(403).json({ error: 'Give one exact user message from the controller chat that names this group and each task for this membership change.' });
+  } else if (!fromDashboard(req)) {
     const actor = req.get('x-tb-actor') || '';
     const ids = Array.isArray(add) ? add.map(String) : add ? [String(add)] : [];
     if (name || color || tasks || remove || !ids.length || managerRole.role(actor)?.id !== g.id || ids.some(id => !managerRole.check(actor, 'group-add', id, g.id).ok))

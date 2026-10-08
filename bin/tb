@@ -147,7 +147,10 @@ const HELP = `tb — Taskboard command line
   tb new --batch <plan.json>         [{ agent, folder, title, prompt, account?, model?, worktree?, group?, after?, replaces?, follows?, related? }, …]
   tb ask spin-off <task> [--answer n] [--title <t>] [--agent claude|codex|antigravity] [--account <id>] [--folder <path>] [--worktree <branch>]
                                      start from a completed BTW answer; n is its 1-based position
-  tb group list | tb group add <group> <task…> | tb group rm <group> <task…>
+  tb group list | tb group add|rm <group> <task…> [--user-request "exact user message" for controller]
+  tb group create <name> [--task <task> …] --user-request "exact user message"   controller only
+  tb manager set <task> --group <group> [--preset watch|direct|create] --user-request "exact user message"
+  tb manager remove --group <group> --user-request "exact user message"   controller only
   tb doc send <task>:<file> <task>   send a named document from one task's outbox to another task's inbox.
                                      A card is needed unless an allow always rule or the all-task communication setting applies.
   tb doc read <task>:<file>          read a named Markdown or text file from another task's outbox when all-task communication is on.
@@ -491,11 +494,15 @@ switch (cmd) {
     break;
   }
   case 'manager': {
-    if (args[1] !== 'set' || process.env.TASK_ID !== 'controller') { console.error('tb manager set <task> --group <group> --user-request "exact user message"'); process.exit(1); }
-    const group = flag('--group'), userRequest = flag('--user-request');
+    if (!['set', 'remove'].includes(args[1]) || process.env.TASK_ID !== 'controller') { console.error('tb manager set <task> --group <group> [--preset watch|direct|create] --user-request "exact user message" | tb manager remove --group <group> --user-request "exact user message"'); process.exit(1); }
+    const group = flag('--group'), userRequest = flag('--user-request'), preset = flag('--preset');
     if (!group || !userRequest) { console.error('Give --group and --user-request.'); process.exit(1); }
-    const taskRef = args[2] === 'none' ? null : (await task(args[2])).id;
-    console.log(JSON.stringify(await call('POST', `/api/manager/${encodeURIComponent(group)}`, { task: taskRef, userRequest }), null, 2));
+    if (preset && !['watch', 'direct', 'create'].includes(preset)) { console.error('Choose --preset watch, direct or create.'); process.exit(1); }
+    if (args[1] === 'remove' && (args[2] || preset)) { console.error('tb manager remove takes only --group and --user-request.'); process.exit(1); }
+    if (args[1] === 'set' && !args[2]) { console.error('Give a task to manage the group. Use tb manager remove to remove the role.'); process.exit(1); }
+    if (args[2] === 'none' && preset) { console.error('A preset needs a manager task.'); process.exit(1); }
+    const taskRef = args[1] === 'remove' || args[2] === 'none' ? null : (await task(args[2])).id;
+    console.log(JSON.stringify(await call('POST', `/api/manager/${encodeURIComponent(group)}`, { task: taskRef, userRequest, ...(preset ? { preset } : {}) }), null, 2));
     break;
   }
   case 'plan': {
@@ -635,14 +642,30 @@ switch (cmd) {
     break;
   }
   case 'group': {
-    const [sub, name, ...refs] = rest; const gs = await call('GET', '/api/groups');
+    const [sub, name, ...refs] = rest;
+    if (sub === 'create') {
+      if (process.env.TASK_ID !== 'controller') { console.error('tb group create: controller only'); process.exit(1); }
+      const userRequest = flag('--user-request');
+      if (!name || !userRequest) { console.error('tb group create <name> [--task <task> …] --user-request "exact user message"'); process.exit(1); }
+      const ids = [];
+      while (args.includes('--task')) { const ref = flag('--task'); if (!ref) { console.error('Give a task after --task.'); process.exit(1); } ids.push((await task(ref)).id); }
+      if (args.length !== 3) { console.error(`Unknown group create arguments: ${args.slice(3).join(' ')}`); process.exit(1); }
+      const g = await call('POST', '/api/groups', { name, tasks: ids, userRequest });
+      console.log(`${g.name} (${g.id}): created with ${g.tasks.length} task(s).`);
+      break;
+    }
+    const gs = await call('GET', '/api/groups');
     if (sub === 'list') { console.log(gs.map(g => `${g.name} (${g.tasks.length})`).join('\n') || 'No groups.'); break; }
+    if (!['add', 'rm'].includes(sub) || !name) { console.error('tb group add|rm <group> <task…> [--user-request "exact user message" for controller]'); process.exit(1); }
+    const userRequest = flag('--user-request');
+    const taskRefs = args.slice(3);
+    if (!taskRefs.length) { console.error('Give at least one task.'); process.exit(1); }
+    if (process.env.TASK_ID === 'controller' && !userRequest) { console.error('Give --user-request with the exact user message.'); process.exit(1); }
     let g = gs.find(x => x.name === name || x.id === name);
-    if (!g && sub === 'add') g = await call('POST', '/api/groups', { name });
     if (!g) { console.error(`tb: no group ${name}`); process.exit(1); }
-    const ids = []; for (const r of refs) ids.push((await task(r)).id);
-    await call('PATCH', `/api/groups/${g.id}`, sub === 'add' ? { add: ids } : { remove: ids });
-    console.log(`${g.name}: ${sub === 'add' ? 'added' : 'removed'} ${refs.join(', ')}`);
+    const ids = []; for (const r of taskRefs) ids.push((await task(r)).id);
+    await call('PATCH', `/api/groups/${g.id}`, sub === 'add' ? { add: ids, userRequest } : { remove: ids, userRequest });
+    console.log(`${g.name}: ${sub === 'add' ? 'added' : 'removed'} ${taskRefs.join(', ')}`);
     break;
   }
   // the allow always rules (server/allow-rules.ts). Read only: tasks and the controller cannot add or revoke a rule.
