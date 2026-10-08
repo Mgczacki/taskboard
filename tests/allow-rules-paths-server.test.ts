@@ -10,7 +10,7 @@
 // deliveries in one hour, and the cards that keep no choice (stop by a manager, a document between two groups).
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -44,6 +44,10 @@ writeFileSync(join(tbdir, 'task-tokens.json'), JSON.stringify(TOKENS));
 const now = Date.now();
 writeFileSync(join(tbdir, 'manager-actions.jsonl'), Array.from({ length: 30 }, (_, i) => JSON.stringify({ actor: 'm', group: 'alpha', action: 'send', target: 'a2', result: 'done', at: new Date(now - 60000 + i).toISOString() })).join('\n') + '\n');
 writeFileSync(join(vault, 'tasks', 'a1', 'outbox', 'report.md'), '# Report\n');
+writeFileSync(join(vault, 'tasks', 'm', 'outbox', 'report.md'), '# Manager report\n');
+writeFileSync(join(vault, 'tasks', 'a1', 'outbox', 'public.md'), 'password=not-for-sharing\n');
+writeFileSync(join(vault, 'tasks', 'a1', 'private.md'), '# Private\n');
+symlinkSync(join(vault, 'tasks', 'a1', 'private.md'), join(vault, 'tasks', 'a1', 'outbox', 'linked.md'));
 
 const submitted = (id: string) => { const f = join(vault, 'tasks', id, 'submitted.jsonl'); return existsSync(f) ? readFileSync(f, 'utf8').trim().split('\n').filter(Boolean).map(l => JSON.parse(l).text as string) : []; };
 const pause = (ms: number) => new Promise(r => setTimeout(r, ms));
@@ -78,6 +82,48 @@ test('allow always on ordinary, cross-group and manager message cards: one way o
       assert.equal((await post(`/api/approvals/${r.data.approval.id}/deny`, {}, user)).data.state, 'denied');
       return r.data.approval;
     };
+    const read = (from: string, to: string, name: string) => post('/api/docs/read', { from: to, name }, as(from));
+    assert.equal((await read('b1', 'a1', 'report.md')).status, 403, 'off by default');
+    assert.equal((await req('PATCH', '/api/info', { allTaskCommunication: true }, as('a1'))).status, 403, 'tasks cannot change the setting');
+    await cardThenDeny('a1', 'b1', 'Off before setting');
+    assert.equal((await req('PATCH', '/api/info', { allTaskCommunication: true }, user)).data.settings.permissions.allTaskCommunication, true);
+    for (const [from, to] of [['a1', 'b1'], ['m', 'b1'], ['a1', 'a2']]) {
+      const r = await send(from, to, `Global ${from} to ${to}`);
+      assert.equal(r.status, 200, JSON.stringify(r.data));
+      assert.equal(r.data.allTaskCommunication, true);
+    }
+    const globalDoc = await post('/api/docs/send', { from: 'a1', name: 'report.md', to: 'b1' }, as('a1'));
+    assert.equal(globalDoc.status, 200, JSON.stringify(globalDoc.data));
+    assert.equal(globalDoc.data.allTaskCommunication, true);
+    const managerDoc = await post('/api/docs/send', { from: 'm', name: 'report.md', to: 'b1' }, as('m'));
+    assert.equal(managerDoc.status, 200, JSON.stringify(managerDoc.data));
+    assert.equal(managerDoc.data.allTaskCommunication, true);
+    assert.equal((await read('b1', 'a1', 'report.md')).data.content, '# Report\n');
+    const cliRead = spawnSync(process.execPath, ['bin/tb', 'doc', 'read', '31:report.md'], { cwd: process.cwd(), env: { ...env, TB_URL: base, TB_TOKEN_FILE: join(tbdir, 'token'), TB_TASK_TOKEN: TOKENS.b1, TASK_ID: 'b1' }, encoding: 'utf8' });
+    assert.equal(cliRead.status, 0, cliRead.stderr);
+    assert.equal(cliRead.stdout, '# Report\n');
+    assert.equal((await post('/api/docs/read', { from: 'a1', name: 'report.md' }, { ...as('b1'), 'x-tb-actor': 'a1' })).status, 403, 'a task cannot claim another task identity');
+    for (const name of ['../report.md', '.secret.md', 'token.txt', '/tmp/report.md']) assert.notEqual((await read('b1', 'a1', name)).status, 200);
+    for (const name of ['public.md', 'linked.md']) assert.notEqual((await read('b1', 'a1', name)).status, 200, `${name} stays private`);
+    assert.equal((await read('b1', 'a1', 'missing.md')).status, 400);
+    assert.equal((await read('b1', 'b1', 'report.md')).status, 403, 'a task does not use this route for its own files');
+    assert.equal((await read('controller', 'a1', 'report.md')).status, 403, 'the controller cannot use task reads');
+    for (let i = 2; i < 30; i++) assert.equal((await read('b1', 'a1', 'report.md')).status, 200);
+    assert.equal((await read('b1', 'a1', 'report.md')).status, 429, 'reads have a limit per task pair');
+    const globalAudit = readFileSync(join(tbdir, 'all-task-communication.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(globalAudit.filter(row => row.event === 'delivered' && row.kind === 'read' && row.from === 'b1' && row.to === 'a1').length, 30);
+    assert.equal((await req('PATCH', '/api/info', { allTaskCommunication: false }, user)).data.settings.permissions.allTaskCommunication, false);
+    assert.equal((await read('b1', 'a1', 'report.md')).status, 403, 'revocation takes effect at once');
+    await cardThenDeny('a1', 'b1', 'Off after setting');
+    const offDoc = await post('/api/docs/send', { from: 'a1', name: 'report.md', to: 'b1' }, as('a1'));
+    assert.equal(offDoc.status, 202, 'the document needs a card again');
+    await post(`/api/approvals/${offDoc.data.approval.id}/deny`, {}, user);
+    assert.equal((await req('PATCH', '/api/info', { agentsNeedApproval: false }, user)).status, 200);
+    await cardThenDeny('a1', 'b1', 'Cross-group still needs a card when general agent approvals are off');
+    const offCrossDoc = await post('/api/docs/send', { from: 'a1', name: 'report.md', to: 'b1' }, as('a1'));
+    assert.equal(offCrossDoc.status, 202, 'cross-group document approval stays in force');
+    await post(`/api/approvals/${offCrossDoc.data.approval.id}/deny`, {}, user);
+    assert.equal((await req('PATCH', '/api/info', { agentsNeedApproval: true }, user)).status, 200);
     // a message that an allow always rule delivers without a card
     const underRule = async (from: string, to: string, text: string, rule: string) => {
       const r = await send(from, to, text);

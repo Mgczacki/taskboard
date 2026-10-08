@@ -135,8 +135,8 @@ const HELP = `tb — Taskboard command line
                                      continue the task on that account, with a handoff when needed
   tb send <task> "<text>"            type (or paste, when long) text into the agent's input box, check that the box
                                      holds it, then press Enter. Empty text is refused.
-                                     A message across groups waits for your card. Other task messages wait for a
-                                     card unless your allow always rule covers them.
+                                     Task messages wait for a card unless an allow always rule or the all-task
+                                     communication setting covers them. Cross-group messages also need a card when both are off.
   tb allow list [--json]             the allow always rules: which task may type into or send documents to which task without a card.
                                      Read only. Only the user adds or revokes a rule, on the dashboard.
   tb resume <task>                   bring back a parked or archived task; then use tb send
@@ -148,9 +148,9 @@ const HELP = `tb — Taskboard command line
   tb ask spin-off <task> [--answer n] [--title <t>] [--agent claude|codex|antigravity] [--account <id>] [--folder <path>] [--worktree <branch>]
                                      start from a completed BTW answer; n is its 1-based position
   tb group list | tb group add <group> <task…> | tb group rm <group> <task…>
-  tb doc send <task>:<file> <task>   send a document from one task's outbox to another task's inbox. To another task,
-                                     it waits for your card across groups. Other task documents wait unless your
-                                     allow always rule covers them.
+  tb doc send <task>:<file> <task>   send a named document from one task's outbox to another task's inbox.
+                                     A card is needed unless an allow always rule or the all-task communication setting applies.
+  tb doc read <task>:<file>          read a named Markdown or text file from another task's outbox when all-task communication is on.
   tb dep add <task> --on <task> [--note "<text>"]     <task> is blocked by the other task until it is archived
   tb dep add <task> --replaces <task> [--folded] [--note "<text>"]
                                      <task> replaces the other task (--folded: its work went into <task>); parks it.
@@ -553,7 +553,7 @@ switch (cmd) {
     const t = await task(args[1]); const r = await call('POST', `/api/tasks/${t.id}/send`, { text, priority });
     if (r?.approved || r?.approval) break;
     // delivered: typed and Enter pressed. queued: nothing typed yet, the reason says why (failed exits in call)
-    const rule = r?.allowedBy ? ` No card: the user's allow always rule ${r.allowedBy} covers messages from this task to #${t.num}.` : r?.managerRule ? ` No card: the group manager rule of ${r.managerRule} covers messages from this task to its manager #${t.num}.` : '';
+    const rule = r?.allowedBy ? ` No card: the user's allow always rule ${r.allowedBy} covers messages from this task to #${t.num}.` : r?.allTaskCommunication ? ' No card: the all-task communication setting covers this message.' : r?.managerRule ? ` No card: the group manager rule of ${r.managerRule} covers messages from this task to its manager #${t.num}.` : '';
     if (r?.state === 'queued') console.log(`Queued for #${t.num}, not typed yet: ${r.reason} ${r.next || 'Taskboard types it when the input box is empty.'} The dashboard shows it on the task.${rule}`);
     else console.log(`Delivered to #${t.num}: typed into its input box, and Enter was pressed.${r?.warning ? ` ${r.warning}` : ''}${rule}`);
     break;
@@ -663,12 +663,21 @@ switch (cmd) {
     break;
   }
   case 'doc': {
+    if (rest[0] === 'read') {
+      const spec = rest[1] || ''; const cut = spec.indexOf(':');
+      if (cut < 1 || !spec.slice(cut + 1)) { console.error('Usage: tb doc read <task>:<file>'); process.exit(1); }
+      const from = await task(spec.slice(0, cut));
+      const r = await call('POST', '/api/docs/read', { from: from.id, name: spec.slice(cut + 1) });
+      process.stdout.write(r.content);
+      break;
+    }
     if (rest[0] !== 'send') { console.log(HELP); break; }
     const [src, dst] = rest.slice(1); const [fromRef, name] = src.split(':');
     const from = await task(fromRef), to = await task(dst);
     const r = await call('POST', '/api/docs/send', { from: from.id, name, to: to.id });
     if (r?.approved || r?.approval) break;
     if (r.allowedBy) console.log(`No card: the user's allow always rule ${r.allowedBy} covers documents from this task to #${to.num}.`);
+    if (r.allTaskCommunication) console.log('No card: the all-task communication setting covers this document.');
     if (r.managerRule) console.log(`No card: the group manager rule of ${r.managerRule} covers documents from this task to its manager #${to.num}.`);
     if (r.delivery === 'delivered') console.log(`Copied to ${r.path}. Delivered: #${to.num} was told about the file.`);
     else if (r.delivery === 'queued') console.log(`Copied to ${r.path}. Queued: #${to.num} was not told yet. ${r.reason} Taskboard tells it when its input box is empty${to.agent === 'claude' ? ', at its next tool call or at its next prompt' : ''}.`);

@@ -11,6 +11,7 @@ export const SECTIONS: SectionDef[] = [
     { id: 'tasks', title: 'Managing tasks', settings: [
       { id: 'controllerManagesTasks', label: 'The controller may create and manage tasks without asking', words: 'tb new send park archive resume approval' },
       { id: 'agentsManageTasks', label: 'Other agents may start, type into, set aside and archive tasks without asking', words: 'tb approval' },
+      { id: 'allTaskCommunication', label: 'Tasks may send messages and outbox files to any other task without a card', words: 'cross group manager tb send tb doc send tb doc read named outbox file' },
     ] },
     { id: 'controllerApprovals', title: 'Controller approvals', settings: [
       { id: 'controllerApprovalKinds', label: 'Let the controller approve this kind when I ask in the chat', words: 'tb approve merge push force push release restart scope permit message draft chat' },

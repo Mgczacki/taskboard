@@ -1,7 +1,7 @@
 // Inbox and outbox. Each task folder has outbox/ (documents the agent writes for you or other agents)
 // and inbox/ (documents sent to it). Sending copies the file, so the agent reads it like any local file.
 // inbox/.sent.json records where each inbox file came from.
-import { copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
+import { closeSync, constants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, statSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { basename, extname, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +13,44 @@ export interface DocInfo { name: string; path: string; kind: 'md' | 'html' | 'ot
 
 export const outboxDir = (id: string) => join(store.taskDir(id), 'outbox');
 export const inboxDir = (id: string) => join(store.taskDir(id), 'inbox');
+const sharedName = (name: string) => typeof name === 'string' && name.length > 0 && name.length <= 255 && !name.startsWith('.') && !/[\\/\0]/.test(name) && !/(?:^|[._-])(?:env|secret|secrets|credential|credentials|token|key|private)(?:[._-]|$)/i.test(name);
+export function namedOutboxFile(task: string, name: string): string {
+  if (!sharedName(name)) throw new Error('Give one public file name from the task outbox.');
+  const dir = outboxDir(task), path = join(dir, name);
+  if (!existsSync(dir) || !lstatSync(dir).isDirectory() || realpathSync(dir) !== dir || !existsSync(path) || !lstatSync(path).isFile() || realpathSync(path) !== path)
+    throw new Error(`No regular file named ${name} in the task outbox.`);
+  return path;
+}
+export function readOutboxBuffer(task: string, name: string, maxBytes?: number): Buffer {
+  const path = namedOutboxFile(task, name);
+  const fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+  try {
+    const st = fstatSync(fd);
+    if (!st.isFile()) throw new Error('The outbox item is not a regular file.');
+    if (maxBytes !== undefined) {
+      if (st.size > maxBytes) throw new Error('The file exceeds the 1 MiB read limit.');
+      const data = Buffer.alloc(maxBytes + 1);
+      let n = 0;
+      while (n < data.length) {
+        const count = readSync(fd, data, n, data.length - n, n);
+        if (!count) break;
+        n += count;
+      }
+      if (n > maxBytes) throw new Error('The file exceeds the 1 MiB read limit.');
+      return data.subarray(0, n);
+    }
+    return readFileSync(fd);
+  } finally { closeSync(fd); }
+}
+export function readNamedOutboxFile(task: string, name: string): string {
+  if (!/\.(?:md|markdown|txt)$/i.test(name)) throw new Error('Read supports Markdown and text files only.');
+  const data = readOutboxBuffer(task, name, 1_048_576);
+  const text = new TextDecoder('utf-8', { fatal: true }).decode(data);
+  if (text.includes('\0')) throw new Error('The file is not plain text.');
+  if (/-----BEGIN (?:RSA |EC |OPENSSH |DSA )?PRIVATE KEY-----|\b(?:password|passwd|secret|api[_-]?key|access[_-]?token|refresh[_-]?token)\s*[:=]\s*[^\s#]{8,}|\b(?:AKIA|ASIA)[A-Z0-9]{16}\b|\bgh[pousr]_[A-Za-z0-9_]{20,}\b/i.test(text))
+    throw new Error('The file appears to contain credentials. Ask the source task for a file without them.');
+  return text;
+}
 const sentFile = (id: string) => join(inboxDir(id), '.sent.json');
 const kindOf = (n: string): DocInfo['kind'] => /\.(md|markdown|txt)$/i.test(n) ? 'md' : /\.html?$/i.test(n) ? 'html' : 'other';
 
@@ -58,16 +96,13 @@ export const counts = (id: string) => ({ inbox: fileCount(inboxDir(id)), outbox:
 const pendingFile = (id: string) => join(inboxDir(id), '.pending.json');
 
 export function send(fromTask: string, name: string, toTask: string, expectedHash?: string): string {
-  const src = join(outboxDir(fromTask), basename(name));
-  if (!existsSync(src)) throw new Error(`No such file in #${store.get(fromTask)?.num}'s outbox: ${name}`);
-  const approvedContent = expectedHash === undefined ? undefined : readFileSync(src);
-  if (approvedContent && createHash('sha256').update(approvedContent).digest('hex') !== expectedHash)
+  const content = readOutboxBuffer(fromTask, name);
+  if (expectedHash !== undefined && createHash('sha256').update(content).digest('hex') !== expectedHash)
     throw new Error('The document content changed. Request a new card.');
   mkdirSync(inboxDir(toTask), { recursive: true });
   let target = basename(name), n = 2;
   while (existsSync(join(inboxDir(toTask), target))) target = basename(name, extname(name)) + `-${n++}` + extname(name);
-  if (approvedContent) writeFileSync(join(inboxDir(toTask), target), approvedContent);
-  else copyFileSync(src, join(inboxDir(toTask), target));
+  writeFileSync(join(inboxDir(toTask), target), content);
   const sent = readJson<Record<string, unknown>>(sentFile(toTask), {});
   sent[target] = { task: fromTask, at: new Date().toISOString(), orig: basename(name) };
   writeFileSync(sentFile(toTask), JSON.stringify(sent, null, 2));
