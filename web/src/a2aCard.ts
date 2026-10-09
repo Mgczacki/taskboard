@@ -3,7 +3,7 @@
 export interface CardInput { state: string; direction: 'in' | 'out'; allowed_actions: string[]; body_flags: number | null; route_person?: boolean }
 export interface CardControls { label: string; approve: boolean; reject: boolean; removeFlagged: boolean; send: boolean; sendLabel: string; route: boolean }
 
-export const stateLabel: Record<string, string> = { draft: 'Draft', approved: 'Approved', sending: 'Sending', sent: 'Sent', delivery_uncertain: 'Delivery uncertain', rejected: 'Rejected',
+export const stateLabel: Record<string, string> = { draft: 'Draft', approved: 'Approved', sending: 'Sending', queued: 'Queued', send_failed: 'Delivery stopped', permanent_failure: 'Delivery stopped', sent: 'Sent', delivery_uncertain: 'Delivery uncertain', rejected: 'Rejected',
   held: 'Waiting for approval', failed: 'Could not be read', quarantined: 'Quarantine' };
 
 export function cardControls(m: CardInput): CardControls {

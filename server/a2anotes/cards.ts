@@ -15,6 +15,8 @@
 // A2A Notes keeps the state. sync() makes the cards again from it, so a restart does not lose a card, and it closes a
 // card when its message changed or was decided somewhere else. A changed draft gets a new card with a new ID, so a
 // click on the old card never approves text that you did not see. A card that runs now is never made a second time.
+import { createHash } from 'node:crypto';
+import { readJson, savePrivate } from './files.ts';
 import * as approvals from '../approvals.ts';
 import * as tasks from '../store.ts';
 import { A2AError } from './client.ts';
@@ -24,6 +26,7 @@ export interface Proposal { task: string | null; at: string }
 export interface CardDeps {
   // calls an A2A Notes tool as the person; undefined when A2A Notes is off
   call: (tool: string, args: Record<string, unknown>) => Promise<any> | undefined;
+  deliveryFile?: string;
   proposals: () => Record<string, Proposal>;
   clearProposal: (id: string) => void;
   route: (id: string, task: string) => Promise<{ task: string; file: string }>;
@@ -70,6 +73,7 @@ export function a2aCards(deps: CardDeps) {
         if (m.approver === 'nobody' && m.check?.verdict === 'quarantine') return `held:${m.hash}`;
         return null;
       }
+      if (m.delivery) return null;
       // approved and not sent: the send failed or did not happen yet, or Slack did not confirm the delivery
       if ((m.state === 'approved' && m.approved_by) || m.state === 'delivery_uncertain') return `send:${m.hash}:${m.state}:${m.updated}`;
       return null;
@@ -115,9 +119,9 @@ export function a2aCards(deps: CardDeps) {
   }
 
   // Tells the task that wrote a draft what happened to it: a file in its inbox, and a line in its log.
-  async function tellWriter(m: any, what: string, text: string, next: string) {
+  async function tellWriter(m: any, what: string, text: string, next: string, suffix = stamp()) {
     const to = writer(m);
-    await deps.notify(to, `a2anotes-${m.id}-${what}-${stamp()}.md`, `# Your draft to ${deps.name(m)}: ${what}\n\nSubject: ${m.subject}\nMessage: ${m.id}\n\n${text}\n`).catch(() => {});
+    await deps.notify(to, `a2anotes-${m.id}-${what}-${suffix}.md`, `# Your draft to ${deps.name(m)}: ${what}\n\nSubject: ${m.subject}\nMessage: ${m.id}\n\n${text}\n`).catch(() => {});
     // the log is for the user: it names the draft of this task, not "your draft"
     log(to, text.split('\n')[0].replace('your draft', 'the draft of this task'), next);
   }
@@ -125,15 +129,46 @@ export function a2aCards(deps: CardDeps) {
   // Sends an approved draft. A failure goes to the card result and to the task, in plain words.
   async function send(m: any, hash: string, d: approvals.Decider = { by: 'user' }) {
     const who = d.by === 'controller' ? 'The controller, on the user\'s request in its chat,' : 'The user';
-    try { await deps.call('a2anotes_send', { id: m.id, expected_hash: hash, request_id: `card-${m.id}-${hash.slice(0, 16)}` }); }
+    let result: any;
+    try { result = await deps.call('a2anotes_send', { id: m.id, expected_hash: hash, request_id: `card-${m.id}-${hash.slice(0, 16)}` }); }
     catch (e) {
+      const current = await Promise.resolve(deps.call('a2anotes_get_message', { id: m.id })).catch(() => undefined);
+      if (current?.delivery?.nextAttemptAt) {
+        await deliveryNotice(current);
+        return `Approved and queued. Next attempt: ${current.delivery.nextAttemptAt}.`;
+      }
       const why = explainSendError(e instanceof A2AError ? e.code : 'error', (e as Error).message);
       await tellWriter(m, 'not-sent', `${who} approved your draft to ${deps.name(m)} at ${clock()}, but it was not sent. ${why}`,
-        'The user can send it again from the card on the dashboard. Do not write a new draft unless the user asks.');
+        current?.delivery?.stoppedAt ? 'Read the final failure in A2A Notes. This note will not retry.' : 'Check the existing draft when A2A Notes is reachable.');
       throw new Error(`Approved, but not sent. ${why}`);
     }
+    if (result?.delivery && result.state !== 'sent') {
+      await deliveryNotice(result);
+      if (result.delivery.stoppedAt) throw new Error(`Approved, but delivery stopped. ${result.error || result.delivery.failureCode}`);
+      return `Approved and queued. Next attempt: ${result.delivery.nextAttemptAt || 'being checked'}.`;
+    }
     await tellWriter(m, 'sent', `${who} approved your draft to ${deps.name(m)}, and Taskboard sent it at ${clock()}.`, 'The draft is sent. Nothing else is needed for it.');
+    if (result?.delivery && deps.deliveryFile) saveDeliveryKey(result);
     return `Approved and sent to ${deps.name(m)} at ${clock()}.`;
+  }
+
+  const deliveryKey = (m: any) => `${m.hash}:${m.state}:${m.delivery?.attempts}:${m.delivery?.nextAttemptAt || ''}:${m.delivery?.stoppedAt || ''}`;
+  function saveDeliveryKey(m: any) {
+    if (!deps.deliveryFile) return;
+    const records = readJson<Record<string, string>>(deps.deliveryFile, {});
+    records[m.id] = deliveryKey(m); savePrivate(deps.deliveryFile, records);
+  }
+  async function deliveryNotice(m: any) {
+    if (!deps.deliveryFile || m.direction !== 'out' || !m.delivery ||
+      !['queued', 'delivery_uncertain', 'sent', 'permanent_failure', 'send_failed'].includes(m.state) ||
+      !['task', 'controller'].includes(m.metadata?.['taskboard.proposed_by'])) return;
+    if (readJson<Record<string, string>>(deps.deliveryFile, {})[m.id] === deliveryKey(m)) return;
+    const text = m.state === 'sent' ? `Slack confirmed delivery of the approved note to ${deps.name(m)}.`
+      : m.delivery.stoppedAt ? `Delivery stopped for the approved note to ${deps.name(m)}. ${m.error || m.delivery.failureCode}`
+      : `The approved note to ${deps.name(m)} waits for delivery. Next attempt: ${m.delivery.nextAttemptAt}. Slack method: ${m.delivery.lastMethod || 'not recorded'}.`;
+    await tellWriter(m, 'delivery', text, m.delivery.stoppedAt ? 'Read the final failure in A2A Notes. This note will not retry.'
+      : m.state === 'sent' ? 'The note is sent.' : 'Wait for the service retry. The approval remains recorded.', createHash('sha256').update(deliveryKey(m)).digest('hex').slice(0, 16));
+    saveDeliveryKey(m);
   }
 
   async function create(id: string, key: string) {
@@ -146,7 +181,7 @@ export function a2aCards(deps: CardDeps) {
       ? proposal?.task ? `give a message from ${deps.name(m)} to ${taskName(proposal.task)}` : `accept a message from ${deps.name(m)}`
       : stage === 'send' ? `send an approved message to ${deps.name(m)}: ${m.subject}` : `send a message to ${deps.name(m)}: ${m.subject}`;
     const current = async () => { const x = await deps.call('a2anotes_get_message', { id }); if (!x || x.hash !== hash) throw new Error('The message changed. Read the new version on its card.'); return x; };
-    // after a decision, sync again at once: a failed send gets its Send again card without a wait for the next check
+    // Refresh delivery status after the decision. The stored approval remains in A2A Notes.
     const later = () => { setTimeout(() => { void sync(); }, 50).unref?.(); };
     const card = approvals.request({ actor, action: m.direction === 'in' ? 'mail-in' : 'mail-out', summary, detail: detail(m, stage), payload: payloadOf(m, stage, proposal) }, d => decide(d).finally(later), {
       onDeny: () => { deny().catch(() => {}).finally(later); },
@@ -199,10 +234,16 @@ export function a2aCards(deps: CardDeps) {
 
   let running: Promise<void> | undefined, again = false;
   async function doSync() {
-    const list = await deps.call('a2anotes_list_messages', { direction: 'all', limit: 100 });
-    if (!list) return;
+    const messages = [];
+    let cursor: string | undefined;
+    do {
+      const list = await deps.call('a2anotes_list_messages', { direction: 'all', limit: 100, ...(cursor ? { cursor } : {}) });
+      if (!list) return;
+      messages.push(...list.messages); cursor = list.next_cursor;
+    } while (cursor);
     const seen = new Set<string>();
-    for (const m of list.messages) {
+    for (const m of messages) {
+      await deliveryNotice(m);
       seen.add(m.id);
       const entry = open.get(m.id);
       const state = entry ? approvals.get(entry.approval)?.state : undefined;

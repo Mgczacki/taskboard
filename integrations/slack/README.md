@@ -14,3 +14,34 @@ A2A Notes signs in with the redirect URL `http://localhost:<port>/slack/callback
 The Slack app must list that exact URL under OAuth & Permissions, Redirect URLs. If it does not, Slack shows "redirect_uri did not match any configured URIs".
 
 To use another app, set the client ID and team ID on the Settings page (Integrations, A2A Notes, Choose the Slack app). You can also set `TASKBOARD_A2A_SLACK_CLIENT_ID` and `TASKBOARD_A2A_SLACK_TEAM_ID`. The Settings page value has priority.
+
+
+## Replies and queued delivery
+
+A2A Notes 0.5.0 displays an explicit reply marker in each sent Slack note.
+The person copies that first line and writes the reply on the next line.
+The reply can arrive in the direct message conversation or its thread.
+
+The service verifies the sender against the original recipient.
+It preserves the original audience and runs the current incoming checks.
+Taskboard uses verified local metadata to find the originating task.
+Ordinary Slack text creates no agent instruction or action approval.
+
+Outgoing approval stores a durable queued note.
+A Slack 429 sets the next attempt from Retry-After.
+Later 429 responses use capped exponential backoff with jitter.
+A queued note keeps the approval for unchanged content.
+Taskboard shows the next attempt and final failure in the Inbox.
+The graph also shows delivery status.
+
+The adapter records which Slack method failed.
+An uncertain post triggers a lookup and does not trigger another post.
+Saved upload progress prevents the adapter from sharing a file twice.
+Invalid credentials stop delivery.
+Changed content or policy stops delivery.
+
+Taskboard installs the tested service from the local package in `integrations/a2a-notes/a2a-notes-0.5.0.tgz`.
+The lockfile records the package integrity.
+The source revision is `2f68d9bb94359a5b14791dd04a1f5b399d821e18` in the A2A Notes repository.
+A future service update must replace that package and update the lockfile.
+The existing Slack app needs no new callback endpoint.
