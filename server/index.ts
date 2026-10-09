@@ -55,6 +55,7 @@ import * as store from './store.ts';
 import * as stats from './stats.ts';
 import * as taskGit from './task-git.ts';
 import * as taskRepair from './task-repair.ts';
+import * as taskMergeBase from './task-merge-base.ts';
 import * as push from './push.ts';
 import * as pullRequest from './pull-request.ts';
 import * as restart from './restart.ts';
@@ -1199,6 +1200,17 @@ app.post('/api/git/rebase', async (req, res) => {
   if (req.body.base !== undefined && (typeof req.body.base !== 'string' || action !== 'start')) return res.status(400).json({ error: 'Give a base only to start a rebase, for example tb git rebase origin/master.' });
   if (req.body.stage !== undefined && (typeof req.body.stage !== 'string' || action !== 'continue')) return res.status(400).json({ error: 'Give --stage one path only with tb git rebase --continue.' });
   try { res.json({ result: await taskGit.rebaseTask(gitTask(task, req.body.worktree), action, undefined, req.body.base || undefined, req.body.stage) }); } catch (e) { fail(res, e); }
+});
+// tb git merge-from merges a base into the task branch with one merge commit (server/task-merge-base.ts). gitTask
+// accepts only the actor's own worktree or one of its attached worktrees.
+app.post('/api/git/merge-from', async (req, res) => {
+  const task = store.get(req.get('x-tb-actor') || '');
+  if (!task || task.role === 'controller') return res.status(403).json({ error: 'A Taskboard task must run tb git merge-from on its own branch.' });
+  const { action = 'start', base, stage = [] } = req.body as { action?: unknown; base?: unknown; stage?: unknown };
+  if (action !== 'start' && action !== 'continue' && action !== 'abort') return res.status(400).json({ error: 'Run tb git merge-from BASE, tb git merge-from --continue --stage PATH, or tb git merge-from --abort.' });
+  if (base !== undefined && (typeof base !== 'string' || action !== 'start')) return res.status(400).json({ error: 'Give a base only to start a merge, for example tb git merge-from origin/main.' });
+  if (!Array.isArray(stage) || stage.some(p => typeof p !== 'string') || (stage.length && action !== 'continue')) return res.status(400).json({ error: 'Give --stage PATH only with tb git merge-from --continue.' });
+  try { res.json({ result: await taskMergeBase.mergeBaseTask(gitTask(task, req.body.worktree), action, base as string | undefined, stage as string[]) }); } catch (e) { fail(res, e); }
 });
 app.post('/api/git/repair', async (req, res) => {
   const actorTask = store.get(req.get('x-tb-actor') || '');
