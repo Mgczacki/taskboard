@@ -101,6 +101,30 @@ test('CLI and routes review exact settings and explain a conflicting directory',
     assert.equal((await cards()).length, before);
     assert.ok(!JSON.stringify(await permits()).includes('do-not-store-this'));
 
+    for (const name of ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN']) {
+      const rejectedAws = await cli(['suggest', 'pwd', '--why', 'Reject AWS credentials', '--env', `${name}=do-not-store-this`]);
+      assert.equal(rejectedAws.code, 1);
+      assert.ok(!rejectedAws.out.includes('do-not-store-this'));
+      assert.equal((await cards()).length, before);
+      assert.ok(!JSON.stringify(await permits()).includes('do-not-store-this'));
+    }
+
+    const aws = await cli(['suggest', 'pwd', '--why', 'Review AWS selection', '--risk', 'Reads task output.', '--env', 'AWS_PROFILE=sekai', '--env', 'AWS_REGION=us-east-1', '--network']);
+    assert.equal(aws.code, 0, aws.out);
+    const ap = await latest();
+    assert.deepEqual(ap.steps[0].env, { AWS_PROFILE: 'sekai', AWS_REGION: 'us-east-1' });
+    assert.equal(ap.steps[0].command, 'pwd');
+    assert.equal(ap.steps[0].cwd, attached);
+    assert.equal(ap.steps[0].network, true);
+    assert.equal(ap.state, 'pending');
+    assert.equal(ap.riskClass, 'high');
+    const ac = await permitCard(ap.id);
+    assert.match(ac.detail, /Set AWS_PROFILE: sekai/);
+    assert.match(ac.detail, /Set AWS_REGION: us-east-1/);
+    assert.ok(ac.detail.includes(ap.stepHash));
+    assert.equal((await post(`/api/permits/${ap.id}/controller-approve`, {}, controllerHeaders)).status, 403);
+    await post(`/api/permits/${ap.id}/decide`, { approve: false }, userHeaders);
+
     // Legacy env text becomes separate fields and still needs user approval when policy is off.
     await patch({ controllerCanApprovePermits: false });
     const legacy = await post('/api/permits', { reason: 'Review legacy environment syntax', steps: [{ command: `env GH_CONFIG_DIR=${config} echo reviewed`, cwd: attached }] });

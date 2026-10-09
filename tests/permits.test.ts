@@ -350,6 +350,93 @@ test('named environment settings leave the command and enter the exact approval 
   assert.match(p.error || '', /approved steps changed/);
 });
 
+test('AWS selection stays in reviewed fields and reaches the child without path resolution', async () => {
+  const task = freshTask('aws-selection');
+  writeFileSync(join(task.cwd, 'aws-selection.mjs'), 'console.log(process.env.AWS_PROFILE, process.env.AWS_REGION);\n');
+  const env = { AWS_PROFILE: 'relay.catalog-1', AWS_REGION: 'us-east-1' };
+  for (const input of [
+    { command: 'node aws-selection.mjs', env },
+    { command: 'env AWS_PROFILE=relay.catalog-1 AWS_REGION=us-east-1 node aws-selection.mjs' },
+  ]) {
+    const p = permits.request(task, 'Review cloud selection', [{ ...input, cwd: task.cwd, network: true }]);
+    const step = p.steps[0];
+    assert.deepEqual(step.env, env);
+    assert.deepEqual(step.envPaths, {});
+    assert.deepEqual(step.argv, ['node', 'aws-selection.mjs']);
+    assert.equal(step.cwd, realpathSync(task.cwd));
+    assert.equal(step.network, true);
+    assert.equal(p.state, 'pending');
+    assert.equal(p.riskClass, 'high');
+    assert.equal(permits.controllerAllowed(p, task, true), false);
+    assert.match(permits.settingsDetail(step), /Set AWS_PROFILE: relay.catalog-1\nSet AWS_REGION: us-east-1/);
+    assert.ok(!permits.settingsDetail(step).includes('Resolved path:'));
+    await permits.run(p, task, 'user');
+    assert.equal(p.state, 'succeeded');
+    assert.equal(step.outputTail?.trim(), 'relay.catalog-1 us-east-1');
+  }
+  const supervised = permits.requestSupervised(task, 'aws-selection', 'Review script', 'node aws-selection.mjs', task.cwd, true, 'Writes task output.', { env });
+  let started = false;
+  const start = async (owner: any, config: any) => {
+    started = true;
+    assert.equal(owner.env.AWS_PROFILE, env.AWS_PROFILE);
+    assert.equal(owner.env.AWS_REGION, env.AWS_REGION);
+    assert.equal(config.cwd, realpathSync(task.cwd));
+    return {} as any;
+  };
+  const card = approvals.request({ actor: task.id, action: 'permit', summary: 'Review AWS selection', detail: supervised.steps[0].command, payload: { permitId: supervised.id } }, async () => {
+    await permits.runSupervised(supervised, task, start);
+    return 'Started.';
+  });
+  permits.attachApproval(supervised, card.id);
+  await approvals.decide(card.id, true, { by: 'user' });
+  assert.equal(started, true);
+  assert.equal(supervised.state, 'running');
+});
+
+test('changes to either approved AWS selection stop execution', async () => {
+  for (const name of ['AWS_PROFILE', 'AWS_REGION']) {
+    const task = freshTask(`aws-change-${name}`);
+    const p = permits.request(task, 'Review cloud selection', [{ command: 'echo reviewed', env: { AWS_PROFILE: 'relay', AWS_REGION: 'us-east-1' } }]);
+    p.steps[0].env![name] = name === 'AWS_PROFILE' ? 'other' : 'us-west-2';
+    let ran = false;
+    await permits.run(p, task, 'user', '', '', async () => { ran = true; return { code: 0, signal: null, output: '' }; });
+    assert.equal(ran, false);
+    assert.match(p.error || '', /approved steps changed/);
+  }
+});
+
+test('AWS credentials and malformed selection cannot enter records', () => {
+  const task = freshTask('aws-rejected');
+  for (const name of ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN', 'AWS_SECURITY_TOKEN', 'AWS_CREDENTIAL_FILE', 'AWS_SHARED_CREDENTIALS_FILE']) {
+    for (const input of [{ command: 'pwd', env: { [name]: 'do-not-store-this' } }, { command: `env ${name}=do-not-store-this pwd` }]) {
+      assert.throws(() => permits.request(task, 'Reject credentials', [input]), error => {
+        assert.ok(!String(error).includes('do-not-store-this'));
+        return /Secret values cannot enter a card/.test(String(error));
+      });
+    }
+  }
+  for (const value of ['', '/tmp/profile', 'relay\n', 'relay\nsecret', 'token=value', 'ghp_abcdefghijklmnop', 'AKIAABCDEFGHIJKLMNOP', 'ASIAABCDEFGHIJKLMNOP', 'x'.repeat(129)]) {
+    assert.throws(() => permits.validate(task, [{ command: 'pwd', env: { AWS_PROFILE: value } }]), /nonsecret profile name/);
+  }
+  for (const value of ['', '/tmp/region', 'us-east-1\n', 'us-east-1\nsecret', 'US-EAST-1', 'token=value']) {
+    assert.throws(() => permits.validate(task, [{ command: 'pwd', env: { AWS_REGION: value } }]), /region name/);
+  }
+  const previous = process.env.AWS_SECRET_ACCESS_KEY;
+  process.env.AWS_SECRET_ACCESS_KEY = 'credentialvalue123';
+  try {
+    assert.throws(() => permits.validate(task, [{ command: 'pwd', env: { AWS_PROFILE: 'credentialvalue123' } }]), /nonsecret profile name/);
+  } finally {
+    if (previous === undefined) delete process.env.AWS_SECRET_ACCESS_KEY;
+    else process.env.AWS_SECRET_ACCESS_KEY = previous;
+  }
+  for (const region of ['us-gov-west-1', 'cn-north-1', 'eu-isoe-west-1']) {
+    assert.equal(permits.validate(task, [{ command: 'pwd', env: { AWS_REGION: region } }]).steps[0].env!.AWS_REGION, region);
+  }
+  assert.throws(() => permits.validate(task, [{ command: 'env AWS_PROFILE=relay AWS_REGION=us-east-1 pnpm release' }]), /release or rollback/);
+  assert.throws(() => permits.validate(task, [{ command: 'env AWS_PROFILE=relay AWS_REGION=us-east-1 cat .env' }]), /credential file/);
+  assert.equal(permits.all().some(p => p.taskId === task.id), false);
+});
+
 test('only supported nonsecret settings can enter a record', () => {
   const task = freshTask('environment-secrets');
   for (const env of [{ GH_TOKEN: 'do-not-store-this' }, { PATH: '/tmp/bin' }, { NODE_OPTIONS: '--require evil' }, { TASKBOARD_DIR: '/tmp/tbdir' }]) {

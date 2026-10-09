@@ -288,9 +288,17 @@ A move between windows never changes a task's groups. A new task goes after the 
   - `CLOUDSDK_CONFIG`
   - `GOOGLE_APPLICATION_CREDENTIALS`
 
+  Cloud selection settings accept names instead of paths:
+
+  - `AWS_PROFILE`: 1 through 128 characters. Start with a letter or digit. Then use letters, digits, underscores, periods, or hyphens.
+  - `AWS_REGION`: a region name, such as `us-east-1` or `us-gov-west-1`.
+
+  For example, use `--env AWS_PROFILE=relay --env AWS_REGION=us-east-1` with `tb suggest` or `tb permit run-request`.
+  AWS credential values and other environment names remain rejected.
+
   Use `--unset-env GH_TOKEN` or `--unset-env GITHUB_TOKEN` to remove an inherited token.
   Steps in a JSON file use `env` and `unsetEnv` fields.
-  Supported `env NAME=PATH program args` commands move their settings to separate fields before a card forms.
+  Supported `env NAME=VALUE program args` commands move their settings to separate fields before a card forms.
   Unknown names and secret values cannot enter a permit.
   The card shows the `environment-values-in-command` rule when it converts this syntax.
   Approval runs the exact stored steps once. Requests with environment settings expire after 15 minutes.
