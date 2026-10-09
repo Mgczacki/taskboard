@@ -613,6 +613,8 @@ export function taskInstructions(t: Task, inlineRules = true) {
     `Use tb mail submit <subject> <body> to send a message to your own user's Inbox.`,
     mailWritingRules(false),
     `If you cannot run a command, use tb suggest "<command>" --why "<reason>" --risk "<risk>".`,
+    'tb suggest uses your current directory. Use --cwd <folder> to name a different directory.',
+    'Use --env GH_CONFIG_DIR=/absolute/path for a nonsecret setting. Use --unset-env GH_TOKEN to remove an inherited token.',
     `Do not paste a command into chat and ask the user to run it.`,
     `Use tb suggest --steps <file> --why "<reason>" for an ordered sequence.`,
     `The server stops after the first failed step. Read the result with tb permit result <id> --wait.`,

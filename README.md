@@ -273,6 +273,32 @@ A move between windows never changes a task's groups. A new task goes after the 
   group, sends SIGKILL after 5 s, and then ends processes that left the group (found by `TB_PROC_OWNER` in their
   environment). Resume starts the processes that the suspend ended. Deleting a group, or taking a task out of it,
   stops nothing.
+- **Permit commands:** `tb suggest "program args" --why "reason"` uses the CLI's current directory.
+  This includes each step without a cwd in a `--steps` file. `--cwd` selects another directory for a single command.
+  A directory rejection creates a card that grants no access. The card gives these facts:
+  - The resolved cwd.
+  - The conflicting worktree and its task.
+  - The rule `cwd-overlaps-other-worktree`.
+  - A supported correction that uses an attached worktree or requests one through `tb scope`.
+
+  Use `--env GH_CONFIG_DIR=/absolute/path` to request a nonsecret setting apart from the command.
+  These names accept absolute paths:
+  - `GH_CONFIG_DIR`
+  - `GIT_CONFIG_GLOBAL`
+  - `CLOUDSDK_CONFIG`
+  - `GOOGLE_APPLICATION_CREDENTIALS`
+
+  Use `--unset-env GH_TOKEN` or `--unset-env GITHUB_TOKEN` to remove an inherited token.
+  Steps in a JSON file use `env` and `unsetEnv` fields.
+  Supported `env NAME=PATH program args` commands move their settings to separate fields before a card forms.
+  Unknown names and secret values cannot enter a permit.
+  The card shows the `environment-values-in-command` rule when it converts this syntax.
+  Approval runs the exact stored steps once. Requests with environment settings expire after 15 minutes.
+  The approved hash includes the resolved configuration paths. Changed paths or settings stop execution.
+  The controller can approve low risk commands only when Settings permits this behavior.
+  High risk commands require an explicit user message and the configured controller policy.
+  Protected actions retain their existing approval requirements.
+  A permit cannot grant access to another task's worktree.
 - **Approved task run:** `tb permit run-request <name> --reason "text" --risk "text" --command "python3 /absolute/script.py" --cwd /absolute/folder --network`
   asks the user to start one script. The card shows the command, script SHA-256 hash, folder, network flag, task owner,
   and risk. Taskboard checks these facts again after approval. It starts the script as a task process without the short

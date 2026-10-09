@@ -330,3 +330,168 @@ test('quoted shell syntax stays a literal argument', async () => {
   assert.equal(p.state, 'succeeded');
   assert.equal(p.steps[0].outputTail?.trim(), 'one; echo two');
 });
+
+
+test('named environment settings leave the command and enter the exact approval hash', async () => {
+  const task = freshTask('environment');
+  const p = permits.request(task, 'Review nonsecret settings', [{ command: 'env -u GH_TOKEN -u GITHUB_TOKEN GH_CONFIG_DIR=/tmp/gh-test echo checked' }]);
+  assert.deepEqual(p.steps[0].argv, ['echo', 'checked']);
+  assert.deepEqual(p.steps[0].env, { GH_CONFIG_DIR: '/tmp/gh-test' });
+  assert.deepEqual(p.steps[0].unsetEnv, ['GH_TOKEN', 'GITHUB_TOKEN']);
+  assert.equal(p.steps[0].reviewRule, 'environment-values-in-command');
+  assert.ok(!p.steps[0].command.includes('GH_CONFIG_DIR'));
+  assert.ok(p.expiresAt);
+  assert.equal(permits.controllerAllowed(p, task, false), false);
+  assert.equal(permits.controllerAllowed(p, task, true), true);
+  p.steps[0].env!.GH_CONFIG_DIR = '/tmp/changed';
+  let ran = false;
+  await permits.run(p, task, 'user', '', '', async () => { ran = true; return { code: 0, signal: null, output: '' }; });
+  assert.equal(ran, false);
+  assert.match(p.error || '', /approved steps changed/);
+});
+
+test('only supported nonsecret settings can enter a record', () => {
+  const task = freshTask('environment-secrets');
+  for (const env of [{ GH_TOKEN: 'do-not-store-this' }, { PATH: '/tmp/bin' }, { NODE_OPTIONS: '--require evil' }, { TASKBOARD_DIR: '/tmp/tbdir' }]) {
+    assert.throws(() => permits.request(task, 'Unsupported setting', [{ command: 'pwd', env }]), e => {
+      assert.ok(!String(e).includes('do-not-store-this'));
+      return /Only GH_CONFIG_DIR/.test(String(e));
+    });
+  }
+  assert.throws(() => permits.validate(task, [{ command: 'env GH_TOKEN=do-not-store-this pwd' }]), /Only GH_CONFIG_DIR/);
+  assert.throws(() => permits.validate(task, [{ command: 'env -S "sh -c echo"' }]), /one executable/);
+  assert.throws(() => permits.validate(task, [{ command: 'env GH_CONFIG_DIR=/tmp/gh sh -c "echo x"' }]), /Put interpreter code/);
+  assert.throws(() => permits.validate(task, [{ command: 'pwd', env: { GH_CONFIG_DIR: 'relative' } }]), /absolute nonsecret path/);
+  assert.throws(() => permits.validate(task, [{ command: 'pwd', env: { GH_CONFIG_DIR: '/tmp/ghp_abcdefghijklmnop' } }]), /absolute nonsecret path/);
+  assert.throws(() => permits.validate(task, [{ command: 'pwd', unsetEnv: ['TASK_ID'] }]), /Only GH_TOKEN/);
+  assert.throws(() => permits.validate(task, [{ command: 'env GH_CONFIG_DIR=/tmp/gh pnpm release' }]), /release or rollback/);
+  assert.throws(() => permits.validate(task, [{ command: 'env GH_CONFIG_DIR=/tmp/gh cat .env' }]), /credential file/);
+  assert.throws(() => permits.validate(task, [{ command: 'pwd', env: { GH_CONFIG_DIR: process.env.TASKBOARD_DIR! } }]), /protected Taskboard/);
+  assert.equal(permits.all().some(p => p.taskId === task.id), false);
+});
+
+test('execution receives approved settings and removes only the named inherited variables', async () => {
+  const task = freshTask('environment-run');
+  writeFileSync(join(task.cwd, 'environment-check.mjs'), 'console.log(process.env.GH_CONFIG_DIR, process.env.GH_TOKEN ? "present" : "absent", process.env.GITHUB_TOKEN ? "present" : "absent");\n');
+  const p = permits.request(task, 'Check the child environment', [{ command: 'node environment-check.mjs', env: { GH_CONFIG_DIR: '/tmp/approved' }, unsetEnv: ['GH_TOKEN', 'GITHUB_TOKEN'] }]);
+  const env = permits.stepEnvironment(p.steps[0], { GH_TOKEN: 'inherited', GITHUB_TOKEN: 'inherited', TASK_ID: task.id });
+  assert.equal(env.GH_TOKEN, undefined);
+  assert.equal(env.GITHUB_TOKEN, undefined);
+  assert.equal(env.TASK_ID, task.id);
+  await permits.run(p, task, 'user');
+  assert.equal(p.state, 'succeeded');
+  assert.equal(p.steps[0].outputTail?.trim(), `${realpathSync('/tmp')}/approved absent absent`);
+  await permits.run(p, task, 'user', '', '', async () => { throw new Error('ran twice'); });
+  assert.equal(p.state, 'succeeded');
+});
+
+test('approved settings cannot change between steps and the guard still checks env commands', async () => {
+  const task = freshTask('environment-between-steps');
+  const p = permits.request(task, 'Check each step', [{ command: 'echo first' }, { command: 'echo second', env: { GH_CONFIG_DIR: '/tmp/approved' } }]);
+  let count = 0;
+  await permits.run(p, task, 'user', '', '', async () => {
+    count++;
+    p.steps[1].env!.GH_CONFIG_DIR = '/tmp/changed';
+    return { code: 0, signal: null, output: '' };
+  });
+  assert.equal(count, 1);
+  assert.equal(p.state, 'failed');
+  assert.match(p.steps[1].error || '', /settings.*changed after approval/);
+  writeFileSync(join(root, 'tbdir', 'server.pid'), JSON.stringify({ pid: 123456 }));
+  const guarded = permits.request(task, 'Check guard with settings', [{ command: 'env GH_CONFIG_DIR=/tmp/approved kill 123456' }]);
+  await permits.run(guarded, task, 'user', '', '', async () => { throw new Error('guard let this run'); });
+  assert.equal(guarded.state, 'failed');
+  assert.match(guarded.steps[0].error || '', /running Taskboard server/);
+});
+
+test('directory rejection gives the actual rule, owner, resolved cwd and attached worktree correction', () => {
+  const parent = join(root, 'diagnostic-parent');
+  const attached = join(parent, 'attached');
+  const other = join(parent, 'other');
+  mkdirSync(attached, { recursive: true }); mkdirSync(other);
+  store.create({ ...freshTask('diagnostic-other'), num: 216, title: 'Other', status: 'idle', cwd: other, folder: parent, worktree: true, branch: 'task/other', session: 'other', desc: '' });
+  const task = { ...freshTask('diagnostic-task'), cwd: parent, folder: parent, scopes: [{ kind: 'worktree', name: 'attached', path: attached }] } as Task;
+  assert.throws(() => permits.validate(task, [{ command: 'pwd' }]), e => {
+    assert.ok(e instanceof permits.PermitValidationError);
+    assert.equal(e.diagnostic.rule, 'cwd-overlaps-other-worktree');
+    assert.equal(e.diagnostic.cwd, realpathSync(parent));
+    assert.equal(e.diagnostic.conflictingWorktree, realpathSync(other));
+    assert.match(e.diagnostic.conflictingTask, /task #216/);
+    assert.ok(e.diagnostic.correction.includes(attached));
+    assert.match(e.diagnostic.correction, /--cwd/);
+    return true;
+  });
+  const p = permits.request(task, 'Read attached', [{ command: 'pwd', cwd: attached, env: { GH_CONFIG_DIR: '/tmp/gh' } }]);
+  assert.equal(p.riskClass, 'low');
+  assert.equal(permits.controllerAllowed(p, task, true), true);
+  permits.deny(p, 'Done');
+  assert.throws(() => permits.validate(task, [{ command: 'pwd', cwd: attached, env: { GH_CONFIG_DIR: other } }]), /accesses another task worktree/);
+  symlinkSync(other, join(attached, 'config-link'));
+  assert.throws(() => permits.validate(task, [{ command: 'pwd', cwd: attached, env: { GH_CONFIG_DIR: join(attached, 'config-link') } }]), /accesses another task worktree/);
+});
+
+test('a changed configuration symlink fails the exact hash and production paths stay high risk', async () => {
+  const task = freshTask('config-symlink');
+  const config = join(task.cwd, 'config');
+  const changed = join(task.cwd, 'config-changed');
+  const link = join(task.cwd, 'config-path');
+  mkdirSync(config); mkdirSync(changed); symlinkSync(config, link);
+  const p = permits.request(task, 'Check resolved settings', [{ command: 'pwd', env: { GH_CONFIG_DIR: link } }]);
+  assert.equal(p.steps[0].envPaths!.GH_CONFIG_DIR, realpathSync(config));
+  rmSync(link); symlinkSync(changed, link);
+  let ran = false;
+  await permits.run(p, task, 'user', '', '', async () => { ran = true; return { code: 0, signal: null, output: '' }; });
+  assert.equal(ran, false); assert.match(p.error || '', /approved steps changed/);
+  const high = permits.request(task, 'Read with a production configuration path', [{ command: 'pwd', env: { GH_CONFIG_DIR: join(task.cwd, 'prod') } }]);
+  assert.equal(high.riskClass, 'high'); assert.equal(permits.controllerAllowed(high, task, true), false);
+  permits.deny(high, 'Done');
+});
+
+test('supervised settings reach the child and removal does not inherit tokens from tmux', async () => {
+  const task = freshTask('supervised-env');
+  writeFileSync(join(task.cwd, 'supervised-env.sh'), 'echo checked\n');
+  const p = permits.requestSupervised(task, 'settings', 'Review one script', 'bash supervised-env.sh', task.cwd, false, 'Writes task output.', { env: { GH_CONFIG_DIR: '/tmp/approved' }, unsetEnv: ['GH_TOKEN', 'GITHUB_TOKEN'] });
+  let owner: any, command = '';
+  const start = (async (o: unknown, input: { command: string }) => { owner = o; command = input.command; return {} as any; }) as any;
+  const card = approvals.request({ actor: task.id, action: 'permit', summary: 'Script with settings', detail: p.steps[0].command, payload: { permitId: p.id } }, async () => {
+    await permits.runSupervised(p, task, start, { PATH: '/usr/bin:/bin', GH_TOKEN: 'inherited', GITHUB_TOKEN: 'inherited' });
+    return 'Started.';
+  });
+  permits.attachApproval(p, card.id);
+  await approvals.decide(card.id, true, { by: 'user' });
+  assert.equal(p.state, 'running');
+  assert.equal(owner.env.GH_CONFIG_DIR, `${realpathSync('/tmp')}/approved`);
+  assert.equal(owner.env.GH_TOKEN, undefined); assert.equal(owner.env.GITHUB_TOKEN, undefined);
+  assert.equal(command, "'env' '-u' 'GH_TOKEN' '-u' 'GITHUB_TOKEN' 'bash' 'supervised-env.sh'");
+  permits.syncSupervised(p, { state: 'exited', exitCode: 0, ended: new Date().toISOString() } as any, 'checked');
+});
+
+test('credential file paths stay nonsecret while an explicit negative user request cannot approve', () => {
+  const task = freshTask('credential-path');
+  const before = process.env.GOOGLE_APPLICATION_CREDENTIALS;
+  const path = join(task.cwd, 'adc.json');
+  process.env.GOOGLE_APPLICATION_CREDENTIALS = path;
+  try {
+    const p = permits.request(task, 'Use an ADC file', [{ command: 'pwd', env: { GOOGLE_APPLICATION_CREDENTIALS: path } }]);
+    assert.equal(p.steps[0].env!.GOOGLE_APPLICATION_CREDENTIALS, path);
+    assert.equal(p.riskClass, 'high');
+    const transcript = join(root, 'negative-request.jsonl');
+    const words = `do not run permit ${p.id}`;
+    writeFileSync(transcript, JSON.stringify({ type: 'user', message: { content: words } }) + '\n');
+    assert.equal(permits.explicitControllerRequest(transcript, 'claude', words, p), false);
+    permits.deny(p, 'Done');
+  } finally {
+    if (before === undefined) delete process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    else process.env.GOOGLE_APPLICATION_CREDENTIALS = before;
+  }
+});
+
+test('named settings cannot make credential reads low risk', () => {
+  const task = freshTask('credential-read');
+  for (const name of ['hosts.yml', 'token', 'credentials.db']) {
+    const p = permits.request(task, 'Review a credential path', [{ command: `cat ${join(task.cwd, name)}`, env: { GH_CONFIG_DIR: '/tmp/gh' } }]);
+    assert.equal(p.riskClass, 'high');
+    assert.equal(permits.controllerAllowed(p, task, true), false);
+    permits.deny(p, 'Done');
+  }
+});

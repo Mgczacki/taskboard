@@ -730,6 +730,7 @@ app.post('/api/approvals/:id/controller-approve', async (req, res) => {
   if (k.kind === 'permit') {
     const p = permits.get((a.payload as { permitId?: string }).permitId || ''); const pt = p && store.get(p.taskId);
     if (!p || !pt) return res.status(404).json({ error: 'The permit of this card is gone.' });
+    if (p.supervised) return res.status(403).json({ error: 'Approve a supervised run on the dashboard.' });
     if (!approvals.startExternal(a.id, decider)) return res.status(409).json({ error: 'The card is no longer pending.' });
     try {
       const r = await permits.run(p, pt, 'controller', '', words);
@@ -746,16 +747,25 @@ app.post('/api/approvals/:id/controller-approve', async (req, res) => {
   res.status(x.state === 'approved' ? 200 : 409).json({ approval: agentCard(x), said, ...(x.state === 'approved' ? {} : { error: said }) });
 });
 const scopeHintText = taskGit.scopeHint;
+function refusePermitDirectory(res: express.Response, task: store.Task, error: unknown, inputs: permits.StepInput[]): boolean {
+  if (!(error instanceof permits.PermitValidationError)) return false;
+  const command = permits.redactOutput(inputs.map(s => s.command).join('\n'));
+  const card = approvals.request({ actor: task.id, action: 'tool-refusal', summary: 'review a refused permit directory',
+    detail: error.message, payload: { command, canPermit: false, reason: error.message, diagnostic: error.diagnostic } }, async () => error.diagnostic.correction);
+  store.update(task.id, { status: 'needs-you', ask: 'Correct the permit working directory.', statusSource: error.message });
+  res.status(400).json({ error: error.message, diagnostic: error.diagnostic, refusal: card.id });
+  return true;
+}
 function createPermit(task: store.Task, reason: string, steps: permits.StepInput[], refusalId?: string, statedRisk = '', externalAction?: { action: 'deploy' | 'catalog-release'; covers: Record<string, string>; target: string }) {
     const actor = task.id;
     const p = permits.request(task, reason, steps, refusalId, statedRisk);
     const card = approvals.request({ actor, action: externalAction ? 'external' : 'permit', summary: externalAction ? `${externalAction.action} ${externalAction.target}` : `run ${p.steps.length} approved step${p.steps.length === 1 ? '' : 's'}`,
-      detail: `Task: #${task.num} ${task.title}\nReason: ${p.reason}\n${p.steps.map((s, i) => `${i + 1}. ${s.command}\n   ${s.cwd} · ${s.timeoutSeconds} s · Network: ${s.network ? 'Yes' : 'No'}`).join('\n')}`,
-      payload: { permitId: p.id }, ...(externalAction ? { target: externalAction.target, covers: externalAction.covers } : {}) }, async () => {
+      detail: `Task: #${task.num} ${task.title}\nReason: ${p.reason}\n${p.steps.map((s, i) => `${i + 1}. ${s.command}\n   ${s.cwd} · ${s.timeoutSeconds} s · Network: ${s.network ? 'Yes' : 'No'}\n${permits.settingsDetail(s)}`).join('\n')}\nSHA-256: ${p.stepHash}\n${p.expiresAt ? `Expires: ${p.expiresAt}` : ''}`,
+      payload: { permitId: p.id }, ...(p.expiresAt ? { validUntil: p.expiresAt } : {}), ...(externalAction ? { target: externalAction.target, covers: externalAction.covers } : {}) }, async () => {
         const result = await permits.run(p, task, 'user', p.decisionComment || '');
         if (result.state !== 'succeeded') throw new Error(result.error || result.state);
         return `Permit ${p.id} succeeded.`;
-      }, { onDeny: () => { permits.deny(p, 'Denied on the dashboard.'); }, onReopen: () => { permits.reopen(p); } });
+      }, { onDeny: () => { permits.deny(p, 'Denied on the dashboard.'); }, onReopen: () => { permits.reopen(p); }, check: async () => permits.expire(p) ? 'The permit expired. Nothing ran.' : undefined });
     permits.attachApproval(p, card.id);
     store.update(actor, { status: 'needs-you', ask: `Approve permit ${p.id}`, statusSource: 'Waiting for a permit decision on the dashboard.' });
     return p;
@@ -799,8 +809,9 @@ app.post('/api/permits', (req, res) => {
         return;
       }
       const message = 'This push needs a push request: run tb git push-request. Force pushes, deletions, and tags cannot use this command.';
-      const card = approvals.request({ actor, action: 'tool-refusal', summary: 'review a refused push command', detail: `${steps[0].command}\n${message}`, payload: { command: steps[0].command, canPermit: false } }, async () => message);
-      store.update(actor, { status: 'needs-you', ask: `Refused: ${steps[0].command}`, statusSource: message });
+      const command = permits.redactOutput(steps[0].command);
+      const card = approvals.request({ actor, action: 'tool-refusal', summary: 'review a refused push command', detail: `${command}\n${message}`, payload: { command, canPermit: false } }, async () => message);
+      store.update(actor, { status: 'needs-you', ask: `Refused: ${command}`, statusSource: message });
       return res.status(400).json({ error: message, refusal: card.id });
     }
     if (/^(pnpm|npm|yarn)$/.test(argv[0] || '') && argv.includes('release')) {
@@ -816,8 +827,9 @@ app.post('/api/permits', (req, res) => {
     res.status(202).json({ permit: p });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
+    if (refusePermitDirectory(res, task, e, steps || [])) return;
     if (/task Git commands|release or rollback|restart of Taskboard|GitHub write/.test(message)) {
-      const command = steps?.map(s => s.command).join('\n') || '';
+      const command = permits.redactOutput(steps?.map(s => s.command).join('\n') || '');
       const help = /restart/.test(message) ? 'Only the user restarts Taskboard, from the dashboard or a terminal.' : /release|rollback/.test(message) ? 'Use tb release-request for a release. Rollback needs a user action.' : task.worktree || task.scopes?.some(x => x.kind === 'worktree') ? 'Use tb git commit, tb git rebase, tb git repair, tb git merge-request, or tb git push-request. For another repository, run tb scope request worktree.' : `Use the tb git commands in a worktree. ${scopeHintText}`;
       const card = approvals.request({ actor, action: 'tool-refusal', summary: 'review a refused command', detail: `${command}\n${help}`, payload: { command, canPermit: false } }, async () => help);
       store.update(actor, { status: 'needs-you', ask: `Refused: ${command}`, statusSource: help });
@@ -830,10 +842,10 @@ app.post('/api/permits/supervised', (req, res) => {
   const task = store.get(req.get('x-tb-actor') || '');
   if (!task || task.role === 'controller') return res.status(403).json({ error: 'A task must request its own run.' });
   try {
-    const p = permits.requestSupervised(task, String(req.body.name || ''), String(req.body.reason || ''), String(req.body.command || ''), String(req.body.cwd || task.cwd), req.body.network === true, String(req.body.risk || ''));
+    const p = permits.requestSupervised(task, String(req.body.name || ''), String(req.body.reason || ''), String(req.body.command || ''), String(req.body.cwd || task.cwd), req.body.network === true, String(req.body.risk || ''), { env: req.body.env, unsetEnv: req.body.unsetEnv });
     const step = p.steps[0];
     const card = approvals.request({ actor: task.id, action: 'permit', summary: `start approved run ${p.supervised!.name}`,
-      detail: `Task: #${task.num} ${task.title}\nOwner: ${task.id}\nReason: ${p.reason}\nRisk: ${p.statedRisk || p.riskFlags.join(', ')}\nCommand: ${step.command}\nScript SHA-256: ${step.scriptHash}\nFolder: ${step.cwd}\nNetwork: ${step.network ? 'Yes' : 'No'}\nExpires: ${p.expiresAt}`,
+      detail: `Task: #${task.num} ${task.title}\nOwner: ${task.id}\nReason: ${p.reason}\nRisk: ${p.statedRisk || p.riskFlags.join(', ')}\nCommand: ${step.command}\n${permits.settingsDetail(step)}\nScript SHA-256: ${step.scriptHash}\nFolder: ${step.cwd}\nNetwork: ${step.network ? 'Yes' : 'No'}\nExpires: ${p.expiresAt}`,
       payload: { permitId: p.id }, validUntil: p.expiresAt }, async decider => {
         if (decider.by !== 'user') throw new Error('A supervised run needs a dashboard decision by the user.');
         const result = await permits.runSupervised(p, task, undefined, agents.baseEnv(task));
@@ -844,7 +856,9 @@ app.post('/api/permits/supervised', (req, res) => {
     permits.attachApproval(p, card.id);
     store.update(task.id, { status: 'needs-you', ask: `Approve run ${p.id}`, statusSource: 'Waiting for a supervised run decision on the dashboard.' });
     res.status(202).json({ permit: p });
-  } catch (e) { fail(res, e); }
+  } catch (e) {
+    if (!refusePermitDirectory(res, task, e, [{ command: String(req.body.command || '') }])) fail(res, e);
+  }
 });
 app.post('/api/refusals/:id/permit', (req, res) => {
   if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Use the dashboard.' });
