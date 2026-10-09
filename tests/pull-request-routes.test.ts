@@ -97,14 +97,23 @@ test('a task requests one exact pull request, and only the dashboard approves it
 
     git(work, 'push', 'origin', 'task-pr');
     const head2 = git(work, 'rev-parse', 'HEAD');
-    const second = await post('/api/git/pr-request', request);
-    assert.equal(second.status, 202);
+    // the second request goes through the tb command, with the body in a file
+    writeFileSync(join(root, 'body.md'), request.body);
+    const tbEnv = { ...process.env, TB_URL: base, TB_TOKEN_FILE: join(tbdir, 'token'), TASK_ID: 'pr-task', TB_TASK_TOKEN: taskKey('pr-task') };
+    const tb = (...args: string[]) => spawnSync(process.execPath, [join(process.cwd(), 'bin', 'tb'), ...args], { cwd: work, env: tbEnv, encoding: 'utf8' });
+    assert.match(tb('git', 'pr-request', '--title', 'x', '--body', 'a', '--body-file', 'b').stderr, /give --body or --body-file, not both/);
+    const cli = tb('git', 'pr-request', '--title', request.title, '--body-file', join(root, 'body.md'), '--draft');
+    assert.equal(cli.status, 0, cli.stderr);
+    const cliMatch = cli.stdout.match(/^Pull request request (\S+): pending\. The user decides card (\S+) on the dashboard\./);
+    assert.ok(cliMatch, cli.stdout);
+    const second = { data: { pullRequest: { id: cliMatch[1] }, approval: { id: cliMatch[2] } } };
     assert.equal(second.data.approval.id, approval.id, 'a new request for the same branches replaces the open card');
     assert.equal((await read(pullRequest.id)).state, 'expired');
     const approved = await post(`/api/approvals/${approval.id}/approve`, {}, userHeaders);
     assert.equal(approved.data.state, 'approved', JSON.stringify(approved.data));
     assert.match(approved.data.result, /https:\/\/github\.com\/test-owner\/test-repo\/pull\/7/);
     const done = await read(second.data.pullRequest.id);
+    assert.equal(JSON.parse(tb('git', 'pr-result', done.id, '--wait').stdout).url, 'https://github.com/test-owner/test-repo/pull/7');
     assert.equal(done.state, 'succeeded');
     assert.equal(done.url, 'https://github.com/test-owner/test-repo/pull/7');
     assert.match(done.result, new RegExp(`GitHub reports head ${head2}, base main, draft yes`));

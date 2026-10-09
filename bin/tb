@@ -967,21 +967,7 @@ switch (cmd) {
       if (args.length > 2) { console.error('tb git check: run tb git check [--base BASE].'); process.exit(1); }
       console.log((await call('POST', '/api/git/check', { base, ...wt })).result);
     }
-    else if (rest[0] === 'push-request') {
-      if (rest.some(x => /^(--force|--delete|--tags|--mirror|--all)(?:$|[=-])/.test(x))) { console.error('tb git push-request: force pushes, deletions, and tags are not allowed'); process.exit(1); }
-      const reason = flag('--reason', ''); const branch = flag('--branch', undefined); const remote = flag('--remote', 'origin'); const base = flag('--base', undefined); const thenRelease = has('--then-release');
-      if (!reason) { console.error('tb git push-request: give --reason'); process.exit(1); }
-      const result = await call('POST', '/api/git/push-request', { reason, branch, remote, base, thenRelease, ...wt });
-      console.log(`Push ${result.push.id}: ${result.push.state}. Read it with tb git push-result ${result.push.id} --wait.`);
-    } else if (rest[0] === 'push-result') {
-      const id = rest[1]; if (!id) { console.error('tb git push-result: give an ID'); process.exit(1); }
-      const wait = has('--wait');
-      for (;;) {
-        const result = await call('GET', `/api/git/pushes/${encodeURIComponent(id)}`);
-        if (result.state !== 'pending' || !wait) { console.log(JSON.stringify(result, null, 2)); break; }
-        await new Promise(resolve => setTimeout(resolve, 2000));
-      }
-    } else if (rest[0] === 'pr-request') {
+    else if (rest[0] === 'pr-request') {
       const title = flag('--title'); const body = flag('--body'); const bodyFile = flag('--body-file'); const base = flag('--base'); const remote = flag('--remote'); const draft = has('--draft');
       if (!title) { console.error('tb git pr-request: give --title'); process.exit(1); }
       if (body !== undefined && bodyFile !== undefined) { console.error('tb git pr-request: give --body or --body-file, not both'); process.exit(1); }
@@ -995,6 +981,21 @@ switch (cmd) {
       const wait = has('--wait');
       for (;;) {
         const result = await call('GET', `/api/git/pull-requests/${encodeURIComponent(id)}`);
+        if (result.state !== 'pending' || !wait) { console.log(JSON.stringify(result, null, 2)); break; }
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    }
+    else if (rest[0] === 'push-request') {
+      if (rest.some(x => /^(--force|--delete|--tags|--mirror|--all)(?:$|[=-])/.test(x))) { console.error('tb git push-request: force pushes, deletions, and tags are not allowed'); process.exit(1); }
+      const reason = flag('--reason', ''); const branch = flag('--branch', undefined); const remote = flag('--remote', 'origin'); const base = flag('--base', undefined); const thenRelease = has('--then-release');
+      if (!reason) { console.error('tb git push-request: give --reason'); process.exit(1); }
+      const result = await call('POST', '/api/git/push-request', { reason, branch, remote, base, thenRelease, ...wt });
+      console.log(`Push ${result.push.id}: ${result.push.state}. Read it with tb git push-result ${result.push.id} --wait.`);
+    } else if (rest[0] === 'push-result') {
+      const id = rest[1]; if (!id) { console.error('tb git push-result: give an ID'); process.exit(1); }
+      const wait = has('--wait');
+      for (;;) {
+        const result = await call('GET', `/api/git/pushes/${encodeURIComponent(id)}`);
         if (result.state !== 'pending' || !wait) { console.log(JSON.stringify(result, null, 2)); break; }
         await new Promise(resolve => setTimeout(resolve, 2000));
       }
