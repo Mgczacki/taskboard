@@ -183,6 +183,7 @@ const HELP = `tb — Taskboard command line
   tb suggest "program args" --why "reason" [--cwd PATH] [--env NAME=PATH] [--unset-env NAME] [--risk "risk"] [--timeout 30]
   tb suggest --steps steps.json --why "reason" [--risk "risk"]
   tb permit result ID [--wait] | tb permit list
+  tb permit withdraw ID [--reason "text"]   cancel your own pending permit; nothing runs and its card closes
   tb permit approve ID [--user-request "the user's chat message"]   controller only
   tb approvals list [--json]         controller only: the open approval cards (merge, push, release, restart, scope,
                                      permit, message) with the id, version, head and range that tb approve needs
@@ -930,12 +931,18 @@ switch (cmd) {
         await sleep(2000);
       }
     } else if (action === 'list') console.log(JSON.stringify(await call('GET', '/api/permits'), null, 2));
+    else if (action === 'withdraw') {
+      if (!process.env.TASK_ID || process.env.TASK_ID === 'controller') { console.error('tb permit withdraw: run this inside the task that requested the permit'); process.exit(1); }
+      const id = rest[1]; if (!id) { console.error('tb permit withdraw ID [--reason "text"]'); process.exit(1); }
+      const p = await call('POST', `/api/permits/${encodeURIComponent(id)}/withdraw`, { reason: flag('--reason') || '' });
+      console.log(`Permit ${p.id}: ${p.state}. ${p.error || ''} Nothing ran.`.trim());
+    }
     else if (action === 'approve') {
       if (process.env.TASK_ID !== 'controller') { console.error('tb permit approve: controller only'); process.exit(1); }
       const userRequest = flag('--user-request');
       if (!rest[1]) { console.error('tb permit approve ID [--user-request "the user chat message for high risk"]'); process.exit(1); }
       console.log(JSON.stringify(await call('POST', `/api/permits/${encodeURIComponent(rest[1])}/controller-approve`, { userRequest }), null, 2));
-    } else { console.error('tb permit request | result | list | approve'); process.exit(1); }
+    } else { console.error('tb permit request | result | list | withdraw | approve'); process.exit(1); }
     break;
   }
   case 'git': {
