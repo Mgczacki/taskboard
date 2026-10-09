@@ -1,6 +1,6 @@
 // What a message card on the Inbox page shows (web/src/components/A2ANotes.tsx). The label comes only from the
-// message state and the buttons only from allowed_actions, as A2A Notes returns them in the last list response.
-export interface CardInput { state: string; direction: 'in' | 'out'; allowed_actions: string[]; body_flags: number | null }
+// message state. Buttons use current service actions and Taskboard's audience checks.
+export interface CardInput { state: string; direction: 'in' | 'out'; allowed_actions: string[]; body_flags: number | null; route_person?: boolean }
 export interface CardControls { label: string; approve: boolean; reject: boolean; removeFlagged: boolean; send: boolean; sendLabel: string; route: boolean }
 
 export const stateLabel: Record<string, string> = { draft: 'Draft', approved: 'Approved', sending: 'Sending', sent: 'Sent', delivery_uncertain: 'Delivery uncertain', rejected: 'Rejected',
@@ -9,13 +9,13 @@ export const stateLabel: Record<string, string> = { draft: 'Draft', approved: 'A
 export function cardControls(m: CardInput): CardControls {
   const can = (action: string) => m.allowed_actions.includes(action);
   return {
-    label: stateLabel[m.state] || m.state,
+    label: m.direction === 'in' && m.state === 'approved' ? 'Accepted' : stateLabel[m.state] || m.state,
     approve: can('approve'),
     reject: can('reject'),
     removeFlagged: m.direction === 'out' && can('revise') && !!m.body_flags,
     send: can('send'),
     sendLabel: m.state === 'delivery_uncertain' ? 'Check and send' : 'Send',
-    route: can('release_to_agent'),
+    route: can('release_to_agent') || m.route_person === true,
   };
 }
 

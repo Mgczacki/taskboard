@@ -44,6 +44,7 @@ import { ROLE, installRuntimeFiles, refuseReason } from './instance.ts';
 import { hostname } from 'node:os';
 import WebSocket from 'ws';
 import { mountA2ANotes } from './a2anotes/routes.ts';
+import { agentCard } from './a2anotes/card-view.ts';
 import * as inboxDelivery from './inbox-delivery.ts';
 import * as messageQueue from './message-queue.ts';
 import * as answerHistory from './answer-history.ts';
@@ -68,7 +69,7 @@ import * as controllerApprove from './controller-approve.ts';
 import { EVENT_LIMITS, TERMINAL_LIMITS, clientOrigin, sendChecked } from './slow-client.ts';
 import * as allowRules from './allow-rules.ts';
 import * as allTaskCommunication from './all-task-communication.ts';
-import { controllerMailToken, isControllerToken } from './a2anotes/auth.ts';
+import { controllerMailToken, human, isControllerToken } from './a2anotes/auth.ts';
 import * as tmux from './tmux.ts';
 import * as tmuxHealth from './tmux-health.ts';
 import * as transfer from './transfer.ts';
@@ -367,7 +368,7 @@ async function guarded(req: express.Request, res: express.Response, summary: str
   res.status(202).json({ approval: a });
 }
 let a2aNotes: ReturnType<typeof mountA2ANotes> | undefined;
-app.get('/api/approvals', (_req, res) => res.json(approvals.all()));
+app.get('/api/approvals', (req, res) => res.json(approvals.all().map(a => human(req) ? a : agentCard(a))));
 // ---------- the Waiting page: questions and dialogs that agents wait on (pending.ts) ----------
 app.get('/api/pending', (req, res) => {
   const actor = req.get('x-tb-actor');
@@ -444,7 +445,7 @@ app.post('/api/dismiss/bring-back', (req, res) => {
 app.get('/api/stats', (req, res) => {
   try { res.json(stats.get(String(req.query.timeZone || 'UTC'))); } catch { res.status(400).json({ error: 'Invalid time zone.' }); }
 });
-app.get('/api/approvals/:id', (req, res) => { const a = approvals.get(req.params.id); a ? res.json(a) : res.status(404).end(); });
+app.get('/api/approvals/:id', (req, res) => { const a = approvals.get(req.params.id); a ? res.json(human(req) ? a : agentCard(a)) : res.status(404).end(); });
 app.post('/api/approvals/:id/notify', async (req, res) => {
   if (!fromDashboard(req)) return res.status(403).json({ error: 'Only the dashboard marks a card for phone notice.' });
   const card = approvals.setNotify(req.params.id, req.body.enabled === true);
@@ -581,6 +582,8 @@ app.post('/api/approvals/:id/:decision', async (req, res, next) => {
     catch (e) { return res.status(409).json({ error: e instanceof Error ? e.message : String(e) }); }
   }
   const current = approvals.get(req.params.id);
+  if ((current?.action === 'mail-in' || current?.action === 'mail-out') && !human(req))
+    return res.status(403).json({ error: 'Only the user decides message cards on the dashboard.' });
   if (current?.action === 'git-push' || (req.params.decision === 'approve' && ['permit', 'tool-refusal'].includes(current?.action || '')))
     return res.status(403).json({ error: 'Use the dedicated decision on the dashboard.' });
   // a task cannot decide its own scope request: tb sends the token and x-tb-actor, the dashboard sends neither
@@ -603,6 +606,9 @@ app.post('/api/approvals/:id/refresh', async (req, res) => {
 // Send a message card back with a comment: to the controller (incoming) or to the agent that wrote the draft (outgoing).
 app.post('/api/approvals/:id/return', async (req, res) => {
   if (!req.get('origin')) return res.status(403).json({ error: 'approvals are decided on the dashboard' });
+  const current = approvals.get(req.params.id);
+  if ((current?.action === 'mail-in' || current?.action === 'mail-out') && !human(req))
+    return res.status(403).json({ error: 'Only the user returns message cards on the dashboard.' });
   try { const a = await approvals.giveBack(req.params.id, String(req.body.comment || '')); a ? res.json(a) : res.status(404).end(); } catch (e) { fail(res, e); }
 });
 // ---------- allow always rules (server/allow-rules.ts) ----------
@@ -687,12 +693,12 @@ function releaseInFlight(): string {
 }
 const cardView = (o: { a: approvals.Approval; kind?: controllerApprove.ControllerKind; userOnly?: string }) => {
   const t = store.get(o.a.actor); const h = controllerApprove.headOf(o.a);
+  const visible = agentCard(o.a);
   const allowed = o.kind ? machine.get().controllerApprovals[o.kind] : false;
   return { id: o.a.id, kind: o.kind || null, kindName: o.kind ? controllerApprove.KIND_NAME[o.kind] : null, label: o.kind === 'forcePush' ? 'FORCE PUSH' : undefined,
     task: t && t.role !== 'controller' ? { id: t.id, num: t.num, title: t.title } : null, requestedBy: o.a.actor === 'controller' ? 'controller' : t ? `#${t.num}` : o.a.actor,
-    // a message card shows only its header lines: the controller reads a message body with tb mail get, where A2A Notes
-    // decides what the controller may see (a2anotes/cards.ts list)
-    summary: o.a.summary, detail: o.kind === 'mail' ? o.a.detail.split('\n\n')[0] : o.a.detail, created: o.a.created, version: controllerApprove.versionOf(o.a), ...(h ? { head: h.head, range: h.range, branch: h.branch } : {}),
+    // Incoming card text stays private here. The controller reads accepted text through tb mail get.
+    summary: visible.summary, detail: o.kind === 'mail' ? visible.detail.split('\n\n')[0] : visible.detail, created: o.a.created, version: controllerApprove.versionOf(o.a), ...(h ? { head: h.head, range: h.range, branch: h.branch } : {}),
     ...expiryOf(o.a), controllerMayApprove: !!o.kind && allowed,
     // a "type into" card between two tasks: the user can also choose Allow always on the dashboard (only the user)
     ...(o.a.allow ? { allowAlways: o.a.allow.choices } : {}),
@@ -754,7 +760,7 @@ app.post('/api/approvals/:id/controller-approve', async (req, res) => {
     userRequest: words, named, controller: { agent: t.agent, sessionId: t.sessionId, account: t.account }, state: x.state, result: x.result || '' });
   // the same notices as a click reach the task (the card's action), and its log names the controller and the user's words
   if (task) try { store.appendLog(task.id, { did: `The controller approved the ${name} card ${a.id} on the user's request: "${words.slice(0, 300)}". Result: ${(x.result || x.state).slice(0, 300)}` }); } catch (e) { console.error('could not write the task log', e); }
-  res.status(x.state === 'approved' ? 200 : 409).json({ approval: x, said, ...(x.state === 'approved' ? {} : { error: said }) });
+  res.status(x.state === 'approved' ? 200 : 409).json({ approval: agentCard(x), said, ...(x.state === 'approved' ? {} : { error: said }) });
 });
 const scopeHintText = taskGit.scopeHint;
 function createPermit(task: store.Task, reason: string, steps: permits.StepInput[], refusalId?: string, statedRisk = '', externalAction?: { action: 'deploy' | 'catalog-release'; covers: Record<string, string>; target: string }) {
@@ -2266,6 +2272,7 @@ const wss = new WebSocketServer({ noServer: true, maxPayload: 1_048_576 });
 // wait for zlib; browser frames are JPEG). threshold: messages under 1 KB are sent as they are.
 const eventsWss = new WebSocketServer({ noServer: true, maxPayload: 1_048_576, perMessageDeflate: { threshold: 1024 } });
 const eventClients = new Set<import('ws').WebSocket>();
+const dashboardEventClients = new WeakSet<import('ws').WebSocket>();
 const responsive = new WeakSet<import('ws').WebSocket>();
 // the type of an event message, for the log line when a client is closed: every message starts with {"type":"<type>"
 const eventType = (message: string) => message.slice(9, message.indexOf('"', 9));
@@ -2292,6 +2299,7 @@ server.on('upgrade', (req, socket, head) => {
   if (req.headers.origin ? !originOk(req.headers.origin) : (url.searchParams.get('token') !== TOKEN && req.headers['x-taskboard-token'] !== TOKEN)) return socket.destroy();
   (url.pathname === '/ws/events' ? eventsWss : wss).handleUpgrade(req, socket, head, ws => {
     clientOrigin.set(ws, req.headers.origin || '');
+    if (req.headers.origin && !url.searchParams.has('token') && !req.headers['x-taskboard-token'] && !req.headers['x-tb-actor'] && !req.headers['x-tb-task-token']) dashboardEventClients.add(ws);
     // ws emits 'error' for a message larger than maxPayload or with invalid UTF-8, and closes the socket itself
     ws.on('error', e => console.error(`${new Date().toISOString()} websocket ${url.pathname}: ${e.message}`));
     try { onSocket(ws, url); } catch (e) {
@@ -2311,7 +2319,7 @@ function onSocket(ws: import('ws').WebSocket, url: URL) {
       sendEvent(ws, JSON.stringify({ type: 'tasks', tasks: [...store.all().map(t => listView(view(t))), ...machines.remoteTasks()] }), true);
       sendEvent(ws, JSON.stringify({ type: 'groups', groups: groups.all() }), true);
       sendEvent(ws, JSON.stringify({ type: 'canvasOrder', orders: canvasOrder.all() }), true);
-      sendEvent(ws, JSON.stringify({ type: 'approvals', approvals: approvals.all() }), true);
+      sendEvent(ws, JSON.stringify({ type: 'approvals', approvals: approvals.all().map(a => dashboardEventClients.has(ws) ? a : agentCard(a)) }), true);
       sendEvent(ws, JSON.stringify({ type: 'pending', items: pending.list(), answered: pending.answeredList() }), true);
       sendEvent(ws, JSON.stringify({ type: 'dismissed', entries: dismiss.all() }), true);
       sendEvent(ws, JSON.stringify({ type: 'runtime', counts: runtime.runtimeCounts() }), true);
@@ -2391,7 +2399,8 @@ approvals.onApprovalsChange(() => {
   }
   settleCardStatus();
   const msg = JSON.stringify({ type: 'approvals', approvals: approvals.all() });
-  for (const c of eventClients) sendEvent(c, msg);
+  const privateMsg = JSON.stringify({ type: 'approvals', approvals: approvals.all().map(agentCard) });
+  for (const c of eventClients) sendEvent(c, dashboardEventClients.has(c) ? msg : privateMsg);
 });
 approvals.onDecision(card => {
   // A dismissed refused-command card holds no decision: the task is not told (server/approvals.ts dismiss).

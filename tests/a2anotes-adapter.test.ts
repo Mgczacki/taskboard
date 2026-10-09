@@ -78,6 +78,11 @@ test('callers get the MCP role of who they are, and strangers are refused', asyn
   assert.equal((await call('user', '/status')).data.identity.role, 'person');
   assert.equal((await call('task', '/trusted', { address: alex.address, trusted: true })).status, 403);
   assert.equal((await call('controller', '/trusted', { address: alex.address, trusted: true })).status, 403);
+  for (const browserHeaders of [{ origin: URL_BASE }, { referer: URL_BASE, 'sec-fetch-site': 'same-origin' }]) {
+    const response = await fetch(base + '/trusted', { method: 'POST', headers: { 'content-type': 'application/json',
+      'x-taskboard-token': TOKEN, 'x-tb-actor': 'worker', ...browserHeaders }, body: JSON.stringify({ address: alex.address, trusted: true }) });
+    assert.equal(response.status, 403, 'task credentials cannot become a dashboard caller through browser headers');
+  }
   assert.equal((await call('user', '/trusted', { address: alex.address, name: 'Alex B', trusted: true })).data.trusted, true);
 });
 
@@ -146,15 +151,16 @@ test('a person without Taskboard sends to Taskboard, and the controller gives th
   assert.ok(delivered.includes(`worker/${route.data.file}`), 'the agent is told');
   assert.deepEqual((await call('controller', `/messages/${m.id}/route`, { task: 'worker' })).data, route.data, 'routing twice gives the first route');
   await call('user', `/messages/${p.id}/approve`, { hash: p.hash });
-  const refused = await call('user', `/messages/${p.id}/route`, { task: 'worker' });
-  assert.equal(refused.status, 400);
+  const refused = await call('controller', `/messages/${p.id}/route`, { task: 'worker' });
+  assert.equal(refused.status, 403);
   assert.match(refused.data.error, /for a person/);
+  assert.equal((await call('user', `/messages/${p.id}/route`, { task: 'worker' })).status, 200, 'the user can explicitly give an accepted person message to a task');
   const link = await call('user', '/page-link', {});
   assert.match(link.data.url, /\/login\?code=/);
   assert.equal((await call('controller', '/page-link', {})).status, 403);
 });
 
-test('a reply to a task message suggests that task, from local metadata that Taskboard set', async () => {
+test('a trusted agent reply goes to the task from verified local metadata', async () => {
   const draft = (await call('task', '/drafts', { to: alex.address, subject: 'Question from the worker', body: 'Hi Alex, which host should we use?', audience: 'person',
     metadata: { 'taskboard.task_id': 'controller' } })).data;
   assert.deepEqual(draft.metadata, { 'taskboard.proposed_by': 'task', 'taskboard.task_id': 'worker', 'taskboard.task_num': 7, 'taskboard.agent': 'claude' }, 'the caller decides the task, not the request body');
@@ -175,9 +181,14 @@ test('a reply to a task message suggests that task, from local metadata that Tas
   const m = (await call('user', '/messages?direction=incoming')).data.messages.find((x: any) => x.message_id === id);
   assert.equal(m.suggested_task.id, 'worker');
   assert.match(m.suggested_task.reason, /Question from the worker/);
-  const notice = inbox('controller').find(n => n.startsWith(`a2anotes-${m.id}-notice`));
-  assert.ok(notice && readFileSync(join(process.env.TASKBOARD_VAULT!, 'tasks', 'controller', 'inbox', notice), 'utf8').includes('replies to a message from task #7 (worker)'));
-  assert.equal(m.state, 'held', 'a suggestion routes nothing');
+  assert.equal(m.state, 'approved');
+  assert.equal(m.approved_by, 'reviewer');
+  assert.equal(m.routes[0].task, 'worker');
+  const deliveries = () => delivered.filter(x => x === `worker/${m.routes[0].file}`).length;
+  assert.equal(deliveries(), 1);
+  await Promise.all([call('controller', '/sync', {}), call('controller', '/sync', {}), call('controller', `/messages/${m.id}/route`, { task: 'worker' })]);
+  assert.equal(deliveries(), 1, 'sync and route retries do not deliver a second copy');
+  assert.deepEqual(inbox('worker').filter(n => n.startsWith(`a2anotes-${m.id}.`)), [m.routes[0].file]);
 });
 
 test('Taskboard and a plain MCP client see the same message and approval state at once', async () => {
@@ -284,6 +295,137 @@ test('incoming cards follow the controller proposal, and task notes stay local',
   assert.ok(graph.people.some((p: any) => p.user === 'UALEX01' && p.name === 'Alex B'));
   assert.ok(graph.messages.some((x: any) => x.direction === 'outbox' && x.person === 'UALEX01'));
   assert.ok(graph.messages.every((x: any) => x.body === undefined), 'the Graph list has no message text');
+});
+
+async function originForReply() {
+  const d = (await call('task', '/drafts', { to: alex.address, subject: `Origin ${randomUUID()}`, body: 'Hi Alex, which host is available?', audience: 'person' })).data;
+  await call('user', `/messages/${d.id}/approve`, { hash: d.hash });
+  await call('user', `/messages/${d.id}/send`, { hash: d.hash });
+  await alexAgent('a2anotes_sync');
+  const received = (await alexPerson('a2anotes_list_messages', { direction: 'incoming', limit: 100 })).messages.find((x: any) => x.message_id === d.id);
+  await alexPerson('a2anotes_approve', { id: received.id, expected_hash: received.hash, decision: 'approve' });
+  return d.id;
+}
+
+async function incomingFromAlex(audience: 'person' | 'agent', replyTo?: string) {
+  const id = randomUUID(), subject = `Reply ${id}`, body = 'Hi Mario, the host is stage-data. No action is needed.';
+  let agent_file_id: string | undefined;
+  if (audience === 'agent') {
+    const text = JSON.stringify({ version: 'a2anotes.request/1', message_id: id, audience, subject, target: null, facts: [],
+      agent_request: { when: null, ask: 'The host is stage-data.', details: [], deadline: null }, unknowns: [] }) + '\n';
+    const staged = await alexAgent('a2anotes_stage_file', { kind: 'agent', text, sha256: createHash('sha256').update(text).digest('hex'), request_id: `r-${id}` });
+    assert.ok(staged.file_id, JSON.stringify(staged));
+    agent_file_id = staged.file_id;
+  }
+  const d = await alexPerson('a2anotes_create_draft', { to_address: mario.address, subject, body, audience, ...(agent_file_id ? { agent_file_id } : {}),
+    ...(replyTo ? { reply_to: replyTo } : {}), request_id: `r-${randomUUID()}` });
+  assert.equal(d.state, 'draft', JSON.stringify(d));
+  await alexPerson('a2anotes_approve', { id: d.id, expected_hash: d.hash, decision: 'approve' });
+  await alexPerson('a2anotes_send', { id: d.id, expected_hash: d.hash, request_id: `r-${randomUUID()}` });
+  await call('user', '/sync', {});
+  const m = (await call('user', '/messages?direction=incoming')).data.messages.find((x: any) => x.message_id === d.id);
+  assert.ok(m);
+  return { m, body };
+}
+
+test('acceptance before routing puts an agent message in controller triage and permits propose-route', async () => {
+  await call('user', '/policy', { incoming: 1 });
+  const { m, body } = await incomingFromAlex('agent');
+  assert.equal((await call('controller', `/messages/${m.id}`)).data.body, '', 'held text is private');
+  assert.equal((await call('user', `/messages/${m.id}/approve`, { hash: m.hash })).status, 200);
+  assert.equal((await call('controller', `/messages/${m.id}`)).data.body, body);
+  assert.ok((await call('controller', '/triage')).data.messages.some((x: any) => x.id === m.id));
+  assert.equal((await call('task', '/triage')).status, 403);
+  assert.equal((await call('stranger', `/messages/${m.id}/route`, { task: 'worker' })).status, 403);
+  const results = await Promise.all([call('controller', `/messages/${m.id}/propose-route`, { task: 'worker' }),
+    call('controller', `/messages/${m.id}/route`, { task: 'worker' })]);
+  assert.ok(results.every(x => x.status === 200), JSON.stringify(results));
+  assert.equal(delivered.filter(x => x === `worker/a2anotes-${m.id}.md`).length, 1);
+  assert.equal((await call('controller', '/triage')).data.messages.some((x: any) => x.id === m.id), false);
+});
+
+test('an untrusted held reply stays private and an acceptance in another client routes it on sync', async () => {
+  const origin = await originForReply();
+  await call('user', '/trusted', { address: alex.address, trusted: false });
+  await call('user', '/policy', { incoming: 2, confirmLowerControl: true });
+  const { m, body } = await incomingFromAlex('agent', origin);
+  assert.equal(m.trusted, false);
+  assert.equal(m.state, 'held');
+  assert.deepEqual(m.routes, []);
+  assert.equal((await call('controller', `/messages/${m.id}`)).data.body, '');
+  assert.equal((await call('task', `/messages/${m.id}`)).data.body, '');
+  assert.equal((await call('controller', `/messages/${m.id}/approve`, { hash: m.hash })).status, 400);
+  assert.equal((await call('controller', `/messages/${m.id}/route`, { task: 'worker' })).status, 400);
+  const plain = await mcp(mario.url, mario.running.clients.add(`accept-${randomUUID()}`, 'person'));
+  await plain('a2anotes_approve', { id: m.id, expected_hash: m.hash, decision: 'approve' });
+  await call('controller', '/sync', {});
+  const accepted = (await call('controller', `/messages/${m.id}`)).data;
+  assert.equal(accepted.body, body);
+  assert.equal(accepted.routes[0].task, 'worker');
+  const text = readFileSync(join(tasks.taskDir('worker'), 'inbox', accepted.routes[0].file), 'utf8');
+  assert.match(text, /Acceptance permits reading and routing only/);
+  assert.match(text, /IAM changes, production changes, or any other action/);
+  await call('user', '/trusted', { address: alex.address, trusted: true });
+});
+
+test('a person reply stays private before user acceptance and then reaches its originating task', async () => {
+  const origin = await originForReply();
+  const { m, body } = await incomingFromAlex('person', origin);
+  assert.equal(m.state, 'held');
+  const waiting = adapter.cards.list().find(x => x.message === m.id);
+  assert.ok(waiting, 'a held person reply gets a user acceptance card even when its sender is trusted');
+  assert.equal(waiting.approver, 'person');
+  assert.equal(waiting.subject, '(held for user acceptance)', 'controller waiting lists do not disclose held subject text');
+  assert.equal((await call('controller', `/messages/${m.id}`)).data.body, '', 'trusted person text stays private too');
+  assert.equal((await call('controller', `/messages/${m.id}/approve`, { hash: m.hash })).status, 403);
+  assert.equal((await call('user', `/messages/${m.id}/approve`, { hash: 'old' })).status, 400);
+  assert.equal((await call('user', `/messages/${m.id}/approve`, { hash: m.hash })).status, 200);
+  const full = (await call('controller', `/messages/${m.id}`)).data;
+  assert.equal(full.body, body);
+  assert.equal(full.routes[0].task, 'worker');
+  assert.equal((await call('task', `/messages/${m.id}`)).data.body, '', 'tasks get only the routed file for person messages');
+  assert.match(readFileSync(join(tasks.taskDir('worker'), 'inbox', full.routes[0].file), 'utf8'), /stage-data/);
+  await adapter.checkIncoming();
+  assert.equal(delivered.filter(x => x === `worker/${full.routes[0].file}`).length, 1);
+});
+
+test('an approved card target routes a person message and conflicting reply targets wait in triage', async () => {
+  await call('user', '/policy', { incoming: 1 });
+  const { m } = await incomingFromAlex('person');
+  await call('controller', `/messages/${m.id}/propose-route`, { task: 'worker' });
+  const card = approvals.all().find(a => (a.payload as any)?.message === m.id && a.state === 'pending');
+  assert.ok(card);
+  assert.equal((await approvals.decide(card!.id, true))!.state, 'approved');
+  assert.equal((await call('controller', `/messages/${m.id}`)).data.routes[0].task, 'worker');
+
+  tasks.create({ id: 'other', num: 8, title: 'Other task', agent: 'claude', status: 'idle', cwd: root, folder: root, session: 'test', desc: '' } as any);
+  const origin = await originForReply();
+  const { m: conflict } = await incomingFromAlex('agent', origin);
+  await call('controller', `/messages/${conflict.id}/propose-route`, { task: 'other' });
+  const conflictCard = approvals.all().find(a => (a.payload as any)?.message === conflict.id && a.state === 'pending');
+  assert.equal((await approvals.decide(conflictCard!.id, true))!.state, 'approved');
+  const queued = (await call('controller', '/triage')).data.messages.find((x: any) => x.id === conflict.id);
+  assert.match(queued.triage, /different tasks/);
+  assert.deepEqual(queued.routes, []);
+  assert.equal(inbox('worker').includes(`a2anotes-${conflict.id}.md`), false);
+  assert.equal(inbox('other').includes(`a2anotes-${conflict.id}.md`), false);
+  await call('user', '/policy', { incoming: 2, confirmLowerControl: true });
+});
+
+test('trusted messages without verified targets stay held in visible triage and proposals alone cannot route accepted text', async () => {
+  const { m } = await incomingFromAlex('agent');
+  assert.equal(m.trusted, true);
+  assert.equal(m.state, 'held');
+  assert.ok((await call('controller', '/triage')).data.messages.some((x: any) => x.id === m.id));
+  await call('controller', `/messages/${m.id}/propose-route`, { task: 'other' });
+  await call('user', `/messages/${m.id}/approve`, { hash: m.hash });
+  assert.deepEqual((await call('controller', `/messages/${m.id}`)).data.routes, [], 'the user did not approve the proposed target on its card');
+  const original = await originForReply();
+  const { m: reply } = await incomingFromAlex('agent', original);
+  assert.equal(reply.routes[0].task, 'worker');
+  await call('user', '/trusted', { address: alex.address, trusted: false });
+  assert.equal((await call('controller', `/messages/${reply.id}/route`, { task: 'other' })).status, 400, 'trust revocation invalidates reviewer acceptance');
+  await call('user', '/trusted', { address: alex.address, trusted: true });
 });
 
 test('when a2anotes.json is missing, the adapter reports off and changes nothing', async () => {
