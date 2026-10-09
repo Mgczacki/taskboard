@@ -105,7 +105,8 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
   const [protectedBranches, setProtectedBranches] = useState('');
   const [query, setQuery] = useState('');
   const pageRef = useRef<HTMLDivElement>(null);
-  useEffect(() => { api.info().then(i => { setInfo(i); setRoutingRules(i.settings.routingRules || ''); setPermitFolders((i.settings.permitFolders || []).join('\n')); setTenMinuteLimit(String(i.settings.permitRequestLimits.tenMinutes)); setDayLimit(String(i.settings.permitRequestLimits.day)); setOwnRepositories((i.settings.pushes?.ownRepositories || []).join('\n')); setProtectedBranches((i.settings.pushes?.protectedBranches || []).join('\n')); }).catch(e => setErr(String(e.message || e))); loadAccounts().then(setAccts).catch(() => {}); api.pushes().then(setPushes).catch(() => {}); }, []);
+  const [scopeMax, setScopeMax] = useState('8');
+  useEffect(() => { api.info().then(i => { setInfo(i); setRoutingRules(i.settings.routingRules || ''); setPermitFolders((i.settings.permitFolders || []).join('\n')); setScopeMax(String(i.settings.scopeLimit.max)); setTenMinuteLimit(String(i.settings.permitRequestLimits.tenMinutes)); setDayLimit(String(i.settings.permitRequestLimits.day)); setOwnRepositories((i.settings.pushes?.ownRepositories || []).join('\n')); setProtectedBranches((i.settings.pushes?.protectedBranches || []).join('\n')); }).catch(e => setErr(String(e.message || e))); loadAccounts().then(setAccts).catch(() => {}); api.pushes().then(setPushes).catch(() => {}); }, []);
   // #settings:<section> opens the page at that section
   useEffect(() => {
     const go = () => { const id = hashSection(); if (id) document.getElementById(sectionAnchor(id))?.scrollIntoView({ block: 'start' }); };
@@ -113,7 +114,7 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
     addEventListener('hashchange', go);
     return () => { clearTimeout(timer); removeEventListener('hashchange', go); };
   }, []);
-  const save = async (p: { routingRules?: string; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; allTaskCommunication?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; holdPermissionHook?: boolean; permitFolders?: string[]; permitRequestLimits?: Partial<MachineInfo['settings']['permitRequestLimits']>; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; checkPrivateNotes?: boolean; confirmLowerControl?: boolean; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; confirmRisk?: Partial<ConfirmRisk>; controllerApprovals?: Partial<ControllerApprovals>; agentErrors?: Parameters<typeof api.updateInfo>[0]['agentErrors'] }) => {
+  const save = async (p: { routingRules?: string; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; allTaskCommunication?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; holdPermissionHook?: boolean; permitFolders?: string[]; permitRequestLimits?: Partial<MachineInfo['settings']['permitRequestLimits']>; scopeLimit?: Partial<MachineInfo['settings']['scopeLimit']>; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; checkPrivateNotes?: boolean; confirmLowerControl?: boolean; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; confirmRisk?: Partial<ConfirmRisk>; controllerApprovals?: Partial<ControllerApprovals>; agentErrors?: Parameters<typeof api.updateInfo>[0]['agentErrors'] }) => {
     setBusy(true); try { setInfo(await api.updateInfo(p)); } catch (e) { setErr(String((e as Error).message || e)); } setBusy(false);
   };
   const ctl = tasks.find(t => t.role === 'controller');
@@ -150,6 +151,14 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
               </SettingGroup>
               <SettingGroup section="approvals" id="standingRules" title="Standing approvals" help="Only you add these rules. Each use is saved with its rule and target.">
                 <SettingItem id="standingRulesList"><StandingRules tasks={tasks} /></SettingItem>
+              </SettingGroup>
+              <SettingGroup section="approvals" id="scopes" title="Scope requests">
+                {info && <SettingItem id="scopeLimit">
+                  <label className="opt"><input type="checkbox" disabled={busy} checked={info.settings.scopeLimit.enabled} onChange={e => void save({ scopeLimit: { enabled: e.target.checked } })} /> Limit attached scopes per task</label>
+                  <div className="sub">Current count maximum: {info.settings.scopeLimit.enabled ? info.settings.scopeLimit.max : 'off (no maximum)'}. Off by default. Read folders and attached worktrees count together. The initial task folder does not count. Every scope request still needs approval. Lowering the maximum keeps existing scopes and blocks new attachments at or above the maximum.</div>
+                  <label className="opt" htmlFor="scope-limit-max">Maximum attached scopes <input id="scope-limit-max" type="number" min="1" step="1" disabled={busy} value={scopeMax} onChange={e => setScopeMax(e.target.value)} /></label>
+                  <div><button className="btn" disabled={busy || !/^[1-9]\d*$/.test(scopeMax) || !Number.isSafeInteger(Number(scopeMax)) || Number(scopeMax) === info.settings.scopeLimit.max} onClick={() => void save({ scopeLimit: { max: Number(scopeMax) } })}>Save maximum</button></div>
+                </SettingItem>}
               </SettingGroup>
               <SettingGroup section="approvals" id="permits" title="Permit requests">
                 {info && <SettingItem id="permitRequestLimits">

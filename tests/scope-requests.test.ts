@@ -61,7 +61,7 @@ test('a task without a worktree asks for scopes, and only the user approves them
     }, { description: 'the scope test server to answer /api/info', timeoutMs: 60_000,
       state: () => `expected HTTP 200 at ${base}; server output:\n${output.slice(-3000)}` });
     const token = readFileSync(join(tbdir, 'token'), 'utf8').trim();
-    const as = (actor: string) => ({ 'content-type': 'application/json', 'x-taskboard-token': token, 'x-tb-actor': actor });
+    const as = (actor: string) => ({ 'content-type': 'application/json', 'x-taskboard-token': token, ...(actor === 'controller' ? {} : { 'x-tb-task-token': readFileSync(join(tbdir, 'task-tokens', actor), 'utf8').trim() }), 'x-tb-actor': actor });
     const user = { 'content-type': 'application/json', origin: base };
     const post = async (path: string, body: unknown, headers: Record<string, string> = as('plain-task')) => {
       const r = await fetch(base + path, { method: 'POST', headers, body: JSON.stringify(body) });
@@ -108,8 +108,9 @@ test('a task without a worktree asks for scopes, and only the user approves them
     const approved = await post(`/api/approvals/${card.id}/approve`, {}, user);
     assert.equal(approved.data.state, 'approved', JSON.stringify(approved.data) + output);
     await cliDone;
-    assert.match(cliOut, /Attached the worktree alpha/);
-    assert.match(cliOut, /restarts this session after this turn ends/);
+    assert.match(cliOut, /Approval pending: card/);
+    assert.match(approved.data.result, /Attached the worktree alpha/);
+    assert.match(approved.data.result, /restarts this session after this turn ends/);
     assert.equal(git(path1, 'branch', '--show-current'), 'task/alpha-change');
     assert.equal(git(alpha, 'rev-parse', 'HEAD'), alphaHead);
     assert.equal(git(alpha, 'branch', '--show-current'), 'master');
@@ -235,6 +236,91 @@ test('a task without a worktree asks for scopes, and only the user approves them
     const late = await post(`/api/scope/${asked.data.approval.id}/controller-approve`, { userRequest: words }, controller);
     assert.equal(late.status, 200, JSON.stringify(late.data));
     assert.equal(late.data.state, 'approved');
+
+    // More than eight attachments still require cards. Both kinds use the same limit.
+    const patch = async (scopeLimit: unknown) => {
+      const r = await fetch(base + '/api/info', { method: 'PATCH', headers: user, body: JSON.stringify({ scopeLimit }) });
+      return { status: r.status, data: await r.json() };
+    };
+    assert.deepEqual((await (await fetch(base + '/api/info')).json()).settings.scopeLimit, { enabled: false, max: 8 });
+    for (let n = 0; n < 5; n++) {
+      const path = join(root, `extra-read-${n}`); mkdirSync(path);
+      const request = await post('/api/scope/request', { kind: 'read', path, reason: 'Read reference' });
+      assert.equal(request.status, 202, JSON.stringify(request.data));
+      assert.match(request.data.approval.detail, /Count maximum: off \(no maximum\)/);
+      assert.equal((await post(`/api/approvals/${request.data.approval.id}/approve`, {}, user)).data.state, 'approved');
+    }
+    assert.equal((await getTask('plain-task')).scopes.length, 9);
+    const extraWorktree = { kind: 'worktree', repo: gamma, base: gammaHead, branch: 'task/over-eight', name: 'over-eight', reason: 'Change another worktree' };
+    const ninth = await post('/api/scope/request', extraWorktree);
+    assert.equal(ninth.status, 202, JSON.stringify(ninth.data));
+    assert.equal((await post(`/api/approvals/${ninth.data.approval.id}/approve`, {}, user)).data.state, 'approved');
+    assert.equal((await getTask('plain-task')).scopes.length, 10);
+    assert.match((await run(['scope', 'list'])).out, /Attached scopes: 10. Count maximum: off/);
+    const scopeInfo = await (await fetch(base + '/api/scope', { headers: as('plain-task') })).json();
+    assert.deepEqual(scopeInfo.scopeLimit, { enabled: false, max: 8 });
+
+    for (const bad of [{ max: 0 }, { max: -1 }, { max: 1.5 }, { max: '12' }, { enabled: 'yes' }, { max: Number.MAX_SAFE_INTEGER + 1 }, null]) {
+      assert.equal((await patch(bad)).status, 400, JSON.stringify(bad));
+    }
+    const blockedRead = join(root, 'blocked-read'); mkdirSync(blockedRead);
+    const readInput = { kind: 'read', path: blockedRead, reason: 'Read more' };
+    const worktreeInput = { ...extraWorktree, branch: 'task/blocked', name: 'blocked' };
+    // Lowering a maximum keeps existing attachments.
+    assert.equal((await patch({ enabled: true, max: 10 })).status, 200);
+    for (const input of [readInput, worktreeInput]) {
+      const refused = await post('/api/scope/request', input);
+      assert.equal(refused.status, 400);
+      assert.match(refused.data.error, /holds 10 attached scopes.*configured maximum is 10.*Settings/);
+    }
+    assert.equal((await getTask('plain-task')).scopes.length, 10);
+    assert.match((await run(['scope', 'list'])).out, /Count maximum: 10/);
+    // A card planned below the maximum fails if the setting changes before approval.
+    assert.equal((await patch({ max: 12 })).status, 200);
+    const waitingRead = await post('/api/scope/request', readInput);
+    const waitingWorktree = await post('/api/scope/request', worktreeInput);
+    assert.equal(waitingRead.status, 202);
+    assert.equal(waitingWorktree.status, 202);
+    assert.match(waitingWorktree.data.approval.detail, /Count maximum: 12/);
+    assert.equal((await patch({ max: 9 })).status, 200);
+    for (const card of [waitingRead, waitingWorktree]) {
+      const failed = await post(`/api/approvals/${card.data.approval.id}/approve`, {}, user);
+      assert.equal(failed.data.state, 'failed', JSON.stringify(failed.data));
+      assert.match(failed.data.result, /configured maximum is 9/);
+    }
+    assert.equal(git(gamma, 'branch', '--list', 'task/blocked'), '');
+    assert.equal((await getTask('plain-task')).scopes.length, 10);
+    // At max minus one, one approval succeeds. The next waiting card cannot exceed max.
+    assert.equal((await patch({ max: 11 })).status, 200);
+    const parallelCards = [];
+    for (const name of ['parallel-a', 'parallel-b']) {
+      const request = await post('/api/scope/request', { ...worktreeInput, name, branch: `task/${name}` });
+      assert.equal(request.status, 202);
+      parallelCards.push(request.data.approval);
+    }
+    const parallelResults = await Promise.all(parallelCards.map(card => post(`/api/approvals/${card.id}/approve`, {}, user)));
+    assert.deepEqual(parallelResults.map(r => r.data.state).sort(), ['approved', 'failed']);
+    plain = await getTask('plain-task');
+    assert.equal(plain.scopes.length, 11);
+    const winner = plain.scopes.find((scope: { name: string }) => scope.name.startsWith('parallel-'));
+    const loser = winner.name === 'parallel-a' ? 'parallel-b' : 'parallel-a';
+    assert.equal(git(gamma, 'branch', '--list', `task/${loser}`), '');
+    assert.ok(!existsSync(join(`${gamma}-wt`, `plain-task--${loser}`)));
+    assert.equal((await post(`/api/tasks/plain-task/scopes/${winner.name}/remove`, {}, user)).status, 200);
+    const firstWaiting = await post('/api/scope/request', readInput);
+    const secondWaiting = await post('/api/scope/request', worktreeInput);
+    assert.equal((await post(`/api/approvals/${firstWaiting.data.approval.id}/approve`, {}, user)).data.state, 'approved');
+    assert.equal((await post(`/api/approvals/${secondWaiting.data.approval.id}/approve`, {}, user)).data.state, 'failed');
+    assert.equal((await getTask('plain-task')).scopes.length, 11);
+    // Turning the maximum off allows an attachment above the saved maximum.
+    assert.equal((await patch({ enabled: false })).status, 200);
+    const resumed = await post('/api/scope/request', worktreeInput);
+    assert.equal(resumed.status, 202);
+    assert.equal((await post(`/api/approvals/${resumed.data.approval.id}/approve`, {}, user)).data.state, 'approved');
+    assert.equal((await getTask('plain-task')).scopes.length, 12);
+    for (const name of ['over-eight', 'blocked', 'read-blocked-read', ...Array.from({ length: 5 }, (_, n) => `read-extra-read-${n}`)]) {
+      assert.equal((await post(`/api/tasks/plain-task/scopes/${name}/remove`, {}, user)).status, 200, name);
+    }
 
     // 11. archive keeps the attached worktrees; a removal keeps uncommitted work and the branch
     const archived = await post('/api/tasks/plain-task/kill', {}, user);

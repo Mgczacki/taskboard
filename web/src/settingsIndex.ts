@@ -22,6 +22,9 @@ export const SECTIONS: SectionDef[] = [
     { id: 'standingRules', title: 'Standing approvals', settings: [
       { id: 'standingRulesList', label: 'Allow one action for one task and target, up to a daily limit', words: 'standing approval rule push deploy dev catalog stage daily limit manager' },
     ] },
+    { id: 'scopes', title: 'Scope requests', settings: [
+      { id: 'scopeLimit', label: 'Limit attached scopes per task', words: 'read folders worktree count maximum off unlimited approval' },
+    ] },
     { id: 'permits', title: 'Permit requests', settings: [
       { id: 'permitRequestLimits', label: 'Limit permit requests per task', words: 'permit rate limit 10 minutes 24 hours off failed denied' },
       { id: 'controllerApprovesPermits', label: 'The controller may approve low risk suggestions', words: 'permit approval risk' },

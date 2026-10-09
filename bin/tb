@@ -984,6 +984,7 @@ Example: tb scope request worktree --repo ~/code/app --base origin/master --bran
       } else { console.error(help); process.exit(1); }
     } else if (action === 'list') {
       const r = await call('GET', '/api/scope');
+      if (r.scopeLimit) console.log(`Attached scopes: ${r.scopes.length}. Count maximum: ${r.scopeLimit.enabled ? r.scopeLimit.max : 'off (no maximum)'}.`);
       const lines = r.scopes.map(s => s.kind === 'worktree' ? `${s.name.padEnd(20)} worktree  ${s.branch}  ${s.path}  (repository ${s.repo}, base ${s.base})` : `${s.name.padEnd(20)} read      ${s.path}`);
       console.log(lines.join('\n') || 'This task has no attached worktree or folder.');
       if (r.pending.length) console.log(`Waiting for the user: ${r.pending.map(p => `${p.id} ${p.summary}`).join('; ')}`);

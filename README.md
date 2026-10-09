@@ -257,6 +257,13 @@ A move between windows never changes a task's groups. A new task goes after the 
   Tests that start servers or tmux sessions use separate ports, folders, and socket names.
   Wait for the expected screen, file, or server state with `tests/helpers/wait-for.ts`.
   Include the last screen and expected state in a wait failure. Keep fixed sleeps only when elapsed time is the behavior under test.
+- **Attached scopes:** A task can request another worktree or read folder with `tb scope request`.
+  Each request needs user approval. Settings > Approvals > Scope requests controls the maximum attached scopes per task.
+  The count maximum is off by default. When on, it accepts a positive whole number.
+  Read folders and attached worktrees count together. The initial task folder does not count.
+  Lowering the maximum keeps existing scopes. New attachments fail at or above the maximum.
+  `tb scope list` shows the count and effective maximum. Taskboard checks the maximum again when approval adds the scope.
+  At most three scope requests can wait for approval at once. Account task limits still apply to new task starts.
 - **Task processes:** `tb run <name> [--port n] [--stop "<command>"] [--cwd dir] -- <command>` starts a dev server,
   database or other process for the agent's task. A group owns no processes. Each process runs in its own window
   of the tmux session `proc-<num>`, so it keeps running when the Taskboard server
