@@ -121,7 +121,7 @@ test('an explicit Slack reply reaches its originating task only after acceptance
   assert.equal(f.delivered.filter(name => name === `writer/a2anotes-${m.id}.md`).length, 1);
 });
 
-test('MCP human confirmation outside Taskboard clears its card and permits one verified reply delivery', async t => {
+test('legacy MCP human confirmation outside Taskboard clears its card and permits one verified reply delivery', async t => {
   const f = await fixture(t), d = await f.draft();
   const token = f.clients.add('interactive-coding-client', 'agent', { humanApproval: true });
   const coding = new Client({ name: 'fake-coding-client', version: '1' }, { capabilities: { elicitation: { form: {} } } });
@@ -131,7 +131,14 @@ test('MCP human confirmation outside Taskboard clears its card and permits one v
     return { action: 'accept', content: { decision: 'approve' } };
   });
   t.after(() => coding.close());
-  await coding.connect(new StreamableHTTPClientTransport(new URL(f.http.url + '/mcp'), { requestInit: { headers: { authorization: `Bearer ${token}` } } }));
+  await coding.connect(new StreamableHTTPClientTransport(new URL(f.http.url + '/mcp'), { requestInit: { headers: { authorization: `Bearer ${token}` } },
+    fetch: (async (url, init) => {
+      if (init?.body && typeof init.body === 'string') {
+        const body = JSON.parse(init.body);
+        if (body.method === 'initialize') { body.params.capabilities.elicitation = {}; init = { ...init, body: JSON.stringify(body) }; }
+      }
+      return fetch(url, init);
+    }) as typeof fetch }));
   const confirm = async (m: any) => {
     const r = await coding.callTool({ name: 'a2anotes_request_approval', arguments: { id: m.id, expected_hash: m.hash } });
     assert.ok(!r.isError, JSON.stringify(r)); return r.structuredContent as any;

@@ -18,7 +18,7 @@ To use another app, set the client ID and team ID on the Settings page (Integrat
 
 ## Replies and queued delivery
 
-A2A Notes 0.6.0 displays an explicit reply marker in each sent Slack note.
+A2A Notes 0.6.1 displays an explicit reply marker in each sent Slack note.
 The person copies that first line and writes the reply on the next line.
 The reply can arrive in the direct message conversation or its thread.
 
@@ -40,9 +40,9 @@ Saved upload progress prevents the adapter from sharing a file twice.
 Invalid credentials stop delivery.
 Changed content or policy stops delivery.
 
-Taskboard installs the tested service from the local package in `integrations/a2a-notes/a2a-notes-0.6.0.tgz`.
+Taskboard installs the tested service from the local package in `integrations/a2a-notes/a2a-notes-0.6.1.tgz`.
 The lockfile records the package integrity.
-The source revision is `9c8056f2958ccb5b9d975d5257967782365d002f` in the A2A Notes repository.
+The source revision is `78ebe80873bfc97d9223a1ca0f4b3f6be8831a7a` in the A2A Notes repository.
 A future service update must replace that package and update the lockfile.
 The existing Slack app needs no new callback endpoint.
 
@@ -51,6 +51,7 @@ The existing Slack app needs no new callback endpoint.
 The service exposes `a2anotes_request_approval` for interactive MCP clients.
 Register that client with `a2a-notes token add <name> --role agent --human-approval`.
 Its host must support form elicitation and show the form to the human.
+Both modern and legacy form capability declarations work.
 The agent keeps its existing role.
 It cannot approve directly or change the service policy.
 
