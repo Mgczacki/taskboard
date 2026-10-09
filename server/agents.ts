@@ -99,7 +99,7 @@ export function writeClaudeSettings() {
   hooks.PreToolUse = [{ matcher: 'Bash', hooks: [{ type: 'command', command: `node ${tmux.quote(GUARD_SCRIPT)}`, timeout: 5 }] }];
   // The log and documents live in the vault, outside the project folder; allow writing there without a prompt each turn.
   const vault = VAULT.replace(HOME, '~');
-  const permissions = { allow: [`Edit(${vault}/**)`, `Read(${vault}/**)`, 'Bash(tb review:*)', 'Bash(tb inbox wait:*)', 'Bash(tb suggest:*)', 'Bash(tb permit request:*)', 'Bash(tb permit run-request:*)', 'Bash(tb permit result:*)', 'Bash(tb permit list)', `Bash(python3 ${WORDING_SCRIPT}:*)`, 'Bash(tb run:*)', 'Bash(tb ps:*)', 'Bash(tb top:*)', 'Bash(tb proc:*)', 'Bash(tb browser:*)', 'mcp__task-browser'] }; // Edit rules cover every file-writing tool
+  const permissions = { allow: [`Edit(${vault}/**)`, `Read(${vault}/**)`, 'Bash(tb review:*)', 'Bash(tb inbox wait:*)', 'Bash(tb suggest:*)', 'Bash(tb permit request:*)', 'Bash(tb permit run-request:*)', 'Bash(tb permit result:*)', 'Bash(tb permit withdraw:*)', 'Bash(tb permit list)', `Bash(python3 ${WORDING_SCRIPT}:*)`, 'Bash(tb run:*)', 'Bash(tb ps:*)', 'Bash(tb top:*)', 'Bash(tb proc:*)', 'Bash(tb browser:*)', 'mcp__task-browser'] }; // Edit rules cover every file-writing tool
   // status line: shows the model and usage in the terminal and reports the account's usage windows to Taskboard
   const statusLine = { type: 'command', command: `node ${tmux.quote(STATUSLINE_SCRIPT)}` };
   writeFileSync(CLAUDE_SETTINGS_FILE, JSON.stringify({ hooks, permissions, statusLine }, null, 2));
@@ -619,6 +619,7 @@ export function taskInstructions(t: Task, inlineRules = true) {
     `Use tb suggest --steps <file> --why "<reason>" for an ordered sequence.`,
     `The server stops after the first failed step. Read the result with tb permit result <id> --wait.`,
     'For one long script that needs user approval, run `tb permit run-request <name> --reason "<reason>" --risk "<risk>" --command "<script command>" --cwd <folder> [--network]`. Taskboard starts it after dashboard approval. Read the result with `tb permit result <id> --wait`.',
+    'If you no longer need a pending permit, run `tb permit withdraw <id> --reason "<reason>"`. Nothing runs, and its card closes.',
     `Do not rerun an approved command yourself.`,
     `If the Taskboard guard blocks a command, stop and tell the user what it said.`,
     ...(t.agent === 'codex' ? [

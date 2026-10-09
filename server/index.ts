@@ -140,13 +140,14 @@ permits.onChange(p => {
   const card = p.approvalId ? approvals.get(p.approvalId) : undefined;
   const close = permitCardClose(p, card);
   if (card && close) approvals.close(card.id, close.state, close.result);
-  if (!['succeeded', 'failed', 'cancelled', 'denied', 'expired', 'unknown'].includes(p.state) || permitNotices.has(p.id)) return;
+  // a task that withdrew its own permit already has the answer of its request
+  if (!['succeeded', 'failed', 'cancelled', 'denied', 'expired', 'unknown'].includes(p.state) || p.withdrawnAt || permitNotices.has(p.id)) return;
   permitNotices.add(p.id);
   if (permitNotices.size > 1000) permitNotices.delete(permitNotices.values().next().value!);
   const task = store.get(p.taskId);
   // an archived task gets no notice: a status change would take it out of the archive
   if (!task || task.status === 'archived') return;
-  const lines = [`# Permit ${p.id}`, '', `Task: #${p.taskNum}`, `Result: ${p.state}`, `Approved by: ${p.approvedBy || 'Nobody'}`, `Rule: ${p.approvalRule || 'none'}`, `Comment: ${p.decisionComment || 'none'}`, '', ...p.steps.flatMap((s, i) => [`${i + 1}. ${s.state}: ${s.command}`, `Exit code: ${s.exitCode ?? 'none'}`, `Signal: ${s.signal || 'none'}`, 'Output:', '```text', s.outputTail || '', '```']), '', `Read the full record with \`tb permit result ${p.id}\`.`];
+  const lines = [`# Permit ${p.id}`, '', `Task: #${p.taskNum}`, `Result: ${p.state}`, `Approved by: ${p.approvedBy || 'Nobody'}`, `Rule: ${p.approvalRule || 'none'}`, `Comment: ${p.decisionComment || 'none'}`, ...(p.error ? [`Reason: ${p.error}`] : []), '', ...p.steps.flatMap((s, i) => [`${i + 1}. ${s.state}: ${s.command}`, `Exit code: ${s.exitCode ?? 'none'}`, `Signal: ${s.signal || 'none'}`, 'Output:', '```text', s.outputTail || '', '```']), '', `Read the full record with \`tb permit result ${p.id}\`.`];
   try { docs.uploadSystem(task.id, `permit-${p.id}.md`, lines.join('\n') + '\n'); } catch (e) { console.error('could not send permit result', e); }
   const wasIdle = ['idle', 'unread', 'suspended', 'needs-you'].includes(task.status);
   store.update(task.id, { status: 'unread', ask: '', statusSource: `Permit ${p.id} ${p.state}. The result is in the task inbox.` });
@@ -154,9 +155,13 @@ permits.onChange(p => {
   if (wasIdle) void messageQueue.send(store.get(task.id)!, permits.notice(p), { from: 'taskboard', kind: 'permit' })
     .catch(e => console.error('could not wake task for permit result', e));
 });
+// A pending permit whose card closed without it (a restart expired the card) would block the task's next request.
+// It expires here, after the listener above, so the task and the dashboard get the reason.
+for (const p of permits.closeOrphans(approvals.get)) console.log(`permit ${p.id} of task #${p.taskNum} expired: ${p.error}`);
 setInterval(() => {
   // permits.onChange closes the card of an expired permit
   for (const p of permits.all()) if (p.state === 'pending') permits.expire(p);
+  permits.closeOrphans(approvals.get);
   for (const p of permits.all()) if (p.supervised && p.state === 'running') void refreshSupervised(p).catch(e => console.error('could not read approved run', e));
   for (const p of push.allPushes()) if (p.state === 'pending' && p.approvalId) {
     const card = approvals.get(p.approvalId);
@@ -892,6 +897,13 @@ app.get('/api/permits/:id', (req, res) => {
   permits.expire(p);
   if (p.supervised && p.state === 'running') { void refreshSupervised(p).then(() => res.json(p)).catch(e => fail(res, e)); return; }
   res.json(p);
+});
+// The task that requested a pending permit cancels it. Nothing runs, and permits.onChange closes the card.
+app.post('/api/permits/:id/withdraw', (req, res) => {
+  const actor = req.get('x-tb-actor') || '';
+  const p = permits.get(req.params.id);
+  if (!p || p.taskId !== actor) return res.status(404).json({ error: 'This task has no permit with this ID.' });
+  try { res.json(permits.withdraw(p, actor, String(req.body.reason || ''))); } catch (e) { res.status(409).json({ error: e instanceof Error ? e.message : String(e) }); }
 });
 app.post('/api/permits/:id/decide', async (req, res) => {
   if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Decide on the dashboard.' });

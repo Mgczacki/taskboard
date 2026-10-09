@@ -28,6 +28,8 @@ export interface Permit {
   steps: PermitStep[]; approvedBy?: 'user' | 'controller'; approvalRule?: string; riskClass?: 'low' | 'high'; controllerRequestText?: string; statedRisk?: string;
   decidedAt?: string; decisionComment?: string; startedAt?: string; finishedAt?: string; error?: string;
   supervised?: { name: string };
+  // the task cancelled its own pending request (withdraw below)
+  withdrawnAt?: string;
 }
 export interface StepInput { command: string; cwd?: string; timeoutSeconds?: number; network?: boolean; continueOnFailure?: boolean; env?: Record<string, string>; unsetEnv?: string[] }
 export interface PermitDiagnostic { rule: string; cwd: string; conflictingWorktree: string; conflictingTask: string; correction: string }
@@ -380,6 +382,36 @@ export function cancel(p: Permit, reason: string) {
   if (expire(p) || p.state !== 'pending') return false;
   p.state = 'expired'; p.error = reason; p.steps.forEach(s => s.state = 'cancelled'); p.finishedAt = now(); save(p); return true;
 }
+// A pending permit whose approval card is missing or closed can never run: only the card runs it, and the task cannot
+// request another permit while this one is pending (request above). This happens when Taskboard restarts before a
+// decision: approvals.ts marks the pending card expired, but the permit record stays pending. index.ts calls this at
+// startup and every 5 seconds. A pending or running card keeps its permit (a running card starts its permit itself).
+// A running permit is not changed. Nothing runs. Returns the permits that it expired.
+export function closeOrphans(cardOf: (id: string) => { state: string; result?: string } | undefined): Permit[] {
+  const closed: Permit[] = [];
+  for (const p of records.values()) {
+    if (p.state !== 'pending' || expire(p)) continue;
+    const card = p.approvalId ? cardOf(p.approvalId) : undefined;
+    if (card && (card.state === 'pending' || card.state === 'running')) continue;
+    const why = !p.approvalId ? 'This permit has no approval card.'
+      : !card ? `Its approval card ${p.approvalId} no longer exists.`
+      : `Its approval card ${p.approvalId} closed without a decision on the permit (${card.state}${card.result ? `: ${card.result}` : ''}).`;
+    p.state = 'expired'; p.error = `${why} The steps were cancelled and did not run. Request a new permit if you still need it.`;
+    p.steps.forEach(s => s.state = 'cancelled'); p.finishedAt = now(); save(p); closed.push(p);
+  }
+  return closed;
+}
+// The task that requested a pending permit cancels it. Nothing runs. index.ts closes the card (card-close.ts).
+export function withdraw(p: Permit, taskId: string, reason: string): Permit {
+  if (p.taskId !== taskId) throw new Error('A task can withdraw only its own permit.');
+  if (expire(p)) return p;
+  if (p.state !== 'pending') throw new Error(`Permit ${p.id} is ${p.state}. Only a pending permit can be withdrawn.`);
+  if (typeof reason !== 'string' || reason.length > 500) throw new Error('Keep the reason under 500 characters.');
+  const text = redactOutput(reason.trim());
+  p.state = 'cancelled'; p.withdrawnAt = now(); p.finishedAt = p.withdrawnAt;
+  p.error = `Task #${p.taskNum} withdrew this permit before a decision${text ? `: ${text}` : '.'}`;
+  p.steps.forEach(s => s.state = 'cancelled'); save(p); return p;
+}
 export function deny(p: Permit, comment: string) {
   if (expire(p) || p.state !== 'pending') return p;
   p.state = 'denied'; p.decidedAt = now(); p.decisionComment = redactOutput(comment.slice(0, 2000));
@@ -428,7 +460,7 @@ export function userWroteCount(transcript: string | undefined, agent: string, wo
   return count;
 }
 export function notice(p: Permit): string {
-  const comment = p.decisionComment ? ` User comment: ${p.decisionComment}.` : '';
+  const comment = (p.decisionComment ? ` User comment: ${p.decisionComment}.` : '') + (p.error && !p.decisionComment ? ` Reason: ${p.error}` : '');
   const result = p.steps.map((s, i) => `Step ${i + 1}: ${s.state}, exit ${s.exitCode ?? 'none'}.`).join(' ');
   return `Suggestion ${p.id} ${p.state}.${comment} ${result} ${p.supervised ? `Read the process log with tb proc logs ${p.supervised.name}.` : 'Read the last 200 output lines in your inbox.'}`;
 }

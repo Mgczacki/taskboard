@@ -13,8 +13,11 @@ export const clock = (iso: string) => new Date(iso).toLocaleTimeString([], { hou
 
 // How to close the card of a permit that ended without a decision on the card, or undefined when the card stays.
 // A denied or run permit is closed by approvals.decide itself, so only an expiry closes the card here.
-export function permitCardClose(p: Pick<Permit, 'state' | 'expiresAt' | 'error'>, card?: Pick<Approval, 'state'>): { state: 'expired'; result: string } | undefined {
-  if (!card || card.state !== 'pending' || p.state !== 'expired') return;
+// A permit that its task withdrew (permits.withdraw) also closes the card.
+export function permitCardClose(p: Pick<Permit, 'state' | 'expiresAt' | 'error' | 'withdrawnAt'>, card?: Pick<Approval, 'state'>): { state: 'expired'; result: string } | undefined {
+  if (!card || card.state !== 'pending') return;
+  if (p.state === 'cancelled' && p.withdrawnAt) return { state: 'expired', result: `${p.error || 'The task withdrew this permit.'} Nothing ran.` };
+  if (p.state !== 'expired') return;
   return { state: 'expired', result: p.error || `The permit expired at ${clock(p.expiresAt)}. Nothing ran.` };
 }
 
