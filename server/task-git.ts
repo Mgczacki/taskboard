@@ -92,6 +92,8 @@ export async function mergeState(t: Task): Promise<MergeState> {
 export async function commitTask(t: Task, message: string): Promise<string> {
   if (!message.trim() || message.length > 200 || /[\r\n]/.test(message)) throw new Error('Run tb git commit with a one-line message under 200 characters.');
   await mergeStateForSource(t);
+  // git add -A would also stage the conflict markers of an unfinished tb git merge-from.
+  if (existsSync(await gitPath(t.cwd, 'MERGE_HEAD'))) throw new Error('A merge is in progress; run tb git merge-from --continue --stage PATH for each resolved file, or tb git merge-from --abort.');
   await exec('git', ['add', '-A'], { cwd: t.cwd });
   await exec('git', ['commit', '--quiet', '-m', message], { cwd: t.cwd });
   return `Committed ${await git(t.cwd, 'rev-parse', '--short', 'HEAD')} on ${t.branch}.`;

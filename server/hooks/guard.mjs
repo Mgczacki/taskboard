@@ -48,11 +48,11 @@ for (const p of parts) {
   // `git branch --show-current` reads the branch name. Other branch forms can change refs.
   if (process.env.TASK_ID && process.env.TASK_ID !== 'controller' && match && gitWrite.test(match[1]) &&
       !(match[1] === 'branch' && /^\s+--show-current\s*$/.test(match[2])))
-    reasons.push(attached.length
-      ? `run \`tb git commit\`, \`tb git rebase\`, \`tb git repair\`, or \`tb git merge-request\` for Git writes. This task has attached worktrees: ${attached.map(s => s.name).join(', ')}. Select one with \`--worktree <name>\`. The main checkouts and other tasks' worktrees are outside this task's write scope`
+    reasons.push((/^(?:merge|pull)$/.test(match[1]) ? 'to merge a base such as origin/main into your task branch without a rebase, run `tb git merge-from origin/main`. Otherwise, ' : '') + (attached.length
+      ? `run \`tb git commit\`, \`tb git rebase\`, \`tb git merge-from\`, \`tb git repair\`, or \`tb git merge-request\` for Git writes. This task has attached worktrees: ${attached.map(s => s.name).join(', ')}. Select one with \`--worktree <name>\`. The main checkouts and other tasks' worktrees are outside this task's write scope`
       : process.env.TASK_WORKTREE
-      ? 'run `tb git commit`, `tb git rebase`, `tb git repair`, or `tb git merge-request` for Git writes in a Taskboard task. To change another repository, run `tb scope request worktree --repo <main checkout> --base origin/<branch> --branch <new branch> --reason "<why>"` and then use `tb git commit --worktree <name>`'
-      : 'this task has no worktree. Run `tb scope request worktree --repo <main checkout> --base origin/<branch> --branch <new branch> --reason "<why>"`, for example `tb scope request worktree --repo ~/code/app --base origin/master --branch task/fix-login --reason "Fix the login bug"`. The user approves it on the dashboard. Then run `tb git commit`, `tb git rebase`, `tb git repair`, or `tb git merge-request` with `--worktree <name>`');
+      ? 'run `tb git commit`, `tb git rebase`, `tb git merge-from`, `tb git repair`, or `tb git merge-request` for Git writes in a Taskboard task. To change another repository, run `tb scope request worktree --repo <main checkout> --base origin/<branch> --branch <new branch> --reason "<why>"` and then use `tb git commit --worktree <name>`'
+      : 'this task has no worktree. Run `tb scope request worktree --repo <main checkout> --base origin/<branch> --branch <new branch> --reason "<why>"`, for example `tb scope request worktree --repo ~/code/app --base origin/master --branch task/fix-login --reason "Fix the login bug"`. The user approves it on the dashboard. Then run `tb git commit`, `tb git rebase`, `tb git merge-from`, `tb git repair`, or `tb git merge-request` with `--worktree <name>`'));
   if (/\b(pkill|killall)\b/.test(p) && /server\/index|taskboard|\btsx\b|\bnode\b|\bnpx\b/i.test(p))
     reasons.push('pkill/killall by name can match the real Taskboard server, not only a test server');
   if (serverPid && /\bkill\b/.test(p) && new RegExp(`(^|[^0-9])${serverPid}([^0-9]|$)`).test(p))
@@ -135,7 +135,7 @@ if (/\b(rm|mv|rsync\s+--delete)\b[^\n]*(~|\$HOME|\/Users\/[^/\s]+)\/\.taskboard(
 const port = process.env.TASKBOARD_PORT || '4317';
 if (/\bkill\b|fuser\s+-k/.test(cmd) && new RegExp(`[:=\\s]${port}\\b`).test(cmd)) reasons.push(`port ${port} is the real Taskboard server`);
 if (reasons.length || ownText.length) {
-  const gitOnly = reasons.length === 1 && (reasons[0].startsWith('run `tb git') || reasons[0].startsWith('this task has no worktree'));
+  const gitOnly = reasons.length === 1 && (reasons[0].startsWith('run `tb git') || reasons[0].startsWith('to merge a base') || reasons[0].startsWith('this task has no worktree'));
   if (gitOnly) ownText.unshift(reasons.pop());
   const stops = [...new Set(reasons)];
   const reason = 'Blocked by Taskboard: ' + [...ownText.map(r => r + '.'), ...(stops.length ? [`${stops.join('; ')}. You are running inside Taskboard, so stopping it would cut off you and every other agent. ` +

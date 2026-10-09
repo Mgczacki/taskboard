@@ -212,6 +212,12 @@ const HELP = `tb — Taskboard command line
   tb git rebase --continue            stage resolved conflicts and finish the approved merge
   tb git rebase --continue --stage PATH stage one named file before continuing a rebase
   tb git rebase --abort               stop a rebase in your own worktree
+  tb git merge-from BASE              merge BASE (master, or a remote branch such as origin/main; runs git fetch
+                                     first) into your branch with one merge commit. The branch commits do not
+                                     change, so a pushed branch needs no force push. It saves the old head as a backup
+  tb git merge-from --continue --stage PATH [--stage PATH ...]
+                                     stage only the named resolved files and make the merge commit
+  tb git merge-from --abort           stop a merge and restore the branch as before it
   tb git repair --squash --base BASE -m "<message>"
                                      make your branch one commit over BASE (master or a remote branch)
   tb git repair --drop COMMIT [--base BASE]
@@ -961,6 +967,22 @@ switch (cmd) {
       const action = rest[1] === '--continue' ? 'continue' : rest[1] === '--abort' ? 'abort' : 'start';
       console.log((await call('POST', '/api/git/rebase', { action, ...(action === 'start' && rest[1] ? { base: rest[1] } : {}), ...(stage !== undefined ? { stage } : {}), ...wt })).result);
     }
+    else if (rest[0] === 'merge-from') {
+      // tb git merge-from BASE | --continue [--stage PATH ...] | --abort
+      const usage = 'tb git merge-from: run tb git merge-from BASE, tb git merge-from --continue [--stage PATH ...], or tb git merge-from --abort.';
+      const stage = [];
+      let action = 'start', base;
+      if (rest[1] === '--abort' && rest.length === 2) action = 'abort';
+      else if (rest[1] === '--continue') {
+        action = 'continue';
+        for (let i = 2; i < rest.length; i += 2) {
+          if (rest[i] !== '--stage' || !rest[i + 1] || rest[i + 1].startsWith('--')) { console.error(usage); process.exit(1); }
+          stage.push(rest[i + 1]);
+        }
+      } else if (rest.length === 2 && rest[1] && !rest[1].startsWith('-')) base = rest[1];
+      else { console.error(usage); process.exit(1); }
+      console.log((await call('POST', '/api/git/merge-from', { action, ...(base ? { base } : {}), ...(stage.length ? { stage } : {}), ...wt })).result);
+    }
     else if (rest[0] === 'repair') {
       const base = flag('--base'); const message = flag('-m'); const commit = flag('--drop'); const backup = flag('--restore');
       const squash = has('--squash'); const list = has('--list');
@@ -1006,7 +1028,7 @@ switch (cmd) {
         if (result.state !== 'pending' || !wait) { console.log(JSON.stringify(result, null, 2)); break; }
         await new Promise(resolve => setTimeout(resolve, 2000));
       }
-    } else { console.error('Run tb git commit, tb git rebase, tb git repair, tb git check, tb git merge-request, tb git push-request, or tb git push-result.'); process.exit(1); }
+    } else { console.error('Run tb git commit, tb git rebase, tb git merge-from, tb git repair, tb git check, tb git merge-request, tb git push-request, or tb git push-result.'); process.exit(1); }
     break;
   }
   case 'scope': {

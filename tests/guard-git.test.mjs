@@ -36,5 +36,13 @@ test('the guard still blocks raw Git ref changes in a task and lets the tb git c
       assert.doesNotMatch(result, /this task has no worktree/);
     }
     assert.match(run('git branch --show-current -D master', { TASK_ATTACHED_WORKTREES: scopes }), /permissionDecision.*deny/);
+    // git merge and git pull stay blocked. The refusal names tb git merge-from and does not add the text about stopping the server.
+    for (const command of ['git merge origin/main', 'git pull origin main', 'git merge --continue']) {
+      const result = run(command, { TASK_WORKTREE: '1' });
+      assert.match(result, /permissionDecision.*deny.*tb git merge-from origin\/main/, command);
+      assert.doesNotMatch(result, /stopping it would cut off/, command);
+    }
+    for (const command of ['tb git merge-from origin/main', 'tb git merge-from --continue --stage src/a.ts', '/Users/me/.taskboard/bin/tb git merge-from --abort'])
+      assert.equal(run(command), '', command);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
