@@ -29,6 +29,13 @@ test('a held incoming message shows Waiting for approval only with its allowed a
   assert.equal(cardControls({ ...held, allowed_actions: ['mark_seen'] }).reject, false);
 });
 
+test('an accepted incoming message uses acceptance language and a server-checked person route', () => {
+  const incoming = { state: 'approved', direction: 'in' as const, allowed_actions: ['reply'], body_flags: null };
+  assert.equal(cardControls(incoming).label, 'Accepted');
+  assert.equal(cardControls(incoming).route, false);
+  assert.equal(cardControls({ ...incoming, route_person: true }).route, true);
+});
+
 test('an older list response that arrives last is not kept', () => {
   const order = loadOrder();
   const poll = order.start(), afterApproval = order.start();

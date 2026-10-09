@@ -22,7 +22,7 @@ export function stageLabel(stage?: string): string {
   return stage === 'checking' ? 'Not sent yet · the checks are running'
     : stage === 'held' ? 'Not sent yet · the safety check holds it'
     : stage === 'send' ? 'Approved · not sent yet'
-    : stage === 'incoming' ? 'Waits for your approval'
+    : stage === 'incoming' ? 'Waits for your acceptance'
     : 'Not sent yet';
 }
 
@@ -34,7 +34,7 @@ export function messageButtons(a: Pick<Approval, 'action' | 'payload' | 'returna
   const approve = a.state !== 'pending' ? ''
     : stage === 'draft' ? 'Approve and send'
     : stage === 'send' ? 'Send again'
-    : stage === 'incoming' ? (p?.proposal?.task ? 'Approve and give to the task' : 'Approve') : '';
+    : stage === 'incoming' ? (p?.proposal?.task ? 'Accept and give to the task' : 'Accept') : '';
   return {
     approve,
     recheck: a.state === 'pending' && a.action === 'mail-out' && (stage === 'checking' || stage === 'held' || notes.some(n => n.actions.includes('recheck'))),
@@ -46,7 +46,7 @@ export function messageButtons(a: Pick<Approval, 'action' | 'payload' | 'returna
 // The label of a decided Message card, in place of its stage.
 export function doneLabel(a: Pick<Approval, 'state' | 'action'>): string {
   const out = a.action === 'mail-out';
-  return a.state === 'approved' ? (out ? 'Sent' : 'Approved') : a.state === 'failed' ? (out ? 'Not sent' : 'Failed') : a.state === 'denied' || a.state === 'returned' ? 'Rejected' : 'Closed';
+  return a.state === 'approved' ? (out ? 'Sent' : 'Accepted') : a.state === 'failed' ? (out ? 'Not sent' : 'Failed') : a.state === 'denied' || a.state === 'returned' ? 'Rejected' : 'Closed';
 }
 
 // The result line of a decided Message card.

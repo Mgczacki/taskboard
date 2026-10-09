@@ -15,6 +15,7 @@ interface Summary {
   metadata: Record<string, string | number | boolean | null> | null;
   suggested_task?: { id: string; num: number; title: string; reason: string };
   proposed_route?: { task: string | null };
+  triage?: string; route_person?: boolean;
   // the other person: Slack name and picture (server/a2anotes/routes.ts peerOf)
   peer: { address: string; user: string; name: string; picture: string };
 }
@@ -107,18 +108,21 @@ export function MessageList({ tasks, direction, focus }: { tasks: Task[]; direct
       const d = open[m.id];
       const by = m.metadata?.['taskboard.proposed_by'];
       const controls = cardControls(m);
+      const approver = m.direction === 'in' && m.audience === 'person' && m.approver === 'reviewer' ? 'person' : m.approver;
       return <article key={m.id} className="mail-item" data-a2a={m.id}>
         <div className="a2a-head">
           <Face person={{ user: m.peer.user, name: m.peer.name, picture: m.peer.picture }} size={32} />
           <div><div className="a2a-who" title={m.peer.address}>{m.direction === 'in' ? 'From' : 'To'} {m.peer.name}</div><h3>{m.subject}</h3></div>
         </div>
-        <p className="mail-meta">{controls.label}. For: {m.audience === 'person' ? 'the reader' : m.audience === 'agent' ? "the reader's agent" : 'the reader and the agent'}. Check: {m.check?.verdict || m.failure_code || 'running'}. Approver: {approverLabel(m.approver)}. {m.trusted ? 'Trusted.' : 'Not trusted.'}
+        <p className="mail-meta">{controls.label}. For: {m.audience === 'person' ? 'the reader' : m.audience === 'agent' ? "the reader's agent" : 'the reader and the agent'}. Check: {m.check?.verdict || m.failure_code || 'running'}. Approver: {approverLabel(approver)}. {m.trusted ? 'Trusted.' : 'Not trusted.'}
           {m.direction === 'out' && by ? ` Written by ${proposer({ proposedBy: { actor: by === 'user' ? 'user' : by as 'task' | 'controller', task: String(m.metadata?.['taskboard.task_id'] || '') } }, tasks)}.` : ''}
           {m.direction === 'out' && m.body_flags ? ` The message check flagged ${m.body_flags} item(s).` : ''}
           {' '}{date(m.created)}.
           {m.routes.length ? ` Given to ${m.routes.map(r => tasks.find(t => t.id === r.task)?.title || r.task).join(', ')}.` : ''}
           {m.proposed_route ? ` The controller proposes ${m.proposed_route.task ? tasks.find(t => t.id === m.proposed_route!.task)?.title || m.proposed_route.task : 'no task'}.` : ''}
           {m.suggested_task && !m.routes.length ? ` ${m.suggested_task.reason}: ${m.suggested_task.title}.` : ''}</p>
+        {m.triage && <p className="mail-meta">Controller triage: {m.triage}</p>}
+        {m.direction === 'in' && controls.approve && <p className="mail-meta">Acceptance lets the controller read this message. A verified reply goes to its originating task. Other messages wait for a destination.</p>}
         {d && <>
           {d.body && (d.direction === 'out' ? <FlaggedBody body={d.body} quality={d.body_check ? { state: d.body_check.state || 'done', flags: d.body_check.flags } : undefined} /> : <p className="mail-body" style={{ whiteSpace: 'pre-wrap' }}>{d.body}</p>)}
           {d.review && <p className="mail-meta">Check reason: {d.review.reason}</p>}
@@ -131,7 +135,7 @@ export function MessageList({ tasks, direction, focus }: { tasks: Task[]; direct
         </>}
         <div className="mail-tabs">
           <button className="btn" disabled={busy} onClick={() => show(m.id)}>{d ? 'Refresh' : 'Show message'}</button>
-          {controls.approve && <button className="btn" disabled={busy || !d} title={d ? '' : 'Show the message first'} onClick={() => act(() => request(`/messages/${m.id}/approve`, { hash: m.hash, decision: 'approve' }), m.id)}>Approve this version</button>}
+          {controls.approve && <button className="btn" disabled={busy || !d} title={d ? '' : 'Show the message first'} onClick={() => act(() => request(`/messages/${m.id}/approve`, { hash: m.hash, decision: 'approve' }), m.id)}>{m.direction === 'in' ? 'Accept this version' : 'Approve this version'}</button>}
           {controls.reject && <button className="btn" disabled={busy} onClick={() => act(() => request(`/messages/${m.id}/approve`, { hash: m.hash, decision: 'reject' }), m.id)}>Reject</button>}
           {controls.removeFlagged && d && <button className="btn" disabled={busy} onClick={() => act(() => request(`/messages/${m.id}/remove-flagged`, { hash: m.hash }), m.id)}>Remove flagged text</button>}
           {controls.send && <button className="btn" disabled={busy} onClick={() => act(() => request(`/messages/${m.id}/send`, { hash: m.hash }), m.id)}>{controls.sendLabel}</button>}

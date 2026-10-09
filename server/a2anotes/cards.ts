@@ -29,6 +29,7 @@ export interface CardDeps {
   route: (id: string, task: string) => Promise<{ task: string; file: string }>;
   notify: (task: string, name: string, text: string) => Promise<string>;
   name: (m: any) => string;
+  accepted?: (m: any, proposal?: Proposal) => Promise<{ task: string } | undefined>;
   // a line in the log of a task (store.appendLog); the default writes to the Taskboard task log
   log?: (task: string, did: string, next: string) => void;
 }
@@ -73,7 +74,7 @@ export function a2aCards(deps: CardDeps) {
       if ((m.state === 'approved' && m.approved_by) || m.state === 'delivery_uncertain') return `send:${m.hash}:${m.state}:${m.updated}`;
       return null;
     }
-    if (m.approver !== 'person' || !m.check || m.state !== 'held') return null;
+    if ((m.approver !== 'person' && !(m.audience === 'person' && m.approver === 'reviewer')) || !m.check || m.state !== 'held') return null;
     const p = deps.proposals()[m.id];
     return `incoming:${m.hash}:${p ? p.task ?? 'none' : '-'}`;
   }
@@ -107,7 +108,7 @@ export function a2aCards(deps: CardDeps) {
       check: { verdict: m.review?.verdict || m.check?.verdict || '', reason: m.review?.reason || '', summary: checkSummary(m) },
       quality: { state: m.body_check?.state || (m.body_check ? 'done' : 'checking'), flags },
       notes: m.direction === 'out' ? flags.map(explainFlag) : [],
-      approver: m.approver, since: m.created, remindAfterMin: REMIND_AFTER_MIN,
+      approver: m.direction === 'in' && m.audience === 'person' && m.approver === 'reviewer' ? 'person' : m.approver, since: m.created, remindAfterMin: REMIND_AFTER_MIN,
       ...(m.error ? { error: explainSendError(m.state === 'delivery_uncertain' ? 'delivery_uncertain' : 'send_failed', String(m.error)) } : {}),
       ...(proposal ? { proposal: { task: proposal.task, ...(proposal.task && tasks.get(proposal.task) ? { title: taskName(proposal.task) } : {}) } } : {}),
     };
@@ -162,8 +163,12 @@ export function a2aCards(deps: CardDeps) {
         return send(x, hash, d);
       }
       if (x.state === 'held') x = await deps.call('a2anotes_approve', { id, expected_hash: hash, decision: 'approve', review_context: context });
-      if (proposal?.task && x.audience !== 'person') { const r = await deps.route(id, proposal.task); return `Approved and given to ${taskName(r.task)}.`; }
-      return x.audience === 'person' && proposal?.task ? 'Approved. A message for a person does not go to a task.' : 'Approved.';
+      if (deps.accepted) {
+        const routed = await deps.accepted(x, proposal);
+        return routed ? `Accepted and given to ${taskName(routed.task)}.` : 'Accepted. The controller can read it and check its destination.';
+      }
+      if (proposal?.task) { const r = await deps.route(id, proposal.task); return `Accepted and given to ${taskName(r.task)}.`; }
+      return 'Accepted. The controller can read it and check its destination.';
     }
     async function deny() {
       const x = await deps.call('a2anotes_approve', { id, expected_hash: hash, decision: 'reject', review_context: 'Denied on the dashboard card.' });
@@ -231,7 +236,7 @@ export function a2aCards(deps: CardDeps) {
       if (!a || (a.state !== 'pending' && a.state !== 'running')) continue;
       const p = a.payload as MessagePayload;
       const waitMin = Math.max(0, Math.floor((now - Date.parse(p.since)) / 60000));
-      out.push({ card: a.id, state: a.state, message: p.message, stage: p.stage, direction: p.direction, to: p.peer, subject: p.subject, writer: p.writer,
+      out.push({ card: a.id, state: a.state, message: p.message, stage: p.stage, direction: p.direction, to: p.peer, subject: p.direction === 'in' ? '(held for user acceptance)' : p.subject, writer: p.writer,
         check: p.check.summary, flags: p.notes.map(n => n.code), approver: p.approver, since: p.since, waitMin, reminder: p.stage !== 'incoming' && waitMin >= p.remindAfterMin, notSent: p.direction === 'out' });
     }
     return out.sort((a, b) => a.since.localeCompare(b.since));

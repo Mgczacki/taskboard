@@ -11,6 +11,7 @@ export interface Message {
   review?: { verdict: string; reason: string }; approval?: { by: string; at?: string };
   approver?: 'user' | 'controller' | 'nobody'; trusted?: boolean;
   routes: { task: string; at?: string }[]; proposedRoute?: { task: string | null };
+  triage?: string;
   quality?: QualityView; files: number; agentFile?: string; returns?: { comment: string; at: string }[]; failure?: string;
 }
 
@@ -53,7 +54,8 @@ export function inboxState(m: Message, tasks: Task[]) {
   if (m.failure) return 'The message could not be read. No agent receives it.';
   if (m.rejectedAt) return 'Rejected. No agent receives it.';
   if (m.routes.length) return 'Given to ' + m.routes.map(r => taskLabel(r.task, tasks)).join(', ') + '.';
-  if (m.approval) return `Approved by ${m.approval.by === 'user' ? 'you' : 'the controller'}.`;
+  if (m.triage) return `${m.state === 'approved' ? 'Accepted for' : 'Waiting for'} controller triage. ${m.triage}`;
+  if (m.approval) return `Accepted by ${m.approval.by === 'user' ? 'you' : 'the controller'}. The controller checks its destination.`;
   if (!m.review) return 'Waiting for the check.';
   if (m.review.verdict === 'quarantine') return 'Quarantine: the check found a problem. No agent receives it.';
   if (m.approver === 'nobody') return 'Held: the message failed the safety check. No agent receives it at this level.';

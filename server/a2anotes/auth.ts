@@ -16,6 +16,7 @@ export function isControllerToken(value: string | undefined) {
 
 const origins = new Set([URL_BASE, `http://localhost:${PORT}`, 'http://localhost:5173', 'http://127.0.0.1:5173']);
 export function human(req: Request) {
+  if (req.get('x-tb-actor') || req.get('x-taskboard-token') || req.get('x-tb-task-token') || req.get('x-tb-mail-controller')) return false;
   const origin = req.get('origin');
   if (origin) return origins.has(origin) && !req.get('x-tb-actor');
   try { return req.get('sec-fetch-site') === 'same-origin' && origins.has(new URL(req.get('referer') || '').origin); } catch { return false; }
