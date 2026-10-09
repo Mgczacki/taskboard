@@ -14,6 +14,7 @@ import * as answerHistory from './answer-history.ts';
 import * as taskToken from './task-token.ts';
 import type { Agent, Task } from './store.ts';
 import * as tmux from './tmux.ts';
+import * as terminalInput from './terminal-input.ts';
 import * as accounts from './accounts.ts';
 import { failureAccountAfterMove } from './failure-account.ts';
 import { chooseAuto } from './auto-choice.ts';
@@ -1014,6 +1015,12 @@ export function checkResumeAccount(t: Task) {
 }
 
 const delivering = new Set<string>();
+export async function withTaskInput<T>(t: Task, run: () => Promise<T>): Promise<T> {
+  if (delivering.has(t.id)) throw new NotTyped('Another message is being typed into this task now.', 'busy');
+  delivering.add(t.id);
+  const release = terminalInput.hold(t.session);
+  try { return await run(); } finally { release(); delivering.delete(t.id); }
+}
 // Questions and dialogs in the bottom lines of an agent's screen that keys must not answer. Codex's update dialog is
 // (Codex 0.158.0): "Update available · 0.158.0 → 0.160.0", "› 1. Update now (runs `sh -c 'curl -fsSL
 // https://chatgpt.com/codex/install.sh | CODEX_NON_INTERACTIVE=1 sh'`)", "2. Skip", "3. Skip until next version".

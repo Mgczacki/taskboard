@@ -10,6 +10,7 @@
 import * as tmux from './tmux.ts';
 import type { Task } from './store.ts';
 import { agentName, blockingQuestion } from './agents.ts';
+import { CODEX_QUESTIONS, CODEX_QUESTION_OPEN, CODEX_ASYNC_OPEN } from './screen-prompts.ts';
 
 export const MAX_LENGTH = 1000;
 const HIDDEN = /[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff]/;
@@ -77,6 +78,7 @@ const QUESTION = /Do you want to|Would you like to|Requesting permission|Run thi
 export type BoxState = 'empty' | 'draft' | 'question' | 'no-box';
 export function boxState(screen: string, agent: PromptAgent = 'claude'): BoxState {
   const plain = plainText(screen);
+  if (agent === 'codex' && (CODEX_QUESTIONS.test(plain) || CODEX_QUESTION_OPEN.test(plain) || CODEX_ASYNC_OPEN.test(plain))) return 'question';
   const box = inputBox(plain, agent);
   const asks = (text: string) => blockingQuestion.test(text) || QUESTION.test(text);
   if (box === null) return asks(plain.split('\n').filter(l => l.trim()).slice(-15).join('\n')) ? 'question' : 'no-box';

@@ -63,6 +63,7 @@ import { archivedResult, cardsToCloseOnArchive, clock, permitCardClose, quickLin
 import * as mergeStale from './merge-stale.ts';
 import * as scopeRestart from './scope-restart.ts';
 import * as pending from './pending.ts';
+import { mountPendingScreenRoutes } from './pending-screen-routes.ts';
 import * as dismiss from './dismiss.ts';
 import * as scopes from './scopes.ts';
 import * as controllerApprove from './controller-approve.ts';
@@ -383,7 +384,7 @@ app.post('/api/pending/:id/answer', async (req, res) => {
     confirm: req.body.confirm === true, group: Array.isArray(req.body.group) ? req.body.group.map(String).slice(0, 20) : undefined };
   try {
     // a click on the dashboard (the browser sends its origin and no actor)
-    if (req.get('origin') && !actor) return res.json(await pending.answer(req.params.id, { ...input, by: 'user', confirmRisk: machine.get().confirmRisk }));
+    if (req.get('origin') && !actor && !req.get('x-taskboard-token')) return res.json(await pending.answer(req.params.id, { ...input, by: 'user', confirmRisk: machine.get().confirmRisk }));
     if (actor !== 'controller' || req.get('x-tb-mail-controller') !== controllerMailToken)
       return res.status(403).json({ error: 'Only the user, on the dashboard, and the controller can answer a card.' });
     const item = pending.get(req.params.id);
@@ -397,30 +398,12 @@ app.post('/api/pending/:id/answer', async (req, res) => {
     res.json(await pending.answer(item.id, { ...input, confirm: false, by: 'controller', rule }));
   } catch (e) { res.status(e instanceof pending.AnswerError ? e.status : 400).json({ error: e instanceof Error ? e.message : String(e) }); }
 });
-app.post('/api/pending/:id/hide', (req, res) => {
-  if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Use the dashboard.' });
-  try { pending.hide(req.params.id); res.json({}); } catch (e) { res.status(e instanceof pending.AnswerError ? e.status : 400).json({ error: e instanceof Error ? e.message : String(e) }); }
-});
-// Unknown Codex screen prompts have no parsed option to answer. Send text through the task queue.
-const unknownReply = (id: string) => {
-  const item = pending.get(id);
-  return item?.agent === 'codex' && item.kind === 'unknown' && item.source === 'screen' ? item : null;
-};
-const replyView = (q: messageQueue.Queued | undefined) => q ? { state: q.state, reason: q.reason, id: q.id, deliveredAt: q.deliveredAt } : null;
-app.get('/api/pending/:id/reply', (req, res) => {
-  if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Use the dashboard.' });
-  const item = unknownReply(req.params.id);
-  if (!item) return res.status(404).json({ error: 'This Unknown prompt card does not exist.' });
-  res.json(replyView(messageQueue.unknownPromptStatus(item.taskId, item.id)));
-});
-app.post('/api/pending/:id/reply', (req, res) => {
-  if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Use the dashboard.' });
-  const item = unknownReply(req.params.id);
-  if (!item || item.state !== 'pending') return res.status(404).json({ error: 'This Unknown prompt card no longer waits.' });
-  if (typeof req.body?.text !== 'string') return res.status(400).json({ error: 'Enter text to send.' });
-  try {
-    res.json(replyView(messageQueue.sendUnknownPrompt(store.get(item.taskId)!, item.id, req.body.text)));
-  } catch (e) { fail(res, e); }
+mountPendingScreenRoutes(app, {
+  originOk,
+  replyStatus: (taskId, id) => {
+    const q = messageQueue.unknownPromptStatus(taskId, id);
+    return q ? { state: q.state, reason: q.reason, id: q.id, deliveredAt: q.deliveredAt } : null;
+  },
 });
 // ---------- dismissed items of the Waiting page (dismiss.ts) ----------
 // Only the user dismisses, on the dashboard. The controller reads the dismissed field in tb pending and has no command.
@@ -1379,6 +1362,7 @@ pending.setIo({
   log: (t, did) => store.appendLog(t.id, { did, next: 'The agent continues.' }),
   answered: (t, note) => { if (store.get(t.id)?.status === 'needs-you') store.update(t.id, { status: 'working', ask: '', statusSource: note }); },
   wait: ms => new Promise(r => setTimeout(r, ms)),
+  withInput: agents.withTaskInput,
 });
 const fail = (res: express.Response, e: unknown) => res.status(400).json({ error: e instanceof Error ? e.message : String(e) });
 
@@ -2759,7 +2743,7 @@ async function reconcile(first = false) {
       // and for 10 s after the rollout file or the status changed (the questions appear right after the call is written).
       const c = store.get(t.id)!;
       if (events.codexQuestionsOpen(c) || Date.now() - Math.max(mtime, Date.parse(c.statusAt) || 0) < 10000)
-        events.codexQuestionCheck(c, (await loopScreen(c.session, s.activity)).split('\n').filter(l => l.trim()).slice(-15).join('\n'));
+        events.codexQuestionCheck(c, (await loopScreen(c.session, s.activity)).split('\n').slice(-45).join('\n'));
     }
     // after the activity checks above, so a new Codex turn is seen first
     const cur = store.get(t.id)!;

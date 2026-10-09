@@ -135,6 +135,7 @@ export interface PendingItem {
   details?: { command?: string; cwd?: string; reason?: string; title?: string; plan?: string };
   screen?: { hash: string; excerpt: string; partial?: boolean };
   answerable: boolean; createdAt: string; state: 'pending' | 'sending' | 'answered' | 'gone' | 'failed'; result?: string; needsTerminal?: boolean;
+  reason?: string; inspect?: boolean;
   answer?: { by: 'user' | 'controller'; label: string; sent: string; at: string; rule?: string; tasks?: number[] };
   repeats?: { count: number; lastAnswer: string };
   sameIn?: { id: string; taskId: string; taskNum: number }[];
@@ -389,8 +390,8 @@ export const api = {
   permitRefusal: (id: string) => call<{ permit: Permit }>('POST', `/api/refusals/${encodeURIComponent(id)}/permit`, {}),
   // a message card goes back to the controller or to the agent that wrote the draft, with the comment
   answerPending: (id: string, body: { option?: string; text?: string; confirm?: boolean; group?: string[] }) => call<PendingItem>('POST', `/api/pending/${id}/answer`, body),
-  unknownReply: (id: string) => call<UnknownReply>('GET', `/api/pending/${id}/reply`),
-  sendUnknownReply: (id: string, text: string) => call<UnknownReply>('POST', `/api/pending/${id}/reply`, { text }),
+  unknownReply: (id: string) => call<UnknownReply>('POST', `/api/pending/${id}/reply/status`, {}),
+  inspectPending: (id: string) => call<PendingItem>('POST', `/api/pending/${id}/inspect`, {}),
   hidePending: (id: string) => call('POST', `/api/pending/${id}/hide`, {}),
   // Dismiss: hide one waiting item until something new happens for it (server/dismiss.ts). The task status does not change.
   dismissItem: (id: string, label: string) => call<Dismissal>('POST', '/api/dismiss', { item: id, label }),
