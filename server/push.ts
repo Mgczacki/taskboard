@@ -108,7 +108,7 @@ export function reopenPush(record: PushRecord) {
 export const pushedHeads = (taskId: string, remoteUrl: string, branch: string) =>
   records.filter(r => r.state === 'succeeded' && r.taskId === taskId && r.remoteUrl === remoteUrl && r.branch === branch);
 const save = () => writeFileSync(recordFile, JSON.stringify(records, null, 2), { mode: 0o600 });
-function repoName(url: string): string | null {
+export function repoName(url: string): string | null {
   const m = url.match(/^(?:https?:\/\/github\.com\/|git@github\.com:|ssh:\/\/git@github\.com\/)([^/]+)\/([^/?#]+?)(?:\.git)?$/i);
   return m ? `${m[1]}/${m[2]}` : null;
 }

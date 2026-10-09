@@ -56,6 +56,7 @@ import * as stats from './stats.ts';
 import * as taskGit from './task-git.ts';
 import * as taskRepair from './task-repair.ts';
 import * as push from './push.ts';
+import * as pullRequest from './pull-request.ts';
 import * as restart from './restart.ts';
 import * as permits from './permits.ts';
 import * as taskProcs from './task-procs.ts';
@@ -128,6 +129,10 @@ for (const p of push.allPushes()) if (p.state === 'pending' && p.approvalId) {
     push.finishPush(p, card?.state === 'unknown' ? 'unknown' : 'expired', card?.result || 'The push card expired after Taskboard restarted.');
     const task = store.get(p.taskId); if (task) pushNotice(task, p);
   }
+}
+for (const r of pullRequest.all()) if (r.state === 'pending' && r.approvalId) {
+  const card = approvals.get(r.approvalId);
+  if (card?.state !== 'pending') pullRequest.finish(r, card?.state === 'unknown' ? 'unknown' : 'expired', card?.result || 'The pull request card expired after Taskboard restarted.');
 }
 const permitNotices = new Set<string>();
 permits.onChange(p => {
@@ -567,6 +572,8 @@ app.post('/api/approvals/:id/:decision', async (req, res, next) => {
   const current = approvals.get(req.params.id);
   if ((current?.action === 'mail-in' || current?.action === 'mail-out') && !human(req))
     return res.status(403).json({ error: 'Only the user decides message cards on the dashboard.' });
+  // a task or the controller cannot decide a pull request card: tb sends the token and x-tb-actor, the dashboard sends neither
+  if (current?.action === 'github-pr' && !fromDashboard(req)) return res.status(403).json({ error: 'Only the user decides a pull request card, on the dashboard.' });
   if (current?.action === 'git-push' || (req.params.decision === 'approve' && ['permit', 'tool-refusal'].includes(current?.action || '')))
     return res.status(403).json({ error: 'Use the dedicated decision on the dashboard.' });
   // a task cannot decide its own scope request: tb sends the token and x-tb-actor, the dashboard sends neither
@@ -1094,6 +1101,47 @@ app.post('/api/git/pushes/:id/decide', async (req, res) => {
   }
   await approvals.decide(card.id, true, { by: 'user' }, origin);
   res.json(record);
+});
+// tb git pr-request: one card for one exact GitHub pull request from the task branch (server/pull-request.ts). The
+// card result, and the notice in the task inbox, hold the URL or the exact failure.
+function pullRequestNotice(task: store.Task, r: pullRequest.PullRequestRecord) {
+  const text = [`# Pull request request ${r.id}`, '', `Time: ${r.at}`, `Task: #${task.num}`, `Repository: ${r.repository}`, `Base: ${r.base} at ${r.baseCommit}`,
+    `Head: ${r.head} at ${r.headCommit}`, `Draft: ${r.draft ? 'Yes' : 'No'}`, `Title: ${r.title}`, `Result: ${r.state}`, ...(r.url ? [`URL: ${r.url}`] : []), '', r.result || 'Waiting for a decision.'].join('\n');
+  try { docs.uploadSystem(task.id, `pull-request-${r.id}.md`, text + '\n'); } catch (e) { console.error('could not send pull request result', e); }
+}
+app.post('/api/git/pr-request', async (req, res) => {
+  const actorTask = store.get(req.get('x-tb-actor') || '');
+  if (!actorTask || actorTask.role === 'controller') return res.status(403).json({ error: 'A task must request its own pull request.' });
+  try {
+    const task = gitTask(actorTask, req.body.worktree);
+    const state = await pullRequest.inspectPullRequest(task, req.body);
+    const id = randomUUID();
+    const summary = `open a pull request ${state.head} -> ${state.base} in ${state.repository}`;
+    const previous = approvals.pendingFor(actorTask.id).find(a => a.action === 'github-pr' && (a.target || a.summary) === summary);
+    let r!: pullRequest.PullRequestRecord;
+    const approval = approvals.request({ actor: actorTask.id, action: 'github-pr', summary, detail: pullRequest.cardDetail(state, actorTask.num), payload: { pullRequestId: id, state } }, async () => {
+      try {
+        const done = await pullRequest.createPullRequest(task, state);
+        pullRequest.finish(r, 'succeeded', done.output, done.url); pullRequestNotice(actorTask, r);
+        return `Pull request ${id}: ${done.output}`;
+      } catch (e) { pullRequest.finish(r, 'failed', e instanceof Error ? e.message : String(e)); pullRequestNotice(actorTask, r); throw e; }
+    }, { onDeny: () => { pullRequest.finish(r, 'denied', 'Denied by the user.'); pullRequestNotice(actorTask, r); },
+      onReopen: () => { if (pullRequest.reopen(r)) pullRequestNotice(actorTask, r); },
+      check: () => pullRequest.changed(task, state) });
+    r = pullRequest.record(state, id, approval.id);
+    if (previous) {
+      const old = pullRequest.all().find(p => p.approvalId === previous.id && p.id !== id && p.state === 'pending');
+      if (old) pullRequest.finish(old, 'expired', `Card ${approval.id} now covers the new values.`);
+    }
+    pullRequestNotice(actorTask, r);
+    store.update(actorTask.id, { status: 'needs-you', ask: `Approve pull request ${state.head} -> ${state.base}`, statusSource: `Pull request request ${id}: pending.` });
+    res.status(202).json({ pullRequest: r, approval });
+  } catch (e) { fail(res, e); }
+});
+app.get('/api/git/pull-requests/:id', (req, res) => {
+  const r = pullRequest.get(req.params.id);
+  if (!r || (req.get('x-tb-actor') && !['controller', r.taskId].includes(req.get('x-tb-actor')!))) return res.status(404).end();
+  res.json(r);
 });
 app.post('/api/git/merge-request', async (req, res) => {
   const actor = req.get('x-tb-actor') || '';
@@ -2476,11 +2524,13 @@ const lastTaskView = new Map<string, string>();
 function closeCardsOfArchived(t: store.Task) {
   const why = archivedResult(t.num);
   for (const a of cardsToCloseOnArchive(approvals.pendingFor(t.id))) {
-    const payload = a.payload as { permitId?: string; pushId?: string } | undefined;
+    const payload = a.payload as { permitId?: string; pushId?: string; pullRequestId?: string } | undefined;
     const p = a.action === 'permit' ? permits.get(payload?.permitId || '') : undefined;
     if (p) permits.cancel(p, why);
     const record = a.action === 'git-push' ? push.allPushes().find(x => x.id === payload?.pushId && x.state === 'pending') : undefined;
     if (record) push.finishPush(record, 'expired', why);
+    const pr = a.action === 'github-pr' ? pullRequest.get(payload?.pullRequestId || '') : undefined;
+    if (pr?.state === 'pending') pullRequest.finish(pr, 'expired', why);
     approvals.close(a.id, 'expired', why);
   }
 }

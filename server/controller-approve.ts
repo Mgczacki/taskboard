@@ -32,6 +32,7 @@ export function kindOf(a: Approval): { kind: ControllerKind } | { userOnly: stri
   switch (a.action) {
     case 'git-merge': return { kind: 'merge' };
     case 'git-push': return { kind: (a.payload as { state?: { forcePush?: boolean } })?.state?.forcePush ? 'forcePush' : 'push' };
+    case 'github-pr': return { userOnly: 'A pull request card opens a GitHub pull request. Only the user decides it, on the dashboard.' };
     case 'release': return { kind: 'release' };
     case 'restart': return { kind: 'restart' };
     case 'scope': return { kind: 'scope' };
