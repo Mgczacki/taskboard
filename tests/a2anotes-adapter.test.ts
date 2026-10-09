@@ -55,13 +55,17 @@ async function call(actor: Actor, path: string, body?: unknown) {
   if (actor === 'controller') headers['x-tb-mail-controller'] = controllerMailToken;
   // /notes is under /api/notes, the rest under /api/a2anotes
   const url = path.startsWith('/notes') ? base.replace(/\/a2anotes$/, '') + path : base + path;
+  if (body !== undefined && (path.endsWith('/send') || path.endsWith('/approve'))) await new Promise(r => setTimeout(r, 1100));
   const res = await fetch(url, { method: body === undefined ? 'GET' : 'POST', headers, body: body === undefined ? undefined : JSON.stringify(body) });
   return { status: res.status, data: await res.json() };
 }
 async function mcp(url: string, token: string) {
   const client = new Client({ name: 'alex-agent', version: '1' });
   await client.connect(new StreamableHTTPClientTransport(new URL(url), { requestInit: { headers: { authorization: `Bearer ${token}` } } }));
-  return async (name: string, args: Record<string, unknown> = {}) => ((await client.callTool({ name, arguments: args })) as any).structuredContent;
+  return async (name: string, args: Record<string, unknown> = {}) => {
+    if (name === 'a2anotes_send' || name === 'a2anotes_approve') await new Promise(r => setTimeout(r, 1100));
+    return ((await client.callTool({ name, arguments: args })) as any).structuredContent;
+  };
 }
 const alexAgent = await mcp(alex.url, alex.running.clients.add('alex-cli', 'agent'));
 const alexPerson = await mcp(alex.url, alex.running.clients.add('alex-page', 'person'));
@@ -103,7 +107,7 @@ test('a Taskboard task sends an agent request to a person who does not use Taskb
   const notice = readFileSync(join(process.env.TASKBOARD_VAULT!, 'tasks', 'controller', 'inbox', inbox('controller').find(n => n.startsWith(`a2anotes-${id}`))!), 'utf8');
   assert.ok(!notice.includes('setting names'), 'the notice has server fields only');
   assert.equal((await call('task', `/messages/${id}/approve`, { hash: draft.data.hash })).status, 403);
-  assert.equal((await call('controller', `/messages/${id}/approve`, { hash: draft.data.hash })).data.state, 'approved');
+  assert.equal((await call('controller', `/messages/${id}/approve`, { hash: draft.data.hash })).data.state, 'queued');
   assert.equal((await call('task', `/messages/${id}/send`, { hash: draft.data.hash })).status, 403);
   const sent = await call('controller', `/messages/${id}/send`, { hash: draft.data.hash });
   assert.equal(sent.data.state, 'sent', JSON.stringify(sent.data));

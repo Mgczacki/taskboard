@@ -86,10 +86,16 @@ test('Approve and send sends the exact version, and the task gets a notice and a
   const c = await card(d.id);
   const done = await approvals.decide(c!.id, true);
   assert.equal(done!.state, 'approved', done!.result);
-  assert.match(done!.result!, /^Approved and sent to Alex B at \d\d:\d\d\.$/);
-  assert.equal((await call('user', `/messages/${d.id}`)).data.state, 'sent');
-  assert.match(inboxText(d.id, 'sent'), /The user approved your draft to Alex B, and Taskboard sent it/);
-  assert.match(tasks.readLog('writer'), /The user approved the draft of this task to Alex B, and Taskboard sent it/);
+  assert.match(done!.result!, /^Approved and (sent|queued)/);
+  let message = (await call('user', `/messages/${d.id}`)).data;
+  for (let i = 0; i < 50 && message.state !== 'sent'; i++) {
+    await new Promise(r => setTimeout(r, 100));
+    message = (await call('user', `/messages/${d.id}`)).data;
+  }
+  assert.equal(message.state, 'sent'); await adapter.cards.sync();
+  const notice = inboxText(d.id, 'sent') + inboxText(d.id, 'delivery');
+  assert.match(notice, /Taskboard sent it|Slack confirmed delivery/);
+  assert.match(tasks.readLog('writer'), /Taskboard sent it|Slack confirmed delivery/);
   assert.equal(await card(d.id), undefined, 'no second card for a sent draft');
 });
 
@@ -172,23 +178,18 @@ test('check flags are explained: ask_changed offers Reject and ask to revise, ch
   assert.equal((after!.payload as any).notes.length, 0);
 });
 
-test('a failed send says why on the card and to the task, and Send again sends it', async () => {
+test('a definite send failure is final and does not ask for the same approval', async () => {
   const d = await draft('Send fails', 'Hi Alex, the plan is ready. Please read it by Friday.');
   const c = await card(d.id);
+  await new Promise(r => setTimeout(r, 1100));
   fake.fail('chat.postMessage', { mode: 'error', count: 1, error: 'channel_not_found' });
   const failed = await approvals.decide(c!.id, true);
   assert.equal(failed!.state, 'failed');
   assert.match(failed!.result!, /^Approved, but not sent\. Slack did not find the direct message channel with the recipient\. \(Slack error channel_not_found\.\)$/);
   assert.match(inboxText(d.id, 'not-sent'), /it was not sent\. Slack did not find the direct message channel/);
   assert.match(tasks.readLog('writer'), /but it was not sent/);
-  const retry = await card(d.id);
-  assert.ok(retry, 'the approved draft that was not sent has a card');
-  assert.equal((retry!.payload as any).stage, 'send');
-  assert.match((retry!.payload as any).error, /Slack did not find the direct message channel/);
-  assert.equal(messageButtons(retry! as any).approve, 'Send again');
-  const sent = await approvals.decide(retry!.id, true);
-  assert.equal(sent!.state, 'approved', sent!.result);
-  assert.equal((await call('user', `/messages/${d.id}`)).data.state, 'sent');
+  assert.equal((await call('user', `/messages/${d.id}`)).data.state, 'permanent_failure');
+  assert.equal(await card(d.id), undefined, 'a final failure has no repeated approval card');
   assert.ok(existsSync(join(process.env.TASKBOARD_VAULT!, 'tasks', 'writer', 'log.md')));
 });
 

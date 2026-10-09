@@ -6,6 +6,8 @@ export interface QualityView { state: string; flags: { text: string; start: numb
 export interface Message {
   id: string; direction: 'inbox' | 'outbox'; from: string; to: string; subject: string; body: string; hash: string; created: string;
   audience?: 'person' | 'agent' | 'both'; state?: string; person: string; peerName: string; picture: string;
+  delivery?: { nextAttemptAt?: string; stoppedAt?: string; failureCode?: string; lastMethod?: string };
+  source?: string;
   sentAt?: string; rejectedAt?: string; sending?: boolean; error?: string; dismissedAt?: string;
   proposedBy?: { actor: 'user' | 'controller' | 'task'; task?: string; agent?: string };
   review?: { verdict: string; reason: string }; approval?: { by: string; at?: string };
@@ -38,8 +40,10 @@ export function FlaggedBody({ body, quality }: { body: string; quality?: Quality
   return <pre className="mail-flagged-body">{parts}</pre>;
 }
 
-export function sentState(m: Pick<Message, 'sentAt' | 'sending' | 'error' | 'rejectedAt' | 'review' | 'approver' | 'approval'>) {
+export function sentState(m: Pick<Message, 'state' | 'sentAt' | 'sending' | 'error' | 'rejectedAt' | 'review' | 'approver' | 'approval'>) {
   if (m.sentAt) return 'Sent';
+  if (m.state === 'queued') return 'Queued';
+  if (m.state === 'permanent_failure') return 'Delivery stopped';
   if (m.sending && m.error) return 'Delivery uncertain';
   if (m.sending) return 'Sending';
   if (m.rejectedAt) return 'Rejected';

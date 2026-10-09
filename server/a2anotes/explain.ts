@@ -63,13 +63,13 @@ const SLACK: Record<string, string> = {
   not_authed: 'A2A Notes is not signed in to Slack. Connect Slack on the Settings page.',
   token_revoked: 'The Slack sign-in of A2A Notes was revoked. Connect Slack again on the Settings page.',
   missing_scope: 'The Slack sign-in of A2A Notes lacks a permission. Connect Slack again on the Settings page.',
-  ratelimited: 'Slack asked A2A Notes to wait. Send again in a minute.',
+  ratelimited: 'Slack asked A2A Notes to wait. The service retries at the recorded time.',
   msg_too_long: 'The message is too long for Slack.',
 };
 export function explainSendError(code: string, message: string): string {
   if (code === 'not_connected') return 'A2A Notes is not signed in to Slack. Connect Slack on the Settings page, then send again.';
   if (code === 'service_unavailable') return 'The A2A Notes service is not running. Start it on the Settings page, then send again.';
-  if (code === 'delivery_uncertain') return 'Slack did not confirm the delivery. Send again: A2A Notes looks for the message in the conversation before it posts a second time.';
+  if (code === 'delivery_uncertain') return 'Slack did not confirm delivery. A2A Notes checks the conversation. It does not post again while delivery remains uncertain.';
   if (code === 'hash_changed') return 'The draft changed after you read it. Read the new version on its card.';
   const slack = Object.keys(SLACK).find(k => message.includes(k));
   return slack ? `${SLACK[slack]} (Slack error ${slack}.)` : message;

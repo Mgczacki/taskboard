@@ -69,6 +69,8 @@ export function MessagePanel({ title, person, sub, note, messages, tasks, onShow
               <dt>Check</dt><dd>{f.review ? `${f.review.verdict}. ${f.review.reason}` : 'Not done'}</dd>
               <dt>State</dt><dd>{f.direction === 'outbox' ? sentState(f) : inboxState(f, tasks)}</dd>
               <dt>Created</dt><dd>{date(f.created)}</dd>
+              {f.delivery?.nextAttemptAt && <><dt>Next attempt</dt><dd>{date(f.delivery.nextAttemptAt)}. Slack method: {f.delivery.lastMethod || 'not recorded'}.</dd></>}
+              {f.delivery?.stoppedAt && <><dt>Final failure</dt><dd>{f.delivery.failureCode}: {f.error}</dd></>}
               {f.sentAt && <><dt>Sent</dt><dd>{date(f.sentAt)}</dd></>}
               {f.error && <><dt>Error</dt><dd>{f.error}</dd></>}
             </dl>

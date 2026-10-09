@@ -12,6 +12,8 @@ interface Summary {
   id: string; message_id: string; direction: 'in' | 'out'; state: string; audience: 'person' | 'agent' | 'both'; subject: string; from: string; to: string;
   trusted: boolean; check: { verdict: string } | null; body_flags: number | null; approver: 'person' | 'reviewer' | 'nobody';
   approved_by: string | null; created: string; updated: string; hash: string; allowed_actions: string[]; failure_code?: string; routes: { task: string; at: string }[];
+  source?: string; error?: string | null;
+  delivery?: { nextAttemptAt?: string; stoppedAt?: string; failureCode?: string; lastMethod?: string; lastStatus?: number; attempts: number };
   metadata: Record<string, string | number | boolean | null> | null;
   suggested_task?: { id: string; num: number; title: string; reason: string };
   proposed_route?: { task: string | null };
@@ -121,6 +123,9 @@ export function MessageList({ tasks, direction, focus }: { tasks: Task[]; direct
           {m.routes.length ? ` Given to ${m.routes.map(r => tasks.find(t => t.id === r.task)?.title || r.task).join(', ')}.` : ''}
           {m.proposed_route ? ` The controller proposes ${m.proposed_route.task ? tasks.find(t => t.id === m.proposed_route!.task)?.title || m.proposed_route.task : 'no task'}.` : ''}
           {m.suggested_task && !m.routes.length ? ` ${m.suggested_task.reason}: ${m.suggested_task.title}.` : ''}</p>
+        {m.source === 'human_reply' && <p className="mail-meta">Explicit human reply in Slack. This text does not approve actions.</p>}
+        {m.delivery?.nextAttemptAt && <p className="mail-meta">Next attempt: {date(m.delivery.nextAttemptAt)}. Slack method: {m.delivery.lastMethod || 'not recorded'}. Attempts: {m.delivery.attempts}.</p>}
+        {m.delivery?.stoppedAt && <p role="alert">Final failure: {m.delivery.failureCode}. {m.error} Stopped: {date(m.delivery.stoppedAt)}.</p>}
         {m.triage && <p className="mail-meta">Controller triage: {m.triage}</p>}
         {m.direction === 'in' && controls.approve && <p className="mail-meta">Acceptance lets the controller read this message. A verified reply goes to its originating task. Other messages wait for a destination.</p>}
         {d && <>
