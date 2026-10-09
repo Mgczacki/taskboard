@@ -24,7 +24,13 @@ const inside = (path: string, root: string) => path === root || (!relative(root,
 const overlap = (a: string, b: string) => inside(a, b) || inside(b, a);
 const real = (p: string) => { try { return realpathSync(p); } catch { return resolve(p); } };
 const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 40);
-export const MAX_SCOPES = 8;
+// Counts attached read folders and worktrees. The task's initial folder does not count.
+function checkScopeLimit(t: Task): void {
+  const limit = machine.get().scopeLimit;
+  const count = (t.scopes || []).length;
+  if (limit.enabled && count >= limit.max)
+    throw new Error(`This task holds ${count} attached scopes. The configured maximum is ${limit.max}. Remove a scope or change Settings > Approvals > Scope requests.`);
+}
 
 export interface WorktreeInput { repo: string; base: string; branch: string; name?: string; reason: string }
 export interface ReadInput { path: string; reason: string }
@@ -100,7 +106,7 @@ export async function planWorktree(t: Task, input: WorktreeInput): Promise<Workt
   if (!reason || reason.length > 1000) throw new Error('Give --reason with a reason under 1000 characters.');
   if (typeof input.repo !== 'string' || typeof input.base !== 'string' || typeof input.branch !== 'string' || !input.repo || !input.base || !input.branch)
     throw new Error('Give --repo, --base and --branch.');
-  if ((t.scopes || []).length >= MAX_SCOPES) throw new Error(`This task already holds ${MAX_SCOPES} scopes.`);
+  checkScopeLimit(t);
   const repo = await mainCheckout(input.repo.replace(/^~(?=\/|$)/, HOME));
   if (protectedRoots().some(p => overlap(repo, p))) throw new Error('The repository contains protected Taskboard files.');
   const pseudo = { ...t, cwd: repo, folder: repo } as Task;
@@ -181,6 +187,8 @@ export async function createWorktree(t: Task, plan: WorktreePlan): Promise<Scope
   const scope: Scope = { id: randomUUID().slice(0, 8), kind: 'worktree', name: plan.name, path: realpathSync(plan.path), repo: plan.repo, branch: plan.branch,
     base: plan.base, baseCommit: plan.baseCommit, at: new Date().toISOString(), reason: plan.reason };
   const current = store.get(t.id)!;
+  // Another approval can finish while Git creates this worktree.
+  try { checkScopeLimit(current); } catch (e) { await undo(); throw e; }
   store.update(t.id, { scopes: [...(current.scopes || []), scope] });
   // tb git rebase, check and push-request then use the remote branch that the worktree started from as its base
   if (plan.baseKind === 'remote branch') recordBase(gitView(current, scope), plan.base);
@@ -202,7 +210,7 @@ export function planRead(t: Task, input: ReadInput): ReadPlan {
   const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
   if (!reason || reason.length > 1000) throw new Error('Give --reason with a reason under 1000 characters.');
   if (t.agent === 'antigravity') throw new Error('Antigravity has no setting for read-only access to one folder. Ask the user to start a task in that folder.');
-  if ((t.scopes || []).length >= MAX_SCOPES) throw new Error(`This task already holds ${MAX_SCOPES} scopes.`);
+  checkScopeLimit(t);
   const given = typeof input.path === 'string' ? input.path.replace(/^~(?=\/|$)/, HOME) : '';
   if (!isAbsolute(given) || !existsSync(given) || !statSync(given).isDirectory()) throw new Error('Give --path an absolute path of an existing folder.');
   const path = realpathSync(given);
@@ -230,7 +238,8 @@ export function planRead(t: Task, input: ReadInput): ReadPlan {
 
 export function addRead(t: Task, plan: ReadPlan): Scope {
   if (plan.taskId !== t.id) throw new Error('The request belongs to another task.');
-  const again = planRead(t, { path: plan.path, reason: plan.reason });
+  const current = store.get(t.id)!;
+  const again = planRead(current, { path: plan.path, reason: plan.reason });
   const scope: Scope = { id: randomUUID().slice(0, 8), kind: 'read', name: again.name, path: again.path, at: new Date().toISOString(), reason: plan.reason };
   store.update(t.id, { scopes: [...(store.get(t.id)!.scopes || []), scope] });
   return scope;
@@ -238,7 +247,8 @@ export function addRead(t: Task, plan: ReadPlan): Scope {
 
 // The approval card text. It names every value that the user approves and every check.
 export function cardDetail(t: Task, plan: Plan): string {
-  const head = [`Task: #${t.num} ${t.title}`];
+  const limit = machine.get().scopeLimit;
+  const head = [`Task: #${t.num} ${t.title}`, `Attached scopes: ${(t.scopes || []).length}. Count maximum: ${limit.enabled ? limit.max : 'off (no maximum)'}.`];
   if (plan.kind === 'read') return [...head, 'Scope: read access to one more folder', `Folder: ${plan.path}`, `Reason: ${plan.reason}`, 'Checks:', ...plan.checks.map(c => `- ${c}`)].join('\n');
   return [...head, 'Scope: a new worktree attached to this task', `Repository: ${plan.repo}`, `Base: ${plan.base} at ${plan.baseCommit}`, `New branch: ${plan.branch}`,
     `Worktree folder: ${plan.path}`, `Name for tb git --worktree: ${plan.name}`, `Reason: ${plan.reason}`, 'Checks:', ...plan.checks.map(c => `- ${c}`),

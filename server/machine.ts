@@ -24,6 +24,7 @@ export interface MachineSettings {
   permissions: { controllerNeedsApproval: boolean; agentsNeedApproval: boolean; allTaskCommunication: boolean; trustWorkspaces: boolean; autoReview: boolean; controllerCanApprovePermits: boolean; holdPermissionHook: boolean };
   permitFolders: string[];
   permitRequestLimits: PermitRequestLimits;
+  scopeLimit: ScopeLimit;
   pushes: { taskBranches: 'run' | 'ask' | 'never'; ownRepositories: string[]; protectedBranches: string[] };
   // questions about a task (server/ask.ts): the separate agent, account, and model
   ask: { agent: 'claude' | 'codex'; account: string; model: string };
@@ -61,6 +62,13 @@ export interface MachineSettings {
   agentErrors: AgentErrorSettings;
 }
 export interface AgentErrorSettings { autoContinue: boolean; message: string; stallMinutes: number; accounts: Record<string, 'on' | 'off'>; codexCapacity: { enabled: boolean; intervalSeconds: number; maxRetries: number } }
+export interface ScopeLimit { enabled: boolean; max: number }
+export const DEFAULT_SCOPE_LIMIT: ScopeLimit = { enabled: false, max: 8 };
+export function readScopeLimit(saved: unknown): ScopeLimit {
+  const s = saved && typeof saved === 'object' ? saved as Record<string, unknown> : {};
+  return { enabled: s.enabled === true,
+    max: Number.isSafeInteger(s.max) && (s.max as number) > 0 ? s.max as number : DEFAULT_SCOPE_LIMIT.max };
+}
 export interface PermitRequestLimits { enabled: boolean; tenMinutes: number; day: number }
 export const DEFAULT_PERMIT_REQUEST_LIMITS: PermitRequestLimits = { enabled: true, tenMinutes: 5, day: 20 };
 export function readPermitRequestLimits(saved: unknown): PermitRequestLimits {
@@ -155,7 +163,7 @@ export const DEFAULT_ROUTING_RULES = `Use Claude Code or Codex for deep planning
 Use Antigravity for routine work. Do not use it for deep planning.
 When Claude's usage is high, use Codex for deep planning.
 Avoid accounts at their limit or running their maximum number of tasks.`;
-let settings: MachineSettings = { name: process.env.TASKBOARD_MACHINE_NAME || defaultName(), routingRules: DEFAULT_ROUTING_RULES, newTaskDefaultAgent: 'claude', controller: structuredClone(DEFAULT_CONTROLLER), permissions: { controllerNeedsApproval: false, agentsNeedApproval: true, allTaskCommunication: false, trustWorkspaces: true, autoReview: true, controllerCanApprovePermits: false, holdPermissionHook: true }, permitFolders: [], permitRequestLimits: { ...DEFAULT_PERMIT_REQUEST_LIMITS }, pushes: { taskBranches: 'run', ownRepositories: [], protectedBranches: [] }, ask: { agent: 'claude', account: 'claude-default', model: 'sonnet' }, review: { account: 'claude-default', model: 'sonnet' }, accounts: { defaultMaxParallel: 4 }, browser: { claude: 'task', codex: 'task', chromePath: '', idleStopMinutes: 10, sharp: false, scale: 'screen', autoSwitch: true }, claudeInChrome: { tasks: false, controller: false }, confirmRisk: { ...DEFAULT_CONFIRM_RISK }, a2aNotes: { slackClientId: '', slackTeamId: '' }, controllerApprovals: { ...DEFAULT_CONTROLLER_APPROVALS }, agentErrors: readAgentErrors(undefined) };
+let settings: MachineSettings = { name: process.env.TASKBOARD_MACHINE_NAME || defaultName(), routingRules: DEFAULT_ROUTING_RULES, newTaskDefaultAgent: 'claude', controller: structuredClone(DEFAULT_CONTROLLER), permissions: { controllerNeedsApproval: false, agentsNeedApproval: true, allTaskCommunication: false, trustWorkspaces: true, autoReview: true, controllerCanApprovePermits: false, holdPermissionHook: true }, permitFolders: [], permitRequestLimits: { ...DEFAULT_PERMIT_REQUEST_LIMITS }, scopeLimit: { ...DEFAULT_SCOPE_LIMIT }, pushes: { taskBranches: 'run', ownRepositories: [], protectedBranches: [] }, ask: { agent: 'claude', account: 'claude-default', model: 'sonnet' }, review: { account: 'claude-default', model: 'sonnet' }, accounts: { defaultMaxParallel: 4 }, browser: { claude: 'task', codex: 'task', chromePath: '', idleStopMinutes: 10, sharp: false, scale: 'screen', autoSwitch: true }, claudeInChrome: { tasks: false, controller: false }, confirmRisk: { ...DEFAULT_CONFIRM_RISK }, a2aNotes: { slackClientId: '', slackTeamId: '' }, controllerApprovals: { ...DEFAULT_CONTROLLER_APPROVALS }, agentErrors: readAgentErrors(undefined) };
 export type BrowserScale = 'screen' | 'one' | 'two';
 const SCALES: BrowserScale[] = ['screen', 'one', 'two'];
 function readScale(b: { scale?: unknown; sharp?: unknown } | undefined): BrowserScale {
@@ -167,7 +175,7 @@ let controllerAgentSaved = true;
 if (existsSync(FILE)) {
   const saved = JSON.parse(readFileSync(FILE, 'utf8'));
   const c = readController(saved.controller); controllerAgentSaved = c.agentSaved;
-  settings = { ...settings, ...saved, permitFolders: Array.isArray(saved.permitFolders) ? saved.permitFolders : [], permitRequestLimits: readPermitRequestLimits(saved.permitRequestLimits), pushes: { ...settings.pushes, ...saved.pushes }, controller: c.controller, permissions: { ...settings.permissions, ...saved.permissions, allTaskCommunication: saved.permissions?.allTaskCommunication === true }, ask: { ...settings.ask, ...saved.ask }, review: { ...settings.review, ...saved.review }, accounts: { ...settings.accounts, ...saved.accounts }, browser: { ...settings.browser, ...saved.browser, scale: readScale(saved.browser) }, claudeInChrome: readClaudeInChrome(saved.claudeInChrome), confirmRisk: readConfirmRisk(saved.confirmRisk), a2aNotes: { ...settings.a2aNotes, ...saved.a2aNotes }, controllerApprovals: readControllerApprovals(saved.controllerApprovals), agentErrors: readAgentErrors(saved.agentErrors) };
+  settings = { ...settings, ...saved, permitFolders: Array.isArray(saved.permitFolders) ? saved.permitFolders : [], permitRequestLimits: readPermitRequestLimits(saved.permitRequestLimits), scopeLimit: readScopeLimit(saved.scopeLimit), pushes: { ...settings.pushes, ...saved.pushes }, controller: c.controller, permissions: { ...settings.permissions, ...saved.permissions, allTaskCommunication: saved.permissions?.allTaskCommunication === true }, ask: { ...settings.ask, ...saved.ask }, review: { ...settings.review, ...saved.review }, accounts: { ...settings.accounts, ...saved.accounts }, browser: { ...settings.browser, ...saved.browser, scale: readScale(saved.browser) }, claudeInChrome: readClaudeInChrome(saved.claudeInChrome), confirmRisk: readConfirmRisk(saved.confirmRisk), a2aNotes: { ...settings.a2aNotes, ...saved.a2aNotes }, controllerApprovals: readControllerApprovals(saved.controllerApprovals), agentErrors: readAgentErrors(saved.agentErrors) };
 } else writeFileSync(FILE, JSON.stringify(settings, null, 2));
 
 export const get = () => settings;
@@ -196,7 +204,14 @@ export function checkMaxParallel(value: unknown): number {
   return n;
 }
 export const controllerLabel = () => `Taskboard controller · ${settings.name}`;
-export function update(patch: { name?: string; routingRules?: string; newTaskDefaultAgent?: MachineSettings['newTaskDefaultAgent']; autostart?: boolean; remoteControl?: boolean; controllerComputerUse?: boolean; dangerouslySkipPermissions?: boolean; controllerSkipPermissions?: Partial<Record<ControllerAgent, boolean>>; controllerModels?: Partial<Record<'claude' | 'codex' | 'antigravity', string>>; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; allTaskCommunication?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; holdPermissionHook?: boolean; permitFolders?: string[]; permitRequestLimits?: Partial<PermitRequestLimits>; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; defaultMaxParallel?: number; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; browserIdleStopMinutes?: number; browserSharp?: boolean; browserScale?: BrowserScale; browserAutoSwitch?: boolean; claudeInChromeTasks?: boolean; claudeInChromeController?: boolean; confirmRisk?: Partial<ConfirmRisk>; a2aSlackClientId?: string; a2aSlackTeamId?: string; controllerApprovals?: Partial<ControllerApprovals>; agentErrors?: Partial<AgentErrorSettings> }) {
+export function update(patch: { name?: string; routingRules?: string; newTaskDefaultAgent?: MachineSettings['newTaskDefaultAgent']; autostart?: boolean; remoteControl?: boolean; controllerComputerUse?: boolean; dangerouslySkipPermissions?: boolean; controllerSkipPermissions?: Partial<Record<ControllerAgent, boolean>>; controllerModels?: Partial<Record<'claude' | 'codex' | 'antigravity', string>>; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; allTaskCommunication?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; holdPermissionHook?: boolean; permitFolders?: string[]; permitRequestLimits?: Partial<PermitRequestLimits>; scopeLimit?: Partial<ScopeLimit>; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; defaultMaxParallel?: number; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; browserIdleStopMinutes?: number; browserSharp?: boolean; browserScale?: BrowserScale; browserAutoSwitch?: boolean; claudeInChromeTasks?: boolean; claudeInChromeController?: boolean; confirmRisk?: Partial<ConfirmRisk>; a2aSlackClientId?: string; a2aSlackTeamId?: string; controllerApprovals?: Partial<ControllerApprovals>; agentErrors?: Partial<AgentErrorSettings> }) {
+  if (patch.scopeLimit !== undefined) {
+    const limit = patch.scopeLimit as Record<string, unknown> | null;
+    if (!limit || typeof limit !== 'object' || Array.isArray(limit) || Object.entries(limit).some(([key, value]) =>
+      key === 'enabled' ? typeof value !== 'boolean' : key !== 'max' || !Number.isSafeInteger(value) || (value as number) <= 0))
+      throw new Error('The scope limit needs on or off and a positive whole number for max.');
+    settings.scopeLimit = { ...settings.scopeLimit, ...limit as Partial<ScopeLimit> };
+  }
   if (patch.permitRequestLimits !== undefined) {
     const limits = patch.permitRequestLimits as Record<string, unknown> | null;
     if (!limits || typeof limits !== 'object' || Array.isArray(limits) || Object.entries(limits).some(([key, value]) =>
