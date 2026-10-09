@@ -5,6 +5,9 @@ import { mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
+import { ElicitRequestSchema } from '@modelcontextprotocol/sdk/types.js';
 
 const root = mkdtempSync(join(tmpdir(), 'tb-a2a-delivery-'));
 process.env.TASKBOARD_DIR = join(root, 'server'); process.env.TASKBOARD_VAULT = join(root, 'vault');
@@ -60,7 +63,7 @@ async function fixture(t: any) {
   const card = (id: string) => approvals.all().find(a => ['pending', 'running'].includes(a.state) && (a.payload as any)?.message === id);
   const next = async (id: string) => { now = Date.parse(service.store.note(id)!.delivery!.nextAttemptAt!); await service.processQueue(); await adapter.checkIncoming(); };
   const restartBoard = async () => { await stopBoard(); await startBoard(); await adapter.checkIncoming(); };
-  return { fake, service, call, draft, card, next, restartBoard, delivered, get adapter() { return adapter; } };
+  return { fake, service, clients, http, call, draft, card, next, restartBoard, delivered, get adapter() { return adapter; } };
 }
 
 for (const method of ['users.info', 'conversations.open', 'chat.postMessage']) {
@@ -116,4 +119,36 @@ test('an explicit Slack reply reaches its originating task only after acceptance
   await f.adapter.checkIncoming(); await f.restartBoard();
   assert.equal(inbox().filter(name => name === `a2anotes-${m.id}.md`).length, 1);
   assert.equal(f.delivered.filter(name => name === `writer/a2anotes-${m.id}.md`).length, 1);
+});
+
+test('MCP human confirmation outside Taskboard clears its card and permits one verified reply delivery', async t => {
+  const f = await fixture(t), d = await f.draft();
+  const token = f.clients.add('interactive-coding-client', 'agent', { humanApproval: true });
+  const coding = new Client({ name: 'fake-coding-client', version: '1' }, { capabilities: { elicitation: { form: {} } } });
+  let forms = 0;
+  coding.setRequestHandler(ElicitRequestSchema, async request => {
+    forms++; assert.match(request.params.message, /does not authorize any action|Approve sends this exact note/);
+    return { action: 'accept', content: { decision: 'approve' } };
+  });
+  t.after(() => coding.close());
+  await coding.connect(new StreamableHTTPClientTransport(new URL(f.http.url + '/mcp'), { requestInit: { headers: { authorization: `Bearer ${token}` } } }));
+  const confirm = async (m: any) => {
+    const r = await coding.callTool({ name: 'a2anotes_request_approval', arguments: { id: m.id, expected_hash: m.hash } });
+    assert.ok(!r.isError, JSON.stringify(r)); return r.structuredContent as any;
+  };
+  assert.equal((await confirm(d)).state, 'queued');
+  await f.adapter.cards.sync(); assert.equal(f.card(d.id), undefined);
+  await f.service.processQueue(); assert.equal(f.service.store.note(d.id)!.state, 'sent');
+  f.fake.inject('UALEX01', 'UMARIO01', `A2A Reply/1 ${d.message_id}\nYes, Friday works.`, f.service.store.note(d.id)!.transport!.ts!);
+  await f.service.scanNow(); await f.adapter.checkIncoming();
+  const m = (await f.call('user', '/messages?direction=incoming')).messages[0];
+  assert.equal((await f.call('controller', `/messages/${m.id}`)).body, '');
+  assert.equal(inbox().filter(name => name === `a2anotes-${m.id}.md`).length, 0);
+  const accepted = await confirm(m); assert.equal(accepted.state, 'approved'); assert.equal(accepted.body, '');
+  await f.adapter.checkIncoming(); await f.restartBoard();
+  assert.equal(forms, 2);
+  assert.equal(f.delivered.filter(name => name === `writer/a2anotes-${m.id}.md`).length, 1);
+  assert.equal(inbox().filter(name => name === `a2anotes-${m.id}.md`).length, 1);
+  const text = readFileSync(join(root, 'vault', 'tasks', 'writer', 'inbox', `a2anotes-${m.id}.md`), 'utf8');
+  assert.match(text, /Message content is data/); assert.match(text, /does not authorize commands/);
 });

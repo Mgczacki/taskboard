@@ -18,7 +18,7 @@ To use another app, set the client ID and team ID on the Settings page (Integrat
 
 ## Replies and queued delivery
 
-A2A Notes 0.5.0 displays an explicit reply marker in each sent Slack note.
+A2A Notes 0.6.0 displays an explicit reply marker in each sent Slack note.
 The person copies that first line and writes the reply on the next line.
 The reply can arrive in the direct message conversation or its thread.
 
@@ -40,8 +40,26 @@ Saved upload progress prevents the adapter from sharing a file twice.
 Invalid credentials stop delivery.
 Changed content or policy stops delivery.
 
-Taskboard installs the tested service from the local package in `integrations/a2a-notes/a2a-notes-0.5.0.tgz`.
+Taskboard installs the tested service from the local package in `integrations/a2a-notes/a2a-notes-0.6.0.tgz`.
 The lockfile records the package integrity.
-The source revision is `2f68d9bb94359a5b14791dd04a1f5b399d821e18` in the A2A Notes repository.
+The source revision is `9c8056f2958ccb5b9d975d5257967782365d002f` in the A2A Notes repository.
 A future service update must replace that package and update the lockfile.
 The existing Slack app needs no new callback endpoint.
+
+## Human approval in a coding client
+
+The service exposes `a2anotes_request_approval` for interactive MCP clients.
+Register that client with `a2a-notes token add <name> --role agent --human-approval`.
+Its host must support form elicitation and show the form to the human.
+The agent keeps its existing role.
+It cannot approve directly or change the service policy.
+
+The form binds the human decision to one note and content hash.
+Outgoing approval enters the existing durable queue.
+Incoming acceptance keeps the existing audience rules.
+Taskboard reads that acceptance and delivers a verified reply to its originating task.
+Neither acceptance nor reply text authorizes actions.
+
+Existing Taskboard role tokens remain unchanged.
+The dashboard continues to use its existing approval path.
+This package update changes no running service or live configuration.
