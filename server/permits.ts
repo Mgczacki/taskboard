@@ -38,19 +38,25 @@ export class PermitValidationError extends Error {
 }
 
 const pathSettings = new Set(['GH_CONFIG_DIR', 'GIT_CONFIG_GLOBAL', 'CLOUDSDK_CONFIG', 'GOOGLE_APPLICATION_CREDENTIALS']);
+const cloudSettings = new Set(['AWS_PROFILE', 'AWS_REGION']);
 const removableSettings = new Set(['GH_TOKEN', 'GITHUB_TOKEN']);
 const quoteCommand = (argv: string[]) => argv.map(a => `"${a.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`).join(' ');
 
-// Values enter the record only after their names and path syntax pass these checks.
+// Values enter the record only after their names and syntax pass these checks.
 export function commandSettings(input: StepInput): { command: string; argv: string[]; env?: Record<string, string>; unsetEnv?: string[]; reviewRule?: string } {
   const argv = parseCommand(input.command);
   const env: Record<string, string> = {};
   const unsetEnv: string[] = [];
   if (input.env !== undefined && (!input.env || Array.isArray(input.env) || typeof input.env !== 'object')) throw new Error('Use an object for nonsecret environment settings.');
   const add = (name: string, value: unknown) => {
-    if (!pathSettings.has(name)) throw new Error('Only GH_CONFIG_DIR, GIT_CONFIG_GLOBAL, CLOUDSDK_CONFIG, and GOOGLE_APPLICATION_CREDENTIALS can be set. Secret values cannot enter a card.');
-    if (typeof value !== 'string' || !isAbsolute(value) || value.length > 500 || !/^\/[A-Za-z0-9_ .\/-]+$/.test(value) || redactOutput(value) !== value)
+    if (!pathSettings.has(name) && !cloudSettings.has(name)) throw new Error('Only GH_CONFIG_DIR, GIT_CONFIG_GLOBAL, CLOUDSDK_CONFIG, GOOGLE_APPLICATION_CREDENTIALS, AWS_PROFILE, and AWS_REGION can be set. Secret values cannot enter a card.');
+    if (cloudSettings.has(name)) {
+      const syntax = name === 'AWS_PROFILE' ? /^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$/ : /^[a-z]{2}(?:-[a-z]+)+-[0-9]{1,2}$/;
+      if (typeof value !== 'string' || value.length > 128 || !syntax.test(value) || /\s/.test(value) || redactOutput(value) !== value || /(?:AKIA|ASIA)[A-Z0-9]{16}/.test(value))
+        throw new Error('AWS_PROFILE must be a nonsecret profile name. AWS_REGION must be a region name. Use at most 128 characters.');
+    } else if (typeof value !== 'string' || !isAbsolute(value) || value.length > 500 || !/^\/[A-Za-z0-9_ .\/-]+$/.test(value) || redactOutput(value) !== value) {
       throw new Error('Environment settings must contain an absolute nonsecret path under 500 characters.');
+    }
     if (Object.hasOwn(env, name)) throw new Error('Set each environment name once.');
     env[name] = value;
   };
@@ -97,7 +103,7 @@ export function stepEnvironment(step: PermitStep, base: NodeJS.ProcessEnv): Node
 
 export function settingsDetail(step: Pick<PermitStep, 'env' | 'envPaths' | 'unsetEnv' | 'reviewRule'>): string {
   return [
-    ...Object.entries(step.env || {}).map(([name, value]) => `Set ${name}: ${value}${step.envPaths?.[name] !== value ? `\nResolved path: ${step.envPaths?.[name]}` : ''}`),
+    ...Object.entries(step.env || {}).map(([name, value]) => `Set ${name}: ${value}${step.envPaths?.[name] && step.envPaths[name] !== value ? `\nResolved path: ${step.envPaths[name]}` : ''}`),
     ...(step.unsetEnv || []).map(name => `Remove ${name} from the child environment.`),
     ...(step.reviewRule ? [`Rule: ${step.reviewRule}. Only named nonsecret settings moved to separate fields. Approval runs this exact command once.`] : []),
   ].join('\n');
@@ -270,6 +276,7 @@ export function validate(task: Task, inputs: StepInput[]): { steps: PermitStep[]
     checkWorktreeAccess(argv, cwd, otherWorktrees, task);
     const envPaths: Record<string, string> = {};
     for (const [name, value] of Object.entries(settings.env || {})) {
+      if (!pathSettings.has(name)) continue;
       const path = realTarget(value);
       if (unsafeRoot(path)) throw new Error('An environment path overlaps protected Taskboard files.');
       if (otherWorktrees.some(other => path !== other && inside(path, other))) throw new Error('An environment path contains another task worktree.');

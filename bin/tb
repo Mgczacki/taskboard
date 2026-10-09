@@ -180,7 +180,7 @@ const HELP = `tb — Taskboard command line
   tb permit request --reason "text" --steps steps.json
   tb permit run-request <name> --reason "text" --risk "text" --command "script command" [--cwd PATH] [--network]
                                      ask the user to start one exact script under process supervision
-  tb suggest "program args" --why "reason" [--cwd PATH] [--env NAME=PATH] [--unset-env NAME] [--risk "risk"] [--timeout 30]
+  tb suggest "program args" --why "reason" [--cwd PATH] [--env NAME=VALUE] [--unset-env NAME] [--risk "risk"] [--timeout 30]
   tb suggest --steps steps.json --why "reason" [--risk "risk"]
   tb permit result ID [--wait] | tb permit list
   tb permit withdraw ID [--reason "text"]   cancel your own pending permit; nothing runs and its card closes
@@ -887,7 +887,7 @@ switch (cmd) {
     while (args.includes('--env')) {
       const value = flag('--env');
       const match = value?.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.+)$/s);
-      if (!match || Object.hasOwn(env, match[1])) { console.error('tb permit: use --env NAME=PATH once for each name.'); process.exit(1); }
+      if (!match || Object.hasOwn(env, match[1])) { console.error('tb permit: use --env NAME=VALUE once for each name.'); process.exit(1); }
       env[match[1]] = match[2];
     }
     while (args.includes('--unset-env')) unsetEnv.push(flag('--unset-env'));
