@@ -90,7 +90,7 @@ export const onReopen = (fn: (card: Approval) => void) => { reopenListeners.add(
 const DECISIONS_FILE = join(TB_DIR, 'approval-decisions.jsonl');
 // One line for each decision, Dismiss and Undo by the user or the controller: approvals.json keeps only the last 100 closed cards.
 function audit(x: Approval, event: string, origin?: DecisionOrigin, ageMs?: number) {
-  try { appendFileSync(DECISIONS_FILE, JSON.stringify({ at: new Date().toISOString(), event, card: x.id, action: x.action, actor: x.actor, state: x.state, by: x.decidedBy?.by, ageMs, origin }) + '\n'); } catch { /* disk full */ }
+  try { appendFileSync(DECISIONS_FILE, JSON.stringify({ at: new Date().toISOString(), event, card: x.id, action: x.action, actor: x.actor, state: x.state, by: x.decidedBy?.by, version: x.version, ageMs, origin }) + '\n'); } catch { /* disk full */ }
 }
 // the time since the card appeared, or since the server last changed it in place
 export const cardAge = (x: Pick<Approval, 'created' | 'updated' | 'reopened'>, now = Date.now()) => Math.max(0, now - Date.parse(x.reopened?.at || x.updated || x.created));
@@ -159,7 +159,14 @@ export function close(id: string, state: 'approved' | 'denied' | 'expired', resu
 }
 export function startExternal(id: string, d?: Decider) {
   const x = items.get(id); if (!x || x.state !== 'pending') return false;
-  x.state = 'running'; if (d) x.decidedBy = { ...d, at: new Date().toISOString() }; forget(id); emit(); return true;
+  x.state = 'running';
+  if (d) {
+    const ageMs = cardAge(x);
+    const origin: DecisionOrigin = { from: d.by === 'controller' ? 'controller' : 'unknown', target: 'approve' };
+    x.decidedBy = { ...d, at: new Date().toISOString(), ageMs, origin };
+    audit(x, 'approve', origin, ageMs);
+  }
+  forget(id); emit(); return true;
 }
 export function finishExternal(id: string, state: 'approved' | 'failed', result: string) {
   const x = items.get(id); if (!x || x.state !== 'running') return;

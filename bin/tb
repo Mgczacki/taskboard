@@ -179,7 +179,7 @@ const HELP = `tb — Taskboard command line
   tb permit request --reason "text" --steps steps.json
   tb permit run-request <name> --reason "text" --risk "text" --command "script command" [--cwd PATH] [--network]
                                      ask the user to start one exact script under process supervision
-  tb suggest "program args" --why "reason" [--cwd PATH] [--risk "risk"] [--timeout 30]
+  tb suggest "program args" --why "reason" [--cwd PATH] [--env NAME=PATH] [--unset-env NAME] [--risk "risk"] [--timeout 30]
   tb suggest --steps steps.json --why "reason" [--risk "risk"]
   tb permit result ID [--wait] | tb permit list
   tb permit approve ID [--user-request "the user's chat message"]   controller only
@@ -874,11 +874,21 @@ switch (cmd) {
   case 'suggest':
   case 'permit': {
     const action = args[0] === 'suggest' ? 'request' : rest[0];
+    const env = Object.create(null);
+    const unsetEnv = [];
+    while (args.includes('--env')) {
+      const value = flag('--env');
+      const match = value?.match(/^([A-Za-z_][A-Za-z0-9_]*)=(.+)$/s);
+      if (!match || Object.hasOwn(env, match[1])) { console.error('tb permit: use --env NAME=PATH once for each name.'); process.exit(1); }
+      env[match[1]] = match[2];
+    }
+    while (args.includes('--unset-env')) unsetEnv.push(flag('--unset-env'));
+    const settings = { ...(Object.keys(env).length ? { env } : {}), ...(unsetEnv.length ? { unsetEnv } : {}) };
     if (action === 'run-request') {
       if (!process.env.TASK_ID || process.env.TASK_ID === 'controller') { console.error('tb permit run-request: run this inside a task'); process.exit(1); }
       const name = rest[1], reason = flag('--reason'), risk = flag('--risk'), command = flag('--command');
       if (!name || !reason || !risk || !command) { console.error('tb permit run-request <name> --reason "text" --risk "text" --command "script command" [--cwd PATH] [--network]'); process.exit(1); }
-      const result = await call('POST', '/api/permits/supervised', { name, reason, risk, command, cwd: resolve(flag('--cwd') || process.cwd()), network: has('--network') });
+      const result = await call('POST', '/api/permits/supervised', { name, reason, risk, command, cwd: resolve(flag('--cwd') || process.cwd()), network: has('--network'), ...settings });
       console.log(`Approved run ${result.permit.id} waits on the dashboard. Read it with tb permit result ${result.permit.id} --wait. Stop it with tb proc stop ${result.permit.supervised.name}.`);
     } else if (action === 'request') {
       if (!process.env.TASK_ID || process.env.TASK_ID === 'controller') { console.error('tb permit request: run this inside a task'); process.exit(1); }
@@ -890,12 +900,16 @@ switch (cmd) {
       const stepsFile = flag('--steps');
       const network = has('--network');
       if (!reason || (!!command === !!stepsFile)) { console.error('tb permit request: give --reason and exactly one of --command or --steps'); process.exit(1); }
-      if (stepsFile && (cwd || timeout || network)) { console.error('tb permit request: set the directory, timeout, and network flag in each step'); process.exit(1); }
-      const steps = stepsFile ? JSON.parse(readFileSync(resolve(stepsFile), 'utf8')).steps : [{ command, ...(cwd ? { cwd: resolve(cwd) } : {}), ...(timeout ? { timeoutSeconds: Number(timeout) } : {}), network }];
+      if (stepsFile && (cwd || timeout || network || Object.keys(settings).length)) { console.error('tb permit request: set the directory, environment, timeout, and network flag in each step'); process.exit(1); }
+      const inputs = stepsFile ? JSON.parse(readFileSync(resolve(stepsFile), 'utf8')).steps : [{ command, ...(timeout ? { timeoutSeconds: Number(timeout) } : {}), network, ...settings }];
+      if (!Array.isArray(inputs)) { console.error('tb permit request: the steps file must contain a steps list.'); process.exit(1); }
+      const steps = inputs.map(step => ({ ...step, cwd: resolve(step.cwd || cwd || process.cwd()) }));
       const result = await call('POST', '/api/permits', { reason, steps, risk });
       if (result.push) console.log(`${result.message} Push ${result.push.id}: ${result.push.state}. Read it with tb git push-result ${result.push.id} --wait.`);
-      else if (result.permit) console.log(`Permit ${result.permit.id} waits on the dashboard. Read it with tb permit result ${result.permit.id} --wait.`);
-      else console.log('That command made a release card, and the user approved it. Run the command that the approval names, alone on the command line.');
+      else if (result.permit) {
+        console.log(`Permit ${result.permit.id} waits on the dashboard. Read it with tb permit result ${result.permit.id} --wait.`);
+        for (const [i, step] of result.permit.steps.entries()) console.log(`Step ${i + 1} resolved cwd: ${step.cwd}`);
+      } else console.log(result.message || 'The command needs its own approval card. Read its decision before running it.');
     } else if (action === 'result') {
       const id = rest[1]; if (!id) { console.error('tb permit result: give an ID'); process.exit(1); }
       const wait = has('--wait');

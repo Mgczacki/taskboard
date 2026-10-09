@@ -16,6 +16,7 @@ export type StepState = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancel
 export type PermitState = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'denied' | 'expired' | 'unknown';
 export interface PermitStep {
   command: string; argv: string[]; cwd: string; timeoutSeconds: number; network: boolean;
+  env?: Record<string, string>; envPaths?: Record<string, string>; unsetEnv?: string[]; reviewRule?: string;
   scriptHash?: string;
   state: StepState; startedAt?: string; finishedAt?: string; exitCode?: number | null; signal?: string | null;
   outputTail?: string; error?: string;
@@ -28,7 +29,77 @@ export interface Permit {
   decidedAt?: string; decisionComment?: string; startedAt?: string; finishedAt?: string; error?: string;
   supervised?: { name: string };
 }
-export interface StepInput { command: string; cwd?: string; timeoutSeconds?: number; network?: boolean; continueOnFailure?: boolean }
+export interface StepInput { command: string; cwd?: string; timeoutSeconds?: number; network?: boolean; continueOnFailure?: boolean; env?: Record<string, string>; unsetEnv?: string[] }
+export interface PermitDiagnostic { rule: string; cwd: string; conflictingWorktree: string; conflictingTask: string; correction: string }
+export class PermitValidationError extends Error {
+  constructor(message: string, public diagnostic: PermitDiagnostic) { super(message); }
+}
+
+const pathSettings = new Set(['GH_CONFIG_DIR', 'GIT_CONFIG_GLOBAL', 'CLOUDSDK_CONFIG', 'GOOGLE_APPLICATION_CREDENTIALS']);
+const removableSettings = new Set(['GH_TOKEN', 'GITHUB_TOKEN']);
+const quoteCommand = (argv: string[]) => argv.map(a => `"${a.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`).join(' ');
+
+// Values enter the record only after their names and path syntax pass these checks.
+export function commandSettings(input: StepInput): { command: string; argv: string[]; env?: Record<string, string>; unsetEnv?: string[]; reviewRule?: string } {
+  const argv = parseCommand(input.command);
+  const env: Record<string, string> = {};
+  const unsetEnv: string[] = [];
+  if (input.env !== undefined && (!input.env || Array.isArray(input.env) || typeof input.env !== 'object')) throw new Error('Use an object for nonsecret environment settings.');
+  const add = (name: string, value: unknown) => {
+    if (!pathSettings.has(name)) throw new Error('Only GH_CONFIG_DIR, GIT_CONFIG_GLOBAL, CLOUDSDK_CONFIG, and GOOGLE_APPLICATION_CREDENTIALS can be set. Secret values cannot enter a card.');
+    if (typeof value !== 'string' || !isAbsolute(value) || value.length > 500 || !/^\/[A-Za-z0-9_ .\/-]+$/.test(value) || redactOutput(value) !== value)
+      throw new Error('Environment settings must contain an absolute nonsecret path under 500 characters.');
+    if (Object.hasOwn(env, name)) throw new Error('Set each environment name once.');
+    env[name] = value;
+  };
+  for (const [name, value] of Object.entries(input.env || {})) add(name, value);
+  const remove = (name: unknown) => {
+    if (typeof name !== 'string' || !removableSettings.has(name)) throw new Error('Only GH_TOKEN and GITHUB_TOKEN can be removed from the environment.');
+    if (!unsetEnv.includes(name)) unsetEnv.push(name);
+  };
+  if (input.unsetEnv !== undefined && !Array.isArray(input.unsetEnv)) throw new Error('Use a list of environment names to remove.');
+  for (const name of input.unsetEnv || []) remove(name);
+  let reviewRule: string | undefined;
+  if (['env', '/usr/bin/env', '/bin/env'].includes(argv[0])) {
+    argv.shift();
+    while (argv.length) {
+      if (argv[0] === '-u' || argv[0] === '--unset') { argv.shift(); remove(argv.shift()); continue; }
+      const assignment = argv[0].match(/^([A-Za-z_][A-Za-z0-9_]*)=(.*)$/s);
+      if (assignment) { argv.shift(); add(assignment[1], assignment[2]); continue; }
+      if (argv[0] === '--') argv.shift();
+      break;
+    }
+    if (!argv.length || argv[0].startsWith('-') || argv[0].split('/').pop() === 'env') throw new Error('Give one executable after the supported environment settings.');
+    reviewRule = 'environment-values-in-command';
+  }
+  // Check the executable again after removing env. Relative executables stay forbidden.
+  const command = reviewRule ? quoteCommand(argv) : input.command;
+  parseCommand(command);
+  return { command, argv, ...(Object.keys(env).length ? { env: Object.fromEntries(Object.entries(env).sort()) } : {}),
+    ...(unsetEnv.length ? { unsetEnv: unsetEnv.sort() } : {}), ...(reviewRule ? { reviewRule } : {}) };
+}
+
+function stepHash(taskId: string, steps: PermitStep[]): string {
+  return createHash('sha256').update(JSON.stringify({ taskId, steps: steps.map(s => {
+    const fields: unknown[] = [s.command, s.cwd, s.timeoutSeconds, s.network, s.scriptHash];
+    if (s.env || s.unsetEnv) fields.push(s.env || {}, s.unsetEnv || [], s.envPaths || {});
+    return fields;
+  }) })).digest('hex');
+}
+
+export function stepEnvironment(step: PermitStep, base: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const env = { ...base, ...step.env, ...step.envPaths };
+  for (const name of step.unsetEnv || []) delete env[name];
+  return env;
+}
+
+export function settingsDetail(step: Pick<PermitStep, 'env' | 'envPaths' | 'unsetEnv' | 'reviewRule'>): string {
+  return [
+    ...Object.entries(step.env || {}).map(([name, value]) => `Set ${name}: ${value}${step.envPaths?.[name] !== value ? `\nResolved path: ${step.envPaths?.[name]}` : ''}`),
+    ...(step.unsetEnv || []).map(name => `Remove ${name} from the child environment.`),
+    ...(step.reviewRule ? [`Rule: ${step.reviewRule}. Only named nonsecret settings moved to separate fields. Approval runs this exact command once.`] : []),
+  ].join('\n');
+}
 const DIR = join(TB_DIR, 'permits');
 const records = new Map<string, Permit>();
 const listeners = new Set<(p: Permit) => void>();
@@ -99,6 +170,7 @@ function allowedSharedGit(argv: string[], task: Task): boolean {
 function hardRule(argv: string[], task?: Task) {
   const bin = argv[0].split('/').pop() || '';
   const text = argv.join(' ');
+  if (redactOutput(text) !== text) throw new Error('The command contains a secret value. Use a file or a credential store instead.');
   if (/^mcp__[^\s/]+$/.test(argv[0])) throw new Error('An MCP tool call cannot run from a shell permit. Do not retry this command. Use an allowed path or ask the user to do this step.');
   if (/^(sudo|su|ssh|scp|sftp|vi|vim|nano|less|more|top|htop)$/.test(bin) || (/^(bash|sh|zsh|python|python3|node)$/.test(bin) && argv.includes('-i'))) throw new Error('Interactive commands cannot run from a permit.');
   if (/^(bash|sh|zsh|python|python3|node)$/.test(bin) && argv.some(a => /^(?:-c|-e|--eval|--command)$/.test(a))) throw new Error('Put interpreter code in a script file before requesting a permit.');
@@ -115,11 +187,10 @@ function hardRule(argv: string[], task?: Task) {
   if (argv.some(a => /(^|\/)\.env(?:\.|$)|\.(?:pem|key|p8|p12|pfx)$/.test(a))) throw new Error('A suggestion cannot display a credential file.');
   if (bin === 'env' && argv.some(a => /^[A-Za-z_][A-Za-z0-9_]*=/.test(a))) throw new Error('Do not place environment values in the command card.');
   if (bin === 'security' && argv.includes('-p')) throw new Error('Do not place a keychain password in the command card.');
-  if (/(?:password|token|secret|api[_-]?key)\s*[:=]\s*\S+/i.test(text) || /\b(?:ghp_|github_pat_|sk-)[A-Za-z0-9_-]{12,}\b/.test(text)) throw new Error('The command contains a secret value. Use a file or a credential store instead.');
 }
 export function redactOutput(value: string): string {
   let safe = value;
-  for (const [name, secret] of Object.entries(process.env)) if (/(?:TOKEN|PASSWORD|SECRET|API_KEY|CREDENTIAL)/i.test(name) && secret && secret.length >= 6)
+  for (const [name, secret] of Object.entries(process.env)) if (!pathSettings.has(name) && /(?:TOKEN|PASSWORD|SECRET|API_KEY|CREDENTIAL)/i.test(name) && secret && secret.length >= 6)
     safe = safe.split(secret).join('[redacted]');
   return safe.replace(/(https?:\/\/)[^/@\s]+@/g, '$1[redacted]@')
     .replace(/\b(password|token|secret|api[_-]?key)\s*[:=]\s*\S+/gi, '$1=[redacted]')
@@ -158,9 +229,17 @@ function realTarget(path: string): string {
   const parent = dirname(path);
   return resolve(realTarget(parent), path.slice(parent.length + (parent === '/' ? 0 : 1)));
 }
-function checkWorktreeAccess(argv: string[], cwd: string, others: string[]) {
+function checkWorktreeAccess(argv: string[], cwd: string, others: string[], task?: Task) {
   const overlaps = (path: string) => others.some(other => inside(other, path));
-  if (others.some(other => inside(cwd, other) || inside(other, cwd))) throw new Error('The working directory overlaps another task worktree.');
+  const conflict = others.find(other => inside(cwd, other) || inside(other, cwd));
+  if (conflict) {
+    const owner = taskWorktrees().find(w => w.path === conflict);
+    const correction = task && worktreeScopes(task).length
+      ? `Use --cwd with this task's attached worktree: ${worktreeScopes(task).map(s => s.path).join(' or ')}. Run tb scope to inspect the attached worktrees.`
+      : `Use --cwd with a folder that does not overlap another task's worktree. Use tb scope request worktree to attach a worktree.`;
+    const diagnostic = { rule: 'cwd-overlaps-other-worktree', cwd, conflictingWorktree: conflict, conflictingTask: owner?.label || 'another task worktree', correction };
+    throw new PermitValidationError(`The working directory overlaps another task worktree. Resolved cwd: ${cwd}. Conflict: ${diagnostic.conflictingTask} (${conflict}). Rule: ${diagnostic.rule}. ${correction}`, diagnostic);
+  }
   for (const arg of argv) {
     // Options may contain a path after '='. Other arguments can be relative to cwd.
     const value = arg.startsWith('-') && arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : arg;
@@ -178,17 +257,26 @@ export function validate(task: Task, inputs: StepInput[]): { steps: PermitStep[]
   const otherWorktrees = taskWorktrees().filter(w => w.task.id !== task.id && existsSync(w.path)).map(w => w.path);
   const steps = inputs.map(input => {
     if (input.continueOnFailure) throw new Error('Steps must stop after a failure.');
-    const argv = parseCommand(input.command); hardRule(argv, task);
+    const settings = commandSettings(input);
+    const { argv } = settings; hardRule(argv, task);
     const requested = input.cwd || task.cwd;
     if (!isAbsolute(requested)) throw new Error('A working directory must be absolute.');
     const cwd = realpathSync(requested);
     if (unsafeRoot(cwd)) throw new Error('The working directory contains protected Taskboard files.');
-    checkWorktreeAccess(argv, cwd, otherWorktrees);
+    checkWorktreeAccess(argv, cwd, otherWorktrees, task);
+    const envPaths: Record<string, string> = {};
+    for (const [name, value] of Object.entries(settings.env || {})) {
+      const path = realTarget(value);
+      if (unsafeRoot(path)) throw new Error('An environment path overlaps protected Taskboard files.');
+      if (otherWorktrees.some(other => path !== other && inside(path, other))) throw new Error('An environment path contains another task worktree.');
+      checkWorktreeAccess([path], cwd, otherWorktrees, task);
+      envPaths[name] = path;
+    }
     if (argv[0] === 'git' && allowedTaskGit(argv) && (!task.worktree || !task.branch || cwd !== realpathSync(task.cwd))) throw new Error('Git commands need this task’s own worktree branch.');
     if (argv[0] === 'git' && allowedSharedGit(argv, task) && cwd !== realpathSync(task.folder)) throw new Error('The merge command needs the task’s shared checkout.');
     const timeoutSeconds = input.timeoutSeconds ?? 30;
     if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 120) throw new Error('A step timeout must be 1 through 120 seconds.');
-    return { command: input.command, argv, cwd, timeoutSeconds, network: input.network === true, scriptHash: scriptHash(argv, cwd, [...roots, cwd], otherWorktrees), state: 'pending' as const };
+    return { ...settings, ...(settings.env ? { envPaths } : {}), cwd, timeoutSeconds, network: input.network === true, scriptHash: scriptHash(argv, cwd, [...roots, cwd], otherWorktrees), state: 'pending' as const };
   });
   if (steps.reduce((sum, s) => sum + s.timeoutSeconds, 0) > 300) throw new Error('The sequence exceeds five minutes.');
   return { steps, riskFlags: [...new Set(steps.flatMap(s => risk(s.argv, s.cwd, task, s.network)))] };
@@ -221,9 +309,9 @@ export function request(task: Task, reason: string, inputs: StepInput[], refusal
   if (limitBlock) throw new Error(limitBlock);
   const { steps, riskFlags } = validate(task, inputs);
   const id = randomUUID();
-  const stepHash = createHash('sha256').update(JSON.stringify({ taskId: task.id, steps: steps.map(s => [s.command, s.cwd, s.timeoutSeconds, s.network, s.scriptHash]) })).digest('hex');
   const p: Permit = { id, taskId: task.id, taskNum: task.num, agent: task.agent, reason: redactOutput(reason.trim()), refusalId,
-    createdAt: now(), expiresAt: '', state: 'pending', stepHash, riskFlags, steps, statedRisk: redactOutput(statedRisk.trim()), riskClass: classify(steps, task) };
+    createdAt: now(), expiresAt: steps.some(s => s.env || s.unsetEnv || s.reviewRule) ? new Date(Date.now() + 15 * 60_000).toISOString() : '',
+    state: 'pending', stepHash: stepHash(task.id, steps), riskFlags, steps, statedRisk: redactOutput(statedRisk.trim()), riskClass: classify(steps, task) };
   records.set(id, p); save(p); return p;
 }
 export function expire(p: Permit) {
@@ -231,11 +319,11 @@ export function expire(p: Permit) {
   p.state = 'expired'; p.finishedAt = now();
   p.steps.forEach(s => s.state = 'cancelled'); save(p); return true;
 }
-export function requestSupervised(task: Task, name: string, reason: string, command: string, cwd: string, network: boolean, statedRisk: string): Permit {
+export function requestSupervised(task: Task, name: string, reason: string, command: string, cwd: string, network: boolean, statedRisk: string, settings: Pick<StepInput, 'env' | 'unsetEnv'> = {}): Permit {
   procs.checkName(name);
   if (name.length > 24) throw new Error('Use a run name with at most 24 characters.');
   if (!statedRisk.trim()) throw new Error('Describe the risk before asking for an approved run.');
-  const p = request(task, reason, [{ command, cwd, network }], undefined, statedRisk);
+  const p = request(task, reason, [{ command, cwd, network, ...settings }], undefined, statedRisk);
   if (!p.steps[0].scriptHash) { cancel(p, 'A supervised command must name an existing script file.'); throw new Error('A supervised command must name an existing script file.'); }
   p.supervised = { name: `permit-${p.id.slice(0, 8)}-${name}` };
   p.expiresAt = new Date(Date.now() + 15 * 60_000).toISOString();
@@ -248,14 +336,16 @@ export async function runSupervised(p: Permit, task: Task, starter: typeof procs
   if (p.taskId !== task.id || task.status === 'archived') throw new Error('The task cannot start this run.');
   const step = p.steps[0];
   try {
-    const checked = validate(task, [{ command: step.command, cwd: step.cwd, network: step.network }]).steps[0];
-    const hash = createHash('sha256').update(JSON.stringify({ taskId: task.id, steps: [[checked.command, checked.cwd, checked.timeoutSeconds, checked.network, checked.scriptHash]] })).digest('hex');
+    const checked = validate(task, [step]).steps[0];
+    const hash = stepHash(task.id, [checked]);
     if (hash !== p.stepHash || checked.scriptHash !== step.scriptHash) throw new Error('The approved command, folder, or script changed.');
+    if (JSON.stringify(checked.argv) !== JSON.stringify(step.argv)) throw new Error('The approved arguments changed.');
     await guard(task, step);
     p.state = 'running'; p.approvedBy = 'user'; p.approvalRule = 'dashboard Run'; p.decidedAt = now(); p.startedAt = now();
     step.state = 'running'; step.startedAt = p.startedAt; save(p);
-    const command = step.argv.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(' ');
-    await starter(procs.taskOwner(task, env), {
+    const argv = [...(step.unsetEnv?.length ? ['env', ...step.unsetEnv.flatMap(name => ['-u', name])] : []), ...step.argv];
+    const command = argv.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(' ');
+    await starter(procs.taskOwner(task, stepEnvironment(step, env) as Record<string, string>), {
       name: p.supervised.name, command, cwd: step.cwd, startedBy: 'user', permitId: p.id,
     });
   } catch (e) {
@@ -307,7 +397,8 @@ export function controllerRule(p: Permit, task: Task, readOnly: boolean): string
 export const controllerAllowed = (p: Permit, task: Task, enabled: boolean) => !!controllerRule(p, task, enabled);
 export function explicitControllerRequest(transcript: string | undefined, agent: string, words: string, p: Permit): boolean {
   if (!transcript || !words.trim() || words.length > 2000 || !/\b(approve|run)\b/i.test(words)) return false;
-  if (!p.steps.every(s => words.includes(s.command) || words.includes(p.id))) return false;
+  if (/\b(no|not|don't|do not|never|deny|reject|cancel|wait)\b/i.test(words)) return false;
+  if (!p.steps.every(s => words.includes(p.id) || (!s.env && !s.unsetEnv && words.includes(s.command)))) return false;
   return userWrote(transcript, agent, words);
 }
 // True when one user message in the controller transcript is exactly these words. Text that a tool returned, a task
@@ -341,8 +432,9 @@ export function notice(p: Permit): string {
 }
 export function classify(steps: PermitStep[], task: Task): 'low' | 'high' {
   const read = /^(pwd|rg|ls|cat|head|tail|wc|stat|echo|true|false|test)$/;
-  if (steps.some(s => /(?:^|[^a-z])prod(?:uction)?(?:[^a-z]|$)|keychain|credential|secret|password/i.test(s.command + ' ' + s.cwd) || s.argv.some(a => /^--(?:pre|pre-glob|exec|pager|ext-diff)/.test(a)))) return 'high';
-  if (steps.some(s => !inside(realpathSync(task.cwd), s.cwd))) return 'high';
+  if (steps.some(s => /(?:^|[^a-z])prod(?:uction)?(?:[^a-z]|$)|keychain|credential|secret|password|(?:^|[\s/])(?:hosts\.yml|tokens?)(?:$|[\s/.])/i.test(s.command + ' ' + s.cwd + ' ' + Object.values(s.env || {}).join(' ') + ' ' + Object.values(s.envPaths || {}).join(' ')) || s.argv.some(a => /^--(?:pre|pre-glob|exec|pager|ext-diff)/.test(a)))) return 'high';
+  if (steps.some(s => ![task.cwd, ...worktreeScopes(task).map(w => w.path)].some(root => inside(realpathSync(root), s.cwd)))) return 'high';
+  if (steps.some(s => s.env && Object.keys(s.env).some(name => name !== 'GH_CONFIG_DIR'))) return 'high';
   if (steps.every(s => !s.network && read.test(s.argv[0].split('/').pop() || ''))) return 'low';
   if (task.worktree && task.branch && steps.every(s => s.cwd === realpathSync(task.cwd) && allowedTaskGit(s.argv) && !s.network)) return 'low';
   return 'high';
@@ -362,10 +454,13 @@ async function guard(task: Task, step: PermitStep) {
 export async function run(p: Permit, task: Task, by: 'user' | 'controller', comment = '', controllerRequestText = '', executor: typeof execute = execute) {
   if (expire(p) || p.state !== 'pending') return p;
   if (p.taskId !== task.id) throw new Error('The task changed.');
+  let approvedSteps: PermitStep[];
   try {
     const { steps } = validate(task, p.steps);
-    const hash = createHash('sha256').update(JSON.stringify({ taskId: task.id, steps: steps.map(s => [s.command, s.cwd, s.timeoutSeconds, s.network, s.scriptHash]) })).digest('hex');
+    approvedSteps = steps;
+    const hash = stepHash(task.id, steps);
     if (hash !== p.stepHash) throw new Error('The approved steps changed.');
+    if (steps.some((s, i) => JSON.stringify(s.argv) !== JSON.stringify(p.steps[i].argv))) throw new Error('The approved arguments changed.');
   } catch (e) {
     p.state = 'failed'; p.error = e instanceof Error ? e.message : String(e);
     p.steps.forEach(s => s.state = 'cancelled'); p.finishedAt = now(); save(p); return p;
@@ -378,7 +473,8 @@ export async function run(p: Permit, task: Task, by: 'user' | 'controller', comm
     const step = p.steps[i];
     try {
       const checked = validate(task, [step]).steps[0];
-      if (checked.cwd !== step.cwd || checked.scriptHash !== step.scriptHash) throw new Error('The working directory or script changed after approval.');
+      if (stepHash(task.id, [checked]) !== stepHash(task.id, [approvedSteps[i]]) || JSON.stringify(checked.argv) !== JSON.stringify(step.argv))
+        throw new Error('The command, settings, working directory, or script changed after approval.');
       if (step.argv[0] === 'git' && allowedTaskGit(step.argv)) await taskGit.mergeStateForSource(task, true);
       if (allowedSharedGit(step.argv, task)) {
         const branch = spawnSync('git', ['branch', '--show-current'], { cwd: step.cwd, encoding: 'utf8' });
@@ -404,7 +500,7 @@ export async function run(p: Permit, task: Task, by: 'user' | 'controller', comm
 async function execute(task: Task, step: PermitStep): Promise<{ code: number | null; signal: string | null; output: string; error?: string }> {
   return new Promise(resolveResult => {
     const child = spawn(step.argv[0], step.argv.slice(1),
-      { cwd: step.cwd, env: { ...process.env, TASK_ID: task.id }, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+      { cwd: step.cwd, env: stepEnvironment(step, { ...process.env, TASK_ID: task.id }), stdio: ['ignore', 'pipe', 'pipe'], detached: true });
     let output = '', done = false, timedOut = false;
     const finish = (code: number | null, signal: string | null, error?: string) => {
       if (done) return; done = true; clearTimeout(timer);

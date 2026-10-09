@@ -12,6 +12,12 @@ import type { Agent, Approval } from './api';
 export interface RefusalText { who: string; where: string; todo: string; command: string }
 export function refusalText(a: Pick<Approval, 'payload' | 'detail'>, agent?: Agent): RefusalText {
   const command = a.payload?.command || a.detail.split('\n')[0] || '';
+  if (a.payload?.diagnostic?.rule === 'cwd-overlaps-other-worktree') return {
+    who: 'Taskboard refused this working directory.',
+    where: `Rule: ${a.payload.diagnostic.rule}. Resolved cwd: ${a.payload.diagnostic.cwd}. Conflict: ${a.payload.diagnostic.conflictingTask} (${a.payload.diagnostic.conflictingWorktree}).`,
+    todo: a.payload.diagnostic.correction,
+    command,
+  };
   if (!a.payload?.id) return {
     who: 'Taskboard refused this command, because it needs its own request.',
     where: 'The detail above names the command to use instead.',

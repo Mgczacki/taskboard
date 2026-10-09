@@ -38,7 +38,9 @@ export function kindOf(a: Approval): { kind: ControllerKind } | { userOnly: stri
     case 'permit': return { kind: 'permit' };
     case 'external': return { kind: 'permit' };
     case 'mail-in': case 'mail-out': return { kind: 'mail' };
-    case 'tool-refusal': return { userOnly: 'Taskboard cannot approve a refused tool call: the agent\'s own permission check refused it. The user can dismiss the card, copy the command, or go to the task on the dashboard.' };
+    case 'tool-refusal':
+      if ((a.payload as { diagnostic?: unknown })?.diagnostic) return { userOnly: 'Taskboard refused this working directory. The task must use the correction on the card and request a new permit. This card grants no access.' };
+      return { userOnly: 'Taskboard cannot approve a refused tool call: the agent\'s own permission check refused it. The user can dismiss the card, copy the command, or go to the task on the dashboard.' };
     case 'kill': if ((a.payload as { managerArchive?: unknown } | undefined)?.managerArchive) return { userOnly: 'A group manager asked to archive a task of its group. Only the user decides this card, on the dashboard.' }; break;
     case 'send': if (a.actor !== 'controller') return { userOnly: `A message or a document from one task to another is decided by the user on the dashboard.${a.allow ? ' The user can also choose Allow always there. Only the user adds or revokes an allow always rule.' : ''}` }; break;
   }
@@ -65,7 +67,9 @@ export const sameHead = (given: string, head: string) => /^[0-9a-f]{7,64}$/i.tes
 // When a card stops being valid: a push card 10 minutes after the request (push.ts pushExpired), a permit at its own
 // expiresAt. Other cards do not expire while Taskboard runs. `expired` is the refusal text after that time.
 export function expiryOf(a: Approval, permitExpiresAt?: string, now = Date.now()): { expiresAt?: string; expired?: string } {
-  const at = a.validUntil && a.validUntil !== 'until the facts change' ? Date.parse(a.validUntil) : NaN;
+  const at = a.validUntil && a.validUntil !== 'until the facts change' ? Date.parse(a.validUntil)
+    : (a.action === 'permit' || a.action === 'external') && permitExpiresAt ? Date.parse(permitExpiresAt)
+    : a.action === 'git-push' ? Date.parse(a.created) + 10 * 60_000 : NaN;
   if (!Number.isFinite(at)) return {};
   return { expiresAt: new Date(at).toISOString(), ...(now >= at ? { expired: `This card expired at ${new Date(at).toTimeString().slice(0, 8)}. Nothing ran. Ask the task to request it again.` } : {}) };
 }
