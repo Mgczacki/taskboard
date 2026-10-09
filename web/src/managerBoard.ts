@@ -55,7 +55,7 @@ export function rowOf(taskId: string, group?: string): { row: BoardRow; column: 
 export interface CardRef { kind: 'approval'; action: string; pushId?: string; permitId?: string; stale?: boolean }
 export type FindCard = (id: string) => CardRef | { kind: 'question' } | undefined;
 const ACTION_WORD: Record<string, string> = {
-  'git-push': 'Approve push', 'git-merge': 'Approve merge', release: 'Approve release', restart: 'Approve restart', scope: 'Approve scope',
+  'git-push': 'Approve push', 'git-merge': 'Approve merge', 'github-pr': 'Approve pull request', release: 'Approve release', restart: 'Approve restart', scope: 'Approve scope',
   permit: 'Approve permit', external: 'Approve action', plan: 'Approve plan', new: 'Approve new task', send: 'Approve message',
   'mail-in': 'Approve message', 'mail-out': 'Approve message', 'tool-refusal': 'Refused command',
 };

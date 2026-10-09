@@ -46,6 +46,7 @@ async function call(method, path, body) {
   if (!r.ok) { console.error(`tb: ${data && data.error ? data.error : r.statusText}${data?.next ? ` Next: ${data.next}` : ''}`); if (data?.matches) console.error(JSON.stringify({ matches: data.matches, hasMore: data.hasMore }, null, 2)); process.exit(1); }
   if (r.status === 202 && data.permit) return data;
   if (r.status === 202 && data.push) return data;
+  if (r.status === 202 && data.pullRequest) return data;
   // 202: the action waits for the user's approval on the Taskboard dashboard
   if (r.status === 202 && data.approval) {
     console.log(`Approval pending: card ${data.approval.id}. ${data.approval.summary}`);
@@ -225,6 +226,12 @@ const HELP = `tb — Taskboard command line
                                      After a rebase or repair of a pushed branch, the user can approve a force
                                      push on the card. The task cannot ask for --force itself
   tb git push-result ID [--wait]      read the push result
+  tb git pr-request --title "text" [--body "text" | --body-file PATH] [--base BRANCH] [--remote REMOTE] [--draft]
+                                     ask the user to open one GitHub pull request from your branch. Push the exact
+                                     head first with tb git push-request. BASE is a branch on the remote; without it,
+                                     the remote default branch. The card shows every value. Taskboard checks the head
+                                     and the base again before gh pr create runs
+  tb git pr-result ID [--wait]        read the pull request result: the URL or the exact failure
   tb inbox wait [--timeout seconds]  wait until a file arrives in your inbox (uses TASK_ID; default 3600 s);
                                      prints each file's path and sender; exit 0 = files, 2 = timed out
   tb park|archive <task>             set aside a task or end and archive it
@@ -971,6 +978,23 @@ switch (cmd) {
       const wait = has('--wait');
       for (;;) {
         const result = await call('GET', `/api/git/pushes/${encodeURIComponent(id)}`);
+        if (result.state !== 'pending' || !wait) { console.log(JSON.stringify(result, null, 2)); break; }
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    } else if (rest[0] === 'pr-request') {
+      const title = flag('--title'); const body = flag('--body'); const bodyFile = flag('--body-file'); const base = flag('--base'); const remote = flag('--remote'); const draft = has('--draft');
+      if (!title) { console.error('tb git pr-request: give --title'); process.exit(1); }
+      if (body !== undefined && bodyFile !== undefined) { console.error('tb git pr-request: give --body or --body-file, not both'); process.exit(1); }
+      if (args.length > 2) { console.error(`tb git pr-request: unknown arguments: ${args.slice(2).join(' ')}`); process.exit(1); }
+      let text = body;
+      if (bodyFile !== undefined) { try { text = readFileSync(resolve(bodyFile), 'utf8'); } catch (e) { console.error(`tb git pr-request: cannot read ${bodyFile}: ${e.message}`); process.exit(1); } }
+      const result = await call('POST', '/api/git/pr-request', { title, body: text, base, remote, draft, ...wt });
+      console.log(`Pull request request ${result.pullRequest.id}: ${result.pullRequest.state}. The user decides card ${result.approval.id} on the dashboard. Read the result with tb git pr-result ${result.pullRequest.id} --wait.`);
+    } else if (rest[0] === 'pr-result') {
+      const id = rest[1]; if (!id) { console.error('tb git pr-result: give an ID'); process.exit(1); }
+      const wait = has('--wait');
+      for (;;) {
+        const result = await call('GET', `/api/git/pull-requests/${encodeURIComponent(id)}`);
         if (result.state !== 'pending' || !wait) { console.log(JSON.stringify(result, null, 2)); break; }
         await new Promise(resolve => setTimeout(resolve, 2000));
       }
