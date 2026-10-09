@@ -36,6 +36,8 @@ export interface PendingItem {
   state: 'pending' | 'sending' | 'answered' | 'gone' | 'failed';
   result?: string;
   needsTerminal?: boolean;              // the last answer failed, and the user must act in the terminal
+  reason?: string;
+  inspect?: boolean;
   answer?: { by: 'user' | 'controller'; label: string; sent: string; at: string; rule?: string; tasks?: number[] };
   repeats?: { count: number; lastAnswer: string };
   sameIn?: { id: string; taskId: string; taskNum: number }[];
@@ -43,7 +45,7 @@ export interface PendingItem {
   dismissed?: { at: string; until?: string };  // set while the user has dismissed this item (dismiss.ts)
 }
 
-type Action = { via: 'hook'; output: (text: string) => unknown } | { via: 'keys'; index: number; expect?: string } | { via: 'prompt' };
+type Action = { via: 'hook'; output: (text: string) => unknown } | { via: 'keys'; index: number; expect?: string } | { via: 'prompt' } | { via: 'codex-text' };
 interface Live { item: PendingItem; actions: Map<string, Action>; textAction?: Action; resolve?: (output: unknown) => void; signature: string; hook?: { tool: string; input: string } }
 
 export interface Io {
@@ -57,11 +59,16 @@ export interface Io {
   log: (t: Task, did: string) => void;
   answered: (t: Task, note: string) => void;
   wait: (ms: number) => Promise<void>;
+  // Shares the task's input lock with message delivery and holds dashboard terminal keys.
+  withInput?: <T>(t: Task, fn: () => Promise<T>) => Promise<T>;
 }
 let io: Io;
 export const setIo = (x: Io) => { io = x; };
 
+const isCodexQuestion = (name?: string) => name === 'codex-question' || name === 'codex-async-question';
 const live = new Map<string, Live>();
+// Keep one receipt while Codex still shows a screen where Enter was attempted.
+const submittedScreens = new Map<string, string>();
 const history: PendingItem[] = [];               // answered and closed items, newest first, for the Answered view
 const listeners = new Set<() => void>();
 export const onPendingChange = (fn: () => void) => { listeners.add(fn); };
@@ -179,12 +186,46 @@ function screenItem(t: Task, p: ScreenPrompt) {
   const actions = new Map<string, Action>();
   const options: PendingOption[] = p.options.map((o, i) => {
     actions.set(`o${i}`, { via: 'keys', index: i });
-    const send = o.key ? `keys: ${o.key}` : i === p.selected ? 'keys: Enter (this row is selected)' : `keys: ${i > p.selected ? '↓' : '↑'} ×${Math.abs(i - Math.max(p.selected, 0))}, then Enter`;
-    return { key: `o${i}`, label: o.label, send, ...(o.risk ? { risk: o.risk } : {}), ...(i === p.selected ? { selected: true } : {}) };
+    const send = isCodexQuestion(p.name) ? `Select "${o.label}", then Enter` : o.key ? `keys: ${o.key}` : i === p.selected ? 'keys: Enter (this row is selected)' : `keys: ${i > p.selected ? '↓' : '↑'} ×${Math.abs(i - Math.max(p.selected, 0))}, then Enter`;
+    return { key: `o${i}`, label: o.label, description: o.description, send, ...(o.risk ? { risk: o.risk } : {}), ...(i === p.selected ? { selected: true } : {}) };
   });
-  const kind: PendingKind = p.kind === 'command' ? 'command' : p.kind === 'plan' ? 'plan' : p.kind === 'signin' ? 'signin' : p.kind === 'unknown' ? 'unknown' : 'dialog';
-  add(t, { kind, source: 'screen', name: p.name, question: p.question, options: p.answerable ? options : [], answerable: p.answerable,
-    details: Object.keys(p.details).length ? p.details : undefined, screen: { hash: p.hash, excerpt: p.excerpt, ...(p.partial ? { partial: true } : {}) } }, actions);
+  const kind: PendingKind = p.kind;
+  add(t, { kind, source: 'screen', name: p.name, question: p.question,
+    options: p.answerable ? options.filter(o => !isCodexQuestion(p.name) || Number(o.key.slice(1)) !== p.textOption) : [], answerable: p.answerable,
+    reason: p.reason, inspect: p.inspect,
+    ...(p.answerable && p.textAnswer ? { text: { mode: 'answer' as const, placeholder: 'Type your exact answer.', send: 'Your text in the Codex answer field, then Enter' } } : {}),
+    details: Object.keys(p.details).length ? p.details : undefined, screen: { hash: p.hash, excerpt: p.excerpt, ...(p.partial ? { partial: true } : {}) } }, actions, p.textAnswer ? { via: 'codex-text' } : undefined);
+}
+
+export async function inspect(id: string): Promise<PendingItem> {
+  const l = live.get(id);
+  if (!l || l.item.state !== 'pending' || !l.item.inspect) throw new AnswerError('This card no longer has a collapsed question.');
+  const t = io.getTask(l.item.taskId);
+  if (!t || t.openElsewhere || t.status !== 'needs-you') throw new AnswerError('The task no longer waits here. Open terminal to check it.');
+  l.item.state = 'sending'; emit();
+  try {
+    const run = async () => {
+      await io.cancelCopyMode(t.session);
+      const p = parsePrompt(t.agent, await io.capture(t.session));
+      if (!p?.inspect || p.hash !== l.item.screen?.hash) throw new OutOfDate('This card is out of date. The collapsed question changed. Taskboard pressed no keys.');
+      await io.key(t.session, 'S-Left', false);
+      for (let n = 0; n < 8; n++) {
+        await io.wait(150);
+        const next = parsePrompt(t.agent, await io.capture(t.session));
+        if (next && isCodexQuestion(next.name)) {
+          close(l, 'gone', 'Opened the Codex question.');
+          screenItem(t, next);
+          return openFor(t.id, 'screen')[0].item;
+        }
+      }
+      throw new AnswerError('Codex did not show a readable question after Shift+Left. Open terminal and check its question controls.', 409, true);
+    };
+    return await (io.withInput ? io.withInput(t, run) : run());
+  } catch (e) {
+    if (e instanceof OutOfDate) close(l, 'gone', e.message);
+    else { l.item.state = 'pending'; l.item.inspect = false; l.item.reason = e instanceof Error ? e.message : String(e); emit(); }
+    throw e;
+  }
 }
 
 const TURN_END = /Stop hook|agent-turn-complete|Antigravity Stop hook/;
@@ -193,10 +234,15 @@ const TURN_END = /Stop hook|agent-turn-complete|Antigravity Stop hook/;
 export function scan(t: Task, screen: string) {
   const waiting = t.status === 'needs-you';
   if (waiting && hasHook(t.id)) return; // the hook item describes the dialog; the hook ending closes it
-  const p = waiting ? parsePrompt(t.agent, screen.split('\n').slice(-45).join('\n')) : null;
+  let p = waiting ? parsePrompt(t.agent, screen.split('\n').slice(-45).join('\n')) : null;
+  const submitted = submittedScreens.get(t.id);
+  if (submitted && p?.hash !== submitted) submittedScreens.delete(t.id);
+  if (p && submitted === p.hash) {
+    p = { ...p, answerable: false, reason: 'Taskboard already pressed Enter for this question. Open terminal to check whether Codex received it.' };
+  }
   for (const l of openFor(t.id, 'screen')) {
     if (l.item.state !== 'pending') continue;
-    if (p && p.hash === l.item.screen?.hash) { if (l.item.screen.excerpt !== p.excerpt) { l.item.screen.excerpt = p.excerpt; emit(); } continue; }
+    if (p && p.hash === l.item.screen?.hash && (p.answerable === l.item.answerable || l.item.needsTerminal)) { if (l.item.screen.excerpt !== p.excerpt) { l.item.screen.excerpt = p.excerpt; emit(); } continue; }
     close(l, 'gone', 'The prompt is no longer on the screen: it was answered in the terminal, or it changed.');
   }
   if (p && !openFor(t.id, 'screen').length && !hidden.get(t.id)?.has(p.hash)) screenItem(t, p);
@@ -213,11 +259,12 @@ export function scan(t: Task, screen: string) {
 const hidden = new Map<string, Set<string>>();
 export function hide(id: string) {
   const l = live.get(id); if (!l || l.item.source !== 'screen') throw new AnswerError('Only a card read from the screen can be hidden.', 400);
+  if (l.item.state !== 'pending') throw new AnswerError('This card is being answered now.');
   const set = hidden.get(l.item.taskId) || new Set<string>(); set.add(l.item.screen!.hash); hidden.set(l.item.taskId, set);
   close(l, 'gone', 'Hidden by the user: not a question.');
 }
 // a task that was archived, removed or moved: its items close
-export function forgetTask(taskId: string) { for (const l of openFor(taskId)) close(l, 'gone', 'The task was closed.'); }
+export function forgetTask(taskId: string) { submittedScreens.delete(taskId); for (const l of openFor(taskId)) close(l, 'gone', 'The task was closed.'); }
 
 // ---------- list ----------
 export function list(): PendingItem[] {
@@ -252,8 +299,9 @@ async function typeKeys(t: Task, l: Live, index: number, expect?: string): Promi
   const read = async () => parsePrompt(t.agent, (await io.capture(t.session)).split('\n').slice(-45).join('\n'));
   const p = await read();
   if (!p || (expect ? p.name !== expect : p.hash !== l.item.screen?.hash))
-    throw new AnswerError('The prompt on the screen is not the one on this card any more. Taskboard typed nothing.');
-  if (!p.answerable || !p.options[index]) throw new AnswerError('Taskboard cannot answer this prompt. Taskboard typed nothing.');
+    throw new AnswerError('The prompt on the screen is not the one on this card any more. Taskboard typed nothing.', 409, isCodexQuestion(l.item.name));
+  if (submittedScreens.get(t.id) === p.hash) throw new AnswerError('Taskboard already attempted this answer. Open terminal to check it.', 409, true);
+  if (!p.answerable || !p.options[index]) throw new AnswerError('Taskboard cannot answer this prompt. Taskboard typed nothing.', 409, true);
   const opt = p.options[index];
   const after = async (sent: string) => {
     await io.wait(1000);
@@ -273,13 +321,59 @@ async function typeKeys(t: Task, l: Live, index: number, expect?: string): Promi
     await io.key(t.session, k, false); moves.push(k === 'Down' ? '↓' : '↑');
     await io.wait(150);
     const now = await read();
-    if (!now || now.hash !== p.hash) throw new AnswerError(`The prompt changed after ${moves.join('')}. Enter was not pressed. Check the terminal.`);
+    if (!now || now.hash !== p.hash || !now.answerable) throw new AnswerError(`The prompt changed after ${moves.join('')}. Enter was not pressed. Check the terminal.`, 409, true);
     sel = now.selected;
   }
   const check = await read();
-  if (!check || check.hash !== p.hash || check.selected !== index) throw new AnswerError(`The highlight is not on "${opt.label}". Enter was not pressed. Check the terminal.`);
+  if (!check || check.hash !== p.hash || !check.answerable || check.selected !== index) throw new AnswerError(`The highlight is not on "${opt.label}". Enter was not pressed. Check the terminal.`, 409, true);
+  if (isCodexQuestion(p.name)) submittedScreens.set(t.id, p.hash);
   await io.key(t.session, 'Enter', false);
-  return after(`keys: ${[...moves, 'Enter'].join(' ')}`);
+  const sent = await after(`keys: ${[...moves, 'Enter'].join(' ')}`);
+  if (isCodexQuestion(p.name) && sent.includes('prompt still shows')) throw new AnswerError('Taskboard pressed Enter, but Codex still shows this question. Open terminal to check it. Taskboard will not send it again.', 409, true);
+  return sent;
+}
+
+async function typeCodexText(t: Task, l: Live, text: string): Promise<string> {
+  // A short single line stays visible as exact text, rather than a paste placeholder.
+  if (text.length > 100 || /[\r\n\x00-\x1f\x7f]/.test(text)) throw new AnswerError('Use up to 100 characters on one line, or open terminal for a longer answer.', 400);
+  await io.cancelCopyMode(t.session);
+  const read = async () => parsePrompt('codex', await io.capture(t.session));
+  let p = await read();
+  if (p && submittedScreens.get(t.id) === p.hash) throw new AnswerError('Taskboard already attempted this answer. Open terminal to check it.', 409, true);
+  if (!p || !isCodexQuestion(p.name) || p.hash !== l.item.screen?.hash || !p.answerable || !p.textAnswer)
+    throw new OutOfDate('This card is out of date. The question or answer field changed. Taskboard typed nothing.');
+  if (p.options.length) {
+    const other = p.textOption ?? -1;
+    if (other < 0) throw new AnswerError('Codex has no text answer option. Open terminal.', 409, true);
+    for (let n = 0; p.selected !== other && n < 12; n++) {
+      await io.key(t.session, p.selected < other ? 'Down' : 'Up', false);
+      await io.wait(150);
+      const next = await read();
+      if (!next || next.hash !== p.hash || !next.answerable) throw new AnswerError('The question changed while selecting the text answer. Enter was not pressed. Open terminal.', 409, true);
+      p = next;
+    }
+    if (p.selected !== other) throw new AnswerError('Codex did not select the text answer. Enter was not pressed. Open terminal.', 409, true);
+    if (p.name === 'codex-question') {
+      await io.key(t.session, 'Tab', false);
+      await io.wait(150);
+    }
+  }
+  const before = await read();
+  const emptyField = before && (p.name === 'codex-question'
+    ? /^\s*›\s*(Add notes|Type your answer \(optional\))\s*$/m.test(before.excerpt)
+    : p.options.length ? before.selected === p.textOption : /^\s*›\s*Type your answer\s*$/m.test(before.excerpt));
+  if (!before || before.hash !== p.hash || before.notes || !emptyField)
+    throw new AnswerError('Codex did not show an empty answer field. Taskboard typed no text. Open terminal.', 409, true);
+  await io.key(t.session, text, true);
+  await io.wait(600);
+  const check = await read();
+  if (!check || check.hash !== p.hash || check.notes !== text || (p.options.length && check.selected !== p.selected))
+    throw new AnswerError('The answer field does not show your exact text. Enter was not pressed. Open terminal and check the text.', 409, true);
+  submittedScreens.set(t.id, p.hash);
+  await io.key(t.session, 'Enter', false);
+  await io.wait(1000);
+  if ((await read())?.hash === p.hash) throw new AnswerError('Taskboard pressed Enter, but Codex still shows this question. Open terminal to check it. Taskboard will not send it again.', 409, true);
+  return `answer field: "${text}" + Enter`;
 }
 
 async function sendOne(l: Live, input: AnswerInput): Promise<string> {
@@ -295,7 +389,16 @@ async function sendOne(l: Live, input: AnswerInput): Promise<string> {
     l.resolve(action.output(text)); l.resolve = undefined;
     return opt ? opt.send.replace('your message', text.trim() ? `"${text.trim()}"` : 'the default message') : input.option === 'form' ? `hook: answers ${text}` : `hook: "${text}"`;
   }
-  if (action.via === 'keys') return typeKeys(t, l, action.index, action.expect);
+  if (action.via === 'keys' || action.via === 'codex-text') {
+    if (t.openElsewhere || ['archived', 'parked', 'suspended', 'stopped'].includes(t.status)) throw new AnswerError('The task cannot accept an answer here. Open terminal and check its session.', 409, true);
+    const run = () => action.via === 'keys' ? typeKeys(t, l, action.index, action.expect) : typeCodexText(t, l, text);
+    try { return await (io.withInput ? io.withInput(t, run) : run()); }
+    catch (e) {
+      if (isCodexQuestion(l.item.name) && !(e instanceof AnswerError) && (e as { state?: string })?.state !== 'busy')
+        throw new AnswerError(`Taskboard could not complete the screen answer. Open terminal and check the question before sending again. ${e instanceof Error ? e.message : String(e)}`, 409, true);
+      throw e;
+    }
+  }
   return typeAnswer(l, text);
 }
 
@@ -388,7 +491,10 @@ export async function answer(id: string, input: AnswerInput): Promise<PendingIte
       // one target: the card names the task, so the message has no task number
       errors.push(targets.length > 1 ? `#${x.item.taskNum}: ${message}` : message);
       if (e instanceof OutOfDate) { close(x, 'gone', message); continue; }
-      x.item.state = 'pending'; x.item.result = message; x.item.needsTerminal = e instanceof AnswerError && e.terminal || undefined; emit();
+      x.item.state = 'pending'; x.item.result = message; x.item.needsTerminal = e instanceof AnswerError && e.terminal || undefined;
+      // After a partial terminal operation, another click must not type the answer twice.
+      if (isCodexQuestion(x.item.name) && x.item.needsTerminal) { x.item.answerable = false; x.item.reason = message; }
+      emit();
     }
   }
   if (errors.length === targets.length) throw new AnswerError(errors.join(' '));

@@ -1,0 +1,9 @@
+• Queued follow-up inputs
+
+  May I start a dedicated Taskboard task to replace the old scope advice?
+
+  › 1. Start the task
+    2. I will remove the old scope
+    3. Other
+
+  enter submit   ctrl+] skip   shift+→ main prompt

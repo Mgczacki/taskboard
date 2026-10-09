@@ -17,6 +17,7 @@ import * as messageQueue from './message-queue.ts';
 import { transcriptFor } from './importer.ts';
 import * as agentErrors from './agent-error-watch.ts';
 import { transcriptError } from './agent-errors.ts';
+import { CODEX_QUESTIONS, CODEX_QUESTION_OPEN, CODEX_ASYNC_OPEN } from './screen-prompts.ts';
 
 const turnStart = new Map<string, number>();   // task id -> when the current turn began
 const blockedOnce = new Set<string>();          // Stop hook already asked for a log entry this turn
@@ -389,11 +390,12 @@ export function codexActivity(t: Task, transcriptMtime: number) {
 // Codex can ask questions without ending its turn (the request_user_input_async tool). It keeps working, and the
 // questions wait above the input box ("? 3 questions" / "shift+← to answer"). No hook fires for them, and the rollout
 // file does not record the answers, so the screen is the only place that shows whether they are still open.
-const CODEX_QUESTIONS = /\?\s+(\d+)\s+questions?\b[^\n]*\n[^\n]*to answer/;
 const CODEX_QUESTION_SOURCE = 'Codex questions on screen';
 export const codexQuestionsOpen = (t: Task) => t.status === 'needs-you' && !!t.statusSource?.startsWith(CODEX_QUESTION_SOURCE);
 export function codexQuestionCheck(t: Task, screen: string) {
-  const m = screen.match(CODEX_QUESTIONS);
+  const collapsed = screen.match(CODEX_QUESTIONS);
+  const opened = screen.match(CODEX_QUESTION_OPEN);
+  const m = collapsed || (opened ? [opened[0], opened[2]] : CODEX_ASYNC_OPEN.test(screen) ? ['', '1'] : null);
   if (codexQuestionsOpen(t)) {
     if (m) return;
     // answered or dismissed: the rollout file shows whether the turn is still running

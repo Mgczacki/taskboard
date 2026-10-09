@@ -82,6 +82,36 @@ test('Codex 0.160.0 and Antigravity boxes: a dim placeholder is empty, other tex
   assert.equal(readyForInput(`${rule}\n❯ \n${rule}\n  ? for shortcuts`), true);
 });
 
+test('Codex questions keep their status and block queued text while collapsed or open', () => {
+  const t = store.create({ id: 'question-screen-check', num: 299, title: 'Question screen check', agent: 'codex', status: 'working', cwd: root, folder: root, session: 'no-session-needed', desc: '' });
+  const collapsed = '• Queued follow-up inputs\n  ? 1 question · 18s\n    shift+← to answer\n› Ask Codex to do anything';
+  const opened = screenFile('codex-choice-question.txt');
+  const freeform = 'Question 1/1 (1 unanswered)\nWhat name?\n› Type your answer (optional)\nenter to submit answer | esc to interrupt';
+  const asyncQuestion = screenFile('codex-async-question.txt');
+  for (const screen of [collapsed, opened, asyncQuestion, freeform, freeform.replace('Type your answer (optional)', 'start')]) {
+    events.codexQuestionCheck(t, screen);
+    assert.equal(t.status, 'needs-you');
+    assert.equal(boxState(screen, 'codex'), 'question');
+  }
+  events.codexQuestionCheck(t, '› Ask Codex to do anything');
+  assert.equal(t.status, 'working');
+});
+
+test('a screen answer shares the input lock with normal message delivery and holds terminal keys', async () => {
+  const { withTaskInput, sendTaskText } = await import('../server/agents.ts');
+  const t = store.create({ id: 'question-input-lock', num: 298, title: 'Question input lock', agent: 'codex', status: 'working', cwd: root, folder: root, session: 'no-lock-session-needed', desc: '' });
+  let release!: () => void, typed = false;
+  const barrier = new Promise<void>(resolve => { release = resolve; });
+  const answer = withTaskInput(t, async () => { await barrier; });
+  assert.equal(terminalInput.held(t.session), true);
+  terminalInput.write(t.session, () => { typed = true; });
+  await assert.rejects(sendTaskText(t, 'follow-up'), /Another message is being typed/);
+  assert.equal(typed, false);
+  release(); await answer;
+  assert.equal(typed, true);
+  assert.equal(terminalInput.held(t.session), false);
+});
+
 let num = 300;
 const fakeState = (t: { id: string }, s: object) => writeFileSync(join(store.taskDir(t.id), 'fake-state.json'), JSON.stringify(s));
 const submitted = (t: { id: string }) => {

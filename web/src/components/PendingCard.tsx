@@ -53,23 +53,13 @@ export function PendingCard({ item, compact, openTask, toast }: { item: PendingI
   const [error, setError] = useState('');
   const [text, setText] = useState('');
   const unknown = item.agent === 'codex' && item.kind === 'unknown' && item.source === 'screen';
-  const [reply, setReply] = useState<UnknownReply>(null);
-  const [replyReady, setReplyReady] = useState(false);
-  const replySending = useRef(false);
-  useEffect(() => {
-    if (!unknown) return;
-    let active = true, loaded = false;
-    const read = () => void api.unknownReply(item.id).then(r => { if (active) { loaded = true; if (r) setReply(r); setReplyReady(true); } }).catch(e => { if (active && !loaded) { setError(String((e as Error).message || e)); setReplyReady(true); } });
-    read();
-    const timer = setInterval(read, 2000);
-    return () => { active = false; clearInterval(timer); };
-  }, [unknown, item.id]);
-  const sendUnknown = async () => {
-    if (replySending.current || !replyReady || reply || !text.trim()) return;
-    replySending.current = true; setBusy(true); setError('');
-    try { setReply(await api.sendUnknownReply(item.id, text)); }
-    catch (e) { setError(String((e as Error).message || e)); }
-    finally { replySending.current = false; setBusy(false); }
+  const sending = useRef(false);
+  const inspect = async () => {
+    if (sending.current || item.state !== 'pending') return;
+    sending.current = true; setBusy(true); setError('');
+    try { await api.inspectPending(item.id); }
+    catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { sending.current = false; setBusy(false); }
   };
   const [confirm, setConfirm] = useState<PendingOption | null>(null);
   const [ack, setAck] = useState(false);
@@ -83,7 +73,8 @@ export function PendingCard({ item, compact, openTask, toast }: { item: PendingI
   const locked = busy || item.state !== 'pending';
 
   const send = async (body: { option?: string; text?: string; confirm?: boolean }) => {
-    setBusy(true); setError('');
+    if (sending.current || item.state !== 'pending') return;
+    sending.current = true; setBusy(true); setError('');
     try {
       const r = await api.answerPending(item.id, { ...body, ...(group.length ? { group: group.map(g => g.id) } : {}) });
       toast(`#${item.taskNum}: ${r.answer ? `answered "${r.answer.label}"` : 'answered'}. ${r.result || ''}`.trim());
@@ -96,7 +87,7 @@ export function PendingCard({ item, compact, openTask, toast }: { item: PendingI
       else if (/^This card is out of date/.test(message)) { setError(message); toast(`#${item.taskNum}: ${message}`); }
       else setError(message);
     }
-    finally { setBusy(false); }
+    finally { sending.current = false; setBusy(false); }
   };
   const asks = (o: PendingOption) => !!o.risk && confirmRisk[RISK_SETTING[o.risk]] !== false;
   const choose = (o: PendingOption) => {
@@ -125,7 +116,7 @@ export function PendingCard({ item, compact, openTask, toast }: { item: PendingI
       <b className="pc-ti">{item.taskTitle}</b><AgentChip a={item.agent} /><span className="chip">{KIND_LABEL[item.kind]}</span>
       <span className="pc-sp" /><span className="pc-age">waiting {fmtWait(minutes(item.createdAt))}</span>
     </div>
-    {!compact && <div className="pc-src">{unknown ? 'Read from the terminal screen. Taskboard cannot parse an answer for this prompt.' : SOURCE_LABEL[item.source]}</div>}
+    {!compact && <div className="pc-src">{SOURCE_LABEL[item.source]}</div>}
     {item.header && <span className="chip pc-header">{item.header}</span>}
     <p className="pc-q">{item.question}</p>
     {!compact && (d.command || d.cwd || d.reason || d.title) && <dl className="pc-d">
@@ -141,14 +132,9 @@ export function PendingCard({ item, compact, openTask, toast }: { item: PendingI
     {item.screen && (!item.answerable || (!compact && item.source === 'screen')) && <details className="pc-screen" open={!item.answerable}><summary>Screen rows that Taskboard read</summary><pre>{item.screen.excerpt}</pre></details>}
     {item.screen?.partial && <div className="pc-note info">The terminal is too short to show the whole list. The card shows the rows on the screen. Open the terminal for the other rows.</div>}
     {item.kind === 'signin' && <div className="pc-note info">Taskboard does not sign in for you. Open the terminal and sign in there. This card closes when the dialog is gone.</div>}
-    {!item.answerable && item.kind !== 'signin' && !unknown && <div className="pc-note info">Taskboard does not answer this prompt. Open the terminal to answer it.</div>}
-    {unknown && <div className="pc-text">
-      <label htmlFor={`unknown-reply-${item.id}`}>Text for #{item.taskNum}</label>
-      <textarea id={`unknown-reply-${item.id}`} rows={compact ? 2 : 3} value={text} disabled={busy || !!reply} onChange={e => setText(e.target.value)} placeholder="Type text to send to this task" />
-      <div className="pc-note info">Taskboard sends this text through the task input queue. It is not a direct answer to the question on screen. The task receives it when the terminal can accept input.</div>
-      <div className="pc-row"><button type="button" className="btn primary" disabled={!replyReady || busy || !!reply || !text.trim()} onClick={() => void sendUnknown()}>Send</button></div>
-      {reply && <div className={`pc-note ${replyClass(reply)}`} role="status">{replyMessage(item, reply)}</div>}
-    </div>}
+    {!item.answerable && item.kind !== 'signin' && <div className="pc-note info">{item.reason || 'Taskboard does not recognize the answer controls on this screen. Open terminal and use the controls shown by the agent.'}</div>}
+    {item.inspect && <div className="pc-row"><button type="button" className="btn primary" disabled={locked} onClick={() => void inspect()}>Read question</button></div>}
+    {unknown && <UnknownReplyResult item={item} />}
     {item.answerable && item.options.length > 0 && <div className="pc-opts">{item.options.map(o =>
       <button key={o.key} className={`btn pc-opt ${o.risk ? 'risky' : ''}`} disabled={locked} onClick={() => choose(o)}>
         <span className="pc-ol"><span className="l">{o.risk ? '⚠ ' : ''}{o.label}</span>{o.selected && <span className="pc-def">selected on screen</span>}{o.description && <span className="d">{o.description}</span>}{o.risk && <span className="d pc-risk">{RISK_LABEL[o.risk]}{asks(o) ? ' · needs a confirm step' : ' · sent at once, no confirm step'}</span>}</span>
@@ -161,7 +147,7 @@ export function PendingCard({ item, compact, openTask, toast }: { item: PendingI
       <input type="text" className="pc-other" placeholder="Or type your own answer" disabled={locked} value={other[q.question] || ''} onChange={e => setOther(x => ({ ...x, [q.question]: e.target.value }))} />
     </fieldset>)}<div className="pc-row"><span className="sub">Sends: hook answers, several choices joined by ", "</span><span className="pc-sp" /><button className="btn primary" disabled={locked} onClick={sendForm}>Send answers</button></div></div>}
     {item.answerable && item.text && <div className="pc-text">
-      <textarea rows={item.text.mode === 'deny' || compact ? 2 : 3} placeholder={item.text.placeholder} disabled={locked} value={text} onChange={e => setText(e.target.value)} />
+      <textarea rows={item.text.mode === 'deny' || compact ? 2 : 3} placeholder={item.agent === 'codex' && item.source === 'screen' ? 'Type one line, up to 100 characters.' : item.text.placeholder} disabled={locked} value={text} onChange={e => setText(e.target.value)} />
       {item.text.mode !== 'deny' && <div className="pc-row"><span className="sub">Sends: {item.text.send}</span><span className="pc-sp" /><button className={`btn ${item.text.mode === 'answer' ? 'primary' : ''}`} disabled={locked || !text.trim()} onClick={() => void send({ text })}>{item.text.mode === 'change' ? 'Send changes' : 'Send answer'}</button></div>}
     </div>}
     {!compact && item.answerable && !!item.sameIn?.length && <div className="pc-group">
@@ -179,7 +165,7 @@ export function PendingCard({ item, compact, openTask, toast }: { item: PendingI
       <button className="btn ghost" onClick={() => openTask(item.taskId)}>Open terminal</button>
       {/* Dismiss never answers the card. A held hook card comes back after 10 minutes (server/dismiss.ts). */}
       {item.state === 'pending' && <button className="btn ghost" disabled={busy} onClick={() => void dismissItem(item, KIND_LABEL[item.kind], toast)} title={holdsHook(item) ? HOOK_TITLE : DISMISS_TITLE}>{holdsHook(item) ? 'Dismiss for 10 min' : 'Dismiss'}</button>}
-      {item.source === 'screen' && !item.answerable && item.kind === 'unknown' && <button className="btn ghost" onClick={() => void api.hidePending(item.id).catch(e => setError(String((e as Error).message || e)))} title="Hide this card. A different screen makes a new card.">Not a question</button>}
+      {item.source === 'screen' && <button className="btn ghost" disabled={locked} onClick={() => void api.hidePending(item.id).catch(e => setError(String((e as Error).message || e)))} title="Hide this card. A different screen makes a new card.">Not a question</button>}
     </div>
     {confirm && <div className="scrim open" onMouseDown={e => { if (e.target === e.currentTarget) setConfirm(null); }}>
       <div className="modal pc-confirm" role="dialog" aria-modal="true">

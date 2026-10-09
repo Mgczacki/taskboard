@@ -7,10 +7,10 @@ import { createHash } from 'node:crypto';
 
 export type Risk = 'wide-access' | 'installs' | 'spends' | 'exits';
 export type PromptAgent = 'claude' | 'codex' | 'antigravity';
-export interface ScreenOption { label: string; key?: string; risk?: Risk }
+export interface ScreenOption { label: string; description?: string; key?: string; risk?: Risk }
 export interface ScreenPrompt {
   name: string;
-  kind: 'command' | 'plan' | 'dialog' | 'signin' | 'unknown';
+  kind: 'command' | 'plan' | 'dialog' | 'choice' | 'text' | 'signin' | 'unknown';
   question: string;
   options: ScreenOption[];
   selected: number;          // index of the highlighted option, -1 when none is highlighted
@@ -19,6 +19,11 @@ export interface ScreenPrompt {
   hash: string;              // name, question, options and command; the highlight is not part of it
   excerpt: string;           // the rows that the card shows
   partial?: boolean;         // the list scrolls: some options are not on the screen
+  reason?: string;
+  inspect?: boolean;
+  textAnswer?: boolean;
+  notes?: string;
+  textOption?: number;
 }
 
 const MARKS = '❯›>';
@@ -119,6 +124,108 @@ function make(name: string, kind: ScreenPrompt['kind'], question: string, block:
 
 // Codex: questions from request_user_input wait above the input box ("? 3 questions" / "shift+← to answer").
 export const CODEX_QUESTIONS = /\?\s+(\d+)\s+questions?\b[^\n]*\n[^\n]*to answer/;
+export const CODEX_QUESTION_OPEN = /^\s*Question (\d+)\/(\d+)(?:\s.*)?$/m;
+export const CODEX_ASYNC_OPEN = /ctrl\+\] skip[\s\S]{0,200}shift\+→ (?:main prompt|prev question)/;
+
+function codexAsyncQuestion(rows: string[]): ScreenPrompt | null {
+  let start = -1;
+  for (let i = rows.length - 1; i >= 0; i--) if (/^\s*• Queued follow-up inputs\s*$/.test(rows[i])) { start = i; break; }
+  if (start < 0 || !CODEX_ASYNC_OPEN.test(rows.slice(start).join('\n'))) return null;
+  const excerpt = excerptOf(rows, start, rows.length - 1);
+  const unavailable = (reason: string) => ({ ...make('codex-async-question', 'unknown', 'Codex has an open question.', null, {}, excerpt, undefined, false), hash: hashOf('codex-async-unknown', excerpt), reason });
+  const area = rows.slice(start + 1);
+  if (area.some(r => /^\s*\d+ of \d+\s*$/.test(r))) return unavailable('Codex has several questions. Open terminal and answer each question there.');
+  const footer = area.findIndex(r => /ctrl\+\] skip/.test(r));
+  if (footer < 0 || !/\benter submit\b/.test(area[footer])) return unavailable('Taskboard cannot see the default Enter action. Open terminal and use the submit key shown by Codex.');
+  const body = area.slice(0, footer);
+  const first = body.findIndex(r => NUMBERED.test(r));
+  const composer = body.findIndex(r => /^\s*›(?:\s|$)/.test(r) && !NUMBERED.test(r));
+  const endQuestion = first >= 0 ? first : composer;
+  if (endQuestion < 0) return unavailable('The question or answer field is cut off. Open terminal and enlarge it.');
+  const question = body.slice(0, endQuestion).map(r => r.trim()).filter(Boolean).join(' ');
+  if (!question || /…/.test(question)) return unavailable('The question is cut off. Open terminal and enlarge it.');
+  const options: ScreenOption[] = [];
+  let selected = -1;
+  for (let i = first; first >= 0 && i < body.length; i++) {
+    if (!body[i].trim()) continue;
+    const m = body[i].match(NUMBERED);
+    if (!m || Number(m[3]) !== options.length + 1) return unavailable('An option is wrapped or missing. Open terminal and enlarge it to show the full list.');
+    if (m[2]) selected = options.length;
+    options.push({ label: m[4], ...(riskOf(m[4], question) ? { risk: riskOf(m[4], question) } : {}) });
+  }
+  let notes = '', textOption: number | undefined;
+  if (options.length) {
+    textOption = options.length - 1;
+    const other = options[textOption];
+    // The final numbered row is Codex's inline text field. Its draft is not part of the question hash.
+    if (!/^Other(?: \(write an answer\))?$/.test(other.label)) {
+      if (selected !== textOption) return unavailable('The Other field holds text or the last option is cut off. Open terminal and check it.');
+      notes = other.label;
+    }
+    other.label = 'Other';
+  } else {
+    const value = body.slice(composer).map(r => r.trim()).filter(Boolean).join(' ').replace(/^›\s*/, '');
+    notes = value === 'Type your answer' ? '' : value;
+  }
+  if (options.some(o => /…/.test(o.label))) return unavailable('An option is cut off. Open terminal and enlarge it.');
+  return { name: 'codex-async-question', kind: options.length ? 'choice' : 'text', question, options, selected, notes, textOption,
+    answerable: !notes && (!options.length || selected >= 0), textAnswer: true, details: {}, excerpt,
+    hash: hashOf('codex-async-question', question, ...options.map(o => o.label)),
+    ...(notes ? { reason: 'The answer field already holds text. Open terminal and send or clear it first.' } : {}) };
+}
+
+// Only a complete overlay with the default submit binding can be answered from the card.
+function codexQuestion(rows: string[]): ScreenPrompt | null {
+  let start = -1;
+  for (let i = rows.length - 1; i >= 0; i--) if (CODEX_QUESTION_OPEN.test(rows[i])) { start = i; break; }
+  if (start < 0) return null;
+  const progress = rows[start].match(CODEX_QUESTION_OPEN)!;
+  const body = rows.slice(start + 1);
+  const footer = body.findIndex(r => /enter to submit (answer|all)/i.test(r));
+  const excerpt = excerptOf(rows, start, rows.length - 1);
+  const unavailable = (reason: string) => ({ ...make('codex-question', 'unknown', 'Codex has an open question.', null, {}, excerpt, undefined, false),
+    hash: hashOf('codex-question-unknown', excerpt.replace(/auto-resolves in [\dsm ]+/g, '')), reason });
+  if (progress[2] !== '1') return unavailable('Codex has several questions. Open terminal and complete every question before submitting all answers.');
+  if (footer < 0) return unavailable('Taskboard cannot see the default Enter action. Open terminal and use the submit key shown by Codex.');
+  const area = body.slice(0, footer);
+  const firstOption = area.findIndex(r => NUMBERED.test(r));
+  const composer = area.findIndex(r => /^\s*›(?:\s|$)/.test(r) && !NUMBERED.test(r));
+  const questionEnd = firstOption >= 0 ? firstOption : composer;
+  if (questionEnd < 0) return unavailable('The question or answer field is cut off. Open terminal and enlarge it to show the full question.');
+  const question = area.slice(0, questionEnd).map(r => r.trim()).filter(Boolean).join(' ');
+  if (!question || /[.…]{3}|…/.test(question)) return unavailable('The question is cut off. Open terminal and enlarge it before answering.');
+  const options: ScreenOption[] = [];
+  let selected = -1;
+  let descriptionCol = 0;
+  const optionEnd = composer >= 0 ? composer : area.length;
+  for (let i = firstOption; firstOption >= 0 && i < optionEnd; i++) {
+    const m = area[i].match(NUMBERED);
+    if (m) {
+      if (Number(m[3]) !== options.length + 1) return unavailable('Some option rows are missing. Open terminal and read the full list.');
+      if (m[2]) selected = options.length;
+      const parts = m[4].split(/\s{2,}/);
+      const label = parts[0];
+      const description = parts.slice(1).join(' ');
+      descriptionCol = description ? area[i].indexOf(description) : 0;
+      options.push({ label, ...(description ? { description } : {}), ...(riskOf(label, question) ? { risk: riskOf(label, question) } : {}) });
+    } else if (area[i].trim() && options.length) {
+      const o = options.at(-1)!;
+      if (!descriptionCol || area[i].search(/\S/) < descriptionCol) return unavailable('An option label wraps onto another row. Open terminal and enlarge it to show each label on one row.');
+      o.description = [o.description, area[i].trim()].filter(Boolean).join(' ');
+    }
+  }
+  if (options.some(o => /…/.test(o.label + (o.description || '')))) return unavailable('An option is cut off. Open terminal and enlarge it to read the full list.');
+  const notes = composer >= 0 ? area.slice(composer).map(r => r.trim()).filter(Boolean).join(' ').replace(/^›\s*/, '') : undefined;
+  const placeholder = /^(Add notes|Type your answer \(optional\)|Select an option to add notes)$/;
+  const draft = notes !== undefined && notes !== '' && !placeholder.test(notes) ? notes : '';
+  const other = options.findIndex(o => o.label === 'None of the above');
+  // Enter on "None of the above" opens notes. It does not submit that option.
+  const answerable = !draft && (options.length ? selected >= 0 && /tab to add notes/i.test(body[footer]) : composer >= 0);
+  return { name: 'codex-question', kind: options.length ? 'choice' : 'text', question, options, selected, details: {}, excerpt,
+    hash: hashOf('codex-question', question, ...options.map(o => o.label + '\u0000' + (o.description || ''))),
+    answerable, textAnswer: !options.length || other >= 0, textOption: other >= 0 ? other : undefined, notes: draft,
+    ...(!answerable ? { reason: draft ? 'The answer field already holds text. Open terminal and send or clear it first.' : 'Codex is editing notes or has no selected option. Open terminal and complete the answer there.' } : {}) };
+}
 const AGY_APPROVAL = /^\s*(>\s*)?1\. Yes\b[\s\S]*\bNo, (cancel|deny)\b/m;
 
 export function parsePrompt(agent: PromptAgent, screen: string): ScreenPrompt | null {
@@ -169,6 +276,10 @@ export function parsePrompt(agent: PromptAgent, screen: string): ScreenPrompt | 
   }
 
   if (agent === 'codex') {
+    const asyncQuestion = codexAsyncQuestion(rows);
+    if (asyncQuestion) return asyncQuestion;
+    const question = codexQuestion(rows);
+    if (question) return question;
     const block = numberedBlock(rows);
     const approval = find(/Would you like to (run the following command|make the following edits|grant|allow)/);
     if (approval >= 0 && block && block.start > approval) {
@@ -190,7 +301,15 @@ export function parsePrompt(agent: PromptAgent, screen: string): ScreenPrompt | 
     const trust = find(/Trust this folder\?/);
     if (trust >= 0 && block && block.start > trust) return make('codex-trust', 'dialog', 'Trust this folder?', block, {}, excerptOf(rows, trust - 2, block.end + 1));
     const qs = text.match(CODEX_QUESTIONS);
-    if (qs) return make('codex-questions', 'unknown', `Codex asked ${qs[1]} question${qs[1] === '1' ? '' : 's'}. Answer them in the terminal (shift+←).`, null, {}, tail(rows, 15), undefined, false);
+    if (qs) {
+      const p = make('codex-questions', 'unknown', `Codex asked ${qs[1]} question${qs[1] === '1' ? '' : 's'}.`, null, {}, tail(rows, 25), undefined, false);
+      const end = rows.findIndex(r => /^\s*\?\s+\d+\s+questions?\b/.test(r));
+      const content = rows.slice(0, end < 0 ? rows.length : end).filter(r => !/Working \(|Queued follow-up inputs/.test(r));
+      p.hash = hashOf(p.name, qs[1], content.slice(-20).join('\n'));
+      p.inspect = true;
+      p.reason = 'The question is collapsed. Read question to open it and check its answers, or open terminal and press Shift+Left.';
+      return p;
+    }
   }
 
   if (agent === 'antigravity') {

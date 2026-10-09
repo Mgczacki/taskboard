@@ -1,5 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { parsePrompt, riskOf } from '../server/screen-prompts.ts';
 
 // Screens captured on 2026-10-02 (Claude Code 2.1.287, Codex 0.160.0, Antigravity 1.2.14), folders shortened.
@@ -150,6 +151,43 @@ test('Codex trust dialog and questions', () => {
   assert.equal(qs.answerable, false);
 });
 
+const choiceQuestion = readFileSync(new URL('./fixtures/screens/codex-choice-question.txt', import.meta.url), 'utf8');
+test('Codex 0.160.0 live question: labels, descriptions, text option, and stable highlight', () => {
+  const p = parsePrompt('codex', choiceQuestion)!;
+  assert.equal(p.name, 'codex-question');
+  assert.equal(p.kind, 'choice');
+  assert.equal(p.answerable, true);
+  assert.equal(p.textAnswer, true);
+  assert.deepEqual(p.options.map(o => o.label), ['Start the task', 'I will remove the old scope', 'None of the above']);
+  assert.equal(p.options[1].description, 'You will remove the old scope yourself.');
+  const moved = choiceQuestion.replace('› 1.', '  1.').replace('  2.', '› 2.');
+  assert.equal(parsePrompt('codex', moved)!.hash, p.hash);
+  assert.notEqual(parsePrompt('codex', choiceQuestion.replace('yourself.', 'later.'))!.hash, p.hash);
+});
+
+test('Codex text fields, drafts, multiple questions, cut rows and changed submit bindings', () => {
+  const notes = readFileSync(new URL('./fixtures/screens/codex-choice-notes.txt', import.meta.url), 'utf8');
+  assert.equal(parsePrompt('codex', notes)!.answerable, false);
+  assert.equal(parsePrompt('codex', notes.replace('› Add notes', '› start'))!.notes, 'start');
+  const text = 'Question 1/1 (1 unanswered)\nWhat name should I use?\n\n› Type your answer (optional)\n\nenter to submit answer | esc to interrupt';
+  assert.equal(parsePrompt('codex', text)!.kind, 'text');
+  assert.equal(parsePrompt('codex', text)!.answerable, true);
+  assert.equal(parsePrompt('codex', text.replace('Type your answer (optional)', 'someone else typed'))!.answerable, false);
+  assert.match(parsePrompt('codex', choiceQuestion.replace('1/1', '1/2'))!.reason!, /several questions/);
+  assert.match(parsePrompt('codex', choiceQuestion.replace('enter to submit', 'ctrl+s to submit'))!.reason!, /default Enter/);
+  assert.match(parsePrompt('codex', choiceQuestion.replace('1. Start the task', '4. Start the task'))!.reason!, /missing/);
+  assert.match(parsePrompt('codex', choiceQuestion.replace('Start the task               ', 'Start the…                  '))!.reason!, /cut off/);
+});
+
+test('screenshot #216: collapsed question has Read question, changes invalidate it, timers do not', () => {
+  const screen = '• May I start a dedicated Taskboard task to replace the old scope advice?\n  • Start the task\n  • I will remove the old scope\n• Working (1m 19s • esc to interrupt)\n• Queued follow-up inputs\n  ? 1 question · 18s\n    shift+← to answer\n› Ask Codex to do anything\n  GPT-6-Sol medium';
+  const p = parsePrompt('codex', screen)!;
+  assert.equal(p.answerable, false);
+  assert.equal(p.inspect, true);
+  assert.equal(parsePrompt('codex', screen.replace('18s', '19s').replace('1m 19s', '1m 20s'))!.hash, p.hash);
+  assert.notEqual(parsePrompt('codex', screen.replace('Start the task', 'Delete the task'))!.hash, p.hash);
+});
+
 test('Antigravity approval and trust dialogs', () => {
   const approval = ['Run this command?', '  npm test -- --grep search', '> 1. Yes', '  2. Yes, and always allow npm commands in this workspace', '  3. No, cancel'].join('\n');
   const p = parsePrompt('antigravity', approval)!;
@@ -187,4 +225,23 @@ test('a list that scrolls in a short terminal: ↓ is not the highlight, and the
   assert.equal(p.options.length, 2);
   assert.equal(p.options[1].risk, 'wide-access');
   assert.equal(p.partial, true);
+});
+
+test('Codex async composer supports options and text while refusing drafts and incomplete rows', () => {
+  const screen = readFileSync(new URL('./fixtures/screens/codex-async-question.txt', import.meta.url), 'utf8');
+  const p = parsePrompt('codex', screen)!;
+  assert.equal(p.name, 'codex-async-question');
+  assert.equal(p.answerable, true);
+  assert.equal(p.textOption, 2);
+  const draft = screen.replace('› 1.', '  1.').replace('  3. Other', '› 3. start');
+  const d = parsePrompt('codex', draft)!;
+  assert.equal(d.hash, p.hash);
+  assert.equal(d.notes, 'start');
+  assert.equal(d.answerable, false);
+  assert.match(parsePrompt('codex', screen.replace('enter submit', 'ctrl+s submit'))!.reason!, /default Enter/);
+  assert.match(parsePrompt('codex', screen.replace('1. Start', '4. Start'))!.reason!, /missing/);
+  assert.match(parsePrompt('codex', screen.replace('May I start', '1 of 2\nMay I start'))!.reason!, /several questions/);
+  const freeform = '• Queued follow-up inputs\nWhat exact text should I record?\n\n› Type your answer\n\nenter submit   ctrl+] skip   shift+→ main prompt';
+  assert.equal(parsePrompt('codex', freeform)!.kind, 'text');
+  assert.equal(parsePrompt('codex', freeform)!.answerable, true);
 });
