@@ -119,6 +119,103 @@ test('paths, expiry, and controller limits stop a request', async () => {
   permits.deny(network, 'test');
 });
 
+test('a task can request a reviewed Python permit from its own folder or a child folder', () => {
+  const task = freshTask('own-folder');
+  const own = taskDir(task.id), scripts = join(own, 'scripts');
+  mkdirSync(scripts);
+  const script = join(scripts, 'create.py');
+  writeFileSync(script, 'print("test")\n');
+  const p = permits.request(task, 'Review a task script', [{ command: `python3 ${script} create`, cwd: own, network: true }], undefined, 'Changes remote state.');
+  assert.equal(p.state, 'pending');
+  assert.equal(p.approvedBy, undefined);
+  assert.equal(p.steps[0].cwd, realpathSync(own));
+  assert.match(p.steps[0].scriptHash!, /^[a-f0-9]{64}$/);
+  assert.equal(p.steps[0].network, true);
+  assert.equal(p.statedRisk, 'Changes remote state.');
+  assert.equal(p.riskClass, 'high');
+  assert.ok(p.riskFlags.includes('Uses network'));
+  assert.equal(permits.controllerAllowed(p, task, true), false);
+  permits.deny(p, 'test');
+  assert.doesNotThrow(() => permits.validate(task, [{ command: 'python3 create.py', cwd: scripts }]));
+  assert.doesNotThrow(() => permits.validate({ ...task, cwd: own }, [{ command: 'python3 scripts/create.py' }]));
+});
+
+test('the global task directory and its ancestors cannot be permit working directories', () => {
+  const task = freshTask('task-root');
+  for (const cwd of [join(root, 'vault', 'tasks'), join(root, 'vault'), root]) {
+    assert.throws(() => permits.validate(task, [{ command: 'pwd', cwd }]), /protected Taskboard files/);
+  }
+});
+
+test('another task folder stays protected through cwd, arguments, settings, and symlinks', () => {
+  const task = freshTask('task-isolation'), other = freshTask('task-isolation-other');
+  const own = taskDir(task.id), otherFolder = taskDir(other.id);
+  mkdirSync(join(otherFolder, 'scripts'));
+  writeFileSync(join(otherFolder, 'scripts', 'other.py'), 'print("other")\n');
+  const alias = join(own, 'other');
+  symlinkSync(otherFolder, alias);
+  for (const cwd of [otherFolder, join(otherFolder, 'scripts'), alias]) {
+    assert.throws(() => permits.validate(task, [{ command: 'pwd', cwd }]), /protected Taskboard files/);
+  }
+  for (const command of [`cat ${otherFolder}/log.md`, 'cat ../task-isolation-other/log.md', 'python3 other/scripts/other.py', `cat --file=${alias}/new-file`]) {
+    assert.throws(() => permits.validate(task, [{ command, cwd: own }]), /protected Taskboard files/);
+  }
+  assert.throws(() => permits.validate(task, [{ command: 'pwd', cwd: own, env: { GH_CONFIG_DIR: alias } }]), /protected Taskboard files/);
+});
+
+test('the installation and Taskboard control files stay protected from an allowed task folder', () => {
+  const task = freshTask('task-controls'), own = taskDir(task.id), installation = join(root, 'tbdir');
+  symlinkSync(installation, join(own, 'installation'));
+  assert.throws(() => permits.validate(task, [{ command: 'pwd', cwd: installation }]), /protected Taskboard files/);
+  for (const command of ['cat installation/token', `cat ${join(root, 'vault', 'tasks', task.id + '.md')}`, 'cat pending-prompt.txt', 'rm procs.json', 'cat --file=message-queue.json', 'cat queued-messages/next.txt']) {
+    assert.throws(() => permits.validate(task, [{ command, cwd: own }]), /protected Taskboard files/);
+  }
+  mkdirSync(join(own, 'queued-messages'));
+  assert.throws(() => permits.validate(task, [{ command: 'pwd', cwd: join(own, 'queued-messages') }]), /protected Taskboard files/);
+  assert.throws(() => permits.validate(task, [{ command: 'pwd', cwd: own, env: { GH_CONFIG_DIR: join(own, 'ask.json') } }]), /protected Taskboard files/);
+  const controlTarget = join(task.cwd, 'control-target.json');
+  writeFileSync(controlTarget, '{}');
+  symlinkSync(controlTarget, join(own, 'procs.json'));
+  assert.throws(() => permits.validate(task, [{ command: 'cat procs.json', cwd: own }]), /protected Taskboard files/);
+});
+
+test('an own-folder permit still rejects a changed script before execution', async () => {
+  const task = freshTask('own-folder-hash'), own = taskDir(task.id), script = join(own, 'hash.py');
+  writeFileSync(script, 'print("first")\n');
+  const p = permits.request(task, 'Review script hash', [{ command: 'python3 hash.py', cwd: own }]);
+  writeFileSync(script, 'print("changed")\n');
+  let ran = false;
+  await permits.run(p, task, 'user', '', '', async () => { ran = true; return { code: 0, signal: null, output: '' }; });
+  assert.equal(ran, false);
+  assert.equal(p.state, 'failed');
+  assert.match(p.error!, /approved steps changed/);
+});
+
+test('a task folder symlink cannot borrow another task folder', () => {
+  const task = freshTask('folder-alias'), other = freshTask('folder-alias-other');
+  rmSync(taskDir(task.id), { recursive: true });
+  symlinkSync(taskDir(other.id), taskDir(task.id));
+  assert.throws(() => permits.validate(task, [{ command: 'pwd', cwd: taskDir(task.id) }]), /protected Taskboard files/);
+});
+
+test('extra permit folders cannot grant access to the global task directory or any task folder', () => {
+  const task = freshTask('extra-task-folder');
+  for (const folder of [join(root, 'vault', 'tasks'), taskDir(task.id)]) {
+    assert.throws(() => machine.update({ permitFolders: [folder] }), /extra folder cannot include Taskboard files/);
+  }
+});
+
+test('a supervised own-folder script still waits for dashboard approval', async () => {
+  const task = freshTask('supervised-own-folder'), own = taskDir(task.id);
+  writeFileSync(join(own, 'activate.py'), 'print("test")\n');
+  const p = permits.requestSupervised(task, 'activation', 'Review activation', 'python3 activate.py', own, true, 'Changes remote state.');
+  assert.equal(p.state, 'pending');
+  assert.equal(p.riskClass, 'high');
+  assert.match(p.steps[0].scriptHash!, /^[a-f0-9]{64}$/);
+  await assert.rejects(permits.runSupervised(p, task, (async () => { throw new Error('started'); }) as any), /not approved/);
+  permits.deny(p, 'test');
+});
+
 test('the guard blocks a server process command and cancels later steps', async () => {
   const task = freshTask('guard');
   writeFileSync(join(root, 'tbdir', 'server.pid'), JSON.stringify({ pid: 123456 }));
