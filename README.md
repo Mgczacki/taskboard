@@ -315,6 +315,11 @@ A move between windows never changes a task's groups. A new task goes after the 
   High risk commands require an explicit user message and the configured controller policy.
   Protected actions retain their existing approval requirements.
   A permit cannot grant access to another task's worktree.
+  A reviewed permit can use the requesting task's folder under `AgentVault/tasks` as its working directory.
+  Child folders also qualify. Taskboard resolves symlinks before it checks access.
+  The global task directory and other task folders remain protected.
+  The Taskboard installation and task control files remain protected.
+  This folder access also applies to `tb permit run-request`. The usual approval checks still apply.
 - **Approved task run:** `tb permit run-request <name> --reason "text" --risk "text" --command "python3 /absolute/script.py" --cwd /absolute/folder --network`
   asks the user to start one script. The card shows the command, script SHA-256 hash, folder, network flag, task owner,
   and risk. Taskboard checks these facts again after approval. It starts the script as a task process without the short

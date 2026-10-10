@@ -114,7 +114,14 @@ const records = new Map<string, Permit>();
 const listeners = new Set<(p: Permit) => void>();
 const now = () => new Date().toISOString();
 const inside = (root: string, path: string) => path === root || (!relative(root, path).startsWith('..' + sep) && relative(root, path) !== '..' && !isAbsolute(relative(root, path)));
-const unsafeRoot = (root: string) => [TB_DIR, TASKS_DIR].some(protectedPath => inside(root, realpathSync(protectedPath)) || inside(realpathSync(protectedPath), root));
+const taskControlFiles = ['pending-prompt.txt', 'message-queue.json', 'queued-messages', 'ask.json', 'answer-history.json', 'procs.json', 'workspace-stage.json'];
+function unsafeRoot(root: string, ownTaskFolder?: string): boolean {
+  const installation = realpathSync(TB_DIR), tasks = realpathSync(TASKS_DIR);
+  if (inside(root, installation) || inside(installation, root) || inside(root, tasks)) return true;
+  if (ownTaskFolder && taskControlFiles.some(name => inside(realTarget(join(ownTaskFolder, name)), root))) return true;
+  if (!inside(tasks, root)) return false;
+  return !ownTaskFolder || !inside(ownTaskFolder, root);
+}
 const file = (id: string) => join(DIR, id + '.json');
 const save = (p: Permit) => {
   mkdirSync(DIR, { recursive: true });
@@ -242,6 +249,13 @@ function realTarget(path: string): string {
   const parent = dirname(path);
   return resolve(realTarget(parent), path.slice(parent.length + (parent === '/' ? 0 : 1)));
 }
+function checkTaskboardAccess(argv: string[], cwd: string, ownTaskFolder: string) {
+  for (const arg of argv) {
+    const value = arg.startsWith('-') && arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : arg;
+    if (value.startsWith('-') || value.includes('://') || !value) continue;
+    if (unsafeRoot(realTarget(resolve(cwd, value)), ownTaskFolder)) throw new Error('The command accesses protected Taskboard files.');
+  }
+}
 function checkWorktreeAccess(argv: string[], cwd: string, others: string[], task?: Task) {
   const overlaps = (path: string) => others.some(other => inside(other, path));
   const conflict = others.find(other => inside(cwd, other) || inside(other, cwd));
@@ -264,8 +278,11 @@ function checkWorktreeAccess(argv: string[], cwd: string, others: string[], task
 export function validate(task: Task, inputs: StepInput[]): { steps: PermitStep[]; riskFlags: string[] } {
   if (!Array.isArray(inputs) || inputs.length < 1 || inputs.length > 8) throw new Error('Give one through eight steps.');
   if (task.role === 'controller') throw new Error('The controller cannot request a permit for itself.');
-  const roots = [task.cwd, join(VAULT, 'tasks', task.id), ...worktreeScopes(task).map(s => s.path), ...machine.get().permitFolders].filter(existsSync).map(p => realpathSync(p));
-  if (unsafeRoot(realpathSync(task.cwd))) throw new Error('The task folder contains protected Taskboard files.');
+  const ownTaskFolder = join(realpathSync(TASKS_DIR), task.id);
+  // A task folder symlink must not grant access to another task or to the installation.
+  if (realpathSync(store.taskDir(task.id)) !== ownTaskFolder) throw new Error('The task folder contains protected Taskboard files.');
+  const roots = [task.cwd, ownTaskFolder, ...worktreeScopes(task).map(s => s.path), ...machine.get().permitFolders].filter(existsSync).map(p => realpathSync(p));
+  if (unsafeRoot(realpathSync(task.cwd), ownTaskFolder)) throw new Error('The task folder contains protected Taskboard files.');
   if (machine.get().permitFolders.some(p => !existsSync(p) || unsafeRoot(realpathSync(p)))) throw new Error('An extra folder contains protected Taskboard files.');
   const otherWorktrees = taskWorktrees().filter(w => w.task.id !== task.id && existsSync(w.path)).map(w => w.path);
   const steps = inputs.map(input => {
@@ -275,13 +292,14 @@ export function validate(task: Task, inputs: StepInput[]): { steps: PermitStep[]
     const requested = input.cwd || task.cwd;
     if (!isAbsolute(requested)) throw new Error('A working directory must be absolute.');
     const cwd = realpathSync(requested);
-    if (unsafeRoot(cwd)) throw new Error('The working directory contains protected Taskboard files.');
+    if (unsafeRoot(cwd, ownTaskFolder)) throw new Error('The working directory contains protected Taskboard files.');
+    checkTaskboardAccess(argv, cwd, ownTaskFolder);
     checkWorktreeAccess(argv, cwd, otherWorktrees, task);
     const envPaths: Record<string, string> = {};
     for (const [name, value] of Object.entries(settings.env || {})) {
       if (!pathSettings.has(name)) continue;
       const path = realTarget(value);
-      if (unsafeRoot(path)) throw new Error('An environment path overlaps protected Taskboard files.');
+      if (unsafeRoot(path, ownTaskFolder)) throw new Error('An environment path overlaps protected Taskboard files.');
       if (otherWorktrees.some(other => path !== other && inside(path, other))) throw new Error('An environment path contains another task worktree.');
       checkWorktreeAccess([path], cwd, otherWorktrees, task);
       envPaths[name] = path;
