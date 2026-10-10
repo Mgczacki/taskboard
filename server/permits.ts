@@ -190,7 +190,9 @@ function hardRule(argv: string[], task?: Task) {
       : 'Use the task Git commands for changes to Git refs.');
   if (/\bgit\s+push\b|\bgh\s+(repo|pr|api)\b/.test(text)) throw new Error(/\bgh\s+pr\s+create\b/.test(text)
     ? 'A GitHub write needs a separate user decision. To open a pull request from your branch, run tb git pr-request.'
-    : 'A GitHub write needs a separate user decision.');
+    : /\bgh\s+pr\s+merge\b/.test(text)
+      ? 'A GitHub write needs a separate user decision. To merge a pull request at a reviewed head, run tb git pr-merge-request.'
+      : 'A GitHub write needs a separate user decision.');
   if (/\b(pnpm|npm|yarn)\b.*\b(release|rollback)\b|scripts\/release\.mjs|scripts\/rollback\.mjs/.test(text)) throw new Error('A release or rollback needs its own rule.');
   if (/scripts\/restart\.mjs/.test(text)) throw new Error('A restart of Taskboard needs the user.');
   if (/\b(pkill|killall|launchctl)\b/.test(text)) throw new Error('This process command is outside permit scope.');

@@ -33,9 +33,9 @@ import { isStaleMerge, REFRESH_LABEL, STALE_CHIP } from '../staleCard';
 type Row = { id: string; at: string; taskId?: string; agent?: Agent; title: string; question: string; kind: string; risky?: boolean; screen?: boolean; late?: boolean; item?: PendingItem; approval?: Approval; task?: Task; done?: boolean; dismissal?: Dismissal; queued?: { t: Task; q: QueuedMessage } };
 type View = 'all' | 'questions' | 'messages' | 'permits' | 'git' | 'answered' | 'dismissed';
 const VIEWS: [View, string][] = [['all', 'All'], ['questions', 'Agent questions'], ['messages', 'Messages'], ['permits', 'Permits'], ['git', 'Push and release'], ['answered', 'Answered'], ['dismissed', 'Dismissed']];
-const GIT = ['git-push', 'git-merge', 'github-pr', 'release', 'restart'];
+const GIT = ['git-push', 'git-merge', 'github-pr', 'github-pr-merge', 'release', 'restart'];
 // the kind chip of a decided approval card in the Answered view
-const KIND_OF_ACTION: Record<string, string> = { 'tool-refusal': 'Refused command', permit: 'Permit', external: 'External action', plan: 'Plan', 'git-push': 'Push', 'git-merge': 'Merge', 'github-pr': 'Pull request', release: 'Release', restart: 'Restart', scope: 'Scope', new: 'New task', send: 'Message', 'mail-in': 'Message', 'mail-out': 'Message' };
+const KIND_OF_ACTION: Record<string, string> = { 'tool-refusal': 'Refused command', permit: 'Permit', external: 'External action', plan: 'Plan', 'git-push': 'Push', 'git-merge': 'Merge', 'github-pr': 'Pull request', 'github-pr-merge': 'Pull request merge', release: 'Release', restart: 'Restart', scope: 'Scope', new: 'New task', send: 'Message', 'mail-in': 'Message', 'mail-out': 'Message' };
 const minutesSince = (iso: string) => Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 60000));
 
 // quiet: the tasks whose waiting item the user dismissed (dismiss.ts quietTaskIds). They get no task row.

@@ -58,6 +58,7 @@ import * as taskRepair from './task-repair.ts';
 import * as taskMergeBase from './task-merge-base.ts';
 import * as push from './push.ts';
 import * as pullRequest from './pull-request.ts';
+import * as prMerge from './pr-merge.ts';
 import * as restart from './restart.ts';
 import * as permits from './permits.ts';
 import * as taskProcs from './task-procs.ts';
@@ -138,6 +139,10 @@ for (const p of push.allPushes()) if (p.state === 'pending' && p.approvalId) {
 for (const r of pullRequest.all()) if (r.state === 'pending' && r.approvalId) {
   const card = approvals.get(r.approvalId);
   if (card?.state !== 'pending') pullRequest.finish(r, card?.state === 'unknown' ? 'unknown' : 'expired', card?.result || 'The pull request card expired after Taskboard restarted.');
+}
+for (const r of prMerge.all()) if (r.state === 'pending' && r.approvalId) {
+  const card = approvals.get(r.approvalId);
+  if (card?.state !== 'pending') prMerge.finish(r, card?.state === 'unknown' ? 'unknown' : 'expired', card?.result || 'The pull request merge card expired after Taskboard restarted.');
 }
 const permitNotices = new Set<string>();
 permits.onChange(p => {
@@ -584,6 +589,7 @@ app.post('/api/approvals/:id/:decision', async (req, res, next) => {
     return res.status(403).json({ error: 'Only the user decides message cards on the dashboard.' });
   // a task or the controller cannot decide a pull request card: tb sends the token and x-tb-actor, the dashboard sends neither
   if (current?.action === 'github-pr' && !fromDashboard(req)) return res.status(403).json({ error: 'Only the user decides a pull request card, on the dashboard.' });
+  if (current?.action === 'github-pr-merge' && !fromDashboard(req)) return res.status(403).json({ error: 'Only the user decides a pull request merge card, on the dashboard.' });
   if (current?.action === 'git-push' || (req.params.decision === 'approve' && ['permit', 'tool-refusal'].includes(current?.action || '')))
     return res.status(403).json({ error: 'Use the dedicated decision on the dashboard.' });
   // a task cannot decide its own scope request: tb sends the token and x-tb-actor, the dashboard sends neither
@@ -1157,6 +1163,48 @@ app.post('/api/git/pr-request', async (req, res) => {
 });
 app.get('/api/git/pull-requests/:id', (req, res) => {
   const r = pullRequest.get(req.params.id);
+  if (!r || (req.get('x-tb-actor') && !['controller', r.taskId].includes(req.get('x-tb-actor')!))) return res.status(404).end();
+  res.json(r);
+});
+// tb git pr-merge-request: one card for one GitHub pull request at one exact head commit (server/pr-merge.ts). A worker
+// or a group manager asks, and only the user decides on the dashboard. The pull request does not need to come from the
+// task branch. The card result, and the notice in the task inbox, hold the merge, the queue entry or the exact failure.
+function prMergeNotice(task: store.Task, r: prMerge.PrMergeRecord) {
+  const text = [`# Pull request merge request ${r.id}`, '', `Time: ${r.at}`, `Task: #${task.num}`, `Repository: ${r.repository}`, `Pull request: #${r.number} ${r.url}`,
+    `Head: ${r.head} at ${r.headCommit}`, `Base: ${r.base}`, `Merge method: ${r.method || 'set by the merge queue'}`, `Merge queue required: ${r.queue ? 'Yes' : 'No'}`,
+    `Result: ${r.state}`, ...(r.mergeCommit ? [`Merge commit: ${r.mergeCommit}`] : []), '', r.result || 'Waiting for a decision.'].join('\n');
+  try { docs.uploadSystem(task.id, `pr-merge-${r.id}.md`, text + '\n'); } catch (e) { console.error('could not send pull request merge result', e); }
+}
+app.post('/api/git/pr-merge-request', async (req, res) => {
+  const actorTask = store.get(req.get('x-tb-actor') || '');
+  if (!actorTask || actorTask.role === 'controller') return res.status(403).json({ error: 'A task must request the merge.' });
+  try {
+    const state = await prMerge.inspectMerge(actorTask, req.body || {});
+    const id = randomUUID();
+    const summary = `merge pull request #${state.number} into ${state.base} in ${state.repository}`;
+    const previous = approvals.pendingFor(actorTask.id).find(a => a.action === 'github-pr-merge' && (a.target || a.summary) === summary);
+    let r!: prMerge.PrMergeRecord;
+    const approval = approvals.request({ actor: actorTask.id, action: 'github-pr-merge', summary, detail: prMerge.cardDetail(state, actorTask.num), payload: { prMergeId: id, state } }, async () => {
+      try {
+        const done = await prMerge.mergePullRequest(actorTask, state);
+        prMerge.finish(r, done.state, done.output, done.mergeCommit); prMergeNotice(actorTask, r);
+        return `Pull request merge ${id}: ${done.output}`;
+      } catch (e) { prMerge.finish(r, 'failed', e instanceof Error ? e.message : String(e)); prMergeNotice(actorTask, r); throw e; }
+    }, { onDeny: () => { prMerge.finish(r, 'denied', 'Denied by the user.'); prMergeNotice(actorTask, r); },
+      onReopen: () => { if (prMerge.reopen(r)) prMergeNotice(actorTask, r); },
+      check: () => prMerge.changed(actorTask, state) });
+    r = prMerge.record(state, id, approval.id);
+    if (previous) {
+      const old = prMerge.all().find(p => p.approvalId === previous.id && p.id !== id && p.state === 'pending');
+      if (old) prMerge.finish(old, 'expired', `Card ${approval.id} now covers the new values.`);
+    }
+    prMergeNotice(actorTask, r);
+    store.update(actorTask.id, { status: 'needs-you', ask: `Approve the merge of ${state.repository}#${state.number}`, statusSource: `Pull request merge request ${id}: pending.` });
+    res.status(202).json({ prMerge: r, approval });
+  } catch (e) { fail(res, e); }
+});
+app.get('/api/git/pr-merges/:id', (req, res) => {
+  const r = prMerge.get(req.params.id);
   if (!r || (req.get('x-tb-actor') && !['controller', r.taskId].includes(req.get('x-tb-actor')!))) return res.status(404).end();
   res.json(r);
 });
@@ -2595,13 +2643,15 @@ const lastTaskView = new Map<string, string>();
 function closeCardsOfArchived(t: store.Task) {
   const why = archivedResult(t.num);
   for (const a of cardsToCloseOnArchive(approvals.pendingFor(t.id))) {
-    const payload = a.payload as { permitId?: string; pushId?: string; pullRequestId?: string } | undefined;
+    const payload = a.payload as { permitId?: string; pushId?: string; pullRequestId?: string; prMergeId?: string } | undefined;
     const p = a.action === 'permit' ? permits.get(payload?.permitId || '') : undefined;
     if (p) permits.cancel(p, why);
     const record = a.action === 'git-push' ? push.allPushes().find(x => x.id === payload?.pushId && x.state === 'pending') : undefined;
     if (record) push.finishPush(record, 'expired', why);
     const pr = a.action === 'github-pr' ? pullRequest.get(payload?.pullRequestId || '') : undefined;
     if (pr?.state === 'pending') pullRequest.finish(pr, 'expired', why);
+    const merge = a.action === 'github-pr-merge' ? prMerge.get(payload?.prMergeId || '') : undefined;
+    if (merge?.state === 'pending') prMerge.finish(merge, 'expired', why);
     approvals.close(a.id, 'expired', why);
   }
 }
