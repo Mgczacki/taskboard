@@ -28,6 +28,7 @@ import { TransferPanel } from './TransferPanel';
 import { BrowserView } from './TaskBrowser';
 import { openBrowserSplit } from '../browserSplit';
 import { ProcList } from './TaskProcs';
+import { UrgentBanner, UrgentButton } from './UrgentMode';
 import { TaskFileText } from './TaskFileText';
 import { RuntimeButton } from './TaskRuntime';
 import type { PanelTab } from '../panelShare';
@@ -205,6 +206,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
         {isCtl && glassOpen && <div className="glass-pop"><GlassControls g={glass} r={readable} /></div>}
         {!collapsed && <NoticeStrip list={notices} ctx={{ t, pending, act, toast, autoMessage, clearError: () => setErr(''), clearDrop: () => setDropMsg(''),
           moveAccount: isCtl ? undefined : () => { setMoveError(''); setMoveOpen(true); }, resumeAnyway: () => { setErr(''); act(api.resume(t.id, true)); } }} />}
+        <UrgentBanner t={t} act={act} />
         <div id={infoId} className="dr-info" hidden={collapsed}>
         <div className="sub">OS computer use: {t.computerUse === true ? (isCtl ? 'On in Controller settings' : 'Allowed at launch') : 'Off'}. Task browser access is separate.</div>
         {isCtl && <div className="banner intro">The controller is {t.agent === 'antigravity' ? 'an' : 'a'} {AGENT_NAME[t.agent]} session in <code>~/AgentVault/controller</code> (choose its account and agent on the Accounts page).{t.remoteUrl && <> Remote Control is on: <a href={t.remoteUrl} target="_blank" rel="noreferrer">open it on claude.ai or the Claude app</a>.</>} It manages agents with the <code>tb</code> command: reading and organising run without asking; starting agents, typing into them and archiving wait for your approval here. Try: “what needs me?” or “split X into three parallel tasks”.</div>}
@@ -214,6 +216,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
           {t.status === 'archived' && <button className="btn" onClick={() => act(api.setStatus(t.id, 'idle'))} title="Take it out of the archive; open it to resume the conversation">Restore</button>}
           {isCtl && !t.newSessionWhenDone && <button className="btn" onClick={() => setConfirmNew(o => !o)} title="End this conversation and start the controller in a new one, with the current instructions and tools">New session…</button>}
           <ManagerRoleButton t={t} variant="button" toast={toast} />
+          <UrgentButton t={t} act={act} />
           <button ref={moreBtn} className="btn" aria-haspopup="true" aria-expanded={moreOpen} onClick={() => setMoreOpen(o => !o)} title="More actions: move, copy the tmux command, show on canvas, set aside, end, remove">⋯ More</button>
           {moreOpen && <PopMenu anchor={moreBtn.current} close={() => setMoreOpen(false)} className="dr-more" align="left" label={`More actions for #${t.num}`}>
             {moreItems.map(m => <button key={m.label} className={`mi ${m.danger ? 'danger' : ''}`} title={m.title} onClick={() => { setMoreOpen(false); void m.run(); }}>{m.label}</button>)}

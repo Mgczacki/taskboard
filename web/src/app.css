@@ -1246,3 +1246,9 @@ table.procs tr.proc-group td { padding-top: 10px; }
 .dt-actions { display: flex; align-items: center; gap: 6px; }
 .dt-side .ask-list { min-height: 0; }
 .document-window-md { flex: 1; min-width: 0; overflow: auto; display: flex; }
+
+/* urgent mode (components/UrgentMode.tsx): no Taskboard restrictions on the task */
+.banner.urgent { border-left-color: var(--st-stopped); border-color: var(--st-stopped); }
+.urgent-badge { font-size: 10px; font-weight: 700; letter-spacing: .04em; color: var(--bg); background: var(--st-stopped); border-radius: 4px; padding: 1px 5px; }
+.urgent-form { display: inline-flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+.urgent-form input { min-width: 180px; }

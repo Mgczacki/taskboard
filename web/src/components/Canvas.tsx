@@ -30,6 +30,7 @@ import { groupManager } from '../managerBoard';
 import { loadAccounts, type Account } from './Accounts';
 import { CanvasAccountChip, CanvasFailureChip } from './CanvasAccountChip';
 import { useScrollPosition } from '../scrollPosition';
+import { UrgentBadge } from './UrgentMode';
 
 type Layout = 'columns' | 'grid' | 'rows';
 const MINW = 640;
@@ -628,7 +629,7 @@ const CanvasWin = memo(function CanvasWin({ t, accounts, i, act, linkTasks, cls,
       <div className="wh" onPointerDown={e => a().startDrag(e, t.id)} onDoubleClick={() => a().toggleMax(t.id)}>
         <span className="grip" title={`Drag to move this window between two others, or onto a group tab. Move it one place: ${keysText('windowEarlier')} / ${keysText('windowLater')}`}>⠿</span><span className="ix">{i + 1}</span><Dot s={t.status} /><CanvasLinkTitle t={t} tasks={linkTasks} onOpen={() => a().openPanel(t.id)} onGo={id => a().goTask(id)} /><ManagerBadge id={t.id} />
         <PendingMarker taskId={t.id} small><WaitLabel taskId={t.id}><span className={`st st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span></WaitLabel></PendingMarker>
-        <ErrorMark t={t} /><span className="canvas-agent" title={AGENT_NAME[t.agent]} aria-label={AGENT_NAME[t.agent]} tabIndex={0}>{t.agent === 'claude' ? 'CC' : t.agent === 'codex' ? 'CX' : 'AG'}</span><CanvasAccountChip task={t} accounts={accounts} /><RuntimeButton t={t} small onOpen={tab => a().openPanel(t.id, tab)} />
+        <ErrorMark t={t} /><UrgentBadge t={t} /><span className="canvas-agent" title={AGENT_NAME[t.agent]} aria-label={AGENT_NAME[t.agent]} tabIndex={0}>{t.agent === 'claude' ? 'CC' : t.agent === 'codex' ? 'CX' : 'AG'}</span><CanvasAccountChip task={t} accounts={accounts} /><RuntimeButton t={t} small onOpen={tab => a().openPanel(t.id, tab)} />
         {ending ? <><span className="sel-warn">End & archive?</span><button className="b" onClick={() => a().endTask(t)}>Yes, end it</button><button className="b" onClick={() => a().setEnding(null)}>Cancel</button></> : <>
         {(t.status === 'suspended' || t.openElsewhere) && <button className="b" onClick={() => a().openPanel(t.id)}>{t.openElsewhere ? 'Options…' : 'Resume…'}</button>}
         {direct.map(x => <button key={x.k} className={`b direct ${x.on ? 'on' : ''}`} title={x.title} aria-label={x.aria || x.text} onPointerDown={e => e.stopPropagation()} onClick={x.fn}>{x.k === 'end' ? 'End & archive' : x.icon}</button>)}

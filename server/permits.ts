@@ -11,6 +11,7 @@ import { scopeHint } from './task-git.ts';
 import { taskWorktrees, worktreeScopes } from './scopes.ts';
 import * as procs from './task-procs.ts';
 import * as approvals from './approvals.ts';
+import * as urgent from './urgent.ts';
 
 export type StepState = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 export type PermitState = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'denied' | 'expired' | 'unknown';
@@ -315,9 +316,12 @@ export function request(task: Task, reason: string, inputs: StepInput[], refusal
   if (typeof reason !== 'string' || !reason.trim() || reason.length > 1000) throw new Error('Give a reason under 1000 characters.');
   if (typeof statedRisk !== 'string' || statedRisk.length > 500) throw new Error('Keep the risk under 500 characters.');
   const recent = all().filter(p => p.taskId === task.id);
-  if (recent.some(p => ['pending', 'running'].includes(p.state))) throw new Error('This task already has a pending permit.');
-  const limitBlock = requestLimitBlock(recent.map(p => p.createdAt), machine.get().permitRequestLimits);
-  if (limitBlock) throw new Error(limitBlock);
+  // urgent mode (server/urgent.ts) turns off both limits
+  if (!urgent.active(task.id)) {
+    if (recent.some(p => ['pending', 'running'].includes(p.state))) throw new Error('This task already has a pending permit.');
+    const limitBlock = requestLimitBlock(recent.map(p => p.createdAt), machine.get().permitRequestLimits);
+    if (limitBlock) throw new Error(limitBlock);
+  }
   const { steps, riskFlags } = validate(task, inputs);
   const id = randomUUID();
   const p: Permit = { id, taskId: task.id, taskNum: task.num, agent: task.agent, reason: redactOutput(reason.trim()), refusalId,
@@ -343,7 +347,7 @@ export function requestSupervised(task: Task, name: string, reason: string, comm
 export async function runSupervised(p: Permit, task: Task, starter: typeof procs.start = procs.start, env: Record<string, string> = { PATH: process.env.PATH || '/usr/bin:/bin' }): Promise<Permit> {
   if (!p.supervised || p.state !== 'pending' || expire(p)) return p;
   const card = p.approvalId ? approvals.get(p.approvalId) : undefined;
-  if (card?.state !== 'running' || card.decidedBy?.by !== 'user' || card.actor !== task.id) throw new Error('The user has not approved this run.');
+  if (card?.state !== 'running' || (card.decidedBy?.by !== 'user' && card.decidedBy?.by !== 'urgent') || card.actor !== task.id) throw new Error('The user has not approved this run.');
   if (p.taskId !== task.id || task.status === 'archived') throw new Error('The task cannot start this run.');
   const step = p.steps[0];
   try {

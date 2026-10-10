@@ -15,6 +15,7 @@ import * as accounts from './accounts.ts';
 import * as machine from './machine.ts';
 import { isProtectedBranch } from './push.ts';
 import * as store from './store.ts';
+import * as urgent from './urgent.ts';
 import type { Scope, Task } from './store.ts';
 import { rebasing, recordBase, resolveBase, scopeHint } from './task-git.ts';
 
@@ -28,7 +29,7 @@ const slug = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(
 function checkScopeLimit(t: Task): void {
   const limit = machine.get().scopeLimit;
   const count = (t.scopes || []).length;
-  if (limit.enabled && count >= limit.max)
+  if (limit.enabled && count >= limit.max && !urgent.active(t.id)) // urgent mode (server/urgent.ts) has no scope limit
     throw new Error(`This task holds ${count} attached scopes. The configured maximum is ${limit.max}. Remove a scope or change Settings > Approvals > Scope requests.`);
 }
 
