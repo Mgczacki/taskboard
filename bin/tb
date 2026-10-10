@@ -48,6 +48,7 @@ async function call(method, path, body) {
   if (r.status === 202 && data.push) return data;
   if (r.status === 202 && data.pullRequest) return data;
   if (r.status === 202 && data.prMerge) return data;
+  if (r.status === 202 && data.prReady) return data;
   // 202: the action waits for the user's approval on the Taskboard dashboard
   if (r.status === 202 && data.approval) {
     console.log(`Approval pending: card ${data.approval.id}. ${data.approval.summary}`);
@@ -250,7 +251,14 @@ const HELP = `tb — Taskboard command line
                                      review and a blocked merge state. When the base needs a merge queue, Approve adds
                                      the pull request to that queue. Without a queue, give --method when the base
                                      allows more than one. The card shows every value. No administrator merge
-  tb git pr-merge-result ID [--wait]  read the merge result: merged, queued, or the exact failure
+  tb git pr-merge-result ID [--wait]  read the merge result: merged, queued, removed-from-queue, or the exact failure.
+                                     After a queue entry, Taskboard reads the queue until GitHub merges or removes the
+                                     pull request. --wait waits for that final state
+  tb git pr-ready-request --pr NUMBER --head SHA [--repo OWNER/NAME]
+                                     ask to mark one draft pull request ready for review at the exact head SHA. It
+                                     merges nothing. Wait for the checks of the ready pull request, then run
+                                     tb git pr-merge-request
+  tb git pr-ready-result ID [--wait]  read the ready for review result
   tb inbox wait [--timeout seconds]  wait until a file arrives in your inbox (uses TASK_ID; default 3600 s);
                                      prints each file's path and sender; exit 0 = files, 2 = timed out
   tb park|archive <task>             set aside a task or end and archive it
@@ -1057,12 +1065,27 @@ switch (cmd) {
       const result = await call('POST', '/api/git/pr-merge-request', { number, head, repo, method });
       const m = result.prMerge;
       console.log(`Pull request merge request ${m.id}: ${m.state}. ${m.repository}#${m.number} at ${m.headCommit}, ${m.queue ? 'through the merge queue' : `method ${m.method}`}. The user decides card ${result.approval.id} on the dashboard. Read the result with tb git pr-merge-result ${m.id} --wait.`);
+    } else if (rest[0] === 'pr-ready-request') {
+      const number = flag('--pr'); const head = flag('--head'); const repo = flag('--repo');
+      if (!number || !head) { console.error('tb git pr-ready-request: give --pr NUMBER and --head SHA'); process.exit(1); }
+      if (args.length > 2) { console.error(`tb git pr-ready-request: unknown arguments: ${args.slice(2).join(' ')}`); process.exit(1); }
+      const result = await call('POST', '/api/git/pr-ready-request', { number, head, repo });
+      const m = result.prReady;
+      console.log(`Ready for review request ${m.id}: ${m.state}. ${m.repository}#${m.number} at ${m.headCommit}. The user decides card ${result.approval.id} on the dashboard. Read the result with tb git pr-ready-result ${m.id} --wait.`);
+    } else if (rest[0] === 'pr-ready-result') {
+      const id = rest[1]; if (!id) { console.error('tb git pr-ready-result: give an ID'); process.exit(1); }
+      const wait = has('--wait');
+      for (;;) {
+        const result = await call('GET', `/api/git/pr-ready/${encodeURIComponent(id)}`);
+        if (result.state !== 'pending' || !wait) { console.log(JSON.stringify(result, null, 2)); break; }
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
     } else if (rest[0] === 'pr-merge-result') {
       const id = rest[1]; if (!id) { console.error('tb git pr-merge-result: give an ID'); process.exit(1); }
       const wait = has('--wait');
       for (;;) {
         const result = await call('GET', `/api/git/pr-merges/${encodeURIComponent(id)}`);
-        if (result.state !== 'pending' || !wait) { console.log(JSON.stringify(result, null, 2)); break; }
+        if (!['pending', 'queued'].includes(result.state) || !wait) { console.log(JSON.stringify(result, null, 2)); break; }
         await new Promise(resolve => setTimeout(resolve, 2000));
       }
     } else if (rest[0] === 'pr-result') {

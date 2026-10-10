@@ -199,6 +199,8 @@ function hardRule(argv: string[], task?: Task) {
     ? 'A GitHub write needs a separate user decision. To open a pull request from your branch, run tb git pr-request.'
     : /\bgh\s+pr\s+merge\b/.test(text)
       ? 'A GitHub write needs a separate user decision. To merge a pull request at a reviewed head, run tb git pr-merge-request.'
+      : /\bgh\s+pr\s+ready\b/.test(text)
+        ? 'A GitHub write needs a separate user decision. To mark a draft pull request ready for review, run tb git pr-ready-request.'
       : 'A GitHub write needs a separate user decision.');
   if (/\b(pnpm|npm|yarn)\b.*\b(release|rollback)\b|scripts\/release\.mjs|scripts\/rollback\.mjs/.test(text)) throw new Error('A release or rollback needs its own rule.');
   if (/scripts\/restart\.mjs/.test(text)) throw new Error('A restart of Taskboard needs the user.');

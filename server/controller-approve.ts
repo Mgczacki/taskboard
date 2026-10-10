@@ -19,11 +19,11 @@ import type { Approval } from './approvals.ts';
 import { TB_DIR } from './config.ts';
 
 // one switch for each kind in Settings > Controller approvals (machine.ts)
-export type ControllerKind = 'merge' | 'push' | 'forcePush' | 'release' | 'restart' | 'scope' | 'permit' | 'mail';
-export const CONTROLLER_KINDS: ControllerKind[] = ['merge', 'push', 'forcePush', 'release', 'restart', 'scope', 'permit', 'mail'];
+export type ControllerKind = 'merge' | 'push' | 'forcePush' | 'release' | 'restart' | 'scope' | 'permit' | 'mail' | 'prReady';
+export const CONTROLLER_KINDS: ControllerKind[] = ['merge', 'push', 'forcePush', 'release', 'restart', 'scope', 'permit', 'mail', 'prReady'];
 export const KIND_NAME: Record<ControllerKind, string> = {
   merge: 'merge into local master', push: 'push', forcePush: 'force push', release: 'release', restart: 'restart',
-  scope: 'scope request', permit: 'permit', mail: 'message draft',
+  scope: 'scope request', permit: 'permit', mail: 'message draft', prReady: 'mark a draft pull request ready for review',
 };
 export class ApproveError extends Error { constructor(message: string, public status = 403) { super(message); } }
 
@@ -33,6 +33,7 @@ export function kindOf(a: Approval): { kind: ControllerKind } | { userOnly: stri
     case 'git-merge': return { kind: 'merge' };
     case 'git-push': return { kind: (a.payload as { state?: { forcePush?: boolean } })?.state?.forcePush ? 'forcePush' : 'push' };
     case 'github-pr': return { userOnly: 'A pull request card opens a GitHub pull request. Only the user decides it, on the dashboard.' };
+    case 'github-pr-ready': return { kind: 'prReady' };
     case 'github-pr-merge': return { userOnly: 'A pull request merge card merges a GitHub pull request. Only the user decides it, on the dashboard.' };
     case 'release': return { kind: 'release' };
     case 'restart': return { kind: 'restart' };
@@ -85,6 +86,7 @@ const KIND_WORD: Record<ControllerKind, RegExp | null> = {
   scope: /\b(scope|worktree|read access)\b/i, permit: /\b(permit|suggestion|command)s?\b/i,
   // a message draft is named only by its card id or its message id
   mail: null,
+  prReady: /\bready\b/i,
 };
 const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const hasToken = (words: string, token: string) => !!token && new RegExp(`(^|[^A-Za-z0-9_-])#?${escape(token)}($|[^A-Za-z0-9_-])`, 'i').test(words);

@@ -73,6 +73,7 @@ const CONTROLLER_APPROVAL_ROWS: [keyof ControllerApprovals, string, string?][] =
   ['scope', 'Scope requests (worktree and read access)'],
   ['permit', 'Permits', 'Software installs and sign-ins stay with you.'],
   ['mail', 'Message drafts', 'Your message must name the draft by its card or message id.'],
+  ['prReady', 'Mark a draft pull request ready for review', 'This merges nothing. A merge card stays with you.'],
 ];
 
 // Search text for the keyboard shortcuts: the name of every action and of its place.
