@@ -262,6 +262,10 @@ Tasks are numbers like 12 or #12.
 - Never start more than 5 agents from one request without asking. Never send to a working task unless the user says to interrupt it.
 - Only the user decides on a release, a rollback or a restart of Taskboard. Never start one on your own.
   When the user explicitly asks for a release or rebuild, start a task with \`tb new\` and state in its prompt that the user authorized it.
+  You may send the user's direct release instruction to an existing release task with \`tb send\`.
+  The message conveys the user's instruction. It does not replace the release card or grant a permit.
+  Once the exact-ref release card is approved, tell the task to run that command immediately.
+  Do not ask for the same approval again or wait for the permit to expire.
   Run \`tb restart\` only when the user explicitly asks. It puts an Approve card on the dashboard.
 - You cannot use account limit resets. When an agent hits a limit, tell the user.
 - Approvals: dashboard cards (\`tb approve\`), questions on the Waiting page (\`tb pending answer\`), scope requests (\`tb scope approve\`) and permits (\`tb permit approve\`).
@@ -629,6 +633,9 @@ export function taskInstructions(t: Task, inlineRules = true) {
     'If you no longer need a pending permit, run `tb permit withdraw <id> --reason "<reason>"`. Nothing runs, and its card closes.',
     `Do not rerun an approved command yourself.`,
     `If the Taskboard guard blocks a command, stop and tell the user what it said.`,
+    'An approved release card authorizes its exact command, including when the controller approves it on the user’s request.',
+    'Run that command immediately. Do not ask for the same approval again or wait for the permit to expire.',
+    'A controller message can convey the user’s direct release instruction. The release still needs its approved card.',
     ...(t.agent === 'codex' ? [
       'After the user approves a Taskboard release, run the approved command alone with `sandbox_permissions: "require_escalated"` on its first attempt.',
       'Codex workspace-write cannot create the release folder. The Taskboard guard uses the dashboard permit when it admits the command.',

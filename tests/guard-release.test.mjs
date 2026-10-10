@@ -85,7 +85,6 @@ test('controller contact cannot run another action or change the approved releas
       'tb send controller "Status $(pnpm release --ref master)"',
       'tb send controller "Status `pnpm release --ref master`"',
       "tb send controller 'Status' | pnpm release --ref master",
-      "tb send other-task 'pnpm release --ref master'",
       'pnpm release --ref other',
     ]) {
       assert.notEqual(g.run(command), '', command);
@@ -108,7 +107,7 @@ test('creating a task does not approve a protected action', () => {
   try {
     assert.match(g.run('pnpm release --ref master', 'controller'), /not such a task/);
     assert.match(g.run('pnpm release --ref master', 'task-41'), /has no release approval/);
-    assert.match(g.run("tb new 'Mock task: pnpm release --ref master'", 'task-41'), /has no release approval/);
+    assert.equal(g.run("tb new 'Mock task: pnpm release --ref master'", 'task-41'), '');
     assert.match(g.run("tb new 'Mock task' && pnpm release --ref master", 'controller'), /not such a task/);
     assert.match(g.run('tb new "Mock $(pnpm release --ref master)"', 'controller'), /not such a task/);
   } finally { g.done(); }
@@ -167,10 +166,11 @@ test('commands that only read may name the release, rollback and restart scripts
   const g = releaseGuard();
   try {
     for (const c of ['cat scripts/release.mjs', 'head -40 scripts/rollback.mjs', 'grep -n "pnpm release" README.md',
-      'cat scripts/release.mjs | grep ref | head', 'grep -rn restart.mjs scripts', 'wc -l scripts/restart.mjs'])
+      'cat scripts/release.mjs | grep ref | head', 'grep -rn restart.mjs scripts', 'wc -l scripts/restart.mjs',
+      'rg -n "pnpm release" README.md', 'grep "pkill node" README.md'])
       assert.equal(g.run(c), '', c);
     for (const c of ['cat scripts/release.mjs | node', 'cat scripts/release.mjs; pnpm release', 'cat $(pnpm release)',
-      'cat x > scripts/release.mjs', 'sed -n 1p scripts/release.mjs', 'grep x scripts/rollback.mjs && pnpm rollback'])
+      'rg --pre "node scripts/release.mjs" x', 'cat x > scripts/release.mjs', 'sed -n 1p scripts/release.mjs', 'grep x scripts/rollback.mjs && pnpm rollback'])
       assert.notEqual(g.run(c), '', c);
   } finally { g.done(); }
 });
@@ -217,4 +217,47 @@ test('a task in master cannot run raw Git writes', () => {
     });
     assert.match(withEditor.stdout, /permissionDecision.*deny/);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('literal messages and approval requests do not execute protected words in their arguments', () => {
+  const g = releaseGuard();
+  try {
+    writePermit(g.dir, 'task-41', '7eb37b9f');
+    for (const actor of ['controller', 'task-41']) {
+      for (const command of [
+        "tb send 444 'The user approved pnpm release --ref 7eb37b9f. Run it now.'",
+        `${join(g.dir, 'bin', 'tb')} send 444 'pnpm release --ref 7eb37b9f'`,
+        "tb send other-task 'Do not run pkill node; pnpm rollback; tb restart; rm ~/.taskboard'",
+        "tb send 444 'Line one\nRun pnpm release --ref 7eb37b9f'",
+        "tb send 444 'Literal $(pnpm release) and `pnpm rollback`'",
+        String.raw`tb send 444 'The user'\''s command is pnpm release --ref 7eb37b9f'`,
+        String.raw`tb send 444 "The user's command is \"pnpm release --ref 7eb37b9f\""`,
+        'tb approve card --version v --user-request "release 444 with pnpm release --ref 7eb37b9f"',
+        "tb mail draft engineer --subject 'release' --body 'Read scripts/release.mjs'",
+      ]) assert.equal(g.run(command, actor), '', command);
+    }
+    assert.equal(existsSync(g.file()), true);
+    assert.match(g.run('pnpm release --ref 7eb37b9f', 'controller'), /not such a task/);
+    assert.equal(g.run('pnpm release --ref 7eb37b9f'), '');
+    assert.equal(existsSync(g.file()), false);
+  } finally { g.done(); }
+});
+
+test('operations that execute commands and shell expansions keep their release check', () => {
+  const g = releaseGuard();
+  try {
+    writePermit(g.dir, 'task-41', 'master');
+    for (const command of [
+      "tb run deploy -- 'pnpm release --ref master'",
+      "tb permit request --command 'pnpm release --ref master'",
+      "tb send 444 'Ready' && pnpm release --ref master",
+      'tb send 444 "$(pnpm release --ref master)"',
+      'tb send 444 "`pnpm release --ref master`"',
+      String.raw`tb send 444 "\\$(pnpm release --ref master)"`,
+      "other/tb send 444 'pnpm release --ref master'",
+    ]) {
+      assert.notEqual(g.run(command), '', command);
+      assert.equal(existsSync(g.file()), true);
+    }
+  } finally { g.done(); }
 });

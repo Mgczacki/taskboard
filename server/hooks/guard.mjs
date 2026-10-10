@@ -23,16 +23,20 @@ const tbDir = process.env.TASKBOARD_DIR || join(homedir(), '.taskboard');
 // every command runs. The record <tbDir>/urgent/<TASK_ID>.json must name this task. A missing or damaged record is off.
 const urgentFile = /^[A-Za-z0-9_-]+$/.test(process.env.TASK_ID || '') && process.env.TASK_ID !== 'controller' ? join(tbDir, 'urgent', process.env.TASK_ID + '.json') : '';
 if (urgentFile) { try { if (JSON.parse(readFileSync(urgentFile, 'utf8'))?.taskId === process.env.TASK_ID) process.exit(0); } catch { /* urgent mode is off */ } }
-// tb new passes its prompt to a new task. Quoted text and literal words cannot run a second shell command.
-const launch = cmd.trim().match(/^(tb|\/[^\s]+)[ \t]+new(?=[ \t]|$)(.*)$/s);
-const literalArgs = /^(?:[ \t]+(?:'[^'\r\n]*'|"[^"$`\\\r\n]*"|[^\s;&|`$<>(){}'"\\#]+))*[ \t]*$/;
-if (process.env.TASK_ID === 'controller' && launch &&
-    (launch[1] === 'tb' || launch[1] === join(tbDir, 'bin', 'tb')) && literalArgs.test(launch[2])) process.exit(0);
-// A quoted message is data for the controller. Check the whole shell command so that no second action can run.
-// Double quotes cannot contain shell expansion or escapes. Single quotes keep those characters literal.
-const contact = cmd.trim().match(/^(tb|\/\S+)\s+send\s+controller\s+(.+)$/);
-if (contact && (contact[1] === 'tb' || contact[1] === join(tbDir, 'bin', 'tb')) &&
-    (/^'[^'\r\n]+'$/.test(contact[2]) || /^"[^"$`\\\r\n]+"$/.test(contact[2]))) process.exit(0);
+// These tb operations pass literal text to the server. Their arguments do not execute shell commands.
+// Match the whole line. Shell operators outside quotes and expansions inside double quotes still need review.
+const literalWord = /(?:'[^']*'|"(?:[^"$`\\]|\\[^\r\n])*"|\\[^\r\n]|[^\s;&|`$<>(){}'"\\#])+/.source;
+const literalLine = new RegExp(`^(${literalWord})(?:[ \t]+(${literalWord}))*[ \t]*$`);
+const tbText = cmd.trim().match(/^(tb|\/[^\s]+)[ \t]+(send|new|approve|pending|scope|permit|mail)(?=[ \t]|$)([\s\S]*)$/);
+if (tbText && (tbText[1] === 'tb' || tbText[1] === join(tbDir, 'bin', 'tb')) &&
+    literalLine.test(cmd.trim())) {
+  const sub = tbText[3].trim().split(/\s+/, 1)[0];
+  const inert = ['send', 'new', 'approve'].includes(tbText[2]) ||
+    tbText[2] === 'pending' && sub === 'answer' ||
+    ['scope', 'permit'].includes(tbText[2]) && sub === 'approve' ||
+    tbText[2] === 'mail' && ['draft', 'revise', 'submit'].includes(sub);
+  if (inert) process.exit(0);
+}
 let serverPid = '';
 try { serverPid = String(JSON.parse(readFileSync(join(tbDir, 'server.pid'), 'utf8')).pid); } catch { /* not running */ }
 const socket = process.env.TASKBOARD_TMUX_SOCKET || 'taskboard';
@@ -70,7 +74,8 @@ for (const p of parts) {
 }
 // A command that only reads files (cat, grep and similar, also joined with |) may name the release, rollback and restart
 // scripts, so that a task can read them. It has no ; & $ ` ( ) { } < > or newline, so it cannot start another command.
-const readOnly = !/[;&`$<>(){}\n\r]/.test(cmd) && cmd.split('|').every(s => /^\s*(cat|head|tail|grep|egrep|fgrep|wc|nl|ls|stat|file|diff)(\s|$)/.test(s));
+const readOnly = !/--pre(?:[=\s]|$)/.test(cmd) && !/[;&`$<>(){}\n\r]/.test(cmd) && cmd.split('|').every(s => /^\s*(cat|head|tail|grep|egrep|fgrep|rg|wc|nl|ls|stat|file|diff)(\s|$)/.test(s));
+if (readOnly) process.exit(0);
 // The user approves one release for one task on the dashboard (tb release-request). The approval writes the permit
 // release-permits/<task id>.json { taskId, ref, approvedAt, expiresAt } (server/release-permit.ts has the same
 // RELEASE_REF). The guard deletes the permit when it lets the release command run, so one permit allows one command.
