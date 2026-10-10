@@ -200,6 +200,9 @@ const HELP = `tb — Taskboard command line
   tb scope request read --path <folder> --reason "text"   ask the user for read access to one more folder
   tb scope list                      your attached worktrees and folders, and the requests that wait
   tb scope approve ID --user-request "the user's chat message"   controller only
+  tb urgent status [TASK]            urgent mode of a task (your own task when you give none)
+  tb urgent on TASK --reason "text" --user-request "the user's chat message"   controller only: turn off every Taskboard restriction of TASK
+  tb urgent off TASK [--reason "text"]   controller only: the Taskboard restrictions of TASK apply again
   tb git … --worktree <name or path> run a tb git command in an attached worktree. Without it, tb git uses your
                                      own worktree, or the only attached worktree
   tb git merge-request               ask the user to merge your worktree branch into local master. When master or
@@ -816,6 +819,27 @@ switch (cmd) {
     console.log('Approve one card only when the user asks in this chat. Tell the user which card you mean, then run');
     console.log('tb approve <card> --version <v> [--head <commit>] --user-request "<the user\'s exact message>".');
     console.log('Questions and dialogs of tasks are in tb pending list.');
+    break;
+  }
+  case 'urgent': {
+    // Urgent mode (server/urgent.ts). Only the user (dashboard) or the controller turns it on or off; the server refuses
+    // a task, so tb refuses it here first.
+    const action = args[1];
+    if (action === 'on' || action === 'off') {
+      if (process.env.TASK_ID && process.env.TASK_ID !== 'controller') { console.error('tb urgent: only the user or the controller turns urgent mode on or off. A task cannot change it.'); process.exit(1); }
+      const reason = flag('--reason', ''), userRequest = flag('--user-request');
+      const t = await task(args[2]);
+      if (action === 'on' && process.env.TASK_ID === 'controller' && !userRequest) { console.error('tb urgent on TASK --reason "<why>" --user-request "<the user\'s exact chat message, with the word urgent and the task number>"'); process.exit(1); }
+      const r = await call('POST', `/api/tasks/${encodeURIComponent(t.id)}/urgent`, { on: action === 'on', reason, ...(userRequest ? { userRequest } : {}) });
+      console.log(action === 'on' ? `Urgent mode is on for #${t.num}. Taskboard does not restrict it until the user or the controller turns it off.`
+        : r.off ? `Urgent mode is off for #${t.num}. The Taskboard restrictions apply again.` : `Urgent mode was already off for #${t.num}.`);
+      break;
+    }
+    if (action && action !== 'status') { console.error('tb urgent status [TASK] | tb urgent on TASK --reason "<why>" --user-request "<message>" | tb urgent off TASK [--reason "<why>"]'); process.exit(1); }
+    const id = args[2] ? (await task(args[2])).id : process.env.TASK_ID;
+    if (!id) { console.error('tb urgent status TASK'); process.exit(1); }
+    const { urgent } = await call('GET', `/api/tasks/${encodeURIComponent(id)}/urgent`);
+    console.log(urgent ? `Urgent mode is on since ${urgent.startedAt}, turned on by the ${urgent.by}. Reason: ${urgent.reason}` : 'Urgent mode is off.');
     break;
   }
   case 'approve': {

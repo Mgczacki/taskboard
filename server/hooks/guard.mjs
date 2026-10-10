@@ -19,6 +19,10 @@ try { const j = JSON.parse(input || '{}'); cmd = String((agy ? j.toolCall?.args?
 
 // the real server: the one this agent's Taskboard runs (TASKBOARD_DIR is only set for test servers)
 const tbDir = process.env.TASKBOARD_DIR || join(homedir(), '.taskboard');
+// Urgent mode (server/urgent.ts): the user or the controller turned off every Taskboard restriction of this task, so
+// every command runs. The record <tbDir>/urgent/<TASK_ID>.json must name this task. A missing or damaged record is off.
+const urgentFile = /^[A-Za-z0-9_-]+$/.test(process.env.TASK_ID || '') && process.env.TASK_ID !== 'controller' ? join(tbDir, 'urgent', process.env.TASK_ID + '.json') : '';
+if (urgentFile) { try { if (JSON.parse(readFileSync(urgentFile, 'utf8'))?.taskId === process.env.TASK_ID) process.exit(0); } catch { /* urgent mode is off */ } }
 // tb new passes its prompt to a new task. Quoted text and literal words cannot run a second shell command.
 const launch = cmd.trim().match(/^(tb|\/[^\s]+)[ \t]+new(?=[ \t]|$)(.*)$/s);
 const literalArgs = /^(?:[ \t]+(?:'[^'\r\n]*'|"[^"$`\\\r\n]*"|[^\s;&|`$<>(){}'"\\#]+))*[ \t]*$/;
@@ -115,6 +119,10 @@ const release = !readOnly && /\b(pnpm|npm|yarn|bun|npx)\b[^;&|\n]*\srelease\b|\b
 const rollback = !readOnly && /\b(pnpm|npm|yarn|bun|npx)\b[^;&|\n]*\srollback\b|\brollback\.mjs\b/.test(cmd);
 // reasons that are complete without the text about stopping the server
 const ownText = [];
+// Only the server writes the urgent mode records and their audit log. A command that only reads them may run.
+const urgentPaths = [join(tbDir, 'urgent'), join(tbDir, 'urgent-mode.jsonl')];
+if (process.env.TASK_ID && !readOnly && (/\.taskboard\/urgent(\b|-mode)/.test(cmd) || urgentPaths.some(path => cmd.includes(path))))
+  ownText.push(`only the user or the controller turns urgent mode on or off, with Taskboard (the dashboard or \`tb urgent\` in the controller). A task cannot change the urgent mode files. ${STOP}`);
 if (release) { const why = releaseRefusal(process.env.TASK_ID || ''); if (why) ownText.push(why); }
 if (rollback) reasons.push('a Taskboard rollback needs the user to run it');
 // Only the user restarts Taskboard. The controller may run `tb restart`: it only puts an Approve card on the dashboard.

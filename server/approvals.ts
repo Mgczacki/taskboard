@@ -45,11 +45,12 @@ export interface Approval {
   updated?: string;
   notifyMe?: boolean;
 }
-export interface Decider { by: 'user' | 'controller'; userRequest?: string }
+// by 'urgent': the card's task was in urgent mode (server/urgent.ts), so Taskboard approved the card without a decision
+export interface Decider { by: 'user' | 'controller' | 'urgent'; userRequest?: string }
 // Where a decision came from, for the audit. The dashboard sends from, target, shownMs and pointerMs. The server adds
 // the user agent. shownMs: how long the card showed in that place before the click. pointerMs: the time from the
 // pointerdown on the button to the click.
-export interface DecisionOrigin { from: 'stack' | 'waiting' | 'permits' | 'manager-board' | 'controller' | 'unknown'; target?: string; shownMs?: number; pointerMs?: number; userAgent?: string }
+export interface DecisionOrigin { from: 'stack' | 'waiting' | 'permits' | 'manager-board' | 'controller' | 'urgent' | 'unknown'; target?: string; shownMs?: number; pointerMs?: number; userAgent?: string }
 const FROM = ['stack', 'waiting', 'permits', 'manager-board', 'controller'];
 // Only the known fields, with a limited size: the body comes from the browser.
 export function cleanOrigin(o: unknown, userAgent?: string): DecisionOrigin {
@@ -124,8 +125,14 @@ export function request(a: Omit<Approval, 'id' | 'created' | 'state' | 'returnab
   if (more.onDeny) deniers.set(x.id, more.onDeny);
   if (more.check) checkers.set(x.id, more.check);
   if (more.onReopen) reopeners.set(x.id, more.onReopen);
-  emit(); return x;
+  emit();
+  // urgent mode: the card is approved after the caller has finished its own changes (for example the task status)
+  if (autoApprover?.(x)) setImmediate(() => { void decide(x.id, true, { by: 'urgent' }, { from: 'urgent', target: 'approve' }).catch(e => console.error('urgent approval', e)); });
+  return x;
 }
+// server/urgent.ts autoApprove: true approves a new card at once. index.ts sets it.
+let autoApprover: ((x: Approval) => boolean) | undefined;
+export const setAutoApprover = (fn: (x: Approval) => boolean) => { autoApprover = fn; };
 const forget = (id: string) => { runners.delete(id); returners.delete(id); deniers.delete(id); checkers.delete(id); reopeners.delete(id); };
 // Keep the actions of a denied card for UNDO_MS, then forget them.
 function hold(id: string) {

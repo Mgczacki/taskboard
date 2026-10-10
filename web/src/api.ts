@@ -19,7 +19,7 @@ export interface Task {
   lastFailure?: { account?: string; name?: string; agent: Agent; reason: string; at?: string };
   // the length of the whole description when desc has only its start (the /ws/events task list, server/index.ts listView)
   descCut?: number;
-  waitMin: number; waitSig?: string; attach: string; docs?: { inbox: number; outbox: number }; role?: 'controller'; computerUse?: boolean; parent?: string; links?: TaskLink[]; link?: LinkInfo; account?: string; model?: string; machine?: { id: string; name: string }; imported?: string; openElsewhere?: { pid: number; tty: string }; moveWhenDone?: boolean; remoteUrl?: string; restartWhenDone?: boolean; restartFor?: string; restartWait?: string; restartOverdue?: boolean; restartFailed?: string; newSessionWhenDone?: boolean; unscrollable?: boolean; tokenEstimate?: number | null;
+  waitMin: number; waitSig?: string; attach: string; docs?: { inbox: number; outbox: number }; role?: 'controller'; computerUse?: boolean; parent?: string; links?: TaskLink[]; link?: LinkInfo; account?: string; model?: string; machine?: { id: string; name: string }; imported?: string; openElsewhere?: { pid: number; tty: string }; moveWhenDone?: boolean; remoteUrl?: string; restartWhenDone?: boolean; restartFor?: string; restartWait?: string; restartOverdue?: boolean; restartFailed?: string; urgent?: { startedAt: string; by: 'user' | 'controller'; reason: string }; newSessionWhenDone?: boolean; unscrollable?: boolean; tokenEstimate?: number | null;
   // the agent's open request for help in the task browser (tb browser ask)
   browserAsk?: string;
   scopes?: Scope[];
@@ -340,6 +340,8 @@ export const api = {
   setAutoContinue: (id: string, value: 'on' | 'off' | 'default') => call('POST', `/api/tasks/${id}/auto-continue`, { value }),
   typeCommand: (id: string, command: string) => call<{ ran: boolean; message: string }>('POST', `/api/tasks/${encodeURIComponent(id)}/type-command`, { command }),
   kill: (id: string) => call('POST', `/api/tasks/${id}/kill`, {}),
+  // urgent mode (server/urgent.ts): only the dashboard and the controller turn it on or off
+  urgent: (id: string, on: boolean, reason: string) => call('POST', `/api/tasks/${encodeURIComponent(id)}/urgent`, { on, reason }),
   restart: (id: string, when: 'now' | 'after-turn' | 'cancel') => call<Task>('POST', `/api/tasks/${encodeURIComponent(id)}/restart`, { when }),
   remove: (id: string) => call('DELETE', `/api/tasks/${encodeURIComponent(id)}`),
   info: () => call<MachineInfo>('GET', '/api/info').then(keepConfirmRisk),
