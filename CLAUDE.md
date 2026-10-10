@@ -29,8 +29,8 @@ release card on the dashboard. The controller can also approve that card on the 
 A task cannot approve its own card. `tb release-request` prints the card ID and returns while the card waits.
 Run `tb release-result <card> --wait` to read the decision. An approved card authorizes its exact release command.
 Run that command immediately. Do not ask for the same approval again or wait for the permit to expire.
-The controller can convey the user's direct release instruction through `tb send`. That message does not replace the card. The approval is valid for five minutes, for one command, for that
-task and that ref. Run the approved command alone on the command line:
+The controller can convey the user's direct release instruction through `tb send`. That message does not replace the card.
+The approval is valid for five minutes, for one command, for that task and that ref. Run the approved command alone on the command line:
 - `pnpm release` (the files of the checkout), or `pnpm release --ref <branch>`
 - either one with `--no-switch` (build and check only)
 
