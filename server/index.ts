@@ -1021,7 +1021,7 @@ function createReleaseApproval(task: store.Task, ref: string | null = null) {
   const approval = approvals.request({ actor, action: 'release', summary: 'release Taskboard',
     detail: `Task: #${task.num} ${task.title}\nCommand: ${command}${ref ? '' : ' (the files of the task\'s checkout, also changes that are not committed)'}`, payload: { ref } }, async () => {
     const p = releasePermit.writePermit(TB_DIR, actor, ref);
-    return `Task #${task.num} may run \`${command}\` once (it may add --no-switch), until ${new Date(p.expiresAt).toTimeString().slice(0, 8)}.`;
+    return `Task #${task.num} may run \`${command}\` once (it may add --no-switch), until ${new Date(p.expiresAt).toTimeString().slice(0, 8)}. This approved card authorizes the command. Run it now. Do not ask for the same approval again or wait for expiry.`;
   });
   store.update(actor, { status: 'needs-you', ask: 'Approve: release Taskboard', statusSource: 'Waiting for your approval on the dashboard.' });
   return approval;

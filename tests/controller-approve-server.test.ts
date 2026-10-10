@@ -67,7 +67,8 @@ test('the controller approves dashboard cards only on the user\'s request in its
   try {
     const token = readFileSync(join(tbdir, 'token'), 'utf8').trim();
     const controllerToken = readFileSync(join(tbdir, 'mail-controller.token'), 'utf8').trim();
-    const as = (actor: string) => ({ 'content-type': 'application/json', 'x-taskboard-token': token, 'x-tb-actor': actor });
+    const as = (actor: string) => ({ 'content-type': 'application/json', 'x-taskboard-token': token, 'x-tb-actor': actor,
+      ...(actor !== 'controller' ? { 'x-tb-task-token': readFileSync(join(tbdir, 'task-tokens', actor), 'utf8').trim() } : {}) });
     const controller = { ...as('controller'), 'x-tb-mail-controller': controllerToken };
     const user = { 'content-type': 'application/json', origin: base };
     const post = async (path: string, body: unknown, headers: Record<string, string>) => {
@@ -83,7 +84,9 @@ test('the controller approves dashboard cards only on the user\'s request in its
       return post(`/api/approvals/${id}/controller-approve`, { userRequest, version: o.version ?? c?.version, head: o.head ?? c?.head }, o.headers || controller);
     };
     const tb = (args: string[], actor: string, withToken = actor === 'controller') => new Promise<{ code: number | null; out: string }>(resolve => {
-      const p = spawn(process.execPath, ['bin/tb', ...args], { cwd: process.cwd(), env: { ...clean, TB_URL: base, TB_TOKEN_FILE: join(tbdir, 'token'), TASK_ID: actor, ...(withToken ? { TB_MAIL_CONTROLLER_TOKEN: controllerToken } : {}) }, stdio: ['ignore', 'pipe', 'pipe'] });
+      const p = spawn(process.execPath, ['bin/tb', ...args], { cwd: process.cwd(), env: { ...clean, TB_URL: base, TB_TOKEN_FILE: join(tbdir, 'token'), TASK_ID: actor,
+        ...(actor !== 'controller' ? { TB_TASK_TOKEN: readFileSync(join(tbdir, 'task-tokens', actor), 'utf8').trim() } : {}),
+        ...(withToken ? { TB_MAIL_CONTROLLER_TOKEN: controllerToken } : {}) }, stdio: ['ignore', 'pipe', 'pipe'] });
       let out = ''; p.stdout.on('data', b => { out += b; }); p.stderr.on('data', b => { out += b; }); p.on('close', code => resolve({ code, out }));
     });
 
@@ -111,7 +114,8 @@ test('the controller approves dashboard cards only on the user\'s request in its
     assert.equal((await approve(m1.id, `approve ${m1.id}`, { headers: as('controller') })).status, 403, 'the controller header without the controller token');
     assert.equal((await approve(m1.id, `approve ${m1.id}`, { headers: { ...as('controller'), 'x-tb-mail-controller': 'f'.repeat(64) } })).status, 403, 'a wrong token');
     const fakeTb = await tb(['approve', m1.id, '--version', l1.version, '--head', l1.head!, '--user-request', `approve ${m1.id}`], 'controller', false);
-    assert.equal(fakeTb.code, 1, 'TASK_ID=controller without the controller token'); assert.match(fakeTb.out, /Only the (user and the )?controller/);
+    assert.equal(fakeTb.code, 1, 'TASK_ID=controller without the controller token');
+    assert.match(fakeTb.out, /Task identity requires its token/);
     assert.equal((await card(m1.id)).state, 'pending');
 
     // ---------- 2. refusals of the message, the version, the head and the setting ----------
@@ -227,14 +231,16 @@ test('the controller approves dashboard cards only on the user\'s request in its
     assert.equal(plain.scopes?.[0]?.kind, 'read');
 
     // ---------- 8. release and restart: the word, and only one in flight ----------
-    const rel = (await post('/api/release/request', {}, as('t1'))).data.approval;
+    const rel = (await post('/api/release/request', { ref: '7eb37b9f' }, as('t1'))).data.approval;
     userSays(`approve ${rel.id}`);
     r = await approve(rel.id, `approve ${rel.id}`);
     assert.equal(r.status, 403); assert.match(r.data.error, /word release/);
     userSays('release 1');
     r = await approve(rel.id, 'release 1');
-    assert.equal(r.status, 200, JSON.stringify(r.data)); assert.match(r.data.said, /may run `pnpm release` once \(it may add --no-switch\), until \d\d:\d\d:\d\d/);
+    assert.equal(r.status, 200, JSON.stringify(r.data)); assert.match(r.data.said, /may run `pnpm release --ref 7eb37b9f` once \(it may add --no-switch\), until \d\d:\d\d:\d\d/);
+    assert.match(r.data.said, /This approved card authorizes the command\. Run it now\./);
     assert.ok(existsSync(join(tbdir, 'release-permits', 't1.json')));
+    assert.equal(JSON.parse(readFileSync(join(tbdir, 'release-permits', 't1.json'), 'utf8')).ref, '7eb37b9f');
     const rel2 = (await post('/api/release/request', {}, as('t2'))).data.approval;
     userSays('release 2');
     r = await approve(rel2.id, 'release 2');

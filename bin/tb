@@ -754,13 +754,25 @@ switch (cmd) {
     break;
   }
   case 'release-request': {
+    if (rest.includes('--help') || rest.includes('-h')) {
+      console.log('tb release-request [--ref <branch, tag or commit>]\nCreate a release card. This does not run a release.\nRead its decision with tb release-result ID --wait. After approval, run the approved command immediately.');
+      break;
+    }
     if (!process.env.TASK_ID) { console.error('tb release-request: run this inside a Taskboard task'); process.exit(1); }
+    if (rest.length && (rest.length !== 2 || rest[0] !== '--ref' || !rest[1] || rest[1].startsWith('-'))) {
+      console.error('tb release-request: use --ref <branch, tag or commit>, or --help.');
+      process.exit(1);
+    }
     const ref = flag('--ref');
-    await call('POST', '/api/release/request', ref ? { ref } : {});
-    console.log('Run that command now, alone on the command line. If the guard blocks it, stop and tell the user what the guard said.');
+    const result = await call('POST', '/api/release/request', ref ? { ref } : {});
+    console.log(`Read the card with tb release-result ${result.approval.id} --wait. An approved release card authorizes its command. Run it immediately. Do not wait for expiry or ask for the same approval again.`);
     break;
   }
   case 'release-result': {
+    if (rest.includes('--help') || rest.includes('-h')) {
+      console.log('tb release-result ID [--wait] [--timeout 540]\nRead the release card. --wait polls only while the card is pending or running.\nAn approved card authorizes its command. Run it immediately. Do not wait for expiry or ask for the same approval again.');
+      break;
+    }
     // the state of a release card; --wait polls until the user decides (exit 2 after --timeout seconds, default 540)
     const id = rest[0]; if (!id) { console.error('tb release-result: give the card ID that tb release-request printed'); process.exit(1); }
     const wait = has('--wait'); const end = Date.now() + Number(flag('--timeout', '540')) * 1000;
@@ -768,7 +780,7 @@ switch (cmd) {
       const a = await call('GET', `/api/approvals/${encodeURIComponent(id)}`);
       if (a.action !== 'release') { console.error(`tb release-result: ${id} is not a release card`); process.exit(1); }
       if (wait && ['pending', 'running'].includes(a.state) && Date.now() < end) { await sleep(2000); continue; }
-      if (a.state === 'approved') console.log(`Approved. ${a.result} Run that command now, alone on the command line. If the guard blocks it, stop and tell the user what the guard said.`);
+      if (a.state === 'approved') console.log(`Approved. ${a.result} The approved card authorizes that command. Run it now, alone on the command line. Do not wait for expiry or ask for the same approval again. If the guard blocks it, stop and tell the user what the guard said.`);
       else if (a.state === 'pending') console.log(`The card still waits for the user.${wait ? ' Run this command again to keep waiting.' : ''}`);
       else console.log(`${a.state}: ${a.result || ''} Do not run the release. Tell the user.`);
       if (a.state !== 'approved') process.exitCode = a.state === 'pending' ? 2 : 3;

@@ -126,7 +126,15 @@ Agents that work on Taskboard itself run inside the real one, so the setup keeps
   You approve the card on the dashboard. The approval writes a permit for that task and that ref, valid for five
   minutes. The task then runs `pnpm release` (or `pnpm release --ref master`, also with `--no-switch`) alone on the
   command line. The guard deletes the permit when it lets the command run, so one approval allows one command. A
-  task can read the release scripts with `cat`, `head`, `tail`, `grep` and similar commands that only read.
+  task can read release scripts with read commands, including `rg`, without consuming the permit.
+  The controller can convey your direct release instruction to the release task with `tb send`.
+  An approved card authorizes its command. The task runs it immediately without asking for the same approval again.
+  Release help (`tb release-request --help` or `tb release-result --help`) sends no server request.
+- The guard treats literal text in `tb send` as message data for every recipient.
+  Protected command names in that text do not execute commands or consume release permits.
+  The server still applies its rules for message delivery and card decisions.
+  Shell expansions and commands that Taskboard executes still pass through the guard.
+  Urgent mode remains a separate setting that the user or controller turns on.
 - Every test copy is a sandbox with its own port, folders and tmux socket. A sandbox refuses to start on the real
   port, `~/.taskboard`, `~/AgentVault` or the `taskboard` tmux socket.
 - One server per `~/.taskboard` (an exclusive lock file). A second one exits with a message.

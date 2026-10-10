@@ -25,9 +25,12 @@ Use `pnpm sandbox` (own port, folders and tmux socket, no controller; `pnpm sand
 When the user explicitly asks for a release or rebuild, the controller starts a task with `tb new`.
 The task prompt states that the user explicitly authorized the release. The controller never starts a release on its own.
 The task runs `tb release-request`, or `tb release-request --ref <branch>` to release a branch. The user approves the
-release card on the dashboard. A task cannot approve its own card. `tb release-request` waits for the decision. If it
-stops first, run `tb release-result <card> --wait`. The approval is valid for five minutes, for one command, for that
-task and that ref. Run the approved command alone on the command line:
+release card on the dashboard. The controller can also approve that card on the user's direct request, when Settings permits it.
+A task cannot approve its own card. `tb release-request` prints the card ID and returns while the card waits.
+Run `tb release-result <card> --wait` to read the decision. An approved card authorizes its exact release command.
+Run that command immediately. Do not ask for the same approval again or wait for the permit to expire.
+The controller can convey the user's direct release instruction through `tb send`. That message does not replace the card.
+The approval is valid for five minutes, for one command, for that task and that ref. Run the approved command alone on the command line:
 - `pnpm release` (the files of the checkout), or `pnpm release --ref <branch>`
 - either one with `--no-switch` (build and check only)
 
