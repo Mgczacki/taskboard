@@ -47,6 +47,7 @@ async function call(method, path, body) {
   if (r.status === 202 && data.permit) return data;
   if (r.status === 202 && data.push) return data;
   if (r.status === 202 && data.pullRequest) return data;
+  if (r.status === 202 && data.prMerge) return data;
   // 202: the action waits for the user's approval on the Taskboard dashboard
   if (r.status === 202 && data.approval) {
     console.log(`Approval pending: card ${data.approval.id}. ${data.approval.summary}`);
@@ -242,6 +243,14 @@ const HELP = `tb — Taskboard command line
                                      the remote default branch. The card shows every value. Taskboard checks the head
                                      and the base again before gh pr create runs
   tb git pr-result ID [--wait]        read the pull request result: the URL or the exact failure
+  tb git pr-merge-request --pr NUMBER --head SHA [--repo OWNER/NAME] [--method merge|squash|rebase]
+                                     ask the user to merge one GitHub pull request at the exact head commit SHA (all 40
+                                     characters) that you reviewed. Without --repo, the origin of the task folder.
+                                     Taskboard refuses a changed head, a draft, a failed or unfinished check, a missing
+                                     review and a blocked merge state. When the base needs a merge queue, Approve adds
+                                     the pull request to that queue. Without a queue, give --method when the base
+                                     allows more than one. The card shows every value. No administrator merge
+  tb git pr-merge-result ID [--wait]  read the merge result: merged, queued, or the exact failure
   tb inbox wait [--timeout seconds]  wait until a file arrives in your inbox (uses TASK_ID; default 3600 s);
                                      prints each file's path and sender; exit 0 = files, 2 = timed out
   tb park|archive <task>             set aside a task or end and archive it
@@ -1041,6 +1050,21 @@ switch (cmd) {
       if (bodyFile !== undefined) { try { text = readFileSync(resolve(bodyFile), 'utf8'); } catch (e) { console.error(`tb git pr-request: cannot read ${bodyFile}: ${e.message}`); process.exit(1); } }
       const result = await call('POST', '/api/git/pr-request', { title, body: text, base, remote, draft, ...wt });
       console.log(`Pull request request ${result.pullRequest.id}: ${result.pullRequest.state}. The user decides card ${result.approval.id} on the dashboard. Read the result with tb git pr-result ${result.pullRequest.id} --wait.`);
+    } else if (rest[0] === 'pr-merge-request') {
+      const number = flag('--pr'); const head = flag('--head'); const repo = flag('--repo'); const method = flag('--method');
+      if (!number || !head) { console.error('tb git pr-merge-request: give --pr NUMBER and --head SHA'); process.exit(1); }
+      if (args.length > 2) { console.error(`tb git pr-merge-request: unknown arguments: ${args.slice(2).join(' ')}`); process.exit(1); }
+      const result = await call('POST', '/api/git/pr-merge-request', { number, head, repo, method });
+      const m = result.prMerge;
+      console.log(`Pull request merge request ${m.id}: ${m.state}. ${m.repository}#${m.number} at ${m.headCommit}, ${m.queue ? 'through the merge queue' : `method ${m.method}`}. The user decides card ${result.approval.id} on the dashboard. Read the result with tb git pr-merge-result ${m.id} --wait.`);
+    } else if (rest[0] === 'pr-merge-result') {
+      const id = rest[1]; if (!id) { console.error('tb git pr-merge-result: give an ID'); process.exit(1); }
+      const wait = has('--wait');
+      for (;;) {
+        const result = await call('GET', `/api/git/pr-merges/${encodeURIComponent(id)}`);
+        if (result.state !== 'pending' || !wait) { console.log(JSON.stringify(result, null, 2)); break; }
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
     } else if (rest[0] === 'pr-result') {
       const id = rest[1]; if (!id) { console.error('tb git pr-result: give an ID'); process.exit(1); }
       const wait = has('--wait');

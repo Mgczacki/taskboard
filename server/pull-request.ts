@@ -17,7 +17,7 @@ import { TB_DIR } from './config.ts';
 
 const exec = promisify(execFile);
 const git = async (cwd: string, ...args: string[]) => (await exec('git', args, { cwd, maxBuffer: 16 * 1024 * 1024 })).stdout.trim();
-const safe = (s: string) => s.replace(/(https?:\/\/)[^/@\s]+@/g, '$1[redacted]@')
+export const safe = (s: string) => s.replace(/(https?:\/\/)[^/@\s]+@/g, '$1[redacted]@')
   .replace(/\b(?:ghp_|gho_|ghu_|ghs_|github_pat_|glpat-)[A-Za-z0-9_-]{12,}\b/g, '[redacted token]');
 
 export const TITLE_MAX = 256;
@@ -104,7 +104,7 @@ function ghEnv() {
   env.GH_CONFIG_DIR ||= join(homedir(), '.config', 'gh');
   return env;
 }
-function gh(args: string[], cwd: string, input?: string): Promise<{ code: number | null; out: string; err: string }> {
+export function gh(args: string[], cwd: string, input?: string): Promise<{ code: number | null; out: string; err: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(ghPath(), args, { cwd, env: ghEnv(), stdio: ['pipe', 'pipe', 'pipe'] });
     let out = '', err = '';
