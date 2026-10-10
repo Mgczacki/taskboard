@@ -125,9 +125,9 @@ export function readController(saved: unknown): { controller: ControllerSettings
     agent: agentSaved ? s.agent : 'claude', skipPermissions, accounts, dangerouslySkipPermissions: skipPermissions.claude, models,
   } };
 }
-export interface ControllerApprovals { merge: boolean; push: boolean; forcePush: boolean; release: boolean; restart: boolean; scope: boolean; permit: boolean; mail: boolean }
+export interface ControllerApprovals { merge: boolean; push: boolean; forcePush: boolean; release: boolean; restart: boolean; scope: boolean; permit: boolean; mail: boolean; prReady: boolean }
 // All on: the user asked for this. Force push, release, restart and message drafts have extra checks (controller-approve.ts extraRules).
-export const DEFAULT_CONTROLLER_APPROVALS: ControllerApprovals = { merge: true, push: true, forcePush: true, release: true, restart: true, scope: true, permit: true, mail: true };
+export const DEFAULT_CONTROLLER_APPROVALS: ControllerApprovals = { merge: true, push: true, forcePush: true, release: true, restart: true, scope: true, permit: true, mail: true, prReady: true };
 export function readControllerApprovals(saved: unknown): ControllerApprovals {
   const s = saved && typeof saved === 'object' ? saved as Record<string, unknown> : {};
   const out = { ...DEFAULT_CONTROLLER_APPROVALS };

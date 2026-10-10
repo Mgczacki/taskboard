@@ -119,8 +119,8 @@ export interface Permit { id: string; taskId: string; taskNum: number; agent: Ag
 export type PendingRisk = 'wide-access' | 'installs' | 'spends' | 'exits';
 // Settings > Controller approvals: the card kinds that the controller may approve when the user asks in its chat
 // (server/machine.ts controllerApprovals, server/controller-approve.ts)
-export interface ControllerApprovals { merge: boolean; push: boolean; forcePush: boolean; release: boolean; restart: boolean; scope: boolean; permit: boolean; mail: boolean }
-export const DEFAULT_CONTROLLER_APPROVALS: ControllerApprovals = { merge: true, push: true, forcePush: true, release: true, restart: true, scope: true, permit: true, mail: true };
+export interface ControllerApprovals { merge: boolean; push: boolean; forcePush: boolean; release: boolean; restart: boolean; scope: boolean; permit: boolean; mail: boolean; prReady: boolean }
+export const DEFAULT_CONTROLLER_APPROVALS: ControllerApprovals = { merge: true, push: true, forcePush: true, release: true, restart: true, scope: true, permit: true, mail: true, prReady: true };
 // Settings: which risk kinds open the second confirm step on a card (server/machine.ts confirmRisk)
 export interface ConfirmRisk { wideAccess: boolean; installs: boolean; spends: boolean; exits: boolean }
 export const DEFAULT_CONFIRM_RISK: ConfirmRisk = { wideAccess: false, installs: true, spends: true, exits: true };

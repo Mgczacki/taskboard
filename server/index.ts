@@ -144,6 +144,10 @@ for (const r of prMerge.all()) if (r.state === 'pending' && r.approvalId) {
   const card = approvals.get(r.approvalId);
   if (card?.state !== 'pending') prMerge.finish(r, card?.state === 'unknown' ? 'unknown' : 'expired', card?.result || 'The pull request merge card expired after Taskboard restarted.');
 }
+for (const r of prMerge.ready.all()) if (r.state === 'pending' && r.approvalId) {
+  const card = approvals.get(r.approvalId);
+  if (card?.state !== 'pending') prMerge.ready.finish(r, card?.state === 'unknown' ? 'unknown' : 'expired', card?.result || 'The ready for review card expired after Taskboard restarted.');
+}
 const permitNotices = new Set<string>();
 permits.onChange(p => {
   // the card closes with the permit, whichever code expired it (server/card-close.ts)
@@ -590,6 +594,8 @@ app.post('/api/approvals/:id/:decision', async (req, res, next) => {
   // a task or the controller cannot decide a pull request card: tb sends the token and x-tb-actor, the dashboard sends neither
   if (current?.action === 'github-pr' && !fromDashboard(req)) return res.status(403).json({ error: 'Only the user decides a pull request card, on the dashboard.' });
   if (current?.action === 'github-pr-merge' && !fromDashboard(req)) return res.status(403).json({ error: 'Only the user decides a pull request merge card, on the dashboard.' });
+  // the controller approves a ready for review card only through tb approve, with the user's message (controller-approve.ts)
+  if (current?.action === 'github-pr-ready' && !fromDashboard(req)) return res.status(403).json({ error: 'The user decides a ready for review card on the dashboard, or asks the controller to approve it.' });
   if (current?.action === 'git-push' || (req.params.decision === 'approve' && ['permit', 'tool-refusal'].includes(current?.action || '')))
     return res.status(403).json({ error: 'Use the dedicated decision on the dashboard.' });
   // a task cannot decide its own scope request: tb sends the token and x-tb-actor, the dashboard sends neither
@@ -1172,9 +1178,13 @@ app.get('/api/git/pull-requests/:id', (req, res) => {
 function prMergeNotice(task: store.Task, r: prMerge.PrMergeRecord) {
   const text = [`# Pull request merge request ${r.id}`, '', `Time: ${r.at}`, `Task: #${task.num}`, `Repository: ${r.repository}`, `Pull request: #${r.number} ${r.url}`,
     `Head: ${r.head} at ${r.headCommit}`, `Base: ${r.base}`, `Merge method: ${r.method || 'set by the merge queue'}`, `Merge queue required: ${r.queue ? 'Yes' : 'No'}`,
-    `Result: ${r.state}`, ...(r.mergeCommit ? [`Merge commit: ${r.mergeCommit}`] : []), '', r.result || 'Waiting for a decision.'].join('\n');
+    `Result: ${r.state}`, ...(r.mergeCommit ? [`Merge commit: ${r.mergeCommit}`] : []), ...(r.state === 'queued' ? [`Queue position: ${r.queuePosition ?? 'unknown'}`, `Taskboard reads the queue until: ${r.followUntil}`] : []),
+    '', r.result || 'Waiting for a decision.'].join('\n');
   try { docs.uploadSystem(task.id, `pr-merge-${r.id}.md`, text + '\n'); } catch (e) { console.error('could not send pull request merge result', e); }
 }
+// the final state of a queued merge (prMerge.follow): the task gets the same notice again, with the new state
+const prMergeDone = (r: prMerge.PrMergeRecord) => { const task = store.get(r.taskId); if (task) prMergeNotice(task, r); };
+for (const r of prMerge.all()) if (r.state === 'queued') prMerge.follow(r, prMergeDone);
 app.post('/api/git/pr-merge-request', async (req, res) => {
   const actorTask = store.get(req.get('x-tb-actor') || '');
   if (!actorTask || actorTask.role === 'controller') return res.status(403).json({ error: 'A task must request the merge.' });
@@ -1187,7 +1197,9 @@ app.post('/api/git/pr-merge-request', async (req, res) => {
     const approval = approvals.request({ actor: actorTask.id, action: 'github-pr-merge', summary, detail: prMerge.cardDetail(state, actorTask.num), payload: { prMergeId: id, state } }, async () => {
       try {
         const done = await prMerge.mergePullRequest(actorTask, state);
-        prMerge.finish(r, done.state, done.output, done.mergeCommit); prMergeNotice(actorTask, r);
+        if (done.state === 'queued') prMerge.queued(r, done.position, done.output, prMergeDone);
+        else prMerge.finish(r, done.state, done.output, done.mergeCommit);
+        prMergeNotice(actorTask, r);
         return `Pull request merge ${id}: ${done.output}`;
       } catch (e) { prMerge.finish(r, 'failed', e instanceof Error ? e.message : String(e)); prMergeNotice(actorTask, r); throw e; }
     }, { onDeny: () => { prMerge.finish(r, 'denied', 'Denied by the user.'); prMergeNotice(actorTask, r); },
@@ -1205,6 +1217,45 @@ app.post('/api/git/pr-merge-request', async (req, res) => {
 });
 app.get('/api/git/pr-merges/:id', (req, res) => {
   const r = prMerge.get(req.params.id);
+  if (!r || (req.get('x-tb-actor') && !['controller', r.taskId].includes(req.get('x-tb-actor')!))) return res.status(404).end();
+  res.json(r);
+});
+// tb git pr-ready-request: one card that marks one draft pull request ready for review at an exact head (server/pr-merge.ts).
+function prReadyNotice(task: store.Task, r: prMerge.PrReadyRecord) {
+  const text = [`# Ready for review request ${r.id}`, '', `Time: ${r.at}`, `Task: #${task.num}`, `Repository: ${r.repository}`, `Pull request: #${r.number} ${r.url}`,
+    `Head: ${r.head} at ${r.headCommit}`, `Base: ${r.base}`, `Result: ${r.state}`, '', r.result || 'Waiting for a decision.'].join('\n');
+  try { docs.uploadSystem(task.id, `pr-ready-${r.id}.md`, text + '\n'); } catch (e) { console.error('could not send ready for review result', e); }
+}
+app.post('/api/git/pr-ready-request', async (req, res) => {
+  const actorTask = store.get(req.get('x-tb-actor') || '');
+  if (!actorTask || actorTask.role === 'controller') return res.status(403).json({ error: 'A task must make the request.' });
+  try {
+    const state = await prMerge.inspectReady(actorTask, req.body || {});
+    const id = randomUUID();
+    const summary = `mark pull request #${state.number} ready for review in ${state.repository}`;
+    const previous = approvals.pendingFor(actorTask.id).find(a => a.action === 'github-pr-ready' && (a.target || a.summary) === summary);
+    let r!: prMerge.PrReadyRecord;
+    const approval = approvals.request({ actor: actorTask.id, action: 'github-pr-ready', summary, detail: prMerge.readyCardDetail(state, actorTask.num), payload: { prReadyId: id, state } }, async () => {
+      try {
+        const output = await prMerge.markReady(actorTask, state);
+        prMerge.ready.finish(r, 'succeeded', output); prReadyNotice(actorTask, r);
+        return `Ready for review ${id}: ${output}`;
+      } catch (e) { prMerge.ready.finish(r, 'failed', e instanceof Error ? e.message : String(e)); prReadyNotice(actorTask, r); throw e; }
+    }, { onDeny: () => { prMerge.ready.finish(r, 'denied', 'Denied by the user.'); prReadyNotice(actorTask, r); },
+      onReopen: () => { if (prMerge.ready.reopen(r)) prReadyNotice(actorTask, r); },
+      check: () => prMerge.readyChanged(actorTask, state) });
+    r = prMerge.ready.record(state, id, approval.id);
+    if (previous) {
+      const old = prMerge.ready.all().find(p => p.approvalId === previous.id && p.id !== id && p.state === 'pending');
+      if (old) prMerge.ready.finish(old, 'expired', `Card ${approval.id} now covers the new values.`);
+    }
+    prReadyNotice(actorTask, r);
+    store.update(actorTask.id, { status: 'needs-you', ask: `Approve: mark ${state.repository}#${state.number} ready for review`, statusSource: `Ready for review request ${id}: pending.` });
+    res.status(202).json({ prReady: r, approval });
+  } catch (e) { fail(res, e); }
+});
+app.get('/api/git/pr-ready/:id', (req, res) => {
+  const r = prMerge.ready.get(req.params.id);
   if (!r || (req.get('x-tb-actor') && !['controller', r.taskId].includes(req.get('x-tb-actor')!))) return res.status(404).end();
   res.json(r);
 });
@@ -2643,7 +2694,7 @@ const lastTaskView = new Map<string, string>();
 function closeCardsOfArchived(t: store.Task) {
   const why = archivedResult(t.num);
   for (const a of cardsToCloseOnArchive(approvals.pendingFor(t.id))) {
-    const payload = a.payload as { permitId?: string; pushId?: string; pullRequestId?: string; prMergeId?: string } | undefined;
+    const payload = a.payload as { permitId?: string; pushId?: string; pullRequestId?: string; prMergeId?: string; prReadyId?: string } | undefined;
     const p = a.action === 'permit' ? permits.get(payload?.permitId || '') : undefined;
     if (p) permits.cancel(p, why);
     const record = a.action === 'git-push' ? push.allPushes().find(x => x.id === payload?.pushId && x.state === 'pending') : undefined;
@@ -2652,6 +2703,8 @@ function closeCardsOfArchived(t: store.Task) {
     if (pr?.state === 'pending') pullRequest.finish(pr, 'expired', why);
     const merge = a.action === 'github-pr-merge' ? prMerge.get(payload?.prMergeId || '') : undefined;
     if (merge?.state === 'pending') prMerge.finish(merge, 'expired', why);
+    const readyRecord = a.action === 'github-pr-ready' ? prMerge.ready.get(payload?.prReadyId || '') : undefined;
+    if (readyRecord?.state === 'pending') prMerge.ready.finish(readyRecord, 'expired', why);
     approvals.close(a.id, 'expired', why);
   }
 }

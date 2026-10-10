@@ -29,8 +29,11 @@ const state = {
     'o/open:main': [],
   } as Record<string, unknown[]>,
   prs: {} as Record<string, Pr>,
+  // the answer to the merge queue read (prMerge.queueOutcome), by pull request id. Default: still in the queue
+  outcomes: {} as Record<string, unknown>,
   failMutation: false,
 };
+const save = () => writeFileSync(stateFile, JSON.stringify(state));
 const setPr = (key: string, pr: Pr) => { state.prs[key] = { head: HEAD, state: 'OPEN', mergeStateStatus: 'CLEAN', mergeable: 'MERGEABLE', reviewDecision: null, checks: green, ...pr }; writeFileSync(stateFile, JSON.stringify(state)); };
 writeFileSync(stateFile, JSON.stringify(state));
 writeFileSync(join(root, 'gh.mjs'), `
@@ -39,7 +42,8 @@ const args = process.argv.slice(2);
 const s = JSON.parse(readFileSync(${JSON.stringify(stateFile)}, 'utf8'));
 const get = k => args.find(a => a.startsWith(k + '='))?.slice(k.length + 1);
 const query = get('query') || '';
-const kind = query.includes('enqueuePullRequest') ? 'enqueue' : query.includes('mergePullRequest') ? 'merge' : query ? 'read' : 'rest';
+const kind = query.includes('enqueuePullRequest') ? 'enqueue' : query.includes('mergePullRequest') ? 'merge' : query.includes('markPullRequestReadyForReview') ? 'ready'
+  : query.includes('node(id') ? 'outcome' : query ? 'read' : 'rest';
 appendFileSync(${JSON.stringify(ghLog)}, JSON.stringify({ kind, args: args.map(a => a.startsWith('query=') ? 'query=' + kind : a), token: process.env.GH_TOKEN || 'none' }) + '\\n');
 const out = v => { process.stdout.write(JSON.stringify(v)); process.exit(0); };
 if (kind === 'rest') { const m = args[1].match(/^repos\\/(.+)\\/rules\\/branches\\/([^?]+)/); out(s.rules[m[1] + ':' + m[2]] || []); }
@@ -52,7 +56,9 @@ if (kind === 'read') {
     mergeable: pr.mergeable, mergeStateStatus: pr.mergeStateStatus, isMergeQueueEnabled: repo === 'o/queued', isInMergeQueue: !!pr.inQueue, reviewDecision: pr.reviewDecision,
     commits: { nodes: [{ commit: { oid: pr.head, statusCheckRollup: { contexts: { pageInfo: { hasNextPage: false }, nodes: pr.checks.map(c => ({ __typename: 'CheckRun', isRequired: !!c.required, ...c })) } } } }] } } } } });
 }
+if (kind === 'outcome') out({ data: { node: s.outcomes[get('id')] || { state: 'OPEN', isInMergeQueue: true, mergeCommit: null, mergeQueueEntry: { position: 1, state: 'QUEUED' }, timelineItems: { nodes: [] } } } });
 if (s.failMutation) { process.stderr.write('GraphQL: Head branch was modified. Review and try the merge again. (mergePullRequest)'); process.exit(1); }
+if (kind === 'ready') out({ data: { markPullRequestReadyForReview: { pullRequest: { isDraft: false, headRefOid: ${JSON.stringify(HEAD)} } } } });
 if (kind === 'enqueue') out({ data: { enqueuePullRequest: { mergeQueueEntry: { position: 2, state: 'QUEUED' } } } });
 out({ data: { mergePullRequest: { pullRequest: { state: 'MERGED', headRefOid: get('head'), mergeCommit: { oid: ${JSON.stringify(MERGED)} } } } } });
 `);
@@ -61,21 +67,28 @@ chmodSync(join(root, 'gh'), 0o755);
 writeFileSync(join(tbdir, 'machine.json'), JSON.stringify({ controller: { autostart: false, remoteControl: false } }));
 writeFileSync(join(vault, 'tasks', 'merge-task.md'), `---\nid: merge-task\nnum: 1\ntitle: Merge test\nagent: codex\nstatus: idle\ncwd: ${folder}\nfolder: ${folder}\nworktree: false\nsession: test\ncreated: 2026-01-01T00:00:00.000Z\nupdated: 2026-01-01T00:00:00.000Z\nstatusAt: 2026-01-01T00:00:00.000Z\n---\n# Merge test\n`);
 const calls = () => existsSync(ghLog) ? readFileSync(ghLog, 'utf8').trim().split('\n').map(l => JSON.parse(l) as { kind: string; args: string[]; token: string }) : [];
-const writes = () => calls().filter(c => c.kind === 'enqueue' || c.kind === 'merge');
+const writes = () => calls().filter(c => c.kind === 'enqueue' || c.kind === 'merge' || c.kind === 'ready');
 
 test('a task requests one exact pull request merge, and only the dashboard approves it', async () => {
   const port = await new Promise<number>(resolve => { const s = createServer(); s.listen(0, '127.0.0.1', () => { const address = s.address(); const port = typeof address === 'object' && address ? address.port : 0; s.close(() => resolve(port)); }); });
   const base = `http://127.0.0.1:${port}`;
-  const child = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { cwd: process.cwd(),
-    env: { ...process.env, TASKBOARD_PORT: String(port), TASKBOARD_DIR: tbdir, TASKBOARD_VAULT: vault, TASKBOARD_GH: join(root, 'gh'), GH_TOKEN: 'server-env-token',
-      TASKBOARD_TMUX_SOCKET: `tb-pr-merge-${port}`, TASKBOARD_MACHINE_NAME: 'pr-merge-test' }, stdio: ['ignore', 'pipe', 'pipe'] });
-  let output = ''; child.stdout.on('data', b => { output += b.toString(); }); child.stderr.on('data', b => { output += b.toString(); });
-  try {
+  let output = '';
+  let child!: ReturnType<typeof spawn>;
+  // the server reads the merge queue every 200 ms (TASKBOARD_PR_QUEUE_POLL_MS)
+  const start = async () => {
+    child = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { cwd: process.cwd(),
+      env: { ...process.env, TASKBOARD_PORT: String(port), TASKBOARD_DIR: tbdir, TASKBOARD_VAULT: vault, TASKBOARD_GH: join(root, 'gh'), GH_TOKEN: 'server-env-token',
+        TASKBOARD_PR_QUEUE_POLL_MS: '200', TASKBOARD_TMUX_SOCKET: `tb-pr-merge-${port}`, TASKBOARD_MACHINE_NAME: 'pr-merge-test' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    child.stdout!.on('data', b => { output += b.toString(); }); child.stderr!.on('data', b => { output += b.toString(); });
     for (let i = 0; i < 100; i++) {
       if (child.exitCode !== null) throw new Error(output);
-      try { const r = await fetch(base + '/api/info'); if (r.ok) break; } catch { /* server starts */ }
+      try { const r = await fetch(base + '/api/info'); if (r.ok) return; } catch { /* server starts */ }
       await new Promise(resolve => setTimeout(resolve, 100));
     }
+  };
+  const stop = async () => { if (child.exitCode === null) { child.kill('SIGTERM'); await new Promise(resolve => child.once('exit', resolve)); } };
+  try {
+    await start();
     const token = readFileSync(join(tbdir, 'token'), 'utf8').trim();
     const taskKey = readFileSync(join(tbdir, 'task-tokens', 'merge-task'), 'utf8').trim();
     const taskHeaders = { 'content-type': 'application/json', 'x-taskboard-token': token, 'x-tb-task-token': taskKey, 'x-tb-actor': 'merge-task' };
@@ -176,7 +189,7 @@ test('a task requests one exact pull request merge, and only the dashboard appro
 
     // queue: the base requires a merge queue. Approve adds the pull request to the queue, with no merge method
     const tbEnv = { ...process.env, TB_URL: base, TB_TOKEN_FILE: join(tbdir, 'token'), TASK_ID: 'merge-task', TB_TASK_TOKEN: taskKey };
-    const tb = (...args: string[]) => spawnSync(process.execPath, [join(process.cwd(), 'bin', 'tb'), ...args], { cwd: folder, env: tbEnv, encoding: 'utf8' });
+    const tb = (...args: string[]) => spawnSync(process.execPath, [join(process.cwd(), 'bin', 'tb'), ...args], { cwd: folder, env: tbEnv, encoding: 'utf8', timeout: 20_000 });
     assert.match(tb('git', 'pr-merge-request', '--pr', '13').stderr, /give --pr NUMBER and --head SHA/);
     const cli = tb('git', 'pr-merge-request', '--repo', 'o/queued', '--pr', '13', '--head', HEAD);
     assert.equal(cli.status, 0, cli.stderr);
@@ -186,12 +199,35 @@ test('a task requests one exact pull request merge, and only the dashboard appro
     assert.ok(queueCard?.detail.includes('Merge queue required: Yes') && queueCard.detail.includes('Merge method: squash')
       && queueCard.detail.includes(`Approve adds the pull request at head ${HEAD} to the merge queue of main`), queueCard?.detail);
     assert.equal((await post(`/api/approvals/${cliMatch[2]}/approve`, {}, userHeaders)).data.state, 'approved');
-    const queued = JSON.parse(tb('git', 'pr-merge-result', cliMatch[1], '--wait').stdout);
+    const queued = await read(cliMatch[1]);
     assert.equal(queued.state, 'queued');
     assert.match(queued.result, /in the merge queue of main at position 2 \(QUEUED\)/);
+    assert.ok(Date.parse(queued.followUntil) > Date.now() + 80 * 60_000, 'the limit is 60 minutes for each entry up to this one, plus 30');
     w = writes();
     assert.equal(w.length, 2);
     assert.deepEqual(w[1].args, ['api', 'graphql', '-f', 'query=enqueue', '-f', 'id=PR_13', '-f', `head=${HEAD}`]);
+    // the queue merges the pull request: Taskboard reads it and the record becomes merged. --wait waits for it
+    await new Promise(resolve => setTimeout(resolve, 500));
+    assert.equal((await read(cliMatch[1])).state, 'queued', 'still in the queue');
+    state.outcomes.PR_13 = { state: 'MERGED', isInMergeQueue: false, mergeCommit: { oid: MERGED }, mergeQueueEntry: null, timelineItems: { nodes: [] } }; save();
+    const final = JSON.parse(tb('git', 'pr-merge-result', cliMatch[1], '--wait').stdout);
+    assert.equal(final.state, 'merged');
+    assert.equal(final.mergeCommit, MERGED);
+    assert.match(final.result, new RegExp(`The merge queue merged o/queued#13 at ${HEAD} into main as ${MERGED}`));
+    assert.match(readFileSync(join(vault, 'tasks', 'merge-task', 'inbox', `pr-merge-${cliMatch[1]}.md`), 'utf8'), /Result: merged/);
+
+    // the queue removes a pull request while Taskboard restarts: the new server reads the queue again
+    setPr('o/queued#14', {});
+    const removedAsk = await ask('o/queued', 14);
+    assert.equal((await post(`/api/approvals/${removedAsk.data.approval.id}/approve`, {}, userHeaders)).data.state, 'approved');
+    assert.equal((await read(removedAsk.data.prMerge.id)).state, 'queued');
+    await stop();
+    state.outcomes.PR_14 = { state: 'OPEN', isInMergeQueue: false, mergeCommit: null, mergeQueueEntry: null,
+      timelineItems: { nodes: [{ createdAt: new Date().toISOString(), reason: 'FAILED_CHECKS' }] } }; save();
+    await start();
+    const removed = JSON.parse(tb('git', 'pr-merge-result', removedAsk.data.prMerge.id, '--wait').stdout);
+    assert.equal(removed.state, 'removed-from-queue');
+    assert.match(removed.result, /o\/queued#14 left the merge queue of main without a merge\. GitHub gives this reason: FAILED_CHECKS\./);
 
     // GitHub refuses the write: the card fails, and the task gets the exact error
     setPr('o/direct#24', {});
@@ -201,8 +237,49 @@ test('a task requests one exact pull request merge, and only the dashboard appro
     assert.equal(failed.data.state, 'failed');
     assert.match(failed.data.result, /Merging the pull request failed with exit code 1: GraphQL: Head branch was modified/);
     assert.equal((await read(fifth.data.prMerge.id)).state, 'failed');
+    state.failMutation = false; save();
+
+    // ready for review: a separate card marks a draft ready. It merges nothing
+    const readyRead = async (id: string) => (await fetch(base + `/api/git/pr-ready/${id}`, { headers: taskHeaders })).json();
+    const before = writes().length;
+    setPr('o/direct#30', {});
+    assert.match((await post('/api/git/pr-ready-request', { repo: 'o/direct', number: 30, head: HEAD })).data.error, /is not a draft/);
+    setPr('o/direct#30', { draft: true, head: NEW_HEAD });
+    assert.match((await post('/api/git/pr-ready-request', { repo: 'o/direct', number: 30, head: HEAD })).data.error, /has head b{40}, not a{40}.*tb git pr-ready-request again/);
+    setPr('o/direct#30', { draft: true, checks: [] });
+    assert.match((await ask('o/direct', 30)).data.error, /is a draft\. Mark it ready first with tb git pr-ready-request/);
+    const readyCli = tb('git', 'pr-ready-request', '--repo', 'o/direct', '--pr', '30', '--head', HEAD);
+    assert.equal(readyCli.status, 0, readyCli.stderr);
+    const readyMatch = readyCli.stdout.match(/^Ready for review request (\S+): pending\. o\/direct#30 at a{40}\. The user decides card (\S+) on the dashboard\./);
+    assert.ok(readyMatch, readyCli.stdout);
+    const readyCard = (await (await fetch(base + '/api/approvals', { headers: userHeaders })).json() as { id: string; action: string; detail: string }[]).find(a => a.id === readyMatch[2]);
+    assert.equal(readyCard?.action, 'github-pr-ready');
+    assert.ok(readyCard?.detail.includes(`Head: fix at ${HEAD}`) && readyCard.detail.includes('Draft: Yes') && readyCard.detail.includes('It merges nothing'), readyCard?.detail);
+    // the task cannot approve it, and the controller approves it only through tb approve with the user's message
+    assert.equal((await post(`/api/approvals/${readyMatch[2]}/approve`, {}, { ...taskHeaders, origin: base })).status, 403);
+    assert.equal((await post(`/api/approvals/${readyMatch[2]}/approve`, {}, { ...controllerHeaders, origin: base })).status, 403);
+    assert.match((await post('/api/permits', { reason: 'ready', steps: [{ command: 'gh pr ready 30', network: true }] })).data.error, /tb git pr-ready-request/);
+    // stale: the head moves after the card was made
+    setPr('o/direct#30', { draft: true, head: NEW_HEAD });
+    assert.match((await post(`/api/approvals/${readyMatch[2]}/approve`, {}, userHeaders)).data.staleFacts, /has head b{40}/);
+    assert.equal(writes().length, before);
+    setPr('o/direct#30', { draft: true });
+    assert.equal((await post(`/api/approvals/${readyMatch[2]}/approve`, {}, userHeaders)).data.state, 'approved');
+    const readyDone = JSON.parse(tb('git', 'pr-ready-result', readyMatch[1], '--wait').stdout);
+    assert.equal(readyDone.state, 'succeeded');
+    assert.match(readyDone.result, /o\/direct#30 is ready for review at head a{40}\. Wait for its checks, then run tb git pr-merge-request/);
+    w = writes();
+    assert.equal(w.length, before + 1);
+    assert.deepEqual(w.at(-1)!.args, ['api', 'graphql', '-f', 'query=ready', '-f', 'id=PR_30']);
+    // a denied ready card reaches the record
+    setPr('o/direct#31', { draft: true });
+    const readyDenied = await post('/api/git/pr-ready-request', { repo: 'o/direct', number: 31, head: HEAD });
+    await post(`/api/approvals/${readyDenied.data.approval.id}/deny`, {}, userHeaders);
+    assert.equal((await readyRead(readyDenied.data.prReady.id)).state, 'denied');
+    assert.equal(writes().length, before + 1);
+    assert.ok(calls().every(c => c.token === 'none' && !c.args.some(a => /admin/i.test(a))), 'no server token and no administrator flag');
   } finally {
-    if (child.exitCode === null) { child.kill('SIGTERM'); await new Promise(resolve => child.once('exit', resolve)); }
+    await stop();
     spawnSync('tmux', ['-L', `tb-pr-merge-${port}`, 'kill-server']);
     rmSync(root, { recursive: true, force: true });
   }

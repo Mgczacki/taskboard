@@ -26,10 +26,10 @@ test('each card action has a kind with a switch, or stays user only', () => {
   assert.deepEqual(ca.kindOf(card('git-merge')), { kind: 'merge' });
   assert.deepEqual(ca.kindOf(card('git-push', { state: { forcePush: false } })), { kind: 'push' });
   assert.deepEqual(ca.kindOf(card('git-push', { state: { forcePush: true } })), { kind: 'forcePush' });
-  for (const [action, kind] of [['release', 'release'], ['restart', 'restart'], ['scope', 'scope'], ['permit', 'permit'], ['mail-out', 'mail'], ['mail-in', 'mail']] as const)
+  for (const [action, kind] of [['release', 'release'], ['restart', 'restart'], ['scope', 'scope'], ['permit', 'permit'], ['mail-out', 'mail'], ['mail-in', 'mail'], ['github-pr-ready', 'prReady']] as const)
     assert.deepEqual(ca.kindOf(card(action)), { kind });
-  for (const action of ['tool-refusal', 'new', 'send', 'status', 'kill', 'move'] as const) assert.ok('userOnly' in ca.kindOf(card(action)), action);
-  assert.deepEqual(ca.CONTROLLER_KINDS.sort(), ['forcePush', 'mail', 'merge', 'permit', 'push', 'release', 'restart', 'scope']);
+  for (const action of ['tool-refusal', 'new', 'send', 'status', 'kill', 'move', 'github-pr', 'github-pr-merge'] as const) assert.ok('userOnly' in ca.kindOf(card(action)), action);
+  assert.deepEqual(ca.CONTROLLER_KINDS.sort(), ['forcePush', 'mail', 'merge', 'permit', 'prReady', 'push', 'release', 'restart', 'scope']);
 });
 
 test('the version changes with the card contents, and the head must match the card', () => {
@@ -57,6 +57,10 @@ test('the message names the card by id, or by task number and kind when that is 
   assert.deepEqual(ca.namesCard('Approve 209, 206 - merge them', m2, all), { by: 'task', key: 't206:merge' });
   assert.deepEqual(ca.namesCard('merge task #206', m2, all), { by: 'task', key: 't206:merge' });
   assert.ok('refusal' in ca.namesCard('Approve 206 for me', m1, all), 'another task number');
+  // a ready for review card is named by the word ready. The word merge does not name it
+  const r1 = open(card('github-pr-ready'), 216, 't216');
+  assert.deepEqual(ca.namesCard('approve the ready card of 216', r1, [...all, r1]), { by: 'task', key: 't216:prReady' });
+  assert.ok('refusal' in ca.namesCard('merge 216', r1, [...all, r1]));
   assert.ok('refusal' in ca.namesCard(`approve ${m2.a.id}`, m1, all), 'another card id');
   assert.ok('refusal' in ca.namesCard('approve all', m1, all), 'approve all names no card');
   assert.ok('refusal' in ca.namesCard('approve 2090 merge', m1, all), 'a longer number is another task');
