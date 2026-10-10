@@ -1698,7 +1698,7 @@ messageQueue.start();
 
 // ---------- accounts ----------
 const acctView = async (a: accounts.Account, fresh = false) => ({ ...a, health: agentErrorWatch.health().find(h => h.account === a.id)?.note, status: await accounts.status(a, fresh), usageStale: accounts.usageStale(a), nextProbeAt: accounts.probeEnabled() ? accounts.nextProbeAt(a) : undefined, probing: accountProbe.runningProbe() === a.id, usageStaleHours: accounts.USAGE_STALE_MS / 3600000, running: store.all().filter(t => (t.account || accounts.defaultFor(t.agent).id) === a.id && !['archived', 'parked', 'suspended'].includes(t.status)).length });
-app.get('/api/accounts', async (req, res) => res.json(await Promise.all(accounts.all().map(a => acctView(a, req.query.fresh === '1')))));
+app.get('/api/accounts', async (req, res) => { if (req.query.fresh === '1') accounts.refreshCodexUsage(); res.json(await Promise.all(accounts.all().map(a => acctView(a, req.query.fresh === '1')))); });
 app.post('/api/accounts', async (req, res) => { try { const { agent, name } = req.body; if (!['claude', 'codex', 'antigravity'].includes(agent) || !name) throw new Error('agent and name are required'); const a = await accounts.create(agent, String(name)); if (a.agent === 'antigravity') await agents.installAgyPlugin(a); res.json(await acctView(a)); } catch (e) { fail(res, e); } });
 // The maximum number of tasks protects an account's usage, so only the dashboard changes it (not tb, agents or the controller).
 app.patch('/api/accounts/:id', (req, res) => {

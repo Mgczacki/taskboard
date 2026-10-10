@@ -16,6 +16,8 @@ const now = new Date().toISOString();
 const fixtureAccounts = [
   { id: 'claude-default', agent: 'claude', name: 'Claude Code (default)', dir: join(root, 'home', '.claude'), isDefault: true, maxParallel: 8, created: now },
   { id: 'codex-work', agent: 'codex', name: 'Codex work', dir: join(root, 'home', '.codex-work'), maxParallel: 2, created: now },
+  // its own folder: a start reads the Codex session files, and the real ~/.codex would change the usage text
+  { id: 'codex-default', agent: 'codex', name: 'Codex (default)', dir: join(root, 'home', '.codex'), isDefault: true, maxParallel: 8, created: now },
 ];
 writeFileSync(join(root, 'state', 'accounts.json'), JSON.stringify(fixtureAccounts));
 writeFileSync(join(root, 'state', 'machine.json'), JSON.stringify({ name: 'max-parallel-test', controller: { autostart: false, remoteControl: false }, permissions: { controllerNeedsApproval: false, agentsNeedApproval: false, trustWorkspaces: false, autoReview: false } }));

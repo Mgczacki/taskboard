@@ -198,55 +198,92 @@ export function alternatives(a: Account, running: (id: string) => number): strin
     : ` No other ${agentLabel} account is available now.`;
 }
 // Why a task cannot start on this account, with the accounts it can use instead; undefined when it can start.
+// A Codex account first reads its session files again, so a limit that reset since the last read does not refuse it.
 export function refusal(a: Account, running: number, runningOf: (id: string) => number): string | undefined {
+  if (a.agent === 'codex') refreshCodexUsage();
   const why = unavailable(a, running);
   return why && why + alternatives(a, runningOf);
 }
 
 // Codex writes its current limits into every session file ("token_count" events with rate_limits). Read the newest.
 const windowLabel = (min?: number) => !min ? 'window' : min === 300 ? '5-hour' : min === 10080 ? 'weekly' : min % 1440 === 0 ? `${min / 1440}-day` : `${Math.round(min / 60)}-hour`;
-function newestRollout(dir: string): string | undefined {
-  const root = join(dir, 'sessions'); if (!existsSync(root)) return;
+// Codex files a session under the date it started (sessions/YYYY/MM/DD) and appends to that file while the session
+// runs, also when the user resumes it days later. So a date folder does not tell when a file last changed: list the
+// rollout files of many date folders and order them by modification time, newest first.
+export const ROLLOUT_SCAN = { days: 120, files: 20000, read: 8 };
+export function codexRollouts(dir: string): string[] {
+  const root = join(dir, 'sessions'); if (!existsSync(root)) return [];
   const sub = (p: string) => { try { return readdirSync(p).filter(n => /^\d+$/.test(n)).sort().reverse(); } catch { return []; } };
   const days: string[] = [];
-  for (const y of sub(root)) for (const m of sub(join(root, y))) for (const d of sub(join(root, y, m))) { days.push(join(root, y, m, d)); if (days.length >= 3) break; }
-  let best: { p: string; t: number } | undefined;
-  for (const d of days) for (const f of readdirSync(d)) if (f.endsWith('.jsonl')) { const p = join(d, f), t = statSync(p).mtimeMs; if (!best || t > best.t) best = { p, t }; }
-  return best?.p;
+  outer: for (const y of sub(root)) for (const m of sub(join(root, y))) for (const d of sub(join(root, y, m))) {
+    days.push(join(root, y, m, d)); if (days.length >= ROLLOUT_SCAN.days) break outer;
+  }
+  const files: { p: string; t: number }[] = [];
+  for (const d of days) {
+    let names: string[]; try { names = readdirSync(d); } catch { continue; }
+    for (const f of names) {
+      if (!f.endsWith('.jsonl')) continue;
+      try { files.push({ p: join(d, f), t: statSync(join(d, f)).mtimeMs }); } catch { /* removed meanwhile */ }
+      if (files.length >= ROLLOUT_SCAN.files) break;
+    }
+    if (files.length >= ROLLOUT_SCAN.files) break;
+  }
+  return files.sort((x, y) => y.t - x.t).map(x => x.p);
+}
+// The newest rate_limits event in the last 512 KB of one rollout file, with the error of a turn that failed after it.
+type CodexReport = { at: string; rl: any; error?: string };
+function newestReport(f: string): CodexReport | undefined {
+  const size = statSync(f).size, start = Math.max(0, size - 524288), buf = Buffer.alloc(size - start);
+  const fd = openSync(f, 'r'); try { readSync(fd, buf, 0, buf.length, start); } finally { closeSync(fd); }
+  const lines = buf.toString('utf8').split('\n');
+  let error: string | undefined; // the message of a turn that failed after the newest rate_limits line
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (!lines[i].includes('"rate_limits"') && !lines[i].includes('"task_complete"')) continue;
+    let o: any; try { o = JSON.parse(lines[i]); } catch { continue; }
+    if (o.payload?.type === 'task_complete') { error ??= o.payload.error?.message; continue; }
+    const rl = o.payload?.rate_limits ?? o.payload?.info?.rate_limits; if (!rl) continue;
+    if (!rl.rate_limit_reached_type && !rl.primary) continue;
+    return { at: o.timestamp || new Date(statSync(f).mtimeMs).toISOString(), rl, error };
+  }
+}
+// The newest report over all sessions of the account, by event time. Files are read newest first. A file changed
+// before the newest event found so far cannot hold a newer event, so the reading stops there.
+export function newestCodexReport(dir: string): CodexReport | undefined {
+  let best: CodexReport | undefined, read = 0;
+  for (const f of codexRollouts(dir)) {
+    if (read >= ROLLOUT_SCAN.read) break;
+    let mtime: number; try { mtime = statSync(f).mtimeMs; } catch { continue; }
+    if (best && mtime < Date.parse(best.at)) break;
+    read++;
+    let r: CodexReport | undefined; try { r = newestReport(f); } catch { continue; }
+    if (r && (!best || Date.parse(r.at) > Date.parse(best.at))) best = r;
+  }
+  return best;
 }
 export function refreshCodexUsage() {
   for (const a of accounts.filter(x => x.agent === 'codex')) {
     try {
-      const f = newestRollout(a.dir); if (!f) continue;
-      const size = statSync(f).size, start = Math.max(0, size - 524288), buf = Buffer.alloc(size - start);
-      const fd = openSync(f, 'r'); try { readSync(fd, buf, 0, buf.length, start); } finally { closeSync(fd); }
-      const lines = buf.toString('utf8').split('\n');
-      let error: string | undefined; // the message of a turn that failed after the newest rate_limits line
-      for (let i = lines.length - 1; i >= 0; i--) {
-        if (!lines[i].includes('"rate_limits"') && !lines[i].includes('"task_complete"')) continue;
-        let o: any; try { o = JSON.parse(lines[i]); } catch { continue; }
-        if (o.payload?.type === 'task_complete') { error ??= o.payload.error?.message; continue; }
-        const rl = o.payload?.rate_limits ?? o.payload?.info?.rate_limits; if (!rl) continue;
-        // No credit or a reached limit: Codex writes the reason and no windows. Mark the account; keep the old numbers,
-        // whose age then shows that they are stale.
-        if (rl.rate_limit_reached_type) {
-          const at = o.timestamp || new Date(statSync(f).mtimeMs).toISOString();
-          if (reportApplies(a, at)) markLimited(a.id, codexLimitNote(rl.rate_limit_reached_type, error));
-          break;
-        }
-        if (!rl.primary) continue;
-        // a later turn that the server accepted: the account works again
-        if (a.limited && o.timestamp && Date.parse(o.timestamp) > Date.parse(a.limited.at)) clearLimited(a.id);
-        const windows = [rl.primary, rl.secondary].filter(Boolean).map((w: any) => ({ label: windowLabel(w.window_minutes), usedPct: Math.round(w.used_percent), resetsAt: w.resets_at ? w.resets_at * 1000 : undefined }));
-        setUsage(a.id, { windows, at: o.timestamp || new Date(statSync(f).mtimeMs).toISOString(), source: 'Codex session file', plan: rl.plan_type || undefined });
-        break;
+      const r = newestCodexReport(a.dir); if (!r) continue;
+      const { rl, at } = r;
+      // No credit or a reached limit: Codex writes the reason and no windows. Mark the account; keep the old numbers,
+      // whose age then shows that they are stale.
+      if (rl.rate_limit_reached_type) {
+        if (reportApplies(a, at)) markLimited(a.id, codexLimitNote(rl.rate_limit_reached_type, r.error));
+        continue;
       }
+      // Numbers older than the stored ones do not replace them (for example when the newest session file is gone).
+      if (a.usage && Date.parse(at) < Date.parse(a.usage.at)) continue;
+      // a later turn that the server accepted: the account works again
+      if (a.limited && Date.parse(at) > Date.parse(a.limited.at)) clearLimited(a.id);
+      const windows = [rl.primary, rl.secondary].filter(Boolean).map((w: any) => ({ label: windowLabel(w.window_minutes), usedPct: Math.round(w.used_percent), resetsAt: w.resets_at ? w.resets_at * 1000 : undefined }));
+      setUsage(a.id, { windows, at, source: 'Codex session file', plan: rl.plan_type || undefined });
     } catch { /* unreadable folder */ }
   }
 }
 
 // Automatic choice: the signed-in account of that agent with the fewest running tasks, skipping limited and full ones.
 export async function pick(agent: AgentKind, running: (id: string) => number, exclude: string[] = []): Promise<{ account: Account; why: string }> {
+  if (agent === 'codex') refreshCodexUsage();
   const cands = accounts.filter(a => a.agent === agent && !exclude.includes(a.id));
   const skipped: string[] = [], ok: Account[] = [];
   for (const a of cands) {

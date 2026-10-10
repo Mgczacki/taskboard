@@ -191,7 +191,7 @@ export function AccountsPage({ tasks }: { tasks: Task[] }) {
     <div className="acc-page">
       <div className="acc-head">
         <div><h2>Accounts</h2><p>Each account keeps its own sign-in. Claude Code uses <code>CLAUDE_CONFIG_DIR</code>, Codex uses <code>CODEX_HOME</code>, and Antigravity uses a separate home and Keychain. New tasks pick the least busy signed-in account that is not at its limit, unless you choose one.</p></div>
-        <div style={{ display: 'flex', gap: 8 }}><button className="btn" onClick={() => load(true)}>Check sign-ins</button><button className="btn primary" onClick={() => setAdding({ agent: 'claude', name: '' })}>＋ Add account</button></div>
+        <div style={{ display: 'flex', gap: 8 }}><button className="btn" title="Checks the sign-in of each account and reads the Codex session files again for new usage numbers. Claude Code and Antigravity numbers come from their status lines while a task runs." onClick={() => load(true)}>Check sign-ins and usage</button><button className="btn primary" onClick={() => setAdding({ agent: 'claude', name: '' })}>＋ Add account</button></div>
       </div>
       {err && <div className="banner">{err} <button className="btn ghost" onClick={() => setErr('')}>OK</button></div>}
       {agentLoad && agentLoad.agents > agentLoad.noteAbove && <div className="banner">

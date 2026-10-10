@@ -420,6 +420,7 @@ export async function startController(opts: { prompt?: string } = {}): Promise<T
 // the account that accounts.pick chooses (it skips limited and signed-out accounts, and ranks unknown or STALE usage as
 // full, not as free).
 export async function chooseControllerAccount(agent: machine.ControllerAgent, wanted?: string): Promise<accounts.Account> {
+  if (agent === 'codex') accounts.refreshCodexUsage();
   if (wanted) {
     const a = accounts.get(wanted);
     if (!a || a.agent !== agent) throw new Error(`Account ${wanted} is not a ${agentName(agent)} account.`);
