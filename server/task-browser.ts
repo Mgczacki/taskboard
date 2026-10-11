@@ -1763,10 +1763,13 @@ export function mcpNode(): string | null {
 }
 export function mcpScript(root: string) { return join(root, 'node_modules', 'chrome-devtools-mcp', 'build', 'src', 'bin', 'chrome-devtools-mcp.js'); }
 // The command and arguments of the MCP server "task-browser" for one task, or null when it cannot run here.
-export function mcpServer(root: string, taskId: string): { command: string; args: string[] } | null {
+export function mcpServer(root: string, taskId: string, clickEvidence = false): { command: string; args: string[] } | null {
   const node = mcpNode(), script = mcpScript(root);
   if (!node || !existsSync(script)) return null;
-  return { command: node, args: [script, '--wsEndpoint', cdpUrl(taskId), '--no-usage-statistics', '--no-performance-crux'] };
+  return { command: node, args: [
+    ...(clickEvidence ? ['--import', join(root, 'node_modules', 'tsx', 'dist', 'loader.mjs'), join(root, 'server', 'task-browser-mcp.ts')] : []),
+    script, '--wsEndpoint', cdpUrl(taskId), '--no-usage-statistics', '--no-performance-crux',
+  ] };
 }
 export async function check(): Promise<{ chrome: string | null; node: string | null; mcp: boolean }> {
   return { chrome: chromePath(), node: mcpNode(), mcp: existsSync(mcpScript(ROOT)) };

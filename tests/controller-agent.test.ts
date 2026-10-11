@@ -114,6 +114,10 @@ test('Codex: --dangerously-bypass-approvals-and-sandbox replaces the approval an
   assert.ok(!task.some(x => x.includes('codex-hook.mjs')));
   assert.ok(!task.includes('--dangerously-bypass-approvals-and-sandbox'));
   assert.ok(task.some(x => x.startsWith('developer_instructions=')));
+  const browserArgs = task.find(x => x.startsWith('mcp_servers.task_browser.args='));
+  assert.ok(browserArgs?.includes('task-browser-mcp.ts'));
+  assert.ok(browserArgs?.includes('chrome-devtools-mcp.js'));
+  assert.ok(task.includes('approvals_reviewer="auto_review"'));
 });
 
 test('Antigravity: --dangerously-skip-permissions is added; --sandbox follows auto review', () => {

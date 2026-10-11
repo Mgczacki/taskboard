@@ -338,6 +338,10 @@ A move between windows never changes a task's groups. A new task goes after the 
   `~/.taskboard/browsers/<task>/profile`. The first start copies the template profile, so sign in once in the template
   browser (Settings → Task browsers). Agents use it through the MCP server `task-browser` (`chrome-devtools-mcp`,
   connected through `ws://127.0.0.1:4317/ws/cdp/<task>?key=…`), which starts the browser when it is first used.
+  Codex clicks require `prepare_click` after a snapshot of the selected page. Copy its `target` object into `click`.
+  The request then includes the exact target details for approval review. Taskboard checks those details before sending the click.
+  A new snapshot invalidates an earlier preparation. A hidden or changed target requires a new snapshot and preparation.
+  Approval review still decides whether the user authorized the action. This change reaches Codex when its session starts or resumes.
   The task panel's Browser tab shows the active tab as a screencast with mouse and key input, and Pop out shows it in its own
   window (an app window in the Mac app). In a Canvas window, 🌐 shows the browser of that task in the window, with the terminal in a strip
   at the bottom (◨ moves the terminal to the right side, ⬓ moves it back). A click on 🌐 starts a stopped browser, and a
