@@ -580,7 +580,7 @@ function claudeMcpConfig(t: Task): string | null {
 // browser_use_external, and the chrome backend of the node_repl server when the user's config has that server).
 function codexBrowserFlags(t: Task): string[] {
   const mode = browserMode(t);
-  const server = mode === 'off' ? null : taskBrowser.mcpServer(ROOT, t.id);
+  const server = mode === 'off' ? null : taskBrowser.mcpServer(ROOT, t.id, true);
   if (!server) return [];
   const flags = ['-c', `mcp_servers.task_browser.command=${JSON.stringify(server.command)}`, '-c', `mcp_servers.task_browser.args=${JSON.stringify(server.args)}`,
     '-c', 'mcp_servers.task_browser.env={CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS="1"}', '-c', 'mcp_servers.task_browser.startup_timeout_sec=30'];
