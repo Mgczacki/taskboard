@@ -91,6 +91,7 @@ import * as waitingBoard from './waiting-board.ts';
 import * as managerEvents from './manager-events.ts';
 import * as agentErrorWatch from './agent-error-watch.ts';
 import * as managerRole from './manager-role.ts';
+import * as taskGroup from './task-group.ts';
 import * as managerArchive from './manager-archive.ts';
 import * as standing from './standing-approvals.ts';
 
@@ -1654,17 +1655,19 @@ app.post('/api/tasks', async (req, res) => {
       if (!dashboard && !pairedDashboard) return res.status(403).json({ error: 'Only the user can allow computer use when a task starts on the dashboard.' });
     }
     const actor = req.get('x-tb-actor') || '';
+    const selectedGroup = taskGroup.forNewTask(actor, req.body.group);
+    const groupRef = typeof selectedGroup === 'string' ? selectedGroup : selectedGroup?.id;
     const managedGroup = managerRole.newTaskGroup(actor, req.body.group);
-    const groupRef = managedGroup?.id || req.body.group;
     const startBy = links.actorFrom(req.get('x-tb-actor'));
     const startLinks = links.planStart(req.body.links, startBy);
     const prompt = (req.body.spinOff ? spinOffPrompt(req.body.spinOff) : (desc || title)) + (startLinks.length ? '\n\n' + startLinks.map(l => l.line).join('\n') : '');
     const images = agents.checkImages(req.body.images);
     await guarded(req, res, `start “${title}” (${agent === 'auto' ? 'Auto' : agents.agentName(agent)})`, `Folder: ${folder} · worktree: ${worktree === false ? 'no' : worktree === true ? 'yes' : 'automatic'}${branch ? ` · branch ${branch}` : ''}\nAccount: ${account && account !== 'auto' ? account : 'automatic'}\nModel: ${model || 'agent default'}\nPrompt: ${prompt}${images.length ? `\nImages: ${images.length} attached` : ''}`, 'new',
       async () => {
+        const currentGroup = taskGroup.forNewTask(actor, req.body.group);
         const t = await agents.startTask({ title, desc: prompt, agent, folder, worktree, branch, parent: managedGroup ? actor : parent, account, model, computerUse: computerUse === true, images,
           captureQuestion: !!req.get('origin') && !req.get('x-tb-actor') && answerHistory.isQuestion(prompt) });
-        if (groupRef) { const g = managedGroup || groups.all().find(x => x.name === groupRef || x.id === groupRef) || groups.create(String(groupRef)); groups.update(g.id, { tasks: [...g.tasks, t.id] }); }
+        if (currentGroup) { const g = typeof currentGroup === 'string' ? groups.create(currentGroup) : currentGroup; groups.update(g.id, { tasks: [...g.tasks, t.id] }); }
         const linkProblems = links.addAtStart(t.id, startLinks, startBy);
         return { ...view(store.get(t.id) || t), ...(linkProblems.length ? { linkProblems } : {}) };
       }, (t: any) => `Started #${t.num} ${t.title} with ${t.agent} on ${t.account} in ${t.cwd}${groupRef ? ` (group ${groupRef})` : ''}`);
