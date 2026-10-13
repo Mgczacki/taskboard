@@ -263,6 +263,8 @@ export function mountA2ANotes(app: Express, options: { delivery?: A2ADeps; setti
     const m = await messageFor(r, id);
     if (task.id === 'controller' && (!ownerMessage(m) || targetOf(m).task !== 'controller')) throw new A2AError('forbidden', 'Only an explicit owner message can go directly to the controller.');
     if (!accepted(m)) throw new A2AError('not_approved', 'Accept this incoming message before it goes to a task.');
+    if (m.source === 'human_message' && r !== 'person' && targetOf(m).task !== task.id)
+      throw new A2AError('forbidden', 'A direct human message needs its verified owner target or a target approved by the user.');
     if (automatic && targetOf(m).task !== task.id) throw new A2AError('invalid_input', 'The verified destination changed. Check controller triage.');
     if (m.audience === 'person') {
       if (m.approval.by !== 'person') throw new A2AError('not_approved', 'The user must accept a message for a person.');
