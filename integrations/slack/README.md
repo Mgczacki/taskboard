@@ -40,10 +40,10 @@ Saved upload progress prevents the adapter from sharing a file twice.
 Invalid credentials stop delivery.
 Changed content or policy stops delivery.
 
-Taskboard installs the tested service from the local package in `integrations/a2a-notes/a2a-notes-0.8.0.tgz`.
+Taskboard installs the tested service from the local package in `integrations/a2a-notes/a2a-notes-0.8.1.tgz`.
 The lockfile records the package integrity.
-The source revision is `dc6770bf0c85e322ad72a3755ec03c5a69857cc5` in the A2A Notes repository.
-The package SHA256 is `2066cb9d35854903a3ded8a1016f491569e3ddd5ec3dc34778371f886c610d23`.
+The source revision is `39e444e6d9483e824e8bd8d18f17ec2283e94a64` in the A2A Notes repository.
+The package SHA256 is `897756bfa36f33b79f478600e3a4a5ba8d53ef33dd8e0391cd1356b7860f7b2c`.
 A future service update must replace that package and update the lockfile.
 The existing Slack app needs no new callback endpoint.
 
@@ -75,9 +75,10 @@ Native owner requests need no acceptance card for unchanged content and policy.
 They do not approve outgoing actions.
 Other people keep the current acceptance and destination checks.
 
-A2A Notes 0.8.0 also provides an optional macOS connector for the installed Slack app.
+A2A Notes 0.8.1 also provides an optional macOS connector for the installed Slack app.
 The connector uses the Chrome DevTools Protocol through a loopback debugging port.
 It verifies the port owner and current account before it accepts native WebSocket events.
+Each new debugger connection rechecks the port owner.
 It stores explicit DM events before it calls the existing receive function.
 The saved event reference matches history polling, so both paths identify the same note.
 Taskboard keeps its current verified routing and approval rules.
