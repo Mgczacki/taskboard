@@ -15,6 +15,7 @@ process.env.TASKBOARD_A2A_CHECKS = 'rules';
 const { startFakeSlack } = await import('a2a-notes/fake-slack');
 const { startService } = await import('a2a-notes');
 const { mountA2ANotes } = await import('../server/a2anotes/routes.ts');
+const taskKeys = await import('../server/task-token.ts');
 const { TOKEN, URL_BASE, TB_DIR } = await import('../server/config.ts');
 const tasks = await import('../server/store.ts');
 const approvals = await import('../server/approvals.ts');
@@ -46,7 +47,7 @@ after(async () => { server.close(); await adapter.close(); await service.close()
 const alex = `slack:${fake.team}:UALEX01`;
 async function call(actor: 'user' | 'task', path: string, body?: unknown) {
   const headers: Record<string, string> = { 'content-type': 'application/json' };
-  if (actor === 'user') headers.origin = URL_BASE; else { headers['x-taskboard-token'] = TOKEN; headers['x-tb-actor'] = 'writer'; }
+  if (actor === 'user') headers.origin = URL_BASE; else { headers['x-taskboard-token'] = TOKEN; headers['x-tb-actor'] = 'writer'; headers['x-tb-task-token'] = taskKeys.forTask('writer'); }
   const res = await fetch(base + path, { method: body === undefined ? 'GET' : 'POST', headers, body: body === undefined ? undefined : JSON.stringify(body) });
   return { status: res.status, data: await res.json() };
 }

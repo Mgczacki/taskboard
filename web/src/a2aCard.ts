@@ -1,7 +1,7 @@
 // What a message card on the Inbox page shows (web/src/components/A2ANotes.tsx). The label comes only from the
 // message state. Buttons use current service actions and Taskboard's audience checks.
-export interface CardInput { state: string; direction: 'in' | 'out'; allowed_actions: string[]; body_flags: number | null; route_person?: boolean }
-export interface CardControls { label: string; approve: boolean; reject: boolean; removeFlagged: boolean; send: boolean; sendLabel: string; route: boolean }
+export interface CardInput { state: string; direction: 'in' | 'out'; allowed_actions: string[]; body_flags: number | null; route_person?: boolean; delivery_notice?: { status: string } | null }
+export interface CardControls { label: string; ack: boolean; retryNotice: boolean; approve: boolean; reject: boolean; removeFlagged: boolean; send: boolean; sendLabel: string; route: boolean }
 
 export const stateLabel: Record<string, string> = { draft: 'Draft', approved: 'Approved', sending: 'Sending', queued: 'Queued', send_failed: 'Delivery stopped', permanent_failure: 'Delivery stopped', sent: 'Sent', delivery_uncertain: 'Delivery uncertain', rejected: 'Rejected',
   held: 'Waiting for approval', failed: 'Could not be read', quarantined: 'Quarantine' };
@@ -10,6 +10,8 @@ export function cardControls(m: CardInput): CardControls {
   const can = (action: string) => m.allowed_actions.includes(action);
   return {
     label: m.direction === 'in' && m.state === 'approved' ? 'Accepted' : stateLabel[m.state] || m.state,
+    ack: can('ack'),
+    retryNotice: m.direction === 'in' && m.state === 'approved' && can('reply') && m.delivery_notice?.status === 'failed',
     approve: can('approve'),
     reject: can('reject'),
     removeFlagged: m.direction === 'out' && can('revise') && !!m.body_flags,

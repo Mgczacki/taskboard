@@ -15,6 +15,7 @@ process.env.TASKBOARD_A2A_CHECKS = 'rules';
 const { startFakeSlack } = await import('a2a-notes/fake-slack');
 const { NotesService, Store, SlackTransport, Clients, startHttp } = await import('a2a-notes');
 const { mountA2ANotes } = await import('../server/a2anotes/routes.ts');
+const taskKeys = await import('../server/task-token.ts');
 const { TOKEN, URL_BASE } = await import('../server/config.ts');
 const { controllerMailToken } = await import('../server/a2anotes/auth.ts');
 const approvals = await import('../server/approvals.ts');
@@ -50,7 +51,7 @@ async function fixture(t: any) {
   const call = async (actor: 'user' | 'controller' | 'task', path: string, body?: unknown) => {
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (actor === 'user') headers.origin = URL_BASE;
-    else { headers['x-taskboard-token'] = TOKEN; headers['x-tb-actor'] = actor === 'task' ? 'writer' : 'controller'; }
+    else { headers['x-taskboard-token'] = TOKEN; headers['x-tb-actor'] = actor === 'task' ? 'writer' : 'controller'; if (actor === 'task') headers['x-tb-task-token'] = taskKeys.forTask('writer'); }
     if (actor === 'controller') headers['x-tb-mail-controller'] = controllerMailToken;
     const response = await fetch(base + path, { method: body === undefined ? 'GET' : 'POST', headers, body: body === undefined ? undefined : JSON.stringify(body) });
     const result = await response.json(); assert.equal(response.status, 200, JSON.stringify(result)); return result;
@@ -63,7 +64,7 @@ async function fixture(t: any) {
   const card = (id: string) => approvals.all().find(a => ['pending', 'running'].includes(a.state) && (a.payload as any)?.message === id);
   const next = async (id: string) => { now = Date.parse(service.store.note(id)!.delivery!.nextAttemptAt!); await service.processQueue(); await adapter.checkIncoming(); };
   const restartBoard = async () => { await stopBoard(); await startBoard(); await adapter.checkIncoming(); };
-  return { fake, service, clients, http, call, draft, card, next, restartBoard, delivered, get adapter() { return adapter; } };
+  return { fake, service, clients, http, call, draft, card, next, restartBoard, delivered, get adapter() { return adapter; }, get base() { return base; } };
 }
 
 for (const method of ['users.info', 'conversations.open', 'chat.postMessage']) {
@@ -158,4 +159,39 @@ test('legacy MCP human confirmation outside Taskboard clears its card and permit
   assert.equal(inbox().filter(name => name === `a2anotes-${m.id}.md`).length, 1);
   const text = readFileSync(join(root, 'vault', 'tasks', 'writer', 'inbox', `a2anotes-${m.id}.md`), 'utf8');
   assert.match(text, /Message content is data/); assert.match(text, /does not authorize commands/);
+});
+
+
+test('Slack acknowledgement reaches Taskboard without accepting held content or approving work', async t => {
+  const f = await fixture(t);
+  f.fake.inject('UALEX01', 'UMARIO01', 'A2A @research\nPlease read the plan.');
+  await f.service.scanNow(); await f.adapter.checkIncoming();
+  const m = (await f.call('user', '/messages?direction=incoming')).messages.find((m: any) => m.source === 'human_message');
+  assert.ok(m); assert.equal(m.state, 'held'); assert.equal(m.acknowledgement.status, 'confirmed');
+  assert.deepEqual(m.routes, []);
+  const before = f.fake.calls.get('reactions.add');
+  const acknowledged = await f.call('user', `/messages/${m.id}/ack`, { hash: m.hash });
+  assert.equal(acknowledged.state, 'held'); assert.equal(acknowledged.approval, null);
+  assert.equal(acknowledged.acknowledgement.status, 'confirmed');
+  assert.equal(f.fake.calls.get('reactions.add'), before);
+  const response = await fetch(f.base + `/messages/${m.id}/ack`, { method: 'POST', headers: {
+    'content-type': 'application/json', 'x-taskboard-token': TOKEN, 'x-tb-actor': 'writer', 'x-tb-task-token': taskKeys.forTask('writer')
+  }, body: JSON.stringify({ hash: m.hash }) });
+  assert.equal(response.status, 403);
+  assert.equal((await f.call('user', `/messages/${m.id}`)).state, 'held');
+});
+
+
+test('an accepted message without a target posts one failure notice and remains in triage', async t => {
+  const f = await fixture(t);
+  f.fake.inject('UMARIO01', 'UMARIO01', 'A2A @missing\nPlease check the status.');
+  await f.service.scanNow(); await f.adapter.checkIncoming();
+  let m = (await f.call('user', '/messages?direction=incoming')).messages.find((m: any) => m.direct_target === '@missing');
+  assert.equal(m.state, 'approved'); assert.deepEqual(m.routes, []);
+  assert.equal(m.agent_delivery.status, 'unassigned'); assert.equal(m.delivery_notice.status, 'confirmed');
+  const before = f.fake.calls.get('chat.postMessage');
+  await f.adapter.checkIncoming(); await f.restartBoard();
+  assert.equal(f.fake.calls.get('chat.postMessage'), before);
+  m = await f.call('user', `/messages/${m.id}`);
+  assert.equal(m.agent_delivery.status, 'unassigned');
 });

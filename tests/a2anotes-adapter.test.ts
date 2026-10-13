@@ -20,7 +20,8 @@ const { startFakeSlack } = await import('a2a-notes/fake-slack');
 const { startService } = await import('a2a-notes');
 const savePrivate = (file: string, data: unknown) => writeFileSync(file, JSON.stringify(data), { mode: 0o600 });
 const { mountA2ANotes } = await import('../server/a2anotes/routes.ts');
-const { TOKEN, URL_BASE, TB_DIR } = await import('../server/config.ts');
+const taskKeys = await import('../server/task-token.ts');
+const { TOKEN, URL_BASE, TB_DIR, machineId } = await import('../server/config.ts');
 const { controllerMailToken } = await import('../server/a2anotes/auth.ts');
 const tasks = await import('../server/store.ts');
 const approvals = await import('../server/approvals.ts');
@@ -51,7 +52,7 @@ type Actor = 'user' | 'controller' | 'task' | 'stranger';
 async function call(actor: Actor, path: string, body?: unknown) {
   const headers: Record<string, string> = { 'content-type': 'application/json' };
   if (actor === 'user') headers.origin = URL_BASE;
-  else if (actor !== 'stranger') { headers['x-taskboard-token'] = TOKEN; headers['x-tb-actor'] = actor === 'task' ? 'worker' : 'controller'; }
+  else if (actor !== 'stranger') { headers['x-taskboard-token'] = TOKEN; headers['x-tb-actor'] = actor === 'task' ? 'worker' : 'controller'; if (actor === 'task') headers['x-tb-task-token'] = taskKeys.forTask('worker'); }
   if (actor === 'controller') headers['x-tb-mail-controller'] = controllerMailToken;
   // /notes is under /api/notes, the rest under /api/a2anotes
   const url = path.startsWith('/notes') ? base.replace(/\/a2anotes$/, '') + path : base + path;
@@ -167,7 +168,7 @@ test('a person without Taskboard sends to Taskboard, and the controller gives th
 test('a trusted agent reply goes to the task from verified local metadata', async () => {
   const draft = (await call('task', '/drafts', { to: alex.address, subject: 'Question from the worker', body: 'Hi Alex, which host should we use?', audience: 'person',
     metadata: { 'taskboard.task_id': 'controller' } })).data;
-  assert.deepEqual(draft.metadata, { 'taskboard.proposed_by': 'task', 'taskboard.task_id': 'worker', 'taskboard.task_num': 7, 'taskboard.agent': 'claude' }, 'the caller decides the task, not the request body');
+  assert.deepEqual(draft.metadata, { 'taskboard.proposed_by': 'task', 'taskboard.task_id': 'worker', 'taskboard.machine_id': machineId(), 'taskboard.task_num': 7, 'taskboard.agent': 'claude' }, 'the caller decides the task, not the request body');
   await call('controller', `/messages/${draft.id}/approve`, { hash: draft.hash });
   await call('controller', `/messages/${draft.id}/send`, { hash: draft.hash });
   await alexAgent('a2anotes_sync');
@@ -243,7 +244,13 @@ test('approval cards: a task draft for the user sends on Approve and returns the
   assert.equal(c1!.action, 'mail-out');
   const done = await approvals.decide(c1!.id, true);
   assert.equal(done!.state, 'approved', done!.result);
-  assert.equal((await call('user', `/messages/${d.id}`)).data.state, 'sent');
+  let sent = (await call('user', `/messages/${d.id}`)).data;
+  const until = Date.now() + 5000;
+  while (sent.state === 'queued' && Date.now() < until) {
+    await new Promise(resolve => setTimeout(resolve, 50));
+    sent = (await call('user', `/messages/${d.id}`)).data;
+  }
+  assert.equal(sent.state, 'sent', sent.error);
 
   const e = (await call('task', '/drafts', { to: alex.address, subject: 'Second card', body: 'Hi Alex, here is another plan.' })).data;
   const c2 = await card(e.id);
@@ -567,4 +574,14 @@ test('when a2anotes.json is missing, the adapter reports off and changes nothing
   offServer.close(); await off.close();
   // stop the test service through its own command
   execFileSync(process.execPath, [join(process.cwd(), 'node_modules', 'a2a-notes', 'bin', 'a2a-notes.js'), 'stop', '--dir', join(TB_DIR, 'a2a-notes')]);
+});
+
+
+test('the shared server token and another task token cannot impersonate a task in messages', async () => {
+  for (const proof of [undefined, taskKeys.forTask('controller')]) {
+    const headers: Record<string, string> = { 'content-type': 'application/json', 'x-taskboard-token': TOKEN, 'x-tb-actor': 'worker' };
+    if (proof) headers['x-tb-task-token'] = proof;
+    const response = await fetch(base + '/drafts', { method: 'POST', headers, body: JSON.stringify({ to: alex.address, subject: 'Impersonation', body: 'Please read this.' }) });
+    assert.equal(response.status, 403);
+  }
 });

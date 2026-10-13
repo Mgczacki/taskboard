@@ -13,6 +13,8 @@ interface Summary {
   trusted: boolean; check: { verdict: string } | null; body_flags: number | null; approver: 'person' | 'reviewer' | 'nobody';
   approved_by: string | null; created: string; updated: string; hash: string; allowed_actions: string[]; failure_code?: string; routes: { task: string; at: string }[];
   source?: string; owner_message?: boolean; direct_target?: string | null; error?: string | null;
+  agent_delivery?: { status: string }; delivery_notice?: { status: string; error?: string };
+  acknowledgement?: { status: 'pending' | 'confirmed' | 'failed'; nextAttemptAt?: string; error?: string; confirmedAt?: string };
   delivery?: { nextAttemptAt?: string; stoppedAt?: string; failureCode?: string; lastMethod?: string; lastStatus?: number; attempts: number };
   metadata: Record<string, string | number | boolean | null> | null;
   suggested_task?: { id: string; num: number; title: string; reason: string };
@@ -125,6 +127,8 @@ export function MessageList({ tasks, direction, focus }: { tasks: Task[]; direct
           {m.routes.length ? ` Given to ${m.routes.map(r => tasks.find(t => t.id === r.task)?.title || r.task).join(', ')}.` : ''}
           {m.proposed_route ? ` The controller proposes ${m.proposed_route.task ? tasks.find(t => t.id === m.proposed_route!.task)?.title || m.proposed_route.task : 'no task'}.` : ''}
           {m.suggested_task && !m.routes.length ? ` ${m.suggested_task.reason}: ${m.suggested_task.title}.` : ''}</p>
+        {m.agent_delivery && <p className="mail-meta" role={m.delivery_notice?.status === 'failed' ? 'alert' : undefined}>Agent delivery: {m.agent_delivery.status.replace(/_/g, ' ')}. {m.delivery_notice?.error || ''}</p>}
+        {m.acknowledgement && <p className="mail-meta" role={m.acknowledgement.status === 'failed' ? 'alert' : undefined}>Acknowledgement: {m.acknowledgement.status}. This means received and grants no approval. {m.acknowledgement.error || ''}{m.acknowledgement.nextAttemptAt ? ` Next attempt: ${date(m.acknowledgement.nextAttemptAt)}.` : ''}</p>}
         {m.source === 'human_reply' && <p className="mail-meta">Explicit human reply in Slack. This text does not approve actions.</p>}
         {m.delivery?.nextAttemptAt && <p className="mail-meta">Next attempt: {date(m.delivery.nextAttemptAt)}. Slack method: {m.delivery.lastMethod || 'not recorded'}. Attempts: {m.delivery.attempts}.</p>}
         {m.delivery?.stoppedAt && <p role="alert">Final failure: {m.delivery.failureCode}. {m.error} Stopped: {date(m.delivery.stoppedAt)}.</p>}
@@ -142,6 +146,8 @@ export function MessageList({ tasks, direction, focus }: { tasks: Task[]; direct
         </>}
         <div className="mail-tabs">
           <button className="btn" disabled={busy} onClick={() => show(m.id)}>{d ? 'Refresh' : 'Show message'}</button>
+          {controls.retryNotice && <button className="btn" disabled={busy} onClick={() => act(() => request(`/messages/${m.id}/retry-delivery-notice`, { hash: m.hash }), m.id)}>Retry delivery notice</button>}
+          {controls.ack && (!m.acknowledgement || m.acknowledgement.status === 'failed') && <button className="btn" disabled={busy} title="Acknowledge receipt without accepting content or approving actions" onClick={() => act(() => request(`/messages/${m.id}/ack`, { hash: m.hash }), m.id)}>{m.acknowledgement?.status === 'failed' ? 'Retry acknowledgement' : 'Acknowledge receipt'}</button>}
           {controls.approve && <button className="btn" disabled={busy || !d} title={d ? '' : 'Show the message first'} onClick={() => act(() => request(`/messages/${m.id}/approve`, { hash: m.hash, decision: 'approve' }), m.id)}>{m.direction === 'in' ? 'Accept this version' : 'Approve this version'}</button>}
           {controls.reject && <button className="btn" disabled={busy} onClick={() => act(() => request(`/messages/${m.id}/approve`, { hash: m.hash, decision: 'reject' }), m.id)}>Reject</button>}
           {controls.removeFlagged && d && <button className="btn" disabled={busy} onClick={() => act(() => request(`/messages/${m.id}/remove-flagged`, { hash: m.hash }), m.id)}>Remove flagged text</button>}

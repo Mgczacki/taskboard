@@ -18,7 +18,8 @@
         "users:read",
         "users:read.email",
         "files:write",
-        "files:read"
+        "files:read",
+        "reactions:write"
       ]
     },
     "pkce_enabled": true

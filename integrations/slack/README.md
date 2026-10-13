@@ -89,3 +89,34 @@ Outgoing delivery and files retain their existing API limits and durable queue.
 The setup procedure is in the package's `docs/SLACK-DESKTOP.md`.
 The optional setting remains off unless the user selects it.
 The desktop connection is not a supported Slack integration API.
+
+## Acknowledge received messages
+
+
+The Inbox has an Acknowledge receipt button for eligible incoming messages.
+`tb mail ack <id> <hash>` calls the same generic `a2anotes_ack` tool.
+Acknowledgement does not accept held content or approve actions.
+Verified native human replies acknowledge endpoint receipt automatically after the note is stored.
+
+The Slack adapter adds ✅ to the original post. Its emoji name is `white_check_mark`.
+The app manifests now list `reactions:write`. Apply the manifest and reconnect Slack before using reactions.
+Changing this repository does not change the live app or token scopes.
+The Inbox shows pending acknowledgement and permanent failures. It lets the owner retry after correcting a failure.
+
+A confirmed reaction means endpoint receipt. Agent notification and completed work remain separate.
+Manual reactions do not invoke tools or approve work.
+This package update does not change the running service.
+
+Taskboard writes its stable machine identity in originating metadata and saved routes.
+A verified reply with a different machine identity stays unassigned. It cannot select a same-named local task automatically.
+Older notes without machine metadata retain their existing local routing behavior.
+Use one designated intake machine for each Slack identity. Remote forwarding remains outside this version.
+
+Taskboard reports when it cannot select or notify an agent for an accepted note.
+A2A Notes posts a fixed Slack notice without the original text or internal task details.
+If a reported failure resolves, it posts a further notice.
+Uncertain notices are checked before another post. The Inbox shows notice errors and a retry control.
+
+Task callers must prove their own identity with the existing task token.
+The shared server token alone cannot name a task for message operations.
+The CLI reads the task token from the existing token file for older sessions.

@@ -1,6 +1,6 @@
 // A2A Notes supplies the current approval and verifies the sender of a reply.
 // Taskboard uses local task metadata and a target that the user approved.
-export interface ApprovedTarget { task: string | null; hash: string }
+export interface ApprovedTarget { task: string | null; hash: string; machine?: string }
 
 export function accepted(m: any): boolean {
   return m.direction === 'in' && m.state === 'approved' &&
@@ -16,7 +16,10 @@ export function ownerMessage(m: any): boolean {
     ['human_reply', 'human_message'].includes(m.source) && m.approval?.by === 'person' && m.approval.actor === m.from;
 }
 
-export function destination(m: any, target: ApprovedTarget | undefined, exists: (id: string) => boolean, resolve?: (selector: string) => string | undefined) {
+export function destination(m: any, target: ApprovedTarget | undefined, exists: (id: string) => boolean, resolve?: (selector: string) => string | undefined, machine?: string) {
+  const replyMachine = m.reply_to_local?.metadata?.['taskboard.machine_id'];
+  if (machine && typeof replyMachine === 'string' && replyMachine !== machine) return { reason: 'The original task belongs to another machine.' };
+  if (machine && target?.machine && target.machine !== machine) return { reason: 'The approved target belongs to another machine.' };
   const reply = m.reply_to_local?.metadata?.['taskboard.task_id'];
   const valid = (id: unknown): id is string => typeof id === 'string' && (id !== 'controller' || ownerMessage(m)) && exists(id);
   if (target && target.hash === m.hash) {

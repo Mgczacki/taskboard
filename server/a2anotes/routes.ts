@@ -11,11 +11,11 @@ import express, { type Express, type Request, type Response } from 'express';
 import { randomUUID, createHash } from 'node:crypto';
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, realpathSync } from 'node:fs';
 import { basename, join, sep } from 'node:path';
-import { TB_DIR, TOKEN, URL_BASE } from '../config.ts';
+import { TB_DIR, TOKEN, URL_BASE, machineId } from '../config.ts';
 import * as tasks from '../store.ts';
 import * as taskToken from '../task-token.ts';
 import * as docs from '../docs.ts';
-import type { Delivery } from '../inbox-delivery.ts';
+import { get as inboxDelivery, type Delivery } from '../inbox-delivery.ts';
 import { human, isControllerToken } from './auth.ts';
 import { readJson, savePrivate } from './files.ts';
 import { draftBody, removeFlags } from './draft.ts';
@@ -28,10 +28,11 @@ import { accepted, agentAudience, destination, trustedAgent, ownerMessage, type 
 
 const MAX_FILE = 10 * 1024 * 1024;
 export interface A2ADeps { deliver: (task: string, name: string) => Promise<Delivery> }
-interface Route { task: string; file: string; at: string; by: 'person' | 'reviewer' }
+interface Route { task: string; machine?: string; file: string; at: string; by: 'person' | 'reviewer' }
 
 export function mountA2ANotes(app: Express, options: { delivery?: A2ADeps; settings?: () => Settings; background?: boolean; dir?: string } = {}) {
   const dir = options.dir || TB_DIR;
+  const localMachine = machineId();
   const settingsFile = join(dir, 'a2anotes.json');
   const settingsFor = options.settings || (() => readSettings(settingsFile));
   let client: A2ANotesClient | undefined, clientKey = '';
@@ -57,7 +58,7 @@ export function mountA2ANotes(app: Express, options: { delivery?: A2ADeps; setti
   };
   const targets = () => readJson<Record<string, ApprovedTarget>>(targetsFile, {});
   const approveTarget = (m: any, task: string | null) => {
-    const all = targets(); all[m.id] = { task, hash: m.hash }; savePrivate(targetsFile, all);
+    const all = targets(); all[m.id] = { task, machine: localMachine, hash: m.hash }; savePrivate(targetsFile, all);
   };
   const notes = TaskNotes.in(dir);
 
@@ -69,7 +70,7 @@ export function mountA2ANotes(app: Express, options: { delivery?: A2ADeps; setti
     const taskProof = !!actor && actor !== 'controller' && taskToken.actorFor(req.get('x-tb-task-token') || req.get('x-taskboard-token')) === actor;
     if (req.get('x-taskboard-token') !== TOKEN && !taskProof) return undefined;
     if (actor === 'controller') return isControllerToken(req.get('x-tb-mail-controller')) ? 'reviewer' : undefined;
-    return actor && tasks.get(actor) ? 'agent' : undefined;
+    return taskProof && tasks.get(actor) ? 'agent' : undefined;
   };
   const need = (req: Request, ...allowed: Role[]) => {
     const r = role(req);
@@ -82,9 +83,9 @@ export function mountA2ANotes(app: Express, options: { delivery?: A2ADeps; setti
     const r = role(req);
     if (r === 'person') return { 'taskboard.proposed_by': 'user' };
     // the reviewer role is proven by the controller token, with or without a controller task record
-    if (r === 'reviewer') { const c = tasks.get('controller'); return { 'taskboard.proposed_by': 'controller', 'taskboard.task_id': 'controller', ...(c ? { 'taskboard.agent': c.agent } : {}) }; }
+    if (r === 'reviewer') { const c = tasks.get('controller'); return { 'taskboard.proposed_by': 'controller', 'taskboard.task_id': 'controller', 'taskboard.machine_id': localMachine, ...(c ? { 'taskboard.agent': c.agent } : {}) }; }
     const task = tasks.get(req.get('x-tb-actor') || '');
-    return task ? { 'taskboard.proposed_by': 'task', 'taskboard.task_id': task.id, 'taskboard.task_num': task.num, 'taskboard.agent': task.agent } : {};
+    return task ? { 'taskboard.proposed_by': 'task', 'taskboard.task_id': task.id, 'taskboard.machine_id': localMachine, 'taskboard.task_num': task.num, 'taskboard.agent': task.agent } : {};
   };
 
   // Names and pictures (server/a2anotes/avatars.ts) come from A2A Notes' person lookup.
@@ -113,7 +114,7 @@ export function mountA2ANotes(app: Express, options: { delivery?: A2ADeps; setti
   };
   const proposals = () => readJson<Record<string, Proposal>>(proposalsFile, {});
   const routes = () => readJson<Record<string, Route[]>>(routesFile, {});
-  const targetOf = (m: any) => destination(m, targets()[m.id], id => !!activeTask(id), resolveTarget);
+  const targetOf = (m: any) => destination(m, targets()[m.id], id => !!activeTask(id), resolveTarget, localMachine);
   // The person token reads accepted text only for this authenticated controller path.
   // The service checks the approval hash and current policy through its reply action.
   const controllerMessage = async (m: any) => {
@@ -246,6 +247,12 @@ export function mountA2ANotes(app: Express, options: { delivery?: A2ADeps; setti
     },
   });
 
+  const reportDelivery = async (m: any, status: 'unassigned' | 'notification_pending' | 'notified') => {
+    if (m.agent_delivery?.status === status) return;
+    try { await service().call('reviewer', 'a2anotes_report_delivery', { id: m.id, expected_hash: m.hash, status }); }
+    catch { /* older services do not expose delivery feedback */ }
+  };
+
   // Each message and task pair has one file. Save the route before attempting delivery.
   // A concurrent route waits for the first route and returns the saved record.
   const routing = new Map<string, Promise<Route>>();
@@ -284,9 +291,12 @@ export function mountA2ANotes(app: Express, options: { delivery?: A2ADeps; setti
     const name = `a2anotes-${m.id}.md`;
     const path = join(docs.inboxDir(task.id), name);
     const file = existsSync(path) && readFileSync(path, 'utf8') === text ? name : basename(docs.uploadSystem(task.id, name, text));
-    const route: Route = { task: task.id, file, at: new Date().toISOString(), by: r === 'person' ? 'person' : 'reviewer' };
+    const route: Route = { task: task.id, machine: localMachine, file, at: new Date().toISOString(), by: r === 'person' ? 'person' : 'reviewer' };
     const latest = routes(); latest[m.id] = [...(latest[m.id] || []), route]; savePrivate(routesFile, latest);
-    try { await options.delivery?.deliver(task.id, file); } catch { /* inbox-delivery retries the saved file */ }
+    try {
+      const delivery = await options.delivery?.deliver(task.id, file);
+      await reportDelivery(m, delivery?.deliveredAt ? 'notified' : 'notification_pending');
+    } catch { await reportDelivery(m, 'notification_pending'); }
     return route;
   }
 
@@ -309,6 +319,7 @@ export function mountA2ANotes(app: Express, options: { delivery?: A2ADeps; setti
       m = await messageFor('reviewer', id);
     }
     const currentTarget = targetOf(m);
+    if (accepted(m) && !currentTarget.task) await reportDelivery(m, 'unassigned');
     if (accepted(m) && currentTarget.task) await routeTo(m.id, currentTarget.task, 'reviewer', true);
     else if (accepted(m) || trustedAgent(m) || (m.state === 'held' && (m.approver === 'person' || m.audience === 'person' && m.approver === 'reviewer') && !proposals()[m.id])) await tellController(m, 'incoming');
     return m;
@@ -415,6 +426,16 @@ export function mountA2ANotes(app: Express, options: { delivery?: A2ADeps; setti
     const result = await service().call(need(req, 'person', 'reviewer'), 'a2anotes_send', { id: req.params.id, expected_hash: req.body?.hash, request_id: typeof req.body?.request_id === 'string' ? req.body.request_id : `tb-${randomUUID()}` });
     void cards.sync();
     return decorate(result);
+  }));
+  app.post('/api/a2anotes/messages/:id/retry-delivery-notice', endpoint(async req => {
+    need(req, 'person');
+    const m = await messageFor('person', String(req.params.id));
+    return service().call('person', 'a2anotes_report_delivery', { id: m.id, expected_hash: req.body?.hash, status: m.agent_delivery?.status });
+  }));
+  app.post('/api/a2anotes/messages/:id/ack', endpoint(async req => {
+    const r = need(req, 'person', 'reviewer', 'agent');
+    const m = await messageFor(r, String(req.params.id));
+    return service().call(r, 'a2anotes_ack', { id: m.id, expected_hash: req.body?.hash });
   }));
   app.post('/api/a2anotes/messages/:id/seen', endpoint(req => service().call(need(req, 'person', 'reviewer', 'agent'), 'a2anotes_mark_seen', { id: req.params.id })));
   app.post('/api/a2anotes/messages/:id/route', endpoint(req => routeTo(String(req.params.id), String(req.body?.task || ''), need(req, 'person', 'reviewer'))));
@@ -524,7 +545,11 @@ export function mountA2ANotes(app: Express, options: { delivery?: A2ADeps; setti
     if (!settingsFor().enabled) return;
     for (const m of await incoming()) {
       if (m.state !== 'held' && m.state !== 'approved') continue;
-      if (routes()[m.id]?.length) continue;
+      if (routes()[m.id]?.length) {
+        const r = routes()[m.id][0], delivered = inboxDelivery(r.task, r.file);
+        if (delivered) await reportDelivery(m, delivered.deliveredAt ? 'notified' : 'notification_pending');
+        continue;
+      }
       try { await intake(m.id); } catch { /* next scan retries this message without blocking others */ }
     }
     await cards.sync();
