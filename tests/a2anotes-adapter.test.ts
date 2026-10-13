@@ -469,6 +469,7 @@ test('an unknown owner target waits in triage and external target text cannot ro
   const list = (await call('user', '/messages?direction=incoming')).data.messages;
   const unknown = list.find((m: any) => m.direct_target === '@missing');
   assert.equal(unknown.state, 'approved'); assert.deepEqual(unknown.routes, []);
+  assert.equal((await call('controller', `/messages/${unknown.id}/route`, { task: 'worker' })).status, 403);
   assert.ok((await call('controller', '/triage')).data.messages.some((m: any) => m.id === unknown.id));
   const external = list.find((m: any) => m.direct_target === '@research' && m.from === alex.address);
   assert.equal(external.state, 'held'); assert.equal(external.owner_message, false); assert.deepEqual(external.routes, []);
@@ -476,6 +477,8 @@ test('an unknown owner target waits in triage and external target text cannot ro
   await call('user', `/messages/${external.id}/approve`, { hash: external.hash });
   assert.deepEqual((await call('user', `/messages/${external.id}`)).data.routes, [], 'a header from another sender does not choose a local target');
   assert.equal((await call('controller', `/messages/${external.id}/route`, { task: 'controller' })).status, 403);
+  assert.equal((await call('controller', `/messages/${external.id}/route`, { task: 'worker' })).status, 403);
+  assert.equal((await call('user', `/messages/${external.id}/route`, { task: 'worker' })).status, 200);
 });
 
 test('a native owner reply reaches its origin with the original person audience', async () => {
