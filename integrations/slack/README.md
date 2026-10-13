@@ -18,7 +18,7 @@ To use another app, set the client ID and team ID on the Settings page (Integrat
 
 ## Replies and queued delivery
 
-A2A Notes 0.6.1 displays an explicit reply marker in each sent Slack note.
+A2A Notes displays an explicit reply marker in each sent Slack note.
 The person copies that first line and writes the reply on the next line.
 The reply can arrive in the direct message conversation or its thread.
 
@@ -40,9 +40,10 @@ Saved upload progress prevents the adapter from sharing a file twice.
 Invalid credentials stop delivery.
 Changed content or policy stops delivery.
 
-Taskboard installs the tested service from the local package in `integrations/a2a-notes/a2a-notes-0.6.1.tgz`.
+Taskboard installs the tested service from the local package in `integrations/a2a-notes/a2a-notes-0.8.0.tgz`.
 The lockfile records the package integrity.
-The source revision is `78ebe80873bfc97d9223a1ca0f4b3f6be8831a7a` in the A2A Notes repository.
+The source revision is `dc6770bf0c85e322ad72a3755ec03c5a69857cc5` in the A2A Notes repository.
+The package SHA256 is `2066cb9d35854903a3ded8a1016f491569e3ddd5ec3dc34778371f886c610d23`.
 A future service update must replace that package and update the lockfile.
 The existing Slack app needs no new callback endpoint.
 
@@ -64,3 +65,26 @@ Neither acceptance nor reply text authorizes actions.
 Existing Taskboard role tokens remain unchanged.
 The dashboard continues to use its existing approval path.
 This package update changes no running service or live configuration.
+
+## Owner requests and Slack Desktop events
+
+The owner can address an active task with `A2A #430` on the first line.
+The owner writes the request on the next line in their Slack self-conversation.
+`A2A @controller` and registered task aliases use the same explicit format.
+Native owner requests need no acceptance card for unchanged content and policy.
+They do not approve outgoing actions.
+Other people keep the current acceptance and destination checks.
+
+A2A Notes 0.8.0 also provides an optional macOS connector for the installed Slack app.
+The connector uses the Chrome DevTools Protocol through a loopback debugging port.
+It verifies the port owner and current account before it accepts native WebSocket events.
+It stores explicit DM events before it calls the existing receive function.
+The saved event reference matches history polling, so both paths identify the same note.
+Taskboard keeps its current verified routing and approval rules.
+
+The connector does not need desktop clicks or screenshots.
+It still uses Slack OAuth to verify new DM channels.
+Outgoing delivery and files retain their existing API limits and durable queue.
+The setup procedure is in the package's `docs/SLACK-DESKTOP.md`.
+The optional setting remains off unless the user selects it.
+The desktop connection is not a supported Slack integration API.
