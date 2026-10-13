@@ -18,13 +18,9 @@ import * as accounts from '../accounts.ts';
 import * as tasks from '../store.ts';
 import { savePrivate } from './files.ts';
 import type { Role, Settings } from './client.ts';
-import { DEFAULT_SLACK_CLIENT_ID, DEFAULT_SLACK_TEAM_ID, appName, redirectUrl, signInHelp, slackApp } from './slack-app.ts';
+import { DEFAULT_SLACK_TEAM_ID, slackApp } from './slack-app.ts';
 
 const run = promisify(execFile);
-// the default Slack app: the separate A2A Notes app (8696283833057.12198817279122) in the Sekai workspace. It lists
-// http://localhost:4460/slack/callback as a redirect URL. The Taskboard settings and TASKBOARD_A2A_SLACK_CLIENT_ID and
-// TASKBOARD_A2A_SLACK_TEAM_ID can choose another app (slackApp in server/a2anotes/slack-app.ts).
-export const SLACK_CLIENT_ID = DEFAULT_SLACK_CLIENT_ID;
 export const SLACK_TEAM_ID = DEFAULT_SLACK_TEAM_ID;
 const realTaskboard = TB_DIR === join(HOME, '.taskboard');
 // The Slack app must list http://localhost:<port>/slack/callback for this port. integrations/slack/a2a-notes-manifest.json
@@ -98,13 +94,6 @@ function configFile() { return join(SERVICE_DIR, 'config.json'); }
 function checksInConfig() {
   try { const c = JSON.parse(readFileSync(configFile(), 'utf8')); return { reviewCommand: c.reviewCommand, bodyCheckCommand: c.bodyCheckCommand }; } catch { return {}; }
 }
-// the Slack app in the A2A Notes config.json, which is the app that the running service signs in with
-function slackInConfig(): { clientId: string; teamId: string; redirectUri: string } | undefined {
-  try {
-    const c = JSON.parse(readFileSync(configFile(), 'utf8')).slack;
-    return c && typeof c.clientId === 'string' ? { clientId: c.clientId, teamId: String(c.teamId || ''), redirectUri: String(c.redirectUri || '') } : undefined;
-  } catch { return undefined; }
-}
 const sameChecks = (a: ReturnType<typeof checkCommands>, b: ReturnType<typeof checkCommands>) => JSON.stringify(a.reviewCommand || null) === JSON.stringify(b.reviewCommand || null) && JSON.stringify(a.bodyCheckCommand || null) === JSON.stringify(b.bodyCheckCommand || null);
 
 export interface SetupState {
@@ -118,14 +107,7 @@ export interface SetupState {
   checks: 'model' | 'rules';
   // the config has other check commands than this Taskboard would write (for example a new controller account)
   checksOutdated: boolean;
-  // the Slack app in the A2A Notes config.json (the app that sign-in uses), when the config exists
-  slack?: { clientId: string; teamId: string; redirectUri: string; name?: string };
-  // the Slack app that this Taskboard chooses (settings, environment, or default) and the redirect URL it must list
-  slackApp: { clientId: string; teamId: string; source: 'settings' | 'environment' | 'default'; name?: string; redirectUri: string };
-  // the config has another Slack app than this Taskboard chooses; "Use this Slack app" writes the chosen one
-  slackAppDiffers: boolean;
-  // the plain help for a failed Slack sign-in, for the app that sign-in uses
-  signInHelp: string[];
+  desktop: {url: string; teamId: string};
 }
 // true when version a is older than version b (both in the form 1.2.3; a part that is not a number counts as 0)
 export function olderVersion(a: string, b: string) {
@@ -142,8 +124,7 @@ function restartStep(launchAgent: boolean) {
 }
 export async function setupState(settings: Settings): Promise<SetupState> {
   const version = packageVersion(), h = await health();
-  const inConfig = slackInConfig(), chosen = { ...slackApp(), redirectUri: redirectUrl(SERVICE_PORT) };
-  const used = inConfig || chosen;
+  const chosen = slackApp();
   return {
     installed: !!version, version, configured: existsSync(join(SERVICE_DIR, 'config.json')), running: !!h, serviceVersion: h?.version,
     linked: settings.enabled && (['person', 'reviewer', 'agent'] as Role[]).every(r => !!settings.tokens[r]),
@@ -152,29 +133,26 @@ export async function setupState(settings: Settings): Promise<SetupState> {
     restartStep: restartStep(existsSync(AGENT_FILE)),
     checks: checksInConfig().reviewCommand ? 'model' : 'rules',
     checksOutdated: existsSync(configFile()) && !sameChecks(checksInConfig(), checkCommands()),
-    ...(inConfig ? { slack: { ...inConfig, name: appName(inConfig.clientId) } } : {}),
-    slackApp: chosen,
-    slackAppDiffers: !!inConfig && (inConfig.clientId !== chosen.clientId || inConfig.teamId !== chosen.teamId),
-    signInHelp: signInHelp(used.clientId, used.redirectUri || chosen.redirectUri),
+    desktop: (() => {try {const c = JSON.parse(readFileSync(configFile(), 'utf8')); return {url: c.desktop?.url || c.slack?.desktopUrl || 'http://127.0.0.1:19322', teamId: c.slack?.teamId || chosen.teamId};} catch {return {url: 'http://127.0.0.1:19322', teamId: chosen.teamId};}})(),
   };
 }
 
 let running: Promise<SetupState> | undefined;
 // applySlackApp: write the Slack app that this Taskboard chooses into an existing A2A Notes config.json. Only the
 // "Use this Slack app" button sends it, so setup never changes the app of a config that the user wrote by hand.
-export function setup(settingsFile: string, read: () => Settings, options: { applySlackApp?: boolean } = {}) {
+export function setup(settingsFile: string, read: () => Settings, options: {desktopUrl?: string; teamId?: string} = {}) {
   // one setup at a time: a second click waits for the first one
   running ||= doSetup(settingsFile, read, options).finally(() => { running = undefined; });
   return running;
 }
 
-async function doSetup(settingsFile: string, read: () => Settings, options: { applySlackApp?: boolean }): Promise<SetupState> {
+async function doSetup(settingsFile: string, read: () => Settings, options: {desktopUrl?: string; teamId?: string}): Promise<SetupState> {
   let state = await setupState(read());
   if (!state.installed) throw new Error('A2A Notes is not installed with this Taskboard. Run pnpm install in the Taskboard folder.');
   if (!state.configured) {
     mkdirSync(SERVICE_DIR, { recursive: true, mode: 0o700 });
     const app = slackApp();
-    await cli('init', '--client-id', app.clientId, '--team-id', app.teamId, '--port', String(SERVICE_PORT));
+    await cli('init', '--team-id', app.teamId, '--desktop-url', 'http://127.0.0.1:19322', '--port', String(SERVICE_PORT));
   }
   // the check commands are read when the service starts: write them, then restart a running service
   const wanted = checkCommands();
@@ -185,11 +163,18 @@ async function doSetup(settingsFile: string, read: () => Settings, options: { ap
     savePrivate(configFile(), { ...config, ...wanted });
     restart = state.running;
   }
-  // the Slack app is read when the service starts too. The redirect URL keeps the port of the config.
-  if (options.applySlackApp && state.slackAppDiffers) {
-    const config = JSON.parse(readFileSync(configFile(), 'utf8')), app = slackApp();
-    savePrivate(configFile(), { ...config, slack: { ...config.slack, clientId: app.clientId, teamId: app.teamId, redirectUri: config.slack?.redirectUri || redirectUrl(SERVICE_PORT) } });
-    restart = state.running;
+  const config = JSON.parse(readFileSync(configFile(), 'utf8'));
+  const url = typeof options.desktopUrl === 'string' ? options.desktopUrl : config.desktop?.url || config.slack?.desktopUrl || 'http://127.0.0.1:19322';
+  const parsed = new URL(url);
+  if (parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1' || !parsed.port || parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) throw new Error('Use a loopback Slack Desktop endpoint with a port.');
+  const teamId = options.teamId || config.slack?.teamId || slackApp().teamId;
+  if (!/^T[A-Z0-9]+$/.test(teamId)) throw new Error('Use a Slack workspace ID.');
+  const next = {...config, slack: {teamId, desktopUrl: parsed.origin, ...(config.slack?.acknowledgementEmoji ? {acknowledgementEmoji: config.slack.acknowledgementEmoji} : {}), ...(config.slack?.projectLink !== undefined ? {projectLink: config.slack.projectLink} : {})}};
+  delete next.desktop;
+  if (JSON.stringify(next) !== JSON.stringify(config)) {
+    const backup = join(SERVICE_DIR, 'config.before-slack-app.json');
+    if ((config.slack?.clientId || config.slack?.redirectUri) && !existsSync(backup)) savePrivate(backup, config);
+    savePrivate(configFile(), next); restart ||= state.running;
   }
   if (state.running && (restart || state.updateAvailable)) {
     // a LaunchAgent starts the service again at once (KeepAlive), with the package of the running Taskboard release;

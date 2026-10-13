@@ -16,7 +16,7 @@ const root = mkdtempSync(join(tmpdir(), 'tb-a2anotes-'));
 process.env.TASKBOARD_DIR = join(root, 'server'); process.env.TASKBOARD_VAULT = join(root, 'vault');
 process.env.TASKBOARD_A2A_CHECKS = 'rules';
 process.env.TASKBOARD_A2A_PORT = String(4700 + Math.floor(Math.random() * 200));
-const { startFakeSlack } = await import('a2a-notes/fake-slack');
+const { startFakeSlack, FakeSlackTransport } = await import('a2a-notes/fake-slack');
 const { startService } = await import('a2a-notes');
 const savePrivate = (file: string, data: unknown) => writeFileSync(file, JSON.stringify(data), { mode: 0o600 });
 const { mountA2ANotes } = await import('../server/a2anotes/routes.ts');
@@ -31,7 +31,7 @@ async function person(user: string) {
   const dir = mkdtempSync(join(tmpdir(), `a2an-${user}-`));
   savePrivate(join(dir, 'config.json'), { port: 0, scanIntervalSeconds: 0, slack: { clientId: 'fake', teamId: fake.team, redirectUri: 'http://localhost:4460/slack/callback', apiBase: `${fake.url}/api` } });
   savePrivate(join(dir, 'slack-credentials.json'), fake.credentials(user));
-  const running = await startService(dir);
+  const running = await startService(dir, {}, undefined, undefined, {transport:new FakeSlackTransport(join(dir,'slack-credentials.json'), JSON.parse(readFileSync(join(dir,'config.json'),'utf8')).slack, fetch, {disableQuotas:true})});
   return { running, url: `${running.server.url}/mcp`, address: `slack:${fake.team}:${user}` };
 }
 const mario = await person('UMARIO01'), alex = await person('UALEX01');
@@ -527,7 +527,7 @@ test('when a2anotes.json is missing, the adapter reports off and changes nothing
   // setup from the dashboard: config, a running service, tokens, and a2anotes.json, in a test folder and port
   const task = await fetch(`${url}/setup`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-taskboard-token': TOKEN, 'x-tb-actor': 'worker' }, body: '{}' });
   assert.equal(task.status, 403, 'only the person starts the setup');
-  const setup = await fetch(`${url}/setup`, { method: 'POST', headers, body: '{}' });
+  const setup = await fetch(`${url}/setup`, { method: 'POST', headers, body: JSON.stringify({desktopUrl:'http://127.0.0.1:1'}) });
   const done = await setup.json();
   assert.equal(setup.status, 200, JSON.stringify(done));
   assert.deepEqual({ configured: done.setup.configured, running: done.setup.running, linked: done.setup.linked, version: done.setup.serviceVersion },
@@ -543,39 +543,24 @@ test('when a2anotes.json is missing, the adapter reports off and changes nothing
   // a second setup finds everything done and keeps the tokens
   assert.equal((await fetch(`${url}/setup`, { method: 'POST', headers, body: '{}' })).status, 200);
   assert.equal(readFileSync(join(offRoot, 'a2anotes.json'), 'utf8'), settingsText);
-  // Connect Slack: a Slack sign-in link that returns to the Taskboard Inbox
-  const link = (await (await fetch(`${url}/slack-sign-in`, { method: 'POST', headers, body: '{}' })).json()).url;
-  assert.match(link, /^https:\/\/slack\.com\/oauth\/v2\/authorize\?/);
-  assert.equal(new URL(link).searchParams.get('team'), 'T08LG8BQH1P');
-  // the default Slack app is the separate A2A Notes app, with the redirect URL of the test port
-  const port = Number(process.env.TASKBOARD_A2A_PORT);
-  assert.equal(new URL(link).searchParams.get('client_id'), '8696283833057.12198817279122');
-  assert.equal(new URL(link).searchParams.get('redirect_uri'), `http://localhost:${port}/slack/callback`);
-  assert.deepEqual(after.setup.slack, { clientId: '8696283833057.12198817279122', teamId: 'T08LG8BQH1P', redirectUri: `http://localhost:${port}/slack/callback`, name: 'A2A Notes' });
-  assert.equal(after.setup.slackAppDiffers, false);
-  assert.ok(after.setup.signInHelp.some((l: string) => l.includes(`http://localhost:${port}/slack/callback`) && l.includes('8696283833057.12198817279122')));
-  // another app in the Taskboard settings: setup reports the difference and changes the config only on "Use this Slack app"
-  const machine = await import('../server/machine.ts');
-  machine.update({ a2aSlackClientId: '8696283833057.12177743257233' });
-  try {
-    const differs = await (await fetch(`${url}/status`, { headers })).json();
-    assert.equal(differs.setup.slackAppDiffers, true);
-    assert.equal(differs.setup.slackApp.source, 'settings');
-    assert.equal(differs.setup.slack.clientId, '8696283833057.12198817279122');
-    await fetch(`${url}/setup`, { method: 'POST', headers, body: '{}' });
-    assert.equal(JSON.parse(readFileSync(join(TB_DIR, 'a2a-notes', 'config.json'), 'utf8')).slack.clientId, '8696283833057.12198817279122', 'a plain setup keeps the app of the config');
-    const applied = await (await fetch(`${url}/setup`, { method: 'POST', headers, body: JSON.stringify({ applySlackApp: true }) })).json();
-    assert.equal(applied.setup.slackAppDiffers, false, JSON.stringify(applied));
-    const config = JSON.parse(readFileSync(join(TB_DIR, 'a2a-notes', 'config.json'), 'utf8'));
-    assert.deepEqual(config.slack, { ...config.slack, clientId: '8696283833057.12177743257233', teamId: 'T08LG8BQH1P', redirectUri: `http://localhost:${port}/slack/callback` });
-    const link2 = (await (await fetch(`${url}/slack-sign-in`, { method: 'POST', headers, body: '{}' })).json()).url;
-    assert.equal(new URL(link2).searchParams.get('client_id'), '8696283833057.12177743257233', 'the restarted service signs in with the new app');
-  } finally { machine.update({ a2aSlackClientId: '' }); }
-  offServer.close(); await off.close();
-  // stop the test service through its own command
-  execFileSync(process.execPath, [join(process.cwd(), 'node_modules', 'a2a-notes', 'bin', 'a2a-notes.js'), 'stop', '--dir', join(TB_DIR, 'a2a-notes')]);
-});
+  assert.equal(after.setup.desktop.url,'http://127.0.0.1:1');
+  assert.equal(after.setup.desktop.teamId,'T08LG8BQH1P');
+  const config=JSON.parse(readFileSync(join(TB_DIR,'a2a-notes','config.json'),'utf8'));
+  assert.deepEqual(config.slack,{teamId:'T08LG8BQH1P',desktopUrl:'http://127.0.0.1:1'});
+  assert.equal('clientId' in config.slack,false);
+  const legacy={...config,slack:{...config.slack,clientId:'123456.654321',redirectUri:'http://localhost:4461/slack/callback'}};
+  savePrivate(join(TB_DIR,'a2a-notes','config.json'),legacy);
+  const migrated=await fetch(`${url}/setup`,{method:'POST',headers,body:'{}'});
+  assert.equal(migrated.status,200,JSON.stringify(await migrated.json()));
+  const backup=join(TB_DIR,'a2a-notes','config.before-slack-app.json');
+  assert.deepEqual(JSON.parse(readFileSync(backup,'utf8')),legacy);
+  assert.equal(statSync(backup).mode & 0o777,0o600);
+  assert.equal(JSON.parse(readFileSync(join(TB_DIR,'a2a-notes','config.json'),'utf8')).slack.clientId,undefined);
 
+  assert.equal((await fetch(`${url}/slack-sign-in`,{method:'POST',headers,body:'{}'})).status,404);
+  offServer.close(); await off.close();
+  execFileSync(process.execPath,[join(process.cwd(),'node_modules','a2a-notes','bin','a2a-notes.js'),'stop','--dir',join(TB_DIR,'a2a-notes')]);
+});
 
 test('the shared server token and another task token cannot impersonate a task in messages', async () => {
   for (const proof of [undefined, taskKeys.forTask('controller')]) {
