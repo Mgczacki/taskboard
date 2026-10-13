@@ -2,7 +2,7 @@
 // name of server/agents.ts (namedCommand).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { etimeSec, groupProcesses, parsePs, parseSafePs, parseTaskEnv, parseTopPower, TASKBOARD, type PsRow, type ProcInput } from '../server/processes.ts';
+import { etimeSec, groupProcesses, parsePs, parseSafePs, parseTaskEnv, parseTopPower, parseTopThreads, TASKBOARD, type PsRow, type ProcInput } from '../server/processes.ts';
 
 const B = '/Users/me/.taskboard/browsers';
 const row = (pid: number, ppid: number, name: string, args = name, cpu = 1, rssKb = 1024, etime = '01:00'): PsRow => ({ pid, ppid, uid: 501, cpu, rssKb, etime, name, args });
@@ -96,6 +96,12 @@ test('safe process rows contain no arguments and count threads', () => {
   assert.equal(table.groups.find(g => g.key === 'fix-login-12')?.totals.threads, 11);
   assert.equal(table.machine.count, input().rows.length + 1);
   assert.equal(table.groups.flatMap(g => g.procs).some(p => p.command.includes('--')), false);
+});
+
+test('macOS top thread output supplies process and machine totals', () => {
+  const result = parseTopThreads('Processes: 2043 total, 15741 threads\nPID    #TH\n701    11  \n702    4/1  \n');
+  assert.equal(result.total, 15741);
+  assert.deepEqual([...result.byPid], [[701, 11], [702, 4]]);
 });
 
 test('agents start with the task number in argv[0]', async () => {
