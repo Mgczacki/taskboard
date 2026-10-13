@@ -57,7 +57,7 @@ function SlackTaskAliases() {
   const load = async () => { const result = await a2aRequest('/aliases'); setAliases(result.aliases); setTasks(result.tasks); };
   const { busy, error, act } = useAction(load);
   useEffect(() => { void load().catch(() => {}); }, []);
-  return <details>
+  return <details className="a2a-task-aliases">
     <summary>Message your tasks from Slack</summary>
     <p>Write in your Slack self-conversation. Put the destination on the first line, then write your request.</p>
     <pre>{'A2A #430\nPlease check the current status.'}</pre>
