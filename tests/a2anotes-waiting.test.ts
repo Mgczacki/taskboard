@@ -12,7 +12,7 @@ import { tmpdir } from 'node:os';
 const root = mkdtempSync(join(tmpdir(), 'tb-a2a-waiting-'));
 process.env.TASKBOARD_DIR = join(root, 'server'); process.env.TASKBOARD_VAULT = join(root, 'vault');
 process.env.TASKBOARD_A2A_CHECKS = 'rules';
-const { startFakeSlack } = await import('a2a-notes/fake-slack');
+const { startFakeSlack, FakeSlackTransport } = await import('a2a-notes/fake-slack');
 const { startService } = await import('a2a-notes');
 const { mountA2ANotes } = await import('../server/a2anotes/routes.ts');
 const taskKeys = await import('../server/task-token.ts');
@@ -31,7 +31,7 @@ const dir = mkdtempSync(join(tmpdir(), 'a2an-mario-'));
 writeFileSync(join(dir, 'config.json'), JSON.stringify({ port: 0, scanIntervalSeconds: 0, bodyCheckCommand: [process.execPath, checker, marker],
   slack: { clientId: 'fake', teamId: fake.team, redirectUri: 'http://localhost:4460/slack/callback', apiBase: `${fake.url}/api` } }), { mode: 0o600 });
 writeFileSync(join(dir, 'slack-credentials.json'), JSON.stringify(fake.credentials('UMARIO01')), { mode: 0o600 });
-const service = await startService(dir);
+const service = await startService(dir, {}, undefined, undefined, {transport:new FakeSlackTransport(join(dir,'slack-credentials.json'), JSON.parse(readFileSync(join(dir,'config.json'),'utf8')).slack)});
 mkdirSync(TB_DIR, { recursive: true });
 writeFileSync(join(TB_DIR, 'a2anotes.json'), JSON.stringify({ enabled: true, url: `${service.server.url}/mcp`,
   tokens: { person: service.clients.add('tb-person', 'person'), reviewer: service.clients.add('tb-reviewer', 'reviewer'), agent: service.clients.add('tb-agent', 'agent') } }), { mode: 0o600 });
