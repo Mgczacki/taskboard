@@ -34,6 +34,7 @@ export interface ProcInput {
   browsersDir: string;
   taskEnv: Map<number, string>;      // pid → TASK_ID, for processes outside the tree
   browserRoots?: Map<number, string>;
+  machineThreads?: number;
   power?: Map<number, number>;
 }
 export type ProcKind = 'server' | 'launcher' | 'tmux' | 'agent' | 'tb run' | 'browser' | 'mcp server' | 'test server' | 'shell' | 'process';
@@ -141,6 +142,7 @@ export function groupProcesses(i: ProcInput): ProcTable {
   for (const r of i.rows) {
     machine.count++; machine.threads += r.threads ?? 0; machine.cpu += r.cpu; machine.memMb += Math.round(r.rssKb / 1024);
   }
+  if (i.machineThreads !== undefined) machine.threads = i.machineThreads;
   round(machine);
   const unownedCandidates = i.rows.filter(r => !owner.has(r.pid) && /Chrome|Chromium|Docker|docker|containerd/i.test(r.name)
     && !/Helper/.test(r.name) && (r.ppid === 1 || !byPid.has(r.ppid) || !/Chrome|Chromium/.test(byPid.get(r.ppid)!.name)))
@@ -203,6 +205,20 @@ export function parseTopPower(out: string): Map<number, number> {
   return m;
 }
 
+export function parseTopThreads(out: string): { byPid: Map<number, number>; total?: number } {
+  const headers = [...out.matchAll(/^PID\s+(?:#TH|TH|THREADS)\s*$/gm)];
+  const last = headers.at(-1);
+  const byPid = new Map<number, number>();
+  if (last) {
+    for (const line of out.slice(last.index! + last[0].length).split('\n')) {
+      const match = line.trim().match(/^(\d+)\s+(\d+)(?:\/\d+)?\s*$/);
+      if (match) byPid.set(Number(match[1]), Number(match[2]));
+    }
+  }
+  const totals = [...out.matchAll(/^Processes:.*?\b(\d+) threads\b/gm)];
+  return { byPid, total: totals.length ? Number(totals.at(-1)![1]) : undefined };
+}
+
 // TASK_ID from the environment of processes (ps -E lists it for processes of this user)
 export function parseTaskEnv(out: string): Map<number, string> {
   const m = new Map<number, string>();
@@ -213,20 +229,25 @@ export function parseTaskEnv(out: string): Map<number, string> {
 export async function readProcesses(o: { tmux: (...a: string[]) => Promise<string>; tasks: ProcInput['tasks']; power: boolean }): Promise<ProcTable> {
   const big = { maxBuffer: 64 * 1024 * 1024, timeout: 10_000, encoding: 'utf8' as const };
   const powerP = o.power && process.platform === 'darwin' ? exec('top', ['-l', '2', '-s', '1', '-stats', 'pid,power'], big).then(r => parseTopPower(r.stdout)).catch(() => undefined) : Promise.resolve(undefined);
+  const threadsP = process.platform === 'darwin'
+    ? exec('top', ['-l', '1', '-stats', 'pid,th'], big).then(r => parseTopThreads(r.stdout)).catch(() => ({ byPid: new Map<number, number>(), total: undefined }))
+    : Promise.resolve({ byPid: new Map<number, number>(), total: undefined });
   const [stats, panesOut, tmuxPid] = await Promise.all([
-    exec('ps', ['-axo', `pid=,ppid=,uid=,pcpu=,rss=,etime=,${process.platform === 'darwin' ? 'thcount' : 'nlwp'}=,ucomm=`], big).then(r => r.stdout)
+    exec('ps', ['-axo', `pid=,ppid=,uid=,pcpu=,rss=,etime=,${process.platform === 'darwin' ? '' : 'nlwp=,'}ucomm=`], big).then(r => r.stdout)
       .catch(() => exec('ps', ['-axo', 'pid=,ppid=,uid=,pcpu=,rss=,etime=,ucomm='], big).then(r => r.stdout)),
     o.tmux('list-panes', '-a', '-F', '#{session_name}|~|#{pane_pid}').catch(() => ''),
     o.tmux('display-message', '-p', '#{pid}').then(s => Number(s.trim()) || null).catch(() => null),
   ]);
   const rows = parseSafePs(stats);
+  const threads = await threadsP;
+  for (const row of rows) row.threads = threads.byPid.get(row.pid) ?? row.threads;
   const panes = panesOut.split('\n').filter(l => l.includes('|~|')).map(l => { const [session, pid] = l.split('|~|'); return { session, panePid: Number(pid) }; });
   const browsersDir = join(TB_DIR, 'browsers');
   const browserRoots = recordedBrowserRoots(rows, browsersDir);
   for (const [pid, id] of browserRoots) {
     if (!matchesBrowser(browser.readMeta(id), identity(pid), profileLockPid(id), process.getuid?.() ?? -1)) browserRoots.delete(pid);
   }
-  const table = groupProcesses({ rows, serverPid: process.pid, tmuxServerPid: tmuxPid, panes, tasks: o.tasks, browsersDir, browserRoots, taskEnv: new Map(), power: await powerP });
+  const table = groupProcesses({ rows, serverPid: process.pid, tmuxServerPid: tmuxPid, panes, tasks: o.tasks, browsersDir, browserRoots, taskEnv: new Map(), machineThreads: threads.total, power: await powerP });
   await Promise.all(table.groups.filter(g => g.key !== TASKBOARD).map(async g => {
     const meta = browser.readMeta(g.key);
     g.browserTabs = meta.pid && browserRoots.has(meta.pid) ? (await browser.tabs(g.key)).length : (meta.tabs || []).length;
