@@ -343,14 +343,24 @@ switch (cmd) {
     const want = only ? String(only).replace(/^#/, '') : null;
     const age = s => s == null ? '' : s >= 86400 ? `${Math.floor(s / 86400)}d` : s >= 3600 ? `${Math.floor(s / 3600)}h` : s >= 60 ? `${Math.floor(s / 60)}m` : `${s}s`;
     const num = (v, w) => String(v ?? '').padStart(w);
-    const tot = x => `CPU ${x.cpu}%, ${x.memMb} MB${x.power != null ? `, energy ${x.power}` : ''}, ${x.count} process(es)`;
-    console.log(`${'PID'.padStart(7)} ${'CPU%'.padStart(6)} ${'MB'.padStart(6)} ${t.power ? 'ENERGY'.padStart(7) + ' ' : ''}${'AGE'.padStart(5)}  ${'KIND'.padEnd(11)} NAME / COMMAND`);
+    const tot = x => `CPU ${x.cpu}%, ${x.memMb} MB, ${x.count} processes, ${x.threads} threads${x.power != null ? `, energy ${x.power}` : ''}`;
+    console.log(`${'PID'.padStart(7)} ${'CPU%'.padStart(6)} ${'MB'.padStart(6)} ${t.power ? 'ENERGY'.padStart(7) + ' ' : ''}${'AGE'.padStart(5)}  ${'KIND'.padEnd(11)} NAME`);
     for (const g of t.groups) {
       if (want && String(g.num) !== want && g.key !== want) continue;
-      console.log(`\n${g.label}: ${tot(g.totals)}`);
-      for (const p of g.procs) console.log(`${num(p.pid, 7)} ${num(p.cpu.toFixed(1), 6)} ${num(p.memMb, 6)} ${t.power ? num(p.power?.toFixed(1), 7) + ' ' : ''}${num(age(p.ageSec), 5)}  ${p.kind.padEnd(11)} ${p.name}: ${p.command.slice(0, 90)}`);
+      console.log(`\n${g.label}: ${tot(g.totals)}${g.status ? `, ${g.status}` : ''}${g.browserTabs != null ? `, ${g.browserTabs} browser tabs` : ''}${g.lastActivity ? `, last activity ${g.lastActivity}` : ''}`);
+      for (const p of g.procs) console.log(`${num(p.pid, 7)} ${num(p.cpu.toFixed(1), 6)} ${num(p.memMb, 6)} ${t.power ? num(p.power?.toFixed(1), 7) + ' ' : ''}${num(age(p.ageSec), 5)}  ${p.kind.padEnd(11)} ${p.name}`);
     }
-    if (!want) console.log(`\nTaskboard in total: ${tot(t.totals)}.${t.power ? ' Energy is the POWER column of top (no unit; Activity Monitor shows the same number as Energy Impact).' : ''}`);
+    if (!want) {
+      console.log(`\nTaskboard in total: ${tot(t.totals)}.`);
+      console.log(`Machine in total: ${tot(t.machine)}.`);
+      console.log(`Unowned candidates for review: ${t.unownedCandidates.length}.`);
+      for (const p of t.unownedCandidates.slice(0, 30)) console.log(`  ${p.pid} ${p.name}: ${p.reason}`);
+      if (t.unownedCandidates.length > 30) console.log(`  ${t.unownedCandidates.length - 30} more in tb top --json.`);
+      if (t.containers?.length) {
+        console.log(`Running Docker containers without Taskboard owner records: ${t.containers.length}. Review only.`);
+        for (const c of t.containers.slice(0, 30)) console.log(`  ${c.id} ${c.name}`);
+      }
+    }
     break;
   }
   // tb proc logs|stop|restart <name>. ("tb restart" alone restarts Taskboard itself, so process commands have their own word.)

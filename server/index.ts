@@ -80,7 +80,8 @@ import * as urgent from './urgent.ts';
 import * as transfer from './transfer.ts';
 const MACHINE_ID = machineId();
 import { sampleResources } from './resource-log.ts';
-import { stopTaskSandboxes } from './sandbox-cleanup.ts';
+import { recoverArchivedSandboxes, stopTaskSandboxes } from './sandbox-cleanup.ts';
+import { recoverArchived } from './browser-recovery.ts';
 import * as runtime from './runtime-routes.ts';
 import { trimTerminalLog } from './terminal-log.ts';
 import { idleSuspendMinutes, maySuspendIdleTask } from './idle-suspend.ts';
@@ -1528,7 +1529,7 @@ app.get('/api/info', (_req, res) => res.json(info()));
 // When and why this server started, its earlier starts and how each ended (server-life.ts)
 // every process of Taskboard, grouped by task (server/processes.ts); ?power=1 adds energy impact and takes about 2 s
 app.get('/api/processes', async (req, res) => {
-  try { res.json(await readProcesses({ tmux: tmux.tmux, tasks: store.all().map(t => ({ id: t.id, num: t.num, title: t.title, session: t.session })), power: req.query.power === '1' })); }
+  try { res.json(await readProcesses({ tmux: tmux.tmux, tasks: store.all().map(t => ({ id: t.id, num: t.num, title: t.title, session: t.session, status: t.status, lastActivity: t.updated })), power: req.query.power === '1' })); }
   catch (e) { res.status(500).json({ error: `Could not read the process list: ${(e as Error).message}` }); }
 });
 app.get('/api/server', async (_req, res) => { const h = life.health(); res.json(h && { ...h, loginService: await loginService() }); });
@@ -1702,6 +1703,7 @@ app.post('/api/tasks/:id/status', async (req, res) => {
       }
       if (s === 'archived') { await tmux.killSession(t0.session); await stopTaskSandboxes(t0.id); await runtime.stopTaskRuntime(t0, 'stopped'); trimTerminalLog(store.terminalLog(t0.id)); }
       const updated = store.update(t0.id, { status: s, statusSource: controllerResume ? 'Resumed by the controller.' : `Set at ${new Date().toTimeString().slice(0, 5)}.` })!;
+      if (s === 'archived') await recoverArchived([updated]);
       if (controllerResume) store.appendLog(t0.id, { did: 'Task resumed by the controller.', next: 'Send the instruction to the task.' });
       return view(updated);
     }, () => `#${t0.num} is now ${s}.`);
@@ -2098,7 +2100,9 @@ async function endAndArchive(t: store.Task) {
     await stopTaskSandboxes(t.id);
     await runtime.stopTaskRuntime(t, 'stopped');
     trimTerminalLog(store.terminalLog(t.id));
-    return view(store.update(t.id, { status: 'archived', statusSource: 'Session ended and archived.' })!);
+    const archived = store.update(t.id, { status: 'archived', statusSource: 'Session ended and archived.' })!;
+    await recoverArchived([archived]);
+    return view(archived);
   } finally { endingTasks.delete(t.id); }
 }
 // A group manager asks to archive a task of its group (server/manager-archive.ts). The request always makes a card
@@ -3004,6 +3008,8 @@ async function reconcile(first = false) {
   }
 }
 await reconcile(true);
+void recoverArchived(store.all()).then(ids => { if (ids.length) console.log(`Recovered ${ids.length} archived task browsers.`); }).catch(e => console.error('archived browser recovery', e));
+void recoverArchivedSandboxes(store.all()).then(count => { if (count) console.log(`Recovered ${count} archived sandbox processes.`); }).catch(e => console.error('archived sandbox recovery', e));
 // Events sent while the server was down are lost; take the status from the transcripts once at start.
 for (const t of store.all()) {
   if (!t.transcript || t.openElsewhere || !['working', 'needs-you', 'idle', 'unread', 'review'].includes(t.status)) continue;

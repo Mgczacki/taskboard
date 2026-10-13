@@ -33,6 +33,10 @@ const running = async (m, folder = base) => {
   const recorded = readJson(join(folder, 'tbdir', 'server.pid'), null);
   return info?.role === 'sandbox' && info.root === m.root && info.url === m.url && info.pid === recorded?.pid;
 };
+const processStart = pid => {
+  try { return execFileSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8', timeout: 3000 }).trim() || undefined; }
+  catch { return undefined; }
+};
 function show(m) {
   log(`Sandbox "${name}": ${m.url}  (process ${m.pid}, code ${m.root})`);
   log(`  folders ${base}  ·  tmux -L ${m.socket}  ·  log ${join(base, 'server.log')}`);
@@ -46,7 +50,13 @@ if (cmd === 'list') {
 } else if (cmd === 'stop') {
   const m = readJson(meta, null);
   if (await running(m)) {
-    for (const pid of m.devPids || [m.pid]) { try { process.kill(-pid, 'SIGTERM'); } catch { try { process.kill(pid, 'SIGTERM'); } catch { /* gone */ } } }
+    const pids = m.devPids || [m.pid], starts = m.devPidStarts || [m.pidStart];
+    let signaled = 0;
+    for (const [index, pid] of pids.entries()) {
+      if (!starts[index] || processStart(pid) !== starts[index] || processStart(pid) !== starts[index]) continue;
+      try { process.kill(-pid, 'SIGTERM'); signaled++; } catch { try { process.kill(pid, 'SIGTERM'); signaled++; } catch { /* gone */ } }
+    }
+    if (!signaled) { log(`Could not verify the process identity of sandbox "${name}". Review it before stopping.`); process.exit(1); }
     await new Promise(resolve => setTimeout(resolve, 400));
     if (await running(m)) { log(`Could not stop sandbox "${name}" (process ${m.pid}).`); process.exit(1); }
     log(`Stopped sandbox "${name}" (process ${m.pid}).`);
@@ -59,7 +69,7 @@ if (cmd === 'list') {
   prepare();
   const port = await freePort(4400);
   const pid = startServer(root, envFor(port), join(base, 'server.log'));
-  const m2 = { pid, port, url: `http://127.0.0.1:${port}`, root, socket: `tbsb-${name}`, started: new Date().toISOString(), ownerTask: process.env.TASK_ID || undefined };
+  const m2 = { pid, pidStart: processStart(pid), port, url: `http://127.0.0.1:${port}`, root, socket: `tbsb-${name}`, started: new Date().toISOString(), ownerTask: process.env.TASK_ID || undefined };
   writeJson(meta, m2);
   const info = await waitForInfo(m2.url, join(base, 'tbdir', 'token'), 20000);
   if (!info) { log(`The sandbox did not come up. Its log (${join(base, 'server.log')}):`); log(readFileSync(join(base, 'server.log'), 'utf8').split('\n').slice(-20).join('\n')); process.exit(1); }
@@ -74,7 +84,7 @@ if (cmd === 'list') {
     spawn(join(root, 'node_modules', '.bin', 'tsx'), ['watch', 'server/index.ts'], { cwd: root, env, stdio: 'inherit', detached: true }),
     spawn(join(root, 'node_modules', '.bin', 'vite'), ['--port', String(webPort)], { cwd: root, env, stdio: 'inherit', detached: true }),
   ];
-  writeJson(meta, { pid: kids[0].pid, devPids: kids.map(k => k.pid), port, url: `http://127.0.0.1:${port}`, root, socket: `tbsb-${name}`, started: new Date().toISOString(), ownerTask: process.env.TASK_ID || undefined });
+  writeJson(meta, { pid: kids[0].pid, pidStart: processStart(kids[0].pid), devPids: kids.map(k => k.pid), devPidStarts: kids.map(k => processStart(k.pid)), port, url: `http://127.0.0.1:${port}`, root, socket: `tbsb-${name}`, started: new Date().toISOString(), ownerTask: process.env.TASK_ID || undefined });
   const stop = () => { kids.forEach(k => { try { process.kill(-k.pid, 'SIGTERM'); } catch { /* gone */ } }); process.exit(0); };
   process.on('SIGINT', stop); process.on('SIGTERM', stop);
 }
