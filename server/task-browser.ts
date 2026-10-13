@@ -31,7 +31,7 @@ const ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,120}$/;
 // 'on' (the sound is on), or 'unverified' (Taskboard could not confirm the mute), with the reason.
 // error: why the last start failed or why Chrome ended by itself (exited), with the useful lines of chrome.log
 // (errorLines) and the time (errorAt). The next start that works removes them.
-export interface Meta { pid?: number; port?: number; started?: string; startMs?: number; tabs?: string[]; suspended?: boolean; idleStopped?: boolean; stoppedAt?: string; error?: string; errorLines?: string[]; errorAt?: string; exited?: boolean; copiedFromTemplate?: string; sound?: boolean; muted?: boolean; muteFlag?: boolean; soundCheck?: SoundCheck; sharp?: boolean; scale?: number;
+export interface Meta { pid?: number; pidStart?: string; port?: number; started?: string; startMs?: number; tabs?: string[]; suspended?: boolean; idleStopped?: boolean; stoppedAt?: string; error?: string; errorLines?: string[]; errorAt?: string; exited?: boolean; copiedFromTemplate?: string; sound?: boolean; muted?: boolean; muteFlag?: boolean; soundCheck?: SoundCheck; sharp?: boolean; scale?: number;
   // sign-in sharing (browser-signins.ts): noShared is the opt-out of this task browser, syncedAt the last sync from the
   // template, clearSites the sites whose cookies the next start deletes (sign out of all), liveSyncAt the last live sync.
   // headed: the template runs in a normal Chrome window (openTemplateWindow). savedFrom: the task whose profile became the template.
@@ -77,13 +77,17 @@ export function chromePath(): string | null {
 }
 
 const pidAlive = (pid?: number) => { if (!pid) return false; try { process.kill(pid, 0); return true; } catch { return false; } };
+const processStart = (pid?: number): string | undefined => {
+  if (!pid) return undefined;
+  try { return execFileSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8', timeout: 3000 }).trim() || undefined; } catch { return undefined; }
+};
 async function version(port: number, timeout = 3000): Promise<{ webSocketDebuggerUrl: string } | null> {
   try { const r = await fetch(`http://127.0.0.1:${port}/json/version`, { signal: AbortSignal.timeout(timeout) }); return r.ok ? await r.json() as { webSocketDebuggerUrl: string } : null; } catch { return null; }
 }
 // the browser of this id is running and answers on its port
 async function live(id: string): Promise<(Meta & { ws: string }) | null> {
   const m = readMeta(id);
-  if (!m.port || !pidAlive(m.pid)) return null;
+  if (!m.port || !pidAlive(m.pid) || (m.pidStart ? processStart(m.pid) !== m.pidStart : profileHolder(id) !== m.pid)) return null;
   // a busy computer can answer slowly: ask twice before treating a live process as not running (a second Chrome on the
   // same profile would hand over to the first one and exit)
   const v = await version(m.port) || await version(m.port);
@@ -157,7 +161,8 @@ function profileHolder(id: string): number | undefined {
   return undefined;
 }
 // End a Chrome process and its helpers (its process group), and wait up to 5 s until the main process is gone.
-async function killChrome(pid: number) {
+async function killChrome(pid: number, start: string | undefined) {
+  if (!start || processStart(pid) !== start) return;
   try { process.kill(-pid, 'SIGKILL'); } catch { try { process.kill(pid, 'SIGKILL'); } catch { /* ended */ } }
   for (let i = 0; i < 50 && pidAlive(pid); i++) await new Promise(r => setTimeout(r, 100));
 }
@@ -260,10 +265,11 @@ async function start(id: string, t0: number): Promise<Meta & { ws: string }> {
   let b: { pid: number; port: number; ws: string; child?: ChildProcess } | null = null;
   const holder = profileHolder(id);
   if (holder) {
+    const holderStart = processStart(holder);
     progress.set(id, { since: t0, pid: holder }); changed(id);
     const r = await waitReady(id, holder, t0 + startLimitMs());
     if (typeof r === 'object') { b = { pid: holder, ...r }; console.log(`${new Date().toISOString()} task browser ${id}: Chrome ${holder} holds the profile and answered after ${Math.round((Date.now() - t0) / 1000)} s, so no second Chrome started`); }
-    else if (r === 'timeout') { console.error(`${new Date().toISOString()} task browser ${id}: Chrome ${holder} holds the profile and did not answer in ${startLimitMs() / 1000} s, so it was ended`); await killChrome(holder); }
+    else if (r === 'timeout') { console.error(`${new Date().toISOString()} task browser ${id}: Chrome ${holder} holds the profile and did not answer in ${startLimitMs() / 1000} s, so it was ended`); await killChrome(holder, holderStart); }
   }
   const launch = async (muteFlag: boolean) => {
     rmSync(portFile, { force: true });
@@ -271,6 +277,7 @@ async function start(id: string, t0: number): Promise<Meta & { ws: string }> {
     const offset = logSize(id), began = Date.now();
     const log = openSync(join(folder(id), 'chrome.log'), 'a');
     const child = spawn(bin, args, { detached: true, stdio: ['ignore', log, log] });
+    const childStart = processStart(child.pid);
     closeSync(log);
     child.unref();
     let how = '';
@@ -281,7 +288,7 @@ async function start(id: string, t0: number): Promise<Meta & { ws: string }> {
     if (typeof r === 'object') return { pid: child.pid!, ...r, child };
     const lines = usefulLines(logSince(id, offset));
     if (r === 'timeout') {
-      await killChrome(child.pid!);
+      await killChrome(child.pid!, childStart);
       throw new StartError(`Chrome did not answer within ${startLimitMs() / 1000} s, so Taskboard ended it. The computer can be too busy. Try again.`, lines);
     }
     throw new StartError(`Chrome ended ${Math.round((Date.now() - began) / 100) / 10} s after its start (${how || 'no exit code'}). It did not open its debugging port.`, lines);
@@ -305,14 +312,16 @@ async function start(id: string, t0: number): Promise<Meta & { ws: string }> {
     // a reused Chrome without the flag that could not be muted, or a Chrome with the flag and the sound on
     if ((muted && check.state !== 'muted') || (!muted && muteFlag)) {
       console.log(`${new Date().toISOString()} task browser ${id}: Chrome starts again ${muted ? 'with' : 'without'} --mute-audio (${check.reason || 'the sound is on'})`);
-      await closeChrome(b.ws, b.pid); b = await launch(muted); reused = false;
+      if (!await closeChrome(b.ws, b.pid)) throw new StartError('Chrome did not close before its sound setting changed.');
+      b = await launch(muted); reused = false;
       muteFlag = hasMuteFlag(b.pid);
       check = muted ? (muteFlag ? { state: 'muted', how: 'flag', at: new Date().toISOString() } : { state: 'unverified', at: new Date().toISOString(), reason: 'Chrome started without --mute-audio.' })
         : judge(false, muteFlag, await muteTabs(b.ws, false).catch(e => ({ error: (e as Error).message }) as TabsReport));
     }
   }
   const port = b.port;
-  const next: Meta = { ...meta, pid: b.pid, port, started: new Date().toISOString(), muted, muteFlag: muteFlag || undefined, soundCheck: check, sharp: (reused ? meta.sharp : sharp) || undefined, scale: (reused ? meta.scale : sharp ? scale : undefined), suspended: undefined, idleStopped: undefined, error: undefined, errorLines: undefined, errorAt: undefined, exited: undefined, stoppedAt: undefined };
+  const pidStart = processStart(b.pid);
+  const next: Meta = { ...meta, pid: b.pid, pidStart, port, started: new Date().toISOString(), muted, muteFlag: muteFlag || undefined, soundCheck: check, sharp: (reused ? meta.sharp : sharp) || undefined, scale: (reused ? meta.scale : sharp ? scale : undefined), suspended: undefined, idleStopped: undefined, error: undefined, errorLines: undefined, errorAt: undefined, exited: undefined, stoppedAt: undefined };
   const v = { webSocketDebuggerUrl: b.ws };
   if (urls.length) await openSaved(port, v.webSocketDebuggerUrl, urls);
   next.startMs = Date.now() - t0;
@@ -462,18 +471,21 @@ async function stopNow(id: string, opts: { suspended?: boolean; idle?: boolean; 
   // a start that runs ends first, so a stop (for example the archive of the task) does not leave its Chrome running
   await starting.get(id)?.catch(() => {});
   const m = readMeta(id);
+  const verifiedPid = m.pid && m.pidStart && processStart(m.pid) === m.pidStart ? m.pid : profileHolder(id);
   // the template in a normal Chrome window: SIGTERM lets Chrome close its profile and write its cookies
   if (m.headed && m.pid) {
-    if (pidAlive(m.pid)) { try { process.kill(m.pid, 'SIGTERM'); } catch { /* ended */ } }
-    await closeChrome(undefined, m.pid, 30000);
+    if (!verifiedPid) return false;
+    if (pidAlive(verifiedPid)) { try { process.kill(verifiedPid, 'SIGTERM'); } catch { /* ended */ } }
+    if (!await closeChrome(undefined, verifiedPid, 30000)) return false;
     writeMeta(id, { ...readMeta(id), pid: undefined, headed: undefined, stoppedAt: new Date().toISOString() });
     changed(id);
     windowEnded();
     return true;
   }
   // a Chrome that holds the profile but is not in browser.json (a start that failed before this version lost it)
-  const holder = m.pid ? undefined : profileHolder(id);
+  const holder = m.pid ? undefined : verifiedPid;
   if (!m.pid && !m.port && !holder) return false;
+  if (m.pid && !verifiedPid) return false;
   const running = await live(id);
   // a busy Chrome can answer slowly: wait up to 5 s, and keep the saved pages when it does not answer
   const listed = running ? await pageList(running.port!, 5000) : null;
@@ -481,7 +493,7 @@ async function stopNow(id: string, opts: { suspended?: boolean; idle?: boolean; 
   const open = listed && !opts.keepTabs ? listed.map(t => t.url).filter(u => /^(https?|file):/.test(u)) : m.tabs;
   // The template waits up to 30 s: new task browsers copy its cookies. On a busy Mac (load average 140 on 10 cores,
   // 2 October 2026) Chrome took more than 10 s to close, and the end of the wait lost cookies that it had not written.
-  await closeChrome(running?.ws, m.pid || holder, id === TEMPLATE ? 30000 : 10000);
+  if (!await closeChrome(running?.ws, verifiedPid, id === TEMPLATE ? 30000 : 10000)) return false;
   writeMeta(id, { ...readMeta(id), pid: undefined, port: undefined, tabs: open, stoppedAt: new Date().toISOString(), suspended: opts.suspended || undefined, idleStopped: opts.idle || undefined });
   changed(id);
   return !!running;
@@ -489,10 +501,13 @@ async function stopNow(id: string, opts: { suspended?: boolean; idle?: boolean; 
 
 // Close Chrome with Browser.close. Chrome writes cookies to disk when it closes: wait up to 10 s before the kill, so a
 // busy Chrome keeps its sign-ins.
-async function closeChrome(ws: string | undefined, pid: number | undefined, waitMs = 10000) {
+async function closeChrome(ws: string | undefined, pid: number | undefined, waitMs = 10000): Promise<boolean> {
+  const start = processStart(pid);
   if (ws) await once(ws, 'Browser.close').catch(() => {});
   for (let i = 0; i < waitMs / 100 && pidAlive(pid); i++) await new Promise(r => setTimeout(r, 100));
-  if (pid && pidAlive(pid)) { try { process.kill(-pid, 'SIGKILL'); } catch { try { process.kill(pid, 'SIGKILL'); } catch { /* ended */ } } }
+  if (pid && start && processStart(pid) === start) { try { process.kill(-pid, 'SIGKILL'); } catch { try { process.kill(pid, 'SIGKILL'); } catch { /* ended */ } } }
+  for (let i = 0; i < 10 && pidAlive(pid); i++) await new Promise(r => setTimeout(r, 100));
+  return !pidAlive(pid);
 }
 
 // ---------- sound: --mute-audio, and Chrome's own tab mute, set by a small extension ----------

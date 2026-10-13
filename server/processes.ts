@@ -1,18 +1,14 @@
-// Every process that belongs to Taskboard, grouped by task, with CPU, memory, energy impact and age
+// Process counts for Taskboard and each task, with CPU, memory, threads, energy impact and age.
 // (GET /api/processes, `tb top`, Settings → Processes).
 //
 // Who owns a process, in this order (the first rule that matches wins):
-//  1. a task browser: a Chrome whose command line has --user-data-dir=<TB_DIR>/browsers/<task id>/profile, and all
-//     its children. The template browser (<TB_DIR>/browsers/template) belongs to Taskboard.
+//  1. a task browser whose recorded PID and start time match its profile lock, and all its children.
 //  2. a tmux pane of Taskboard's socket: the session of a task (task.session) or of its `tb run` processes
 //     (proc-<task number>), and every process below that pane (the agent, its shells, MCP servers, test servers).
-//  3. a tmux client that shows a session in a terminal view (`tmux attach-session -t =<session>`, a child of the
-//     server) belongs to the task of that session. A `sh -c cat >> …/<task id>/terminal.log` child of the tmux server
-//     (pipe-pane, the task's terminal log) belongs to that task.
+//  3. a tmux client or pipe-pane belongs to Taskboard unless a caller supplies its task relation.
 //  4. the tmux server itself and its other children: Taskboard. This comes before rule 5 because the tmux server can
 //     carry the TASK_ID of the session that started it (observed: TASK_ID=controller).
-//  5. a process that left the tree (its parent ended, so launchd adopted it) but has TASK_ID in its environment
-//     (tmux sets it for every task session, so children inherit it), and its children.
+//  5. a process that left the tree stays unowned. The live reader never scans process environments.
 //  6. the server process and its launcher (Taskboard Server, or the tsx process of an older install): Taskboard.
 //     Children of the server that no rule above claimed also belong to Taskboard.
 // groupProcesses() is a pure function of the process table, so tests give it a fake table.
@@ -21,26 +17,30 @@
 // root but takes about 2 s, so it is read only when asked for (?power=1). ps gives CPU and memory (RSS) in an instant.
 import { execFile } from 'node:child_process';
 import { join } from 'node:path';
+import { existsSync, readFileSync, readdirSync, readlinkSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { TB_DIR } from './config.ts';
+import * as browser from './task-browser.ts';
+import { identity, matchesBrowser, profileLockPid } from './browser-recovery.ts';
 
 const exec = promisify(execFile);
-export interface PsRow { pid: number; ppid: number; uid?: number; cpu: number; rssKb: number; etime: string; name: string; args: string }
+export interface PsRow { pid: number; ppid: number; uid?: number; cpu: number; rssKb: number; etime: string; name: string; args: string; threads?: number }
 export interface ProcInput {
   rows: PsRow[];
   serverPid: number;
   tmuxServerPid: number | null;
   panes: { session: string; panePid: number }[];
-  tasks: { id: string; num: number; title: string; session: string }[];
+  tasks: { id: string; num: number; title: string; session: string; status?: string; lastActivity?: string }[];
   browsersDir: string;
   taskEnv: Map<number, string>;      // pid → TASK_ID, for processes outside the tree
+  browserRoots?: Map<number, string>;
   power?: Map<number, number>;
 }
 export type ProcKind = 'server' | 'launcher' | 'tmux' | 'agent' | 'tb run' | 'browser' | 'mcp server' | 'test server' | 'shell' | 'process';
 export interface ProcLine { pid: number; ppid: number; name: string; command: string; kind: ProcKind; cpu: number; memMb: number; power: number | null; ageSec: number | null }
-export interface Totals { count: number; cpu: number; memMb: number; power: number | null }
-export interface ProcGroup { key: string; label: string; num?: number; title?: string; totals: Totals; procs: ProcLine[] }
-export interface ProcTable { at: string; power: boolean; totals: Totals; groups: ProcGroup[] }
+export interface Totals { count: number; threads: number; cpu: number; memMb: number; power: number | null }
+export interface ProcGroup { key: string; label: string; num?: number; title?: string; status?: string; lastActivity?: string; browserTabs?: number; totals: Totals; procs: ProcLine[] }
+export interface ProcTable { at: string; power: boolean; totals: Totals; machine: Totals; groups: ProcGroup[]; unownedCandidates: { pid: number; name: string; reason: string }[]; containers?: { id: string; name: string; reason: string }[] }
 
 export const TASKBOARD = 'taskboard';
 
@@ -82,6 +82,7 @@ export function groupProcesses(i: ProcInput): ProcTable {
   const taskByNum = new Map(i.tasks.map(t => [t.num, t]));
   // 1. task browsers
   const prefix = i.browsersDir.replace(/\/+$/, '') + '/';
+  for (const [pid, id] of i.browserRoots || []) claim(pid, taskById.has(id) ? id : TASKBOARD);
   for (const r of i.rows) {
     const at = r.args.indexOf(`--user-data-dir=${prefix}`);
     if (at < 0) continue;
@@ -115,8 +116,8 @@ export function groupProcesses(i: ProcInput): ProcTable {
 
   const groups = new Map<string, ProcGroup>();
   const hasPower = !!i.power;
-  const empty = (): Totals => ({ count: 0, cpu: 0, memMb: 0, power: hasPower ? 0 : null });
-  const add = (t: Totals, p: ProcLine) => { t.count++; t.cpu += p.cpu; t.memMb += p.memMb; if (t.power !== null) t.power += p.power ?? 0; };
+  const empty = (): Totals => ({ count: 0, threads: 0, cpu: 0, memMb: 0, power: hasPower ? 0 : null });
+  const add = (t: Totals, p: ProcLine, threads: number) => { t.count++; t.threads += threads; t.cpu += p.cpu; t.memMb += p.memMb; if (t.power !== null) t.power += p.power ?? 0; };
   const totals = empty();
   for (const [pid, key] of owner) {
     const r = byPid.get(pid)!;
@@ -124,24 +125,31 @@ export function groupProcesses(i: ProcInput): ProcTable {
     let g = groups.get(key);
     if (!g) {
       const t = taskById.get(key);
-      g = t ? { key, label: t.id === 'controller' ? 'Controller' : `#${t.num} ${t.title}`, num: t.num, title: t.title, totals: empty(), procs: [] } : { key, label: 'Taskboard', totals: empty(), procs: [] };
+      g = t ? { key, label: t.id === 'controller' ? 'Controller' : `#${t.num} ${t.title}`, num: t.num, title: t.title, status: t.status, lastActivity: t.lastActivity, totals: empty(), procs: [] } : { key, label: 'Taskboard', totals: empty(), procs: [] };
       groups.set(key, g);
     }
     const kind = r.pid === server?.ppid && key === TASKBOARD && r.pid !== i.serverPid ? 'launcher' : kindOf(r, i, agentPanes, procPanes);
-    const line: ProcLine = { pid, ppid: r.ppid, name: r.name, command: r.args.slice(0, 300), kind, cpu: r.cpu, memMb: Math.round(r.rssKb / 1024), power: hasPower ? i.power!.get(pid) ?? 0 : null, ageSec: etimeSec(r.etime) };
-    g.procs.push(line); add(g.totals, line); add(totals, line);
+    const line: ProcLine = { pid, ppid: r.ppid, name: r.name, command: r.name, kind, cpu: r.cpu, memMb: Math.round(r.rssKb / 1024), power: hasPower ? i.power!.get(pid) ?? 0 : null, ageSec: etimeSec(r.etime) };
+    g.procs.push(line); add(g.totals, line, r.threads ?? 0); add(totals, line, r.threads ?? 0);
   }
   const round = (t: Totals) => { t.cpu = Math.round(t.cpu * 10) / 10; if (t.power !== null) t.power = Math.round(t.power * 10) / 10; };
   const list = [...groups.values()];
   for (const g of list) { round(g.totals); g.procs.sort((a, b) => b.cpu - a.cpu || b.memMb - a.memMb); }
   round(totals);
   list.sort((a, b) => (a.key === TASKBOARD ? -1 : b.key === TASKBOARD ? 1 : b.totals.cpu - a.totals.cpu || b.totals.memMb - a.totals.memMb));
-  return { at: new Date().toISOString(), power: hasPower, totals, groups: list };
+  const machine = empty();
+  for (const r of i.rows) {
+    machine.count++; machine.threads += r.threads ?? 0; machine.cpu += r.cpu; machine.memMb += Math.round(r.rssKb / 1024);
+  }
+  round(machine);
+  const unownedCandidates = i.rows.filter(r => !owner.has(r.pid) && /Chrome|Chromium|Docker|docker|containerd/i.test(r.name)
+    && !/Helper/.test(r.name) && (r.ppid === 1 || !byPid.has(r.ppid) || !/Chrome|Chromium/.test(byPid.get(r.ppid)!.name)))
+    .map(r => ({ pid: r.pid, name: r.name, reason: 'No verified Taskboard owner. Review only.' }));
+  return { at: new Date().toISOString(), power: hasPower, totals, machine, groups: list, unownedCandidates };
 }
 
 // ---------- reading the system ----------
-// `ps -axo pid=,ppid=,uid=,pcpu=,rss=,etime=,ucomm=`: ucomm (the kernel's process name) is last because it can contain
-// spaces ("Taskboard Server", "Google Chrome He"). The full command lines come from a second ps call.
+// The live reader uses ucomm, the kernel process name. It never reads command arguments.
 export function parsePs(stats: string, argsOut: string): PsRow[] {
   const args = new Map<number, string>();
   for (const l of argsOut.split('\n')) { const m = l.match(/^\s*(\d+)\s(.*)$/); if (m) args.set(Number(m[1]), m[2].trim()); }
@@ -153,6 +161,37 @@ export function parsePs(stats: string, argsOut: string): PsRow[] {
     rows.push({ pid, ppid: Number(m[2]), uid: Number(m[3]), cpu: Number(m[4]), rssKb: Number(m[5]), etime: m[6], name: m[7].trim(), args: args.get(pid) ?? m[7].trim() });
   }
   return rows;
+}
+
+export function parseSafePs(stats: string): PsRow[] {
+  const rows: PsRow[] = [];
+  for (const l of stats.split('\n')) {
+    const m = l.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+([\d.]+)\s+(\d+)\s+(\S+)\s+(\d+)\s+(.*)$/);
+    if (m) rows.push({ pid: Number(m[1]), ppid: Number(m[2]), uid: Number(m[3]), cpu: Number(m[4]), rssKb: Number(m[5]), etime: m[6], threads: Number(m[7]), name: m[8].trim(), args: m[8].trim() });
+    else {
+      const old = l.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+([\d.]+)\s+(\d+)\s+(\S+)\s+(.*)$/);
+      if (old) rows.push({ pid: Number(old[1]), ppid: Number(old[2]), uid: Number(old[3]), cpu: Number(old[4]), rssKb: Number(old[5]), etime: old[6], name: old[7].trim(), args: old[7].trim() });
+    }
+  }
+  return rows;
+}
+
+// Profile locks and browser.json identify candidate roots without reading process arguments.
+export function recordedBrowserRoots(rows: PsRow[], browsersDir: string): Map<number, string> {
+  const byPid = new Map(rows.map(r => [r.pid, r]));
+  const roots = new Map<number, string>();
+  if (!existsSync(browsersDir)) return roots;
+  for (const id of readdirSync(browsersDir)) {
+    if (!/^[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/.test(id)) continue;
+    let meta: { pid?: number };
+    try { meta = JSON.parse(readFileSync(join(browsersDir, id, 'browser.json'), 'utf8')); } catch { continue; }
+    const pid = meta.pid;
+    if (!pid || !byPid.get(pid)?.name.match(/Chrome|Chromium/)) continue;
+    let lockPid = 0;
+    try { const link = readlinkSync(join(browsersDir, id, 'profile', 'SingletonLock')); lockPid = Number(link.slice(link.lastIndexOf('-') + 1)); } catch { /* no lock */ }
+    if (lockPid === pid) roots.set(pid, id);
+  }
+  return roots;
 }
 
 // The second sample of `top -l 2 -s 1 -stats pid,power`: lines "PID POWER" after the second header.
@@ -174,20 +213,30 @@ export function parseTaskEnv(out: string): Map<number, string> {
 export async function readProcesses(o: { tmux: (...a: string[]) => Promise<string>; tasks: ProcInput['tasks']; power: boolean }): Promise<ProcTable> {
   const big = { maxBuffer: 64 * 1024 * 1024, timeout: 10_000, encoding: 'utf8' as const };
   const powerP = o.power && process.platform === 'darwin' ? exec('top', ['-l', '2', '-s', '1', '-stats', 'pid,power'], big).then(r => parseTopPower(r.stdout)).catch(() => undefined) : Promise.resolve(undefined);
-  const [stats, argsOut, panesOut, tmuxPid] = await Promise.all([
-    exec('ps', ['-axo', 'pid=,ppid=,uid=,pcpu=,rss=,etime=,ucomm='], big).then(r => r.stdout),
-    exec('ps', ['-axww', '-o', 'pid=,args='], big).then(r => r.stdout),
+  const [stats, panesOut, tmuxPid] = await Promise.all([
+    exec('ps', ['-axo', `pid=,ppid=,uid=,pcpu=,rss=,etime=,${process.platform === 'darwin' ? 'thcount' : 'nlwp'}=,ucomm=`], big).then(r => r.stdout)
+      .catch(() => exec('ps', ['-axo', 'pid=,ppid=,uid=,pcpu=,rss=,etime=,ucomm='], big).then(r => r.stdout)),
     o.tmux('list-panes', '-a', '-F', '#{session_name}|~|#{pane_pid}').catch(() => ''),
     o.tmux('display-message', '-p', '#{pid}').then(s => Number(s.trim()) || null).catch(() => null),
   ]);
-  const rows = parsePs(stats, argsOut);
+  const rows = parseSafePs(stats);
   const panes = panesOut.split('\n').filter(l => l.includes('|~|')).map(l => { const [session, pid] = l.split('|~|'); return { session, panePid: Number(pid) }; });
-  // only processes of this user that launchd adopted, and not apps: their environment may name a task
-  const uid = process.getuid?.() ?? -1;
-  const adopted = rows.filter(r => r.ppid === 1 && r.uid === uid && !/\.app\/Contents\//.test(r.args)).map(r => r.pid);
-  let taskEnv = new Map<number, string>();
-  if (adopted.length) {
-    try { taskEnv = parseTaskEnv((await exec('ps', ['-wwE', '-o', 'pid=,args=', '-p', adopted.join(',')], big)).stdout); } catch (e) { taskEnv = parseTaskEnv(String((e as { stdout?: string }).stdout || '')); }
+  const browsersDir = join(TB_DIR, 'browsers');
+  const browserRoots = recordedBrowserRoots(rows, browsersDir);
+  for (const [pid, id] of browserRoots) {
+    if (!matchesBrowser(browser.readMeta(id), identity(pid), profileLockPid(id), process.getuid?.() ?? -1)) browserRoots.delete(pid);
   }
-  return groupProcesses({ rows, serverPid: process.pid, tmuxServerPid: tmuxPid, panes, tasks: o.tasks, browsersDir: join(TB_DIR, 'browsers'), taskEnv, power: await powerP });
+  const table = groupProcesses({ rows, serverPid: process.pid, tmuxServerPid: tmuxPid, panes, tasks: o.tasks, browsersDir, browserRoots, taskEnv: new Map(), power: await powerP });
+  await Promise.all(table.groups.filter(g => g.key !== TASKBOARD).map(async g => {
+    const meta = browser.readMeta(g.key);
+    g.browserTabs = meta.pid && browserRoots.has(meta.pid) ? (await browser.tabs(g.key)).length : (meta.tabs || []).length;
+  }));
+  try {
+    const output = (await exec('docker', ['ps', '--format', '{{.ID}}|{{.Names}}'], { timeout: 3000, maxBuffer: 1024 * 1024 })).stdout;
+    table.containers = output.split('\n').filter(Boolean).map(line => {
+      const [id, name] = line.split('|');
+      return { id, name, reason: 'No Taskboard owner record. Review only.' };
+    });
+  } catch { /* Docker is unavailable */ }
+  return table;
 }

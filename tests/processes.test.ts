@@ -2,7 +2,7 @@
 // name of server/agents.ts (namedCommand).
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { etimeSec, groupProcesses, parsePs, parseTaskEnv, parseTopPower, TASKBOARD, type PsRow, type ProcInput } from '../server/processes.ts';
+import { etimeSec, groupProcesses, parsePs, parseSafePs, parseTaskEnv, parseTopPower, TASKBOARD, type PsRow, type ProcInput } from '../server/processes.ts';
 
 const B = '/Users/me/.taskboard/browsers';
 const row = (pid: number, ppid: number, name: string, args = name, cpu = 1, rssKb = 1024, etime = '01:00'): PsRow => ({ pid, ppid, uid: 501, cpu, rssKb, etime, name, args });
@@ -86,6 +86,16 @@ test('ps, top and environment output are parsed', () => {
   const top = 'Processes: 2\nPID    POWER\n101    0.0 \nPID    POWER\n101    3.4 \n301    40.1 \n';
   assert.deepEqual([...parseTopPower(top)], [[101, 3.4], [301, 40.1]]);
   assert.deepEqual([...parseTaskEnv('  400 node x TERM=xterm TASK_ID=fix-login-12 TASK_NUM=12\n  401 node y HOME=/x\n')], [[400, 'fix-login-12']]);
+});
+
+test('safe process rows contain no arguments and count threads', () => {
+  const rows = parseSafePs('  701 1 501 13.5 2048 01:02 11 Google Chrome\n');
+  assert.equal(rows[0].threads, 11);
+  assert.equal(rows[0].args, 'Google Chrome');
+  const table = groupProcesses(input({ rows: [...input().rows, rows[0]], browserRoots: new Map([[701, 'fix-login-12']]) }));
+  assert.equal(table.groups.find(g => g.key === 'fix-login-12')?.totals.threads, 11);
+  assert.equal(table.machine.count, input().rows.length + 1);
+  assert.equal(table.groups.flatMap(g => g.procs).some(p => p.command.includes('--')), false);
 });
 
 test('agents start with the task number in argv[0]', async () => {

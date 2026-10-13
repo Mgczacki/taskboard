@@ -5,7 +5,7 @@
 // The list is a registry file: <task folder>/procs.json. Output goes to
 // a log file next to it (tmux pipe-pane). Each process gets TB_PROC_OWNER and TB_PROC_NAME in its environment, so a
 // child that leaves the process group of its tmux pane (setsid) can still be found with `ps` and stopped.
-import { execFile } from 'node:child_process';
+import { execFile, execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, openSync, readFileSync, readSync, closeSync, statSync, writeFileSync, rmSync, fstatSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { promisify } from 'node:util';
@@ -18,7 +18,7 @@ export type ProcState = 'starting' | 'running' | 'exited' | 'stopped' | 'suspend
 export interface Proc {
   name: string; command: string; cwd: string; stop?: string; port?: number; portFromLog?: boolean;
   startedBy: 'agent' | 'user'; state: ProcState; exitCode?: number; started?: string; ended?: string;
-  window?: string; pid?: number; stopNote?: string;
+  window?: string; pid?: number; pidStart?: string; stopNote?: string;
   path?: string; // the PATH of the shell that ran tb run, so the command finds the same programs as the agent
   permitId?: string; // an approved run starts once and cannot restart after it ends
 }
@@ -173,6 +173,7 @@ async function launch(o: Owner, p: Proc) {
     : await tmux('new-session', '-d', '-P', '-F', fmt, '-s', o.session, '-n', p.name, '-c', p.cwd, '-x', '200', '-y', '50', '/bin/sh', run);
   const [window, pid] = out.trim().split(SEP);
   p.window = window; p.pid = Number(pid);
+  p.pidStart = processStart(p.pid);
   // new-session may have started the tmux server: give it the Taskboard settings like an agent session does
   if (!exists) await ensureConfigured().catch(() => {});
   // keep the window after the command exits, so its exit code can be read (the global setting also does this, but
@@ -183,8 +184,16 @@ async function launch(o: Owner, p: Proc) {
 }
 
 // Send a signal to the process group of the pane (tmux makes each pane a session leader, so its pid is the group id).
-const signalGroup = (pid: number, sig: NodeJS.Signals) => { try { process.kill(-pid, sig); return true; } catch { return false; } };
-const alive = (pid: number) => { try { process.kill(-pid, 0); return true; } catch { return false; } };
+const processStart = (pid?: number): string | undefined => {
+  if (!pid) return undefined;
+  try { return execFileSync('ps', ['-p', String(pid), '-o', 'lstart='], { encoding: 'utf8', timeout: 3000 }).trim() || undefined; } catch { return undefined; }
+};
+export const sameStart = (expected: string | undefined, current: string | undefined) => !!expected && current === expected;
+const signalGroup = (pid: number, start: string | undefined, sig: NodeJS.Signals) => {
+  if (!sameStart(start, processStart(pid))) return false;
+  try { process.kill(-pid, sig); return true; } catch { return false; }
+};
+const alive = (pid: number, start: string | undefined) => sameStart(start, processStart(pid));
 
 // Processes that carry TB_PROC_OWNER=<owner> (and TB_PROC_NAME=<name>) in their environment, found with ps.
 // On macOS `ps -E` prints the environment after the command; on Linux `ps e` does.
@@ -215,21 +224,22 @@ async function stopOne(o: Owner, p: Proc, state: 'stopped' | 'suspended', note?:
     } catch (e) { notes.push(`Stop command failed: ${(e as Error).message.split('\n')[0]}`); }
   }
   if (p.pid) {
-    signalGroup(p.pid, p.permitId ? 'SIGINT' : 'SIGTERM');
+    signalGroup(p.pid, p.pidStart, p.permitId ? 'SIGINT' : 'SIGTERM');
     const grace = p.permitId ? 1200 : 50;
-    for (let i = 0; i < grace && alive(p.pid); i++) await new Promise(r => setTimeout(r, 100));
-    if (alive(p.pid) && p.permitId) {
-      signalGroup(p.pid, 'SIGTERM');
-      for (let i = 0; i < 50 && alive(p.pid); i++) await new Promise(r => setTimeout(r, 100));
+    for (let i = 0; i < grace && alive(p.pid, p.pidStart); i++) await new Promise(r => setTimeout(r, 100));
+    if (alive(p.pid, p.pidStart) && p.permitId) {
+      signalGroup(p.pid, p.pidStart, 'SIGTERM');
+      for (let i = 0; i < 50 && alive(p.pid, p.pidStart); i++) await new Promise(r => setTimeout(r, 100));
     }
-    if (alive(p.pid)) { signalGroup(p.pid, 'SIGKILL'); notes.push(p.permitId ? 'Force-stopped after 125 s. Check cleanup.' : 'Force-stopped after 5 s.'); }
+    if (alive(p.pid, p.pidStart)) { signalGroup(p.pid, p.pidStart, 'SIGKILL'); notes.push(p.permitId ? 'Force-stopped after 125 s. Check cleanup.' : 'Force-stopped after 5 s.'); }
   }
   // children that left the pane's process group
   const left = await marked(ownerTag(o), p.name);
-  for (const pid of left) { try { process.kill(pid, 'SIGTERM'); } catch { /* ended */ } }
+  const leftStarts = new Map(left.map(pid => [pid, processStart(pid)]));
+  for (const pid of left) if (sameStart(leftStarts.get(pid), processStart(pid))) { try { process.kill(pid, 'SIGTERM'); } catch { /* ended */ } }
   if (left.length) {
     await new Promise(r => setTimeout(r, 1000));
-    for (const pid of left) { try { process.kill(pid, 'SIGKILL'); } catch { /* ended */ } }
+    for (const pid of left) if (sameStart(leftStarts.get(pid), processStart(pid))) { try { process.kill(pid, 'SIGKILL'); } catch { /* ended */ } }
     notes.push(`Stopped ${left.length} process(es) that had left the group.`);
   }
   if (p.window) await tmux('kill-window', '-t', p.window).catch(() => {});
@@ -281,7 +291,10 @@ export function stopAll(o: Owner, state: 'stopped' | 'suspended'): Promise<numbe
     const keep = state === 'suspended' && list.some(p => p.permitId && (p.state === 'running' || p.state === 'starting'));
     if (!keep) {
       const left = await marked(ownerTag(o));
-      for (const pid of left) { try { process.kill(pid, 'SIGKILL'); } catch { /* ended */ } }
+      for (const pid of left) {
+        const start = processStart(pid);
+        if (sameStart(start, processStart(pid))) { try { process.kill(pid, 'SIGKILL'); } catch { /* ended */ } }
+      }
       await tmux('kill-session', '-t', '=' + o.session).catch(() => {});
     }
     if (n || list.length) { save(o, list); changed(o); }
