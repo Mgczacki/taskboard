@@ -12,7 +12,7 @@ interface Summary {
   id: string; message_id: string; direction: 'in' | 'out'; state: string; audience: 'person' | 'agent' | 'both'; subject: string; from: string; to: string;
   trusted: boolean; check: { verdict: string } | null; body_flags: number | null; approver: 'person' | 'reviewer' | 'nobody';
   approved_by: string | null; created: string; updated: string; hash: string; allowed_actions: string[]; failure_code?: string; routes: { task: string; at: string }[];
-  source?: string; error?: string | null;
+  source?: string; owner_message?: boolean; direct_target?: string | null; error?: string | null;
   delivery?: { nextAttemptAt?: string; stoppedAt?: string; failureCode?: string; lastMethod?: string; lastStatus?: number; attempts: number };
   metadata: Record<string, string | number | boolean | null> | null;
   suggested_task?: { id: string; num: number; title: string; reason: string };
@@ -119,6 +119,8 @@ export function MessageList({ tasks, direction, focus }: { tasks: Task[]; direct
         <p className="mail-meta">{controls.label}. For: {m.audience === 'person' ? 'the reader' : m.audience === 'agent' ? "the reader's agent" : 'the reader and the agent'}. Check: {m.check?.verdict || m.failure_code || 'running'}. Approver: {approverLabel(approver)}. {m.trusted ? 'Trusted.' : 'Not trusted.'}
           {m.direction === 'out' && by ? ` Written by ${proposer({ proposedBy: { actor: by === 'user' ? 'user' : by as 'task' | 'controller', task: String(m.metadata?.['taskboard.task_id'] || '') } }, tasks)}.` : ''}
           {m.direction === 'out' && m.body_flags ? ` The message check flagged ${m.body_flags} item(s).` : ''}
+          {m.owner_message ? ' Verified request from your Slack account. No acceptance card needed.' : ''}
+          {m.direct_target ? ` Addressed to ${m.direct_target}.` : ''}
           {' '}{date(m.created)}.
           {m.routes.length ? ` Given to ${m.routes.map(r => tasks.find(t => t.id === r.task)?.title || r.task).join(', ')}.` : ''}
           {m.proposed_route ? ` The controller proposes ${m.proposed_route.task ? tasks.find(t => t.id === m.proposed_route!.task)?.title || m.proposed_route.task : 'no task'}.` : ''}

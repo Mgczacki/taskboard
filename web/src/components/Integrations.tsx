@@ -50,6 +50,37 @@ function SlackAppSettings({ status, busy, apply }: { status: Status; busy: boole
   </>;
 }
 
+function SlackTaskAliases() {
+  const [aliases, setAliases] = useState<Record<string, string>>({});
+  const [tasks, setTasks] = useState<{ id: string; num: number; title: string }[]>([]);
+  const [name, setName] = useState(''), [task, setTask] = useState('');
+  const load = async () => { const result = await a2aRequest('/aliases'); setAliases(result.aliases); setTasks(result.tasks); };
+  const { busy, error, act } = useAction(load);
+  useEffect(() => { void load().catch(() => {}); }, []);
+  return <details>
+    <summary>Message your tasks from Slack</summary>
+    <p>Write in your Slack self-conversation. Put the destination on the first line, then write your request.</p>
+    <pre>{'A2A #430\nPlease check the current status.'}</pre>
+    <p><code>A2A @controller</code> goes to Taskboard's controller. <code>A2A @name</code> uses an alias registered below.</p>
+    <p>Your verified account needs no acceptance card. Message checks still apply. Separate action approvals still apply.</p>
+    <p>Other accounts keep the existing acceptance rules. Ordinary Slack text and mentions stay outside this flow.</p>
+    <form onSubmit={e => { e.preventDefault(); void act(async () => { await a2aRequest('/aliases', { name: name.trim(), task }); setName(''); }); }}>
+      <label htmlFor="a2a-task-alias">Alias</label>
+      <input id="a2a-task-alias" value={name} onChange={e => setName(e.target.value)} placeholder="research" pattern="[a-z][a-z0-9_-]{0,31}" maxLength={32} required />
+      <label htmlFor="a2a-alias-task">Task</label>
+      <select id="a2a-alias-task" value={task} onChange={e => setTask(e.target.value)} required>
+        <option value="">Choose a task</option>
+        {tasks.filter(t => t.id !== 'controller').map(t => <option key={t.id} value={t.id}>#{t.num} {t.title}</option>)}
+      </select>
+      <button className="btn" disabled={busy || !name.trim() || !task}>Save alias</button>
+    </form>
+    <ul>{Object.entries(aliases).map(([alias, id]) => <li key={alias}><code>@{alias}</code> → {tasks.find(t => t.id === id)?.title || 'Task unavailable'}{' '}
+      <button type="button" className="btn" disabled={busy} onClick={() => void act(() => a2aRequest('/aliases', { name: alias, task: null }))}>Remove {alias}</button>
+    </li>)}</ul>
+    {error && <p role="alert">{error}</p>}
+  </details>;
+}
+
 // A2A Notes (server/a2anotes): setup of the separate service, and its own Slack sign-in.
 function A2ANotesCard() {
   const [status, setStatus] = useState<Status | null>(null);
@@ -77,6 +108,7 @@ function A2ANotesCard() {
       {status.enabled && s && <div className="sub">Message checks: {s.checks === 'model' ? 'Claude with the controller account, and the fixed rules.' : 'the fixed rules only. Claude checks need the claude program and a Claude controller account.'}</div>}
       {status.enabled && s?.checksOutdated && <div>The message check settings changed (for example the controller account). Update A2A Notes to use them.</div>}
       {!status.enabled && s?.installed && <div className="sub">Setup writes the A2A Notes settings in {s.folder}, starts the service{s.running ? ' (it is already running)' : ''}, keeps it running after you sign in to this computer, and connects Taskboard to it.</div>}
+      {c?.signed_in && <SlackTaskAliases />}
       {s && <SlackAppSettings status={status} busy={busy} apply={() => act(() => a2aRequest('/setup', { applySlackApp: true }))} />}
       {signInFailed && s && <div role="alert">
         <div>Slack sign-in did not finish.</div>

@@ -432,6 +432,75 @@ test('trusted messages without verified targets stay held in visible triage and 
   await call('user', '/trusted', { address: alex.address, trusted: true });
 });
 
+test('owner task numbers, aliases, and controller messages route once without an acceptance card', async () => {
+  await call('user', '/policy', { incoming: 1 });
+  assert.equal((await call('task', '/aliases', { name: 'research', task: 'worker' })).status, 403);
+  assert.equal((await call('controller', '/aliases', { name: 'research', task: 'worker' })).status, 403);
+  assert.equal((await call('user', '/aliases', { name: 'controller', task: 'worker' })).status, 400);
+  assert.equal((await call('user', '/aliases', { name: '__proto__', task: 'worker' })).status, 400);
+  assert.equal((await call('user', '/aliases', { name: 'research', task: 'worker' })).status, 200);
+  for (const selector of ['#7', '@research', '@controller']) {
+    const body = `Please check the status for ${selector}.`;
+    const ts = fake.inject('UMARIO01', 'UMARIO01', `A2A ${selector}\n${body}`);
+    await call('user', '/sync', {});
+    const m = (await call('user', '/messages?direction=incoming')).data.messages.find((m: any) => m.direct_target === selector && m.owner_message);
+    assert.ok(m); assert.equal(m.state, 'approved'); assert.equal(m.source, 'human_message');
+    assert.equal(adapter.cards.list().some(c => c.message === m.id), false);
+    const target = selector === '@controller' ? 'controller' : 'worker';
+    assert.equal(m.routes.length, 1); assert.equal(m.routes[0].task, target);
+    const text = readFileSync(join(tasks.taskDir(target), 'inbox', m.routes[0].file), 'utf8');
+    assert.match(text, /Request from your owner in Slack/); assert.ok(text.includes(body));
+    assert.match(text, /does not approve a draft, a release/);
+    const full = (await call('user', `/messages/${m.id}`)).data;
+    assert.equal(full.transport.ts, ts);
+    await Promise.all([adapter.checkIncoming(), adapter.checkIncoming()]);
+    assert.equal(delivered.filter(x => x === `${target}/${m.routes[0].file}`).length, 1);
+  }
+  const before = delivered.length;
+  const restart = mountA2ANotes(express(), { background: false, delivery: { deliver: async (task, file) => { delivered.push(`${task}/${file}`); return {} as any; } } });
+  try { await restart.checkIncoming(); assert.equal(delivered.length, before); } finally { await restart.close(); }
+});
+
+test('an unknown owner target waits in triage and external target text cannot route or approve work', async () => {
+  fake.inject('UMARIO01', 'UMARIO01', 'A2A @missing\nPlease check the status.');
+  fake.inject('UALEX01', 'UMARIO01', 'A2A @research\nPlease check the status.');
+  fake.inject('UMARIO01', 'UMARIO01', 'approve');
+  await call('user', '/sync', {});
+  const list = (await call('user', '/messages?direction=incoming')).data.messages;
+  const unknown = list.find((m: any) => m.direct_target === '@missing');
+  assert.equal(unknown.state, 'approved'); assert.deepEqual(unknown.routes, []);
+  assert.ok((await call('controller', '/triage')).data.messages.some((m: any) => m.id === unknown.id));
+  const external = list.find((m: any) => m.direct_target === '@research' && m.from === alex.address);
+  assert.equal(external.state, 'held'); assert.equal(external.owner_message, false); assert.deepEqual(external.routes, []);
+  assert.equal((await call('controller', `/messages/${external.id}`)).data.body, '');
+  await call('user', `/messages/${external.id}/approve`, { hash: external.hash });
+  assert.deepEqual((await call('user', `/messages/${external.id}`)).data.routes, [], 'a header from another sender does not choose a local target');
+  assert.equal((await call('controller', `/messages/${external.id}/route`, { task: 'controller' })).status, 403);
+});
+
+test('a native owner reply reaches its origin with the original person audience', async () => {
+  const transport = mario.running.service.transport as any;
+  transport.config.allowSelf = true;
+  let draft: any;
+  try {
+    draft = (await call('task', '/drafts', { to: mario.address, subject: 'Owner reply preview', body: 'Please check this preview.', audience: 'person' })).data;
+    assert.equal(draft.state, 'draft');
+    await call('user', `/messages/${draft.id}/approve`, { hash: draft.hash });
+    await call('user', `/messages/${draft.id}/send`, { hash: draft.hash });
+  } finally { transport.config.allowSelf = false; }
+  const original = (await call('user', `/messages/${draft.id}`)).data;
+  assert.equal(original.state, 'sent');
+  const ts = fake.inject('UMARIO01', 'UMARIO01', `A2A Reply/1 ${draft.message_id}\nYes, I can read it.`, original.transport.ts);
+  await call('user', '/sync', {});
+  const list = (await call('user', '/messages?direction=incoming')).data.messages;
+  const m = list.find((m: any) => m.source === 'human_reply' && m.owner_message);
+  assert.ok(m); assert.equal(m.audience, 'person'); assert.equal(m.routes[0].task, 'worker');
+  assert.equal((await call('task', `/messages/${m.id}`)).data.body, '');
+  assert.equal((await call('user', `/messages/${m.id}`)).data.transport.ts, ts);
+  assert.equal(adapter.cards.list().some(c => c.message === m.id), false);
+  await adapter.checkIncoming(); assert.equal(delivered.filter(x => x === `worker/${m.routes[0].file}`).length, 1);
+});
+
 test('when a2anotes.json is missing, the adapter reports off and changes nothing', async () => {
   const offRoot = mkdtempSync(join(tmpdir(), 'tb-a2anotes-off-'));
   const offApp = express(); offApp.use(express.json());
