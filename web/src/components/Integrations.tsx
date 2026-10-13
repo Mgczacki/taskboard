@@ -66,7 +66,7 @@ function SlackTaskAliases() {
     <p>Other accounts keep the existing acceptance rules. Ordinary Slack text and mentions stay outside this flow.</p>
     <form onSubmit={e => { e.preventDefault(); void act(async () => { await a2aRequest('/aliases', { name: name.trim(), task }); setName(''); }); }}>
       <label htmlFor="a2a-task-alias">Alias</label>
-      <input id="a2a-task-alias" value={name} onChange={e => setName(e.target.value)} placeholder="research" pattern="[a-z][a-z0-9_-]{0,31}" maxLength={32} required />
+      <input id="a2a-task-alias" value={name} onChange={e => setName(e.target.value)} placeholder="research" pattern="[a-z](?:[a-z0-9_]|-){0,31}" maxLength={32} required />
       <label htmlFor="a2a-alias-task">Task</label>
       <select id="a2a-alias-task" value={task} onChange={e => setTask(e.target.value)} required>
         <option value="">Choose a task</option>
