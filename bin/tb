@@ -416,6 +416,7 @@ switch (cmd) {
   stage <outbox file> [--kind agent|support]       stage a file and print its file_id
   approve <id> <hash> | reject <id> <hash> [--comment <text>] | send <id> <hash>   controller only
   triage                                          controller only: accepted or trusted messages that need a destination
+  ack <id> <hash>                                                             acknowledge receipt only
   route <id> <task> | propose-route <id> <task|none>                               controller only
     get reads accepted messages, including messages for a person accepted by the user.
     route requires current acceptance and an allowed audience.
@@ -450,6 +451,7 @@ switch (cmd) {
     }
     else if (action === 'revise') result = await call('POST', `/api/a2anotes/messages/${id}/revise`, { hash, ...sections, ...(audience ? { audience } : {}), files, ...(agentFile ? { agent_file_path: agentFile } : {}) });
     else if (action === 'approve' || action === 'reject') result = await call('POST', `/api/a2anotes/messages/${id}/approve`, { hash: b, decision: action, ...(comment ? { comment } : {}) });
+    else if (action === 'ack') result = await call('POST', `/api/a2anotes/messages/${id}/ack`, { hash: b });
     else if (action === 'send') result = await call('POST', `/api/a2anotes/messages/${id}/send`, { hash: b });
     else if (action === 'route') result = await call('POST', `/api/a2anotes/messages/${id}/route`, { task: (await task(b)).id });
     else if (action === 'propose-route') result = await call('POST', `/api/a2anotes/messages/${id}/propose-route`, { task: b === 'none' ? null : (await task(b)).id });

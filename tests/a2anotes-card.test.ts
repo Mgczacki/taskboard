@@ -56,3 +56,17 @@ test('the Inbox card takes its buttons from cardControls only', () => {
   assert.match(source, /cardControls\(m\)/);
   assert.match(source, /messageCardsKey\(/);
 });
+
+
+test('acknowledgement controls do not imply approval or routing', () => {
+  const c = cardControls({ state: 'held', direction: 'in', allowed_actions: ['ack'], body_flags: null });
+  assert.equal(c.ack, true); assert.equal(c.approve, false); assert.equal(c.route, false);
+  assert.equal(cardControls({ ...draft, state: 'sent', allowed_actions: [] }).ack, false);
+});
+
+
+test('failed delivery notices can retry only while the current service actions permit the accepted message', () => {
+  const m = { state: 'approved', direction: 'in' as const, allowed_actions: ['reply'], body_flags: null, delivery_notice: { status: 'failed' } };
+  assert.equal(cardControls(m).retryNotice, true);
+  assert.equal(cardControls({ ...m, allowed_actions: [] }).retryNotice, false);
+});

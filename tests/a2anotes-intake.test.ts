@@ -59,3 +59,12 @@ test('a saved destination survives alias changes and only an owner message can t
   assert.equal(destination(owner, undefined, all, () => 'controller').task, 'controller');
   assert.equal(destination(message, { task: 'controller', hash: 'current' }, all).task, undefined);
 });
+
+
+test('machine identity prevents automatic routing to a task with the same ID on another machine', () => {
+  const m = { ...message, reply_to_local: { metadata: { 'taskboard.task_id': 'task-a', 'taskboard.machine_id': 'machine-a' } } };
+  const result = destination(m, undefined, () => true, undefined, 'machine-b');
+  assert.equal(result.task, undefined); assert.match(result.reason, /another machine/);
+  const approved = destination(message, { task: 'task-a', hash: message.hash, machine: 'machine-a' }, () => true, undefined, 'machine-b');
+  assert.equal(approved.task, undefined); assert.match(approved.reason, /another machine/);
+});

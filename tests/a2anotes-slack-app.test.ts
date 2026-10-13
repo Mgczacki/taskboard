@@ -16,7 +16,8 @@ const machine = await import('../server/machine.ts');
 const A2A = '8696283833057.12198817279122', TASKBOARD = '8696283833057.12177743257233';
 const manifest = (name: string) => JSON.parse(readFileSync(join(import.meta.dirname, '..', 'integrations', 'slack', name), 'utf8'));
 // the user scopes that A2A Notes asks for at sign-in (a2a-notes src/slack.ts REQUIRED_SCOPES and OPTIONAL_SCOPES)
-const SCOPES = ['chat:write', 'im:write', 'im:read', 'im:history', 'users:read', 'users:read.email', 'files:read', 'files:write'];
+const { REQUIRED_SCOPES, OPTIONAL_SCOPES } = await import('a2a-notes');
+const SCOPES = [...REQUIRED_SCOPES, ...OPTIONAL_SCOPES];
 
 test('the default Slack app is the separate A2A Notes app in the Sekai workspace', () => {
   assert.equal(setup.SLACK_CLIENT_ID, A2A);
