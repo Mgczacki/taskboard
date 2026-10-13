@@ -12,7 +12,7 @@ Slack must run with its debugging port restricted to loopback.
 
 The connector verifies the app account and direct message recipient.
 It stores pending messages before delivery.
-It saves the send checkpoint before clicking Send.
+It saves the send checkpoint before dispatch.
 It confirms the original message ID before recording success.
 It never repeats an uncertain post.
 
@@ -29,9 +29,9 @@ Larger files fail before posting.
 People search and history recovery use records available in the app.
 Changed controls produce visible errors.
 
-Taskboard bundles `integrations/a2a-notes/a2a-notes-0.10.0.tgz`.
+Taskboard bundles `integrations/a2a-notes/a2a-notes-0.11.0.tgz`.
 The lockfile records its integrity.
-No release or live Slack send is part of this change.
+This package update changes no running service.
 
 Setup saves old OAuth settings in `config.before-slack-app.json` before the first migration.
 The backup stays private in the service data folder.
@@ -39,4 +39,43 @@ Restore that config with the earlier package when rolling back.
 Pause outgoing delivery before rollback.
 Do not reuse app attachment checkpoints with the older API transport.
 
-The A2A Notes source revision is `868243a6eecde8f7c7860bfbfe212da3c860e1d2`.
+The A2A Notes source revision is `8d58119c2e91a240807ea2d182f10777133b39a8`.
+
+The integrated package SHA256 is `7020c8cfcdb26cbd66c218523af17890c9bd428f90e5300176ec94b512da1bc7`.
+
+## Optional native posting
+
+Add `--send` to `a2a-notes desktop enable --url http://127.0.0.1:19322` to select native posting.
+Restart A2A Notes after changing the setting.
+The connector checks the current account and inspected Slack module hashes.
+It calls Slack's native `apiCall` function with the approved message ID and content.
+Slack handles credentials inside the app.
+The request gets one SDK attempt.
+A2A Notes controls further retries and honors Retry-After.
+
+`DesktopDeliveries.begin` stores the attempt before dispatch in `desktop-deliveries.json`.
+The connector saves the receipt before the service marks the note sent.
+A restart checks the saved receipt before reading app message records.
+An uncertain attempt cannot create another post.
+A verified native echo can supply a lost receipt.
+Known unavailability before posting permits app composer controls.
+A native 429 or uncertain result cannot switch the same attempt to those controls.
+Invalid credentials and policy failures stop delivery.
+A changed note needs a new approval.
+The adapter preserves small inline attachments and their hash checks.
+It makes no direct Slack HTTP request and has no OAuth fallback.
+
+## Human replies and approval
+
+The person copies `A2A Reply/1 <note ID>` from the sent note.
+They write the reply on the next line in the same conversation or its thread.
+The service verifies the original recipient and preserves the audience.
+Taskboard uses verified task metadata to find the originating task.
+`A2A #430` and registered aliases let the owner address tasks from their verified self-conversation.
+Ordinary Slack text creates no agent instruction or action approval.
+The service keeps approval for unchanged queued content.
+MCP clients retain the bound human approval form through `a2anotes_request_approval`.
+Acknowledgement remains separate from acceptance and action approval.
+
+Saved Web API upload progress stops before app-only delivery.
+The adapter cannot replace an earlier shared file with an inline attachment.
