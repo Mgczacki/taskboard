@@ -5,7 +5,8 @@ import { test, after } from 'node:test';
 import assert from 'node:assert/strict';
 import express from 'express';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomUUID, createHash } from 'node:crypto';
@@ -42,8 +43,10 @@ writeFileSync(join(TB_DIR, 'a2anotes.json'), JSON.stringify(settings), { mode: 0
 tasks.create({ id: 'worker', num: 7, title: 'Stage hosting', agent: 'claude', status: 'idle', cwd: root, folder: root, session: 'test', desc: '' } as any);
 tasks.create({ id: 'controller', num: 0, title: 'Controller', agent: 'claude', status: 'idle', cwd: root, folder: root, session: 'test', desc: '' } as any);
 const delivered: string[] = [];
+const userMessages = new Set<string>();
 const app = express(); app.use(express.json());
-const adapter = mountA2ANotes(app, { background: false, delivery: { deliver: async (task, name) => { delivered.push(`${task}/${name}`); return { task, name, queued: '', deliveredAt: new Date().toISOString() } as any; } } });
+app.get('/api/tasks', (_req, res) => res.json(tasks.all()));
+const adapter = mountA2ANotes(app, { background: false, userWrote: words => Number(userMessages.has(words)), delivery: { deliver: async (task, name) => { delivered.push(`${task}/${name}`); return { task, name, queued: '', deliveredAt: new Date().toISOString() } as any; } } });
 const server = app.listen(0, '127.0.0.1'); await new Promise<void>(r => server.once('listening', r));
 const base = `http://127.0.0.1:${(server.address() as { port: number }).port}/api/a2anotes`;
 after(async () => { server.close(); await adapter.close(); await mario.running.close(); await alex.running.close(); await fake.close(); });
@@ -398,6 +401,43 @@ test('a person reply stays private before user acceptance and then reaches its o
   assert.match(readFileSync(join(tasks.taskDir('worker'), 'inbox', full.routes[0].file), 'utf8'), /stage-data/);
   await adapter.checkIncoming();
   assert.equal(delivered.filter(x => x === `worker/${full.routes[0].file}`).length, 1);
+});
+
+test('controller routes only the accepted person note and task named by the user', async () => {
+  await call('user', '/policy', { incoming: 1 });
+  await call('user', '/trusted', { address: alex.address, trusted: true });
+  tasks.create({ id: 'incident', num: 529, title: 'Incident', agent: 'claude', status: 'idle', cwd: root, folder: root, session: 'test', desc: '' } as any);
+  const { m } = await incomingFromAlex('person');
+  const other = (await incomingFromAlex('person')).m;
+  const words = `Give message ${m.id} to incident task #529.`;
+  userMessages.add(words);
+  const path = `/messages/${m.id}/route`;
+  assert.equal((await call('controller', path, { task: 'incident', hash: m.hash, userRequest: words })).status, 400, 'held text cannot be routed');
+  assert.equal((await call('user', `/messages/${m.id}/approve`, { hash: m.hash })).status, 200);
+  assert.equal((await call('controller', path, { task: 'incident' })).status, 403, 'ordinary route still requires a verified target');
+  assert.equal((await call('controller', `/messages/${m.id}/propose-route`, { task: 'incident' })).status, 403);
+  assert.equal((await call('task', path, { task: 'incident', hash: m.hash, userRequest: words })).status, 403);
+  assert.equal((await call('controller', path, { task: 'worker', hash: m.hash, userRequest: words })).status, 403, 'the named task must match');
+  assert.equal((await call('controller', path, { task: 'incident', hash: 'old', userRequest: words })).status, 400, 'the current hash is required');
+  assert.equal((await call('controller', path, { task: 'incident', hash: m.hash, userRequest: `Give message ${m.id} to incident task #529.` + ' extra' })).status, 403, 'the words must be in user chat');
+  await call('user', '/trusted', { address: alex.address, trusted: false });
+  assert.equal((await call('controller', path, { task: 'incident', hash: m.hash, userRequest: words })).status, 403, 'the sender must still be trusted');
+  await call('user', '/trusted', { address: alex.address, trusted: true });
+  assert.equal((await call('controller', `/messages/${other.id}/route`, { task: 'incident', hash: other.hash, userRequest: words })).status, 400, 'another held note stays held');
+  const tokenFile = join(root, 'cli-token'); writeFileSync(tokenFile, TOKEN);
+  const { stdout } = await promisify(execFile)('node', ['bin/tb', 'mail', 'route', m.id, '#529', '--hash', m.hash, '--user-request', words],
+    { cwd: new URL('..', import.meta.url).pathname, env: { ...process.env, TB_URL: base.replace(/\/api\/a2anotes$/, ''), TB_TOKEN_FILE: tokenFile, TASK_ID: 'controller', TB_MAIL_CONTROLLER_TOKEN: controllerMailToken } });
+  const routed = JSON.parse(stdout);
+  assert.equal(routed.task, 'incident');
+  assert.equal(routed.userRequest, words, 'the saved route audits the user request');
+  assert.equal(routed.hash, m.hash);
+  assert.equal((await call('controller', path, { task: 'incident', hash: m.hash, userRequest: words })).data.at, routed.at, 'a duplicate returns the same route');
+  assert.equal(delivered.filter(x => x === `incident/a2anotes-${m.id}.md`).length, 1);
+  assert.deepEqual((await call('controller', `/messages/${other.id}`)).data.routes, [], 'another note was not routed');
+  const agent = (await incomingFromAlex('agent')).m;
+  assert.equal((await call('user', `/messages/${agent.id}/approve`, { hash: agent.hash })).status, 200);
+  const agentWords = `Give message ${agent.id} to incident task #529.`; userMessages.add(agentWords);
+  assert.equal((await call('controller', `/messages/${agent.id}/route`, { task: 'incident', hash: agent.hash, userRequest: agentWords })).status, 403, 'the instruction path is limited to person notes');
 });
 
 test('an approved card target routes a person message and conflicting reply targets wait in triage', async () => {

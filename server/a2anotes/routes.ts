@@ -28,9 +28,9 @@ import { accepted, agentAudience, destination, trustedAgent, ownerMessage, type 
 
 const MAX_FILE = 10 * 1024 * 1024;
 export interface A2ADeps { deliver: (task: string, name: string) => Promise<Delivery> }
-interface Route { task: string; machine?: string; file: string; at: string; by: 'person' | 'reviewer' }
+interface Route { task: string; machine?: string; file: string; at: string; by: 'person' | 'reviewer'; userRequest?: string; hash?: string }
 
-export function mountA2ANotes(app: Express, options: { delivery?: A2ADeps; settings?: () => Settings; background?: boolean; dir?: string } = {}) {
+export function mountA2ANotes(app: Express, options: { delivery?: A2ADeps; settings?: () => Settings; background?: boolean; dir?: string; userWrote?: (words: string) => number } = {}) {
   const dir = options.dir || TB_DIR;
   const localMachine = machineId();
   const settingsFile = join(dir, 'a2anotes.json');
@@ -256,26 +256,33 @@ export function mountA2ANotes(app: Express, options: { delivery?: A2ADeps; setti
   // Each message and task pair has one file. Save the route before attempting delivery.
   // A concurrent route waits for the first route and returns the saved record.
   const routing = new Map<string, Promise<Route>>();
-  async function routeTo(id: string, taskId: string, r: Role, automatic = false): Promise<Route> {
+  async function routeTo(id: string, taskId: string, r: Role, automatic = false, userRequest?: string, expectedHash?: string): Promise<Route> {
     const key = `${id}:${taskId}`;
     const pending = routing.get(key);
-    if (pending) { await pending; return routeTo(id, taskId, r, automatic); }
-    const run = writeRoute(id, taskId, r, automatic);
+    if (pending) { await pending; return routeTo(id, taskId, r, automatic, userRequest, expectedHash); }
+    const run = writeRoute(id, taskId, r, automatic, userRequest, expectedHash);
     routing.set(key, run);
     try { return await run; } finally { routing.delete(key); }
   }
-  async function writeRoute(id: string, taskId: string, r: Role, automatic: boolean) {
+  async function writeRoute(id: string, taskId: string, r: Role, automatic: boolean, userRequest?: string, expectedHash?: string) {
     const task = tasks.get(taskId);
     if (!task || task.status === 'archived') throw new A2AError('invalid_input', 'Choose one of your local tasks.');
     const m = await messageFor(r, id);
+    if (expectedHash && m.hash !== expectedHash) throw new A2AError('hash_changed', 'The message changed. Read it again.');
     if (task.id === 'controller' && (!ownerMessage(m) || targetOf(m).task !== 'controller')) throw new A2AError('forbidden', 'Only an explicit owner message can go directly to the controller.');
     if (!accepted(m)) throw new A2AError('not_approved', 'Accept this incoming message before it goes to a task.');
-    if (m.source === 'human_message' && r !== 'person' && targetOf(m).task !== task.id)
+    const names = (value: string) => userRequest?.split(/[^A-Za-z0-9_#-]+/).includes(value) === true;
+    const instructed = !!userRequest && r === 'reviewer' && m.audience === 'person' && m.trusted === true &&
+      !!options.userWrote?.(userRequest) && names(m.id) &&
+      (names(`#${task.num}`) || names(task.id)) &&
+      /\b(route|give|send|deliver)\b/i.test(userRequest) && !/\b(no|not|don't|deny|cancel|wait)\b/i.test(userRequest);
+    if (userRequest && !instructed) throw new A2AError('forbidden', 'Give the exact user message that names this message and task and directs its route. The sender must be trusted.');
+    if (m.source === 'human_message' && r !== 'person' && !instructed && targetOf(m).task !== task.id)
       throw new A2AError('forbidden', 'A direct human message needs its verified owner target or a target approved by the user.');
     if (automatic && targetOf(m).task !== task.id) throw new A2AError('invalid_input', 'The verified destination changed. Check controller triage.');
     if (m.audience === 'person') {
       if (m.approval.by !== 'person') throw new A2AError('not_approved', 'The user must accept a message for a person.');
-      if (r !== 'person' && targetOf(m).task !== task.id) throw new A2AError('forbidden', 'A message for a person needs a verified reply task or a target approved by the user.');
+      if (r !== 'person' && !instructed && targetOf(m).task !== task.id) throw new A2AError('forbidden', 'A message for a person needs a verified reply task or a target approved by the user.');
     } else if (!agentAudience(m) || !m.allowed_actions?.includes('release_to_agent')) {
       throw new A2AError('not_approved', 'The audience and current approval must permit delivery to an agent.');
     }
@@ -291,7 +298,7 @@ export function mountA2ANotes(app: Express, options: { delivery?: A2ADeps; setti
     const name = `a2anotes-${m.id}.md`;
     const path = join(docs.inboxDir(task.id), name);
     const file = existsSync(path) && readFileSync(path, 'utf8') === text ? name : basename(docs.uploadSystem(task.id, name, text));
-    const route: Route = { task: task.id, machine: localMachine, file, at: new Date().toISOString(), by: r === 'person' ? 'person' : 'reviewer' };
+    const route: Route = { task: task.id, machine: localMachine, file, at: new Date().toISOString(), by: r === 'person' ? 'person' : 'reviewer', ...(instructed ? { userRequest, hash: m.hash } : {}) };
     const latest = routes(); latest[m.id] = [...(latest[m.id] || []), route]; savePrivate(routesFile, latest);
     try {
       const delivery = await options.delivery?.deliver(task.id, file);
@@ -446,7 +453,13 @@ export function mountA2ANotes(app: Express, options: { delivery?: A2ADeps; setti
     return service().call(r, 'a2anotes_ack', { id: m.id, expected_hash: req.body?.hash });
   }));
   app.post('/api/a2anotes/messages/:id/seen', endpoint(req => service().call(need(req, 'person', 'reviewer', 'agent'), 'a2anotes_mark_seen', { id: req.params.id })));
-  app.post('/api/a2anotes/messages/:id/route', endpoint(req => routeTo(String(req.params.id), String(req.body?.task || ''), need(req, 'person', 'reviewer'))));
+  app.post('/api/a2anotes/messages/:id/route', endpoint(req => {
+    const r = need(req, 'person', 'reviewer');
+    const words = req.body?.userRequest;
+    if (words !== undefined && (r !== 'reviewer' || typeof words !== 'string' || !words.trim() || words.length > 2000 || typeof req.body?.hash !== 'string' || !req.body.hash))
+      throw new A2AError('invalid_input', 'Give the exact user request and current message hash.');
+    return routeTo(String(req.params.id), String(req.body?.task || ''), r, false, words?.trim(), words === undefined ? undefined : req.body.hash);
+  }));
   // The controller proposes the task for a message that the user approves; the user decides on the dashboard card.
   app.post('/api/a2anotes/messages/:id/propose-route', endpoint(async req => {
     const r = need(req, 'reviewer');

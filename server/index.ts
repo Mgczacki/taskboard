@@ -1749,7 +1749,10 @@ mountDocumentContext(app, fromDashboard);
 // Messages between people and their agents, through A2A Notes (github.com/Mgczacki/a2a-notes) and its MCP server.
 // A file from it (a comment from an approval card, a routed message, a notice for the controller) goes into the task's
 // Taskboard inbox, and server/inbox-delivery.ts tells the agent, for every agent and status.
-a2aNotes = mountA2ANotes(app, { delivery: inboxDelivery });
+a2aNotes = mountA2ANotes(app, { delivery: inboxDelivery, userWrote: words => {
+  const transcript = controllerTranscript();
+  return permits.userWroteCount(transcript.path, transcript.agent, words);
+} });
 inboxDelivery.start();
 messageQueue.start();
 
