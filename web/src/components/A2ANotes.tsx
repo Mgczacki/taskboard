@@ -27,7 +27,9 @@ interface Detail extends Summary { body: string; review: { reason: string } | nu
   agent_file: { name: string; sha256: string } | null; files: { name: string; size: number }[]; failure?: { code: string; reason: string }; error: string | null; rejected: { comment?: string } | null }
 export interface Setup { installed: boolean; version?: string; configured: boolean; running: boolean; serviceVersion?: string; linked: boolean; updateAvailable: boolean; restartStep: string; folder: string; port: number; checks: 'model' | 'rules'; checksOutdated: boolean;
   desktop: {url: string; teamId: string} }
-export interface Status { enabled: boolean; url?: string; error?: string; setup?: Setup; identity?: { address?: string; name?: string }; connection?: { available?: boolean; signed_in: boolean; last_scan_at: string | null; last_error: string | null; stale: boolean; missing_scopes: string[] } }
+export interface Status { enabled: boolean; url?: string; error?: string; setup?: Setup; identity?: { address?: string; name?: string }; connection?: { available?: boolean; signed_in: boolean; last_scan_at: string | null; last_error: string | null; stale: boolean; missing_scopes: string[];
+  // The Slack Desktop hook state. connected false means Slack has no reachable debugging port.
+  desktop?: { connected: boolean; listening: boolean } } }
 export { request };
 
 const approverLabel = (a: Summary['approver']) => a === 'nobody' ? 'nobody (the checks hold it)' : a === 'reviewer' ? 'the controller or you' : 'you';

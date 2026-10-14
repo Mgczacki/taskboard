@@ -514,6 +514,8 @@ export function mountA2ANotes(app: Express, options: { delivery?: A2ADeps; setti
   // Slack sign-in for the A2A Notes service. After sign-in, Slack returns the browser to the Taskboard Settings page.
   app.post('/api/a2anotes/slack-disconnect', endpoint(req => service().call(need(req, 'person'), 'a2anotes_slack_disconnect')));
   app.post('/api/a2anotes/slack-connect', endpoint(req => service().call(need(req, 'person'), 'a2anotes_slack_connect')));
+  // Quits Slack Desktop and starts it with its debugging port. Only the person can request it.
+  app.post('/api/a2anotes/restart-slack', endpoint(req => service().call(need(req, 'person'), 'a2anotes_restart_slack')));
   app.post('/api/a2anotes/sync', endpoint(async req => { const r = need(req, 'person', 'reviewer', 'agent'); const status = await service().call(r, 'a2anotes_sync'); await checkIncoming(); return status; }));
 
   // The Graph page: the people and a short record of each message, without its text.
