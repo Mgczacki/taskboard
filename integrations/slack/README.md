@@ -32,7 +32,7 @@ People search reads up to 2,000 members with `users.list`.
 History recovery reads the 50 latest records of up to 20 direct conversations.
 A changed app interface produces a visible error before posting.
 
-Taskboard bundles `integrations/a2a-notes/a2a-notes-0.13.1.tgz`.
+Taskboard bundles `integrations/a2a-notes/a2a-notes-0.14.0.tgz`.
 The lockfile records its integrity.
 This package update changes no running service.
 
@@ -42,9 +42,9 @@ Restore that config with the earlier package when rolling back.
 Pause outgoing delivery before rollback.
 Do not reuse app attachment checkpoints with the older API transport.
 
-The A2A Notes source revision is `c0f373d8dc58b294224bce6c2af165eb1e5560bb`.
+The A2A Notes source revision is `7b057f04af4075b1b38d8c2e6e2a1bd7c65e9e1d`.
 
-The integrated package SHA256 is `968bbf6109e746e18ad0b7e400455da9713bbc052e31f397d8d4cf042308478d`.
+The integrated package SHA256 is `43446d308373ac371a2b51b9735a69d66f7ee888b4fffdc77e5187f956909585`.
 
 ## Optional native posting
 
@@ -128,3 +128,11 @@ Each attachment has a 2 MiB limit, and the note text has a 39,000-byte limit.
 The service checks these limits before approval.
 A failure before posting returns the note to the queue with its approval.
 After the note is posted, a retry only attaches the files. The note is never posted twice.
+
+## Slack restarts
+
+Version 0.14.0 listens to Slack sockets that opened before A2A Notes started.
+Slack needs no restart after A2A Notes restarts.
+A2A Notes reads each such message back from Slack before intake.
+Slack still needs its debugging port. A Slack update, a reboot, or a manual restart starts it without the port.
+The A2A Notes card in Settings then shows **Restart Slack for A2A Notes**. Only the person can use it. It supports macOS only.

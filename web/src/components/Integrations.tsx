@@ -81,6 +81,8 @@ function A2ANotesCard() {
       {s && !s.installed && <div role="alert">A2A Notes is not installed with this Taskboard. Run pnpm install in the Taskboard folder.</div>}
       {c?.last_error && <div role="alert">Last scan error: {c.last_error}</div>}
       {!!c?.missing_scopes.length && <div role="alert">Missing Slack scopes: {c.missing_scopes.join(', ')}</div>}
+      {c?.signed_in && c.desktop && !c.desktop.connected && <div role="alert">Slack Desktop is not reachable. It may have started without its debugging port. Messages wait until it is reachable.</div>}
+      {c?.signed_in && c.desktop?.connected && !c.desktop.listening && <div className="sub">Slack live events are not heard yet. The scan every minute still reads new messages.</div>}
       <ServiceVersion setup={s} />
       {status.enabled && s && <div className="sub">Message checks: {s.checks === 'model' ? 'Claude with the controller account, and the fixed rules.' : 'the fixed rules only. Claude checks need the claude program and a Claude controller account.'}</div>}
       {status.enabled && s?.checksOutdated && <div>The message check settings changed (for example the controller account). Update A2A Notes to use them.</div>}
@@ -94,6 +96,8 @@ function A2ANotesCard() {
         {(s?.updateAvailable || (status.enabled && s?.checksOutdated)) && <button className="btn" disabled={busy} onClick={setup}>{busy ? 'Restarting…' : s?.updateAvailable ? 'Restart A2A Notes' : 'Update A2A Notes'}</button>}
         {status.enabled && !status.error && <button className="btn" disabled={busy} onClick={() => act(() => a2aRequest('/slack-disconnect', {}))}>Disconnect app connector</button>}
         {status.enabled && !status.error && !c?.signed_in && <button className="btn" disabled={busy} onClick={connect}>Connect Slack Desktop</button>}
+        {status.enabled && !status.error && c?.signed_in && c.desktop && !c.desktop.connected && <button className="btn" disabled={busy}
+          onClick={() => { if (window.confirm('Quit Slack and start it again for A2A Notes? Slack keeps unsent drafts.')) void act(() => a2aRequest('/restart-slack', {})); }}>Restart Slack for A2A Notes</button>}
       </div>
     </>}
   </div>;
