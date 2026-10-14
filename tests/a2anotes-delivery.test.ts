@@ -35,9 +35,8 @@ async function fixture(t: any, appOnly = false) {
   if (appOnly) { fake.inject('UMARIO01','UALEX01','Earlier message');appChannel=[...fake.channels.keys()][0]; }
   const app: import('a2a-notes').AppConnection = {
     snapshot: async()=>({team:fake.team,user:'UMARIO01',channel:appChannel,peers:[{id:appChannel!,user:'UALEX01'}],
-      people:[{id:'UMARIO01',name:'Mario',realName:'Mario',title:'',active:true},{id:'UALEX01',name:'Alex',realName:'Alex',title:'',active:true}],messages:[],editor:true,draft:''}),
-    navigate:async id=>{appChannel=id;},compose:async()=>{throw new TransportError('The Slack app control is unavailable. No action was confirmed.',true);},
-    submit:async()=>{throw new Error('Unexpected submit');},react:async()=>{},close:async()=>{},
+      people:[{id:'UMARIO01',name:'Mario',realName:'Mario',title:'',active:true},{id:'UALEX01',name:'Alex',realName:'Alex',title:'',active:true}],messages:[]}),
+    navigate:async id=>{if(id.startsWith('D'))appChannel=id;},message:async()=>{},load:async()=>{},directory:async()=>[],close:async()=>{},
   };
   const transport = appOnly ? new SlackTransport(join(dir,'account.json'),{teamId:fake.team},undefined,{open:async()=>app})
     : new FakeSlackTransport(credentials, { clientId: 'fake', teamId: fake.team, redirectUri: 'http://localhost:4460/slack/callback', apiBase: `${fake.url}/api` }, fetch, { now: () => now });
