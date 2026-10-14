@@ -138,6 +138,16 @@ export async function setupState(settings: Settings): Promise<SetupState> {
 }
 
 let running: Promise<SetupState> | undefined;
+export function slackAppConfig(config: Record<string, any>, teamId: string, desktopUrl: string) {
+  const next: Record<string, any>={...config,slack:{teamId,desktopUrl,
+    ...(config.slack?.acknowledgementEmoji ? {acknowledgementEmoji:config.slack.acknowledgementEmoji} : {}),
+    ...(config.slack?.projectLink !== undefined ? {projectLink:config.slack.projectLink} : {})}};
+  if(config.desktop?.send !== undefined) {
+    if(typeof config.desktop.send !== 'boolean') throw new Error('desktop.send must be a boolean.');
+    next.desktop={url:desktopUrl,send:config.desktop.send};
+  } else delete next.desktop;
+  return next;
+}
 // applySlackApp: write the Slack app that this Taskboard chooses into an existing A2A Notes config.json. Only the
 // "Use this Slack app" button sends it, so setup never changes the app of a config that the user wrote by hand.
 export function setup(settingsFile: string, read: () => Settings, options: {desktopUrl?: string; teamId?: string} = {}) {
@@ -169,8 +179,7 @@ async function doSetup(settingsFile: string, read: () => Settings, options: {des
   if (parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1' || !parsed.port || parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) throw new Error('Use a loopback Slack Desktop endpoint with a port.');
   const teamId = options.teamId || config.slack?.teamId || slackApp().teamId;
   if (!/^T[A-Z0-9]+$/.test(teamId)) throw new Error('Use a Slack workspace ID.');
-  const next = {...config, slack: {teamId, desktopUrl: parsed.origin, ...(config.slack?.acknowledgementEmoji ? {acknowledgementEmoji: config.slack.acknowledgementEmoji} : {}), ...(config.slack?.projectLink !== undefined ? {projectLink: config.slack.projectLink} : {})}};
-  delete next.desktop;
+  const next = slackAppConfig(config,teamId,parsed.origin);
   if (JSON.stringify(next) !== JSON.stringify(config)) {
     const backup = join(SERVICE_DIR, 'config.before-slack-app.json');
     if ((config.slack?.clientId || config.slack?.redirectUri) && !existsSync(backup)) savePrivate(backup, config);
