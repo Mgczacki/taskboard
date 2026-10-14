@@ -9,6 +9,10 @@ const exec = promisify(execFile);
 const MAX_ROWS = 4096;
 const MAX_CANDIDATES = 128;
 const MAX_STOPS = 64;
+const SECOND_PASS_MS = 3000;
+// The node command that runs the wrapper script of any release: `<node> --import <loader> <root>/server/task-browser-mcp.ts`.
+// A tmux server or an agent command line can contain the same path and key, but it does not start with this.
+const WRAPPER_COMMAND = /^\S+ --import \S+ \S+\/server\/task-browser-mcp\.ts /;
 
 export interface McpProcess { pid: number; ppid: number; uid: number; args: string }
 
@@ -26,7 +30,7 @@ export function parseMcpProcesses(output: string): McpProcess[] {
 
 export function orphanWrappers(rows: McpProcess[], taskIds: Set<string>, uid: number): McpProcess[] {
   return rows.filter(row => {
-    if (row.ppid !== 1 || row.uid !== uid || !row.args.includes('/server/task-browser-mcp.ts ')) return false;
+    if (row.ppid !== 1 || row.uid !== uid || !WRAPPER_COMMAND.test(row.args)) return false;
     const match = row.args.match(/--wsEndpoint ws:\/\/127\.0\.0\.1:\d+\/ws\/cdp\/([A-Za-z0-9._-]+)\?key=([a-f0-9]{32})(?:\s|$)/);
     return !!match && taskIds.has(match[1]) && match[2] === cdpKey(match[1]);
   }).slice(0, MAX_CANDIDATES);
@@ -45,6 +49,12 @@ async function readRow(pid: number): Promise<McpProcess | undefined> {
 export async function auditOrphanedTaskBrowserMcp(taskIds: Set<string>, canStop?: (taskId: string) => Promise<boolean>): Promise<{ found: number; stopped: number }> {
   const uid = process.getuid?.() ?? -1;
   const candidates = orphanWrappers(await readMcpProcesses(), taskIds, uid);
+  return { found: candidates.length, stopped: await signalOrphans(candidates, uid, canStop) };
+}
+
+// Each candidate row can be old: the wrapper can have exited and its PID can belong to another process now. Read the row
+// again and send SIGTERM only when the parent, user and full command are the same and the start time did not change.
+export async function signalOrphans(candidates: McpProcess[], uid: number, canStop?: (taskId: string) => Promise<boolean>): Promise<number> {
   let stopped = 0;
   for (const candidate of candidates.slice(0, MAX_STOPS)) {
     const taskId = candidate.args.match(/\/ws\/cdp\/([A-Za-z0-9._-]+)\?key=/)?.[1];
@@ -56,5 +66,13 @@ export async function auditOrphanedTaskBrowserMcp(taskIds: Set<string>, canStop?
     if (identity(candidate.pid)?.start !== before.start) continue;
     try { process.kill(candidate.pid, 'SIGTERM'); stopped++; } catch { /* already exited */ }
   }
-  return { found: candidates.length, stopped };
+  return stopped;
+}
+
+// After tmux ends a session, the agent can still be exiting, and its wrapper gets parent PID 1 only after that. Wrappers
+// of releases before b54914cb do not exit with their agent, so check once now and once more a few seconds later.
+export async function auditAfterSessionEnd(taskIds: Set<string>): Promise<{ found: number; stopped: number }> {
+  const result = await auditOrphanedTaskBrowserMcp(taskIds);
+  setTimeout(() => { void auditOrphanedTaskBrowserMcp(taskIds).catch(e => console.error('task browser MCP audit', e)); }, SECOND_PASS_MS).unref();
+  return result;
 }
