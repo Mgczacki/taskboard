@@ -15,6 +15,7 @@ import * as memory from './memory.ts';
 import * as summary from './runtime-summary.ts';
 import * as machines from './machines.ts';
 import * as transfer from './transfer.ts';
+import { auditOrphanedTaskBrowserMcp } from './task-browser-mcp-cleanup.ts';
 
 export const taskOwner = (t: store.Task) => procs.taskOwner(t, agents.baseEnv(t));
 
@@ -23,6 +24,7 @@ export async function stopTaskRuntime(t: store.Task, state: 'stopped' | 'suspend
   const errors: string[] = [];
   try { await procs.stopAll(taskOwner(t), state); } catch (e) { errors.push(`processes: ${(e as Error).message}`); }
   try { await browser.stop(t.id, { suspended: state === 'suspended' }); } catch (e) { errors.push(`browser: ${(e as Error).message}`); }
+  try { await auditOrphanedTaskBrowserMcp(new Set([t.id])); } catch (e) { errors.push(`browser MCP: ${(e as Error).message}`); }
   if (errors.length) console.error(`${new Date().toISOString()} #${t.num}: could not end everything: ${errors.join('; ')}`);
 }
 export async function removeTaskRuntime(t: store.Task) {
