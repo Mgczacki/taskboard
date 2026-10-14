@@ -1782,7 +1782,8 @@ export function mcpServer(root: string, taskId: string, clickEvidence = false): 
   const node = mcpNode(), script = mcpScript(root);
   if (!node || !existsSync(script)) return null;
   return { command: node, args: [
-    ...(clickEvidence ? ['--import', join(root, 'node_modules', 'tsx', 'dist', 'loader.mjs'), join(root, 'server', 'task-browser-mcp.ts')] : []),
+    '--import', join(root, 'node_modules', 'tsx', 'dist', 'loader.mjs'), join(root, 'server', 'task-browser-mcp.ts'),
+    ...(clickEvidence ? ['--click-evidence'] : []),
     script, '--wsEndpoint', cdpUrl(taskId), '--no-usage-statistics', '--no-performance-crux',
   ] };
 }

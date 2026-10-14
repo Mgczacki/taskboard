@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { existsSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -8,6 +8,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 
 const NODE = ['/opt/homebrew/opt/node@22/bin/node', process.execPath].find(existsSync)!;
+const alive = (pid: number) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
 test('stdio wrapper exposes reviewed click evidence and forwards the ordinary click', { timeout: 20000 }, async () => {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-mcp-evidence-')));
@@ -17,6 +18,8 @@ test('stdio wrapper exposes reviewed click evidence and forwards the ordinary cl
 import { Server } from ${JSON.stringify(sdk('server/index.js'))};
 import { StdioServerTransport } from ${JSON.stringify(sdk('server/stdio.js'))};
 import { CallToolRequestSchema, ListToolsRequestSchema } from ${JSON.stringify(sdk('types.js'))};
+import { writeFileSync } from 'node:fs';
+writeFileSync(process.env.TB_UPSTREAM_PID_FILE, String(process.pid));
 const server = new Server({name:'fixture',version:'1'}, {capabilities:{tools:{}}});
 server.setRequestHandler(ListToolsRequestSchema, async () => ({tools:[
  {name:'click', description:'Click', inputSchema:{type:'object',properties:{pageId:{type:'integer'},uid:{type:'string'}},required:['uid']}},
@@ -33,8 +36,9 @@ await server.connect(new StdioServerTransport());
 `);
   const client = new Client({ name: 'test', version: '1' });
   const transport = new StdioClientTransport({ command: NODE,
-    args: ['--import', resolve('node_modules/tsx/dist/loader.mjs'), resolve('server/task-browser-mcp.ts'), fixture],
+    args: ['--import', resolve('node_modules/tsx/dist/loader.mjs'), resolve('server/task-browser-mcp.ts'), '--click-evidence', fixture],
     stderr: 'pipe',
+    env: { TB_UPSTREAM_PID_FILE: join(root, 'upstream.pid') },
   });
   let stderr = '';
   transport.stderr?.on('data', data => { stderr += data.toString(); });
@@ -57,7 +61,12 @@ await server.connect(new StdioServerTransport());
   } catch (error) {
     throw new Error(`${String(error)}\n${stderr}`);
   } finally {
+    const wrapperPid = transport.pid;
+    const childPid = Number(readFileSync(join(root, 'upstream.pid'), 'utf8'));
     await client.close();
+    for (let i = 0; i < 30 && (alive(wrapperPid || 0) || alive(childPid)); i++) await new Promise(resolve => setTimeout(resolve, 100));
+    assert.equal(alive(wrapperPid || 0), false, 'the wrapper exits with the MCP connection');
+    assert.equal(alive(childPid), false, 'the browser MCP child exits with the wrapper');
     rmSync(root, { recursive: true, force: true });
   }
 });
@@ -65,7 +74,7 @@ await server.connect(new StdioServerTransport());
 test('wrapper handshakes with the installed browser MCP without starting Chrome', { timeout: 20000 }, async () => {
   const client = new Client({ name: 'test', version: '1' });
   const transport = new StdioClientTransport({ command: NODE,
-    args: ['--import', resolve('node_modules/tsx/dist/loader.mjs'), resolve('server/task-browser-mcp.ts'),
+    args: ['--import', resolve('node_modules/tsx/dist/loader.mjs'), resolve('server/task-browser-mcp.ts'), '--click-evidence',
       resolve('node_modules/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js'),
       '--wsEndpoint', 'ws://127.0.0.1:1', '--no-usage-statistics', '--no-performance-crux'],
     stderr: 'pipe',
@@ -78,5 +87,22 @@ test('wrapper handshakes with the installed browser MCP without starting Chrome'
     assert.ok(click?.inputSchema.required?.includes('target'));
     assert.ok(tools.find(tool => tool.name === 'prepare_click'));
     assert.ok(tools.find(tool => tool.name === 'take_snapshot')?.inputSchema.properties?.pageId);
+  } finally { await client.close(); }
+});
+
+test('Claude wrapper passes through the installed browser tools', { timeout: 20000 }, async () => {
+  const client = new Client({ name: 'test', version: '1' });
+  const transport = new StdioClientTransport({ command: NODE,
+    args: ['--import', resolve('node_modules/tsx/dist/loader.mjs'), resolve('server/task-browser-mcp.ts'),
+      resolve('node_modules/chrome-devtools-mcp/build/src/bin/chrome-devtools-mcp.js'),
+      '--wsEndpoint', 'ws://127.0.0.1:1', '--no-usage-statistics', '--no-performance-crux'],
+    stderr: 'pipe',
+  });
+  transport.stderr?.on('data', () => {});
+  try {
+    await client.connect(transport);
+    const tools = (await client.listTools()).tools;
+    assert.ok(tools.find(tool => tool.name === 'click'));
+    assert.equal(tools.some(tool => tool.name === 'prepare_click'), false);
   } finally { await client.close(); }
 });

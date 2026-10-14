@@ -81,6 +81,7 @@ import * as transfer from './transfer.ts';
 const MACHINE_ID = machineId();
 import { sampleResources } from './resource-log.ts';
 import { recoverArchivedSandboxes, stopTaskSandboxes } from './sandbox-cleanup.ts';
+import { auditOrphanedTaskBrowserMcp, inactiveTaskIds } from './task-browser-mcp-cleanup.ts';
 import { recoverArchived } from './browser-recovery.ts';
 import * as runtime from './runtime-routes.ts';
 import { trimTerminalLog } from './terminal-log.ts';
@@ -3010,6 +3011,15 @@ async function reconcile(first = false) {
 await reconcile(true);
 void recoverArchived(store.all()).then(ids => { if (ids.length) console.log(`Recovered ${ids.length} archived task browsers.`); }).catch(e => console.error('archived browser recovery', e));
 void recoverArchivedSandboxes(store.all()).then(count => { if (count) console.log(`Recovered ${count} archived sandbox processes.`); }).catch(e => console.error('archived sandbox recovery', e));
+void tmux.listSessions().then(async sessions => {
+  if (!sessions) return;
+  const inactive = inactiveTaskIds(store.all(), sessions);
+  const result = await auditOrphanedTaskBrowserMcp(inactive, async id => {
+    const current = await tmux.listSessions();
+    return !!current && !current.some(session => session.name === store.get(id)?.session && !session.dead);
+  });
+  if (result.found) console.log(`Task browser MCP audit: ${result.found} orphaned wrappers found, ${result.stopped} signaled.`);
+}).catch(e => console.error('task browser MCP audit', e));
 // Events sent while the server was down are lost; take the status from the transcripts once at start.
 for (const t of store.all()) {
   if (!t.transcript || t.openElsewhere || !['working', 'needs-you', 'idle', 'unread', 'review'].includes(t.status)) continue;
