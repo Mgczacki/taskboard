@@ -21,6 +21,13 @@ test('a sent draft with no allowed actions shows Sent and no action buttons', ()
   assert.deepEqual([c.approve, c.reject, c.removeFlagged, c.send, c.route], [false, false, false, false, false]);
 });
 
+test('retry controls use current service permission and do not ask for approval again',()=>{
+  const m={...draft,state:'permanent_failure',allowed_actions:['retry_send']};
+  const c=cardControls(m);
+  assert.equal(c.retrySend,true);assert.equal(c.approve,false);assert.equal(c.send,false);
+  assert.equal(cardControls({...m,allowed_actions:[]}).retrySend,false);
+});
+
 test('a held incoming message shows Waiting for approval only with its allowed actions', () => {
   const held = { state: 'held', direction: 'in' as const, allowed_actions: ['approve', 'reject', 'mark_seen'], body_flags: null };
   assert.equal(cardControls(held).label, 'Waiting for approval');

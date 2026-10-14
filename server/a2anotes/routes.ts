@@ -432,6 +432,14 @@ export function mountA2ANotes(app: Express, options: { delivery?: A2ADeps; setti
     const m = await messageFor('person', String(req.params.id));
     return service().call('person', 'a2anotes_report_delivery', { id: m.id, expected_hash: req.body?.hash, status: m.agent_delivery?.status });
   }));
+  app.post('/api/a2anotes/messages/:id/retry-send', endpoint(async req => {
+    const result = await service().call(need(req, 'person', 'reviewer'), 'a2anotes_retry_send', {
+      id: req.params.id, expected_hash: req.body?.hash,
+      request_id: typeof req.body?.request_id === 'string' ? req.body.request_id : `tb-retry-${req.params.id}-${String(req.body?.hash).slice(0, 16)}`,
+    });
+    void cards.sync();
+    return decorate(result);
+  }));
   app.post('/api/a2anotes/messages/:id/ack', endpoint(async req => {
     const r = need(req, 'person', 'reviewer', 'agent');
     const m = await messageFor(r, String(req.params.id));

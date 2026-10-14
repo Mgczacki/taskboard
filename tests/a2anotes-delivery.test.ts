@@ -13,7 +13,7 @@ const root = mkdtempSync(join(tmpdir(), 'tb-a2a-delivery-'));
 process.env.TASKBOARD_DIR = join(root, 'server'); process.env.TASKBOARD_VAULT = join(root, 'vault');
 process.env.TASKBOARD_A2A_CHECKS = 'rules';
 const { startFakeSlack, FakeSlackTransport } = await import('a2a-notes/fake-slack');
-const { NotesService, Store, Clients, startHttp } = await import('a2a-notes');
+const { NotesService, Store, Clients, startHttp, SlackTransport, TransportError } = await import('a2a-notes');
 const { mountA2ANotes } = await import('../server/a2anotes/routes.ts');
 const taskKeys = await import('../server/task-token.ts');
 const { TOKEN, URL_BASE } = await import('../server/config.ts');
@@ -26,12 +26,22 @@ tasks.create({ id: 'controller', num: 0, title: 'Controller', agent: 'codex', st
 const save = (path: string, value: unknown) => writeFileSync(path, JSON.stringify(value), { mode: 0o600 });
 const inbox = () => { try { return readdirSync(join(root, 'vault', 'tasks', 'writer', 'inbox')); } catch { return []; } };
 
-async function fixture(t: any) {
+async function fixture(t: any, appOnly = false) {
   const fake = await startFakeSlack({ team: 'TEXAMPLE', users: [{ id: 'UMARIO01', name: 'Mario' }, { id: 'UALEX01', name: 'Alex' }] });
   const dir = mkdtempSync(join(tmpdir(), 'tb-delivery-service-')), boardDir = mkdtempSync(join(tmpdir(), 'tb-delivery-adapter-'));
   let now = Date.now();
   const credentials = join(dir, 'slack-credentials.json'); save(credentials, fake.credentials('UMARIO01'));
-  const transport = new FakeSlackTransport(credentials, { clientId: 'fake', teamId: fake.team, redirectUri: 'http://localhost:4460/slack/callback', apiBase: `${fake.url}/api` }, fetch, { now: () => now });
+  let appChannel: string | undefined;
+  if (appOnly) { fake.inject('UMARIO01','UALEX01','Earlier message');appChannel=[...fake.channels.keys()][0]; }
+  const app: import('a2a-notes').AppConnection = {
+    snapshot: async()=>({team:fake.team,user:'UMARIO01',channel:appChannel,peers:[{id:appChannel!,user:'UALEX01'}],
+      people:[{id:'UMARIO01',name:'Mario',realName:'Mario',title:'',active:true},{id:'UALEX01',name:'Alex',realName:'Alex',title:'',active:true}],messages:[],editor:true,draft:''}),
+    navigate:async id=>{appChannel=id;},compose:async()=>{throw new TransportError('The Slack app control is unavailable. No action was confirmed.',true);},
+    submit:async()=>{throw new Error('Unexpected submit');},react:async()=>{},close:async()=>{},
+  };
+  const transport = appOnly ? new SlackTransport(join(dir,'account.json'),{teamId:fake.team},undefined,{open:async()=>app})
+    : new FakeSlackTransport(credentials, { clientId: 'fake', teamId: fake.team, redirectUri: 'http://localhost:4460/slack/callback', apiBase: `${fake.url}/api` }, fetch, { now: () => now });
+  if (transport instanceof SlackTransport) await transport.connect();
   const service = new NotesService({ store: new Store(dir), transport, scanIntervalMs: 0, retryIntervalMs: 0, now: () => now, random: () => 0.5 });
   service.start();
   const clients = new Clients(dir), http = await startHttp({ service, clients, port: 0 });
@@ -48,13 +58,13 @@ async function fixture(t: any) {
   await startBoard();
   const stopBoard = async () => { await adapter.close(); board.closeAllConnections(); await new Promise<void>(r => board.close(() => r())); };
   t.after(async () => { await stopBoard(); await service.stop(); http.closeAllConnections(); await new Promise<void>(r => http.close(() => r())); await fake.close(); });
-  const call = async (actor: 'user' | 'controller' | 'task', path: string, body?: unknown) => {
+  const call = async (actor: 'user' | 'controller' | 'task', path: string, body?: unknown, expectedStatus = 200) => {
     const headers: Record<string, string> = { 'content-type': 'application/json' };
     if (actor === 'user') headers.origin = URL_BASE;
     else { headers['x-taskboard-token'] = TOKEN; headers['x-tb-actor'] = actor === 'task' ? 'writer' : 'controller'; if (actor === 'task') headers['x-tb-task-token'] = taskKeys.forTask('writer'); }
     if (actor === 'controller') headers['x-tb-mail-controller'] = controllerMailToken;
     const response = await fetch(base + path, { method: body === undefined ? 'GET' : 'POST', headers, body: body === undefined ? undefined : JSON.stringify(body) });
-    const result = await response.json(); assert.equal(response.status, 200, JSON.stringify(result)); return result;
+    const result = await response.json(); assert.equal(response.status, expectedStatus, JSON.stringify(result)); return result;
   };
   const draft = async () => {
     const d = await call('task', '/drafts', { to: `slack:${fake.team}:UALEX01`, subject: 'Friday plan', body: 'Hi Alex, please read the Friday plan.', audience: 'person', request_id: `test-${randomUUID()}` });
@@ -64,8 +74,35 @@ async function fixture(t: any) {
   const card = (id: string) => approvals.all().find(a => ['pending', 'running'].includes(a.state) && (a.payload as any)?.message === id);
   const next = async (id: string) => { now = Date.parse(service.store.note(id)!.delivery!.nextAttemptAt!); await service.processQueue(); await adapter.checkIncoming(); };
   const restartBoard = async () => { await stopBoard(); await startBoard(); await adapter.checkIncoming(); };
-  return { fake, service, clients, http, call, draft, card, next, restartBoard, delivered, get adapter() { return adapter; }, get base() { return base; } };
+  return { fake, service, transport, clients, http, call, draft, card, next, restartBoard, delivered, get adapter() { return adapter; }, get base() { return base; } };
 }
+
+test('Taskboard retries an approved pre-post app failure without replacing the note or its approval',async t=>{
+  const f=await fixture(t,true),d=await f.draft();
+  await approvals.decide(f.card(d.id)!.id,true);
+  const n=f.service.store.note(d.id)!;
+  assert.equal(n.state,'permanent_failure');assert.equal(n.checkpoint?.postStarted,undefined);
+  const approval=structuredClone(n.approval);
+  const denied=await f.call('task',`/messages/${d.id}/retry-send`,{hash:d.hash},403);
+  assert.equal(denied.code,'forbidden');
+  const queued=await f.call('controller',`/messages/${d.id}/retry-send`,{hash:d.hash});
+  assert.equal(queued.state,'queued');assert.equal(queued.message_id,d.message_id);
+  await f.restartBoard();assert.equal(f.card(d.id),undefined);
+  await f.call('controller',`/messages/${d.id}/retry-send`,{hash:d.hash});
+  assert.ok(f.transport instanceof SlackTransport);
+  f.transport.desktopSender={canSend:()=>true,post:async(input,before)=>{
+    before();const channel=f.fake.channels.get(input.channel)!;
+    const ts='1791952161.800889';channel.messages.push({ts,user:'UMARIO01',text:input.text,client_msg_id:input.messageId});
+    return {channel:input.channel,ts};
+  }};
+  await f.service.processQueue();await f.adapter.checkIncoming();
+  const sent=await f.call('controller',`/messages/${d.id}/retry-send`,{hash:d.hash});assert.equal(sent.state,'sent');
+  assert.equal([...f.fake.channels.values()].flatMap(c=>c.messages).filter(m=>m.client_msg_id===d.message_id).length,1);
+  assert.deepEqual(f.service.store.note(d.id)!.approval,approval);
+  assert.equal(f.service.store.read().audit.filter(a=>a.id===d.id&&a.action==='approve').length,1);
+  assert.equal(f.service.store.read().audit.filter(a=>a.id===d.id&&a.action==='send_retry_queued').length,1);
+  assert.equal(f.card(d.id),undefined);
+});
 
 for (const method of ['users.info', 'conversations.open', 'chat.postMessage']) {
   test(`Taskboard approval keeps a ${method} 429 queued and does not ask for the same approval`, async t => {

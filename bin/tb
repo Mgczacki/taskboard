@@ -415,6 +415,7 @@ switch (cmd) {
   revise <id> --hash <hash> --subject <text> (--body <text> | --context <why> --ask <request> ...)
   stage <outbox file> [--kind agent|support]       stage a file and print its file_id
   approve <id> <hash> | reject <id> <hash> [--comment <text>] | send <id> <hash>   controller only
+  retry-send <id> <hash> [--request-id <id>]       queue an unchanged approved note after failure before posting; controller only
   triage                                          controller only: accepted or trusted messages that need a destination
   ack <id> <hash>                                                             acknowledge receipt only
   route <id> <task> | propose-route <id> <task|none>                               controller only
@@ -429,7 +430,7 @@ switch (cmd) {
     const field = name => flag(name);
     const direction = field('--direction'), state = field('--state'), kind = field('--kind'), audience = field('--audience');
     const sections = { subject: field('--subject'), context: field('--context'), found: field('--found'), ask: field('--ask'), by: field('--by'), links: field('--links'), body: field('--body') };
-    const agentFile = field('--agent-file'), replyTo = field('--reply-to'), instruction = field('--instruction'), hash = field('--hash'), comment = field('--comment');
+    const agentFile = field('--agent-file'), replyTo = field('--reply-to'), instruction = field('--instruction'), hash = field('--hash'), comment = field('--comment'), retryRequest = field('--request-id');
     const files = []; for (let f; (f = flag('--file'));) files.push(f);
     // flag() removed the options from args, so the rest is positional
     const [action, a, b, c] = args.slice(1);
@@ -453,6 +454,7 @@ switch (cmd) {
     else if (action === 'approve' || action === 'reject') result = await call('POST', `/api/a2anotes/messages/${id}/approve`, { hash: b, decision: action, ...(comment ? { comment } : {}) });
     else if (action === 'ack') result = await call('POST', `/api/a2anotes/messages/${id}/ack`, { hash: b });
     else if (action === 'send') result = await call('POST', `/api/a2anotes/messages/${id}/send`, { hash: b });
+    else if (action === 'retry-send') result = await call('POST', `/api/a2anotes/messages/${id}/retry-send`, { hash: b, ...(retryRequest ? { request_id: retryRequest } : {}) });
     else if (action === 'route') result = await call('POST', `/api/a2anotes/messages/${id}/route`, { task: (await task(b)).id });
     else if (action === 'propose-route') result = await call('POST', `/api/a2anotes/messages/${id}/propose-route`, { task: b === 'none' ? null : (await task(b)).id });
     else { console.error(help); process.exit(1); }
