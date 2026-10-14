@@ -73,6 +73,6 @@ export async function signalOrphans(candidates: McpProcess[], uid: number, canSt
 // of releases before b54914cb do not exit with their agent, so check once now and once more a few seconds later.
 export async function auditAfterSessionEnd(taskIds: Set<string>): Promise<{ found: number; stopped: number }> {
   const result = await auditOrphanedTaskBrowserMcp(taskIds);
-  setTimeout(() => { void auditOrphanedTaskBrowserMcp(taskIds).catch(e => console.error('task browser MCP audit', e)); }, SECOND_PASS_MS).unref();
+  setTimeout(() => { void auditOrphanedTaskBrowserMcp(taskIds).catch(e => console.error('task browser MCP audit', e instanceof Error ? e.message : String(e))); }, SECOND_PASS_MS).unref();
   return result;
 }

@@ -81,12 +81,22 @@ export async function restartProduction(reason = 'release', detail) {
 
 // After a switch: the new server must keep the same process for `ms` (a release that starts and then crashes makes
 // launchd restart it, which shows up as a new pid or no answer). Returns true if it stayed up.
-export async function staysUp(pid, ms = 60000) {
-  const end = Date.now() + ms;
-  while (Date.now() < end) {
-    await sleep(5000);
-    const info = await waitForInfo(PROD_URL, join(TB_DIR, 'token'), 4000);
-    if (!info || info.pid !== pid) return false;
+export async function staysUp(pid, ms = 60000, {
+  probe = () => waitForInfo(PROD_URL, join(TB_DIR, 'token'), 4000),
+  pause = sleep,
+  clock = Date.now,
+  isAlive = alive,
+} = {}) {
+  const end = clock() + ms;
+  let missed = 0;
+  while (clock() < end || missed === 1) {
+    await pause(5000);
+    const info = await probe();
+    if (info?.pid && info.pid !== pid) return false;
+    if (!info?.pid) {
+      if (!isAlive(pid) || ++missed >= 2) return false;
+      log(`Release process ${pid} missed one health check; checking again.`);
+    } else missed = 0;
   }
   return true;
 }
