@@ -1,3 +1,4 @@
+import { TestResources } from './helpers/test-resources.ts';
 import { spawn, spawnSync } from 'node:child_process';
 import { createServer } from 'node:net';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -6,6 +7,7 @@ import { join } from 'node:path';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
+const resources = new TestResources();
 const root = mkdtempSync(join(tmpdir(), 'tb-push-route-'));
 const main = join(root, 'main'), work = join(root, 'work'), bare = join(root, 'remote.git');
 const tbdir = join(root, 'tbdir'), vault = join(root, 'vault');
@@ -19,12 +21,13 @@ writeFileSync(join(work, '.env'), 'api_key=example-secret-value-12345\n'); git(w
 writeFileSync(join(tbdir, 'machine.json'), JSON.stringify({ controller: { autostart: false, remoteControl: false } }));
 writeFileSync(join(vault, 'tasks', 'push-task.md'), `---\nid: push-task\nnum: 1\ntitle: Push test\nagent: codex\nstatus: idle\ncwd: ${work}\nfolder: ${main}\nbranch: task-push\nworktree: true\nsession: test\ncreated: 2026-01-01T00:00:00.000Z\nupdated: 2026-01-01T00:00:00.000Z\nstatusAt: 2026-01-01T00:00:00.000Z\n---\n# Push test\n`);
 
-test('a sandbox server shows and decides a push to a local bare remote', async () => {
+test('a sandbox server shows and decides a push to a local bare remote', { timeout: 90000 }, async () => {
   const port = await new Promise<number>(resolve => { const s = createServer(); s.listen(0, '127.0.0.1', () => { const address = s.address(); const port = typeof address === 'object' && address ? address.port : 0; s.close(() => resolve(port)); }); });
   const base = `http://127.0.0.1:${port}`;
-  const child = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { cwd: process.cwd(),
+  const socket = resources.socket(`tb-push-route-${port}`);
+  const child = resources.child(spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { cwd: process.cwd(),
     env: { ...process.env, TASKBOARD_PORT: String(port), TASKBOARD_DIR: tbdir, TASKBOARD_VAULT: vault,
-      TASKBOARD_TMUX_SOCKET: `tb-push-route-${port}`, TASKBOARD_MACHINE_NAME: 'push-test' }, stdio: ['ignore', 'pipe', 'pipe'] });
+      TASKBOARD_TMUX_SOCKET: socket, TASKBOARD_MACHINE_NAME: 'push-test' }, detached: true, stdio: ['ignore', 'pipe', 'pipe'] }));
   let output = ''; child.stdout.on('data', b => { output += b.toString(); }); child.stderr.on('data', b => { output += b.toString(); });
   let restarted: ReturnType<typeof spawn> | undefined;
   try {
@@ -34,7 +37,8 @@ test('a sandbox server shows and decides a push to a local bare remote', async (
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     const token = readFileSync(join(tbdir, 'token'), 'utf8').trim();
-    const taskHeaders = { 'content-type': 'application/json', 'x-taskboard-token': token, 'x-tb-actor': 'push-task' };
+    const taskToken = readFileSync(join(tbdir, 'task-tokens', 'push-task'), 'utf8').trim();
+    const taskHeaders = { 'content-type': 'application/json', 'x-taskboard-token': token, 'x-tb-task-token': taskToken, 'x-tb-actor': 'push-task' };
     const post = async (path: string, body: unknown, headers: Record<string, string> = taskHeaders) => {
       const response = await fetch(base + path, { method: 'POST', headers, body: JSON.stringify(body) });
       return { status: response.status, data: await response.json() };
@@ -81,11 +85,10 @@ test('a sandbox server shows and decides a push to a local bare remote', async (
     assert.match(refused.data.result, /Check the merged commits/);
     const expiring = await post('/api/git/push-request', { reason: 'Check restart expiry', branch: 'master' });
     assert.equal(expiring.status, 202);
-    child.kill('SIGTERM');
-    await new Promise(resolve => child.once('exit', resolve));
-    restarted = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { cwd: process.cwd(),
+    await resources.stopChild(child);
+    restarted = resources.child(spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { cwd: process.cwd(),
       env: { ...process.env, TASKBOARD_PORT: String(port), TASKBOARD_DIR: tbdir, TASKBOARD_VAULT: vault,
-        TASKBOARD_TMUX_SOCKET: `tb-push-route-${port}`, TASKBOARD_MACHINE_NAME: 'push-test' }, stdio: 'ignore' });
+        TASKBOARD_TMUX_SOCKET: socket, TASKBOARD_MACHINE_NAME: 'push-test' }, detached: true, stdio: 'ignore' }));
     for (let i = 0; i < 100; i++) {
       try { const r = await fetch(base + '/api/info'); if (r.ok) break; } catch { /* server starts */ }
       await new Promise(resolve => setTimeout(resolve, 100));
@@ -94,8 +97,7 @@ test('a sandbox server shows and decides a push to a local bare remote', async (
     assert.equal(expired.state, 'expired');
     assert.equal(git(main, 'ls-remote', 'origin', 'refs/heads/master').split(/\s/)[0], git(main, 'rev-parse', 'HEAD~2'));
   } finally {
-    if (child.exitCode === null) { child.kill('SIGTERM'); await new Promise(resolve => child.once('exit', resolve)); }
-    if (restarted && restarted.exitCode === null) { restarted.kill('SIGTERM'); await new Promise(resolve => restarted!.once('exit', resolve)); }
+    await resources.stop();
     rmSync(root, { recursive: true, force: true });
   }
 });

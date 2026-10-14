@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 // Shared sign-ins of task browsers (server/browser-signins.ts) with real headless Chrome in a temporary Taskboard
 // folder and a local test site (site-a.localhost, site-b.localhost and so on, which Chrome sends to 127.0.0.1). The
 // cookies are fake. Covers the template copy, the opt-out, save as template, sync from the template, the removal of a
@@ -14,9 +16,10 @@ import WebSocket from 'ws';
 import { waitFor } from './helpers/wait-for.ts';
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-signins-')));
+resources.browserRoot(root);
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-signins-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-signins-${process.pid}`);
 mkdirSync(process.env.TASKBOARD_DIR);
 writeFileSync(join(root, 'state', 'machine.json'), JSON.stringify({ name: 'signins-test', controller: { autostart: false, remoteControl: false } }));
 const browser = await import('../server/task-browser.ts');

@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 // The group manager rule (server/manager-role.ts, task 273): the manager of a group and the tasks of that group may
 // message each other without a card. These tests cover the presets, the inbound rule, its rate limits, the end of the
 // rule (role removed, manager archived, manager left the group), a task outside the group and the controller.
@@ -11,7 +13,7 @@ import { join } from 'node:path';
 const root = mkdtempSync(join(tmpdir(), 'tb-manager-messages-'));
 process.env.TASKBOARD_DIR = join(root, 'private');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-manager-messages-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-manager-messages-${process.pid}`);
 process.env.HOME = join(root, 'home');
 mkdirSync(join(root, 'home'), { recursive: true });
 const store = await import('../server/store.ts');

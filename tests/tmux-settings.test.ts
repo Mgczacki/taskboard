@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 // Tests for the Taskboard settings of the tmux server (scripts/tmux-settings.mjs and ensureConfigured in
 // server/tmux.ts). The first tests use a fake tmux in memory. The last test uses a real tmux server on a scratch socket.
 import { test, after } from 'node:test';
@@ -9,7 +11,7 @@ import { join } from 'node:path';
 import { applySettings, compareSettings, MARK, OPTIONS, readMark, SETTINGS_VERSION, TERMINAL_FEATURES } from '../scripts/tmux-settings.mjs';
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-tmux-settings-')));
-const socket = `tb-tmux-settings-${process.pid}`;
+const socket = resources.socket(`tb-tmux-settings-${process.pid}`);
 process.env.TASKBOARD_DIR = join(root, 'state'); process.env.TASKBOARD_VAULT = join(root, 'vault');
 process.env.TASKBOARD_TMUX_SOCKET = socket; process.env.TASKBOARD_PORT = '4398';
 mkdirSync(process.env.TASKBOARD_DIR, { recursive: true });

@@ -10,16 +10,21 @@ import { fileURLToPath } from 'node:url';
 import assert from 'node:assert/strict';
 import { describeImpact, restartTaskboard } from '../scripts/restart.mjs';
 import { waitFor } from './helpers/wait-for.ts';
+import { TestResources } from './helpers/test-resources.ts';
 
 const checkout = fileURLToPath(new URL('..', import.meta.url));
 const script = join(checkout, 'scripts', 'restart.mjs');
 const guard = join(checkout, 'server', 'hooks', 'guard.mjs');
 const tb = join(checkout, 'bin', 'tb');
 const root = mkdtempSync(join(tmpdir(), 'tb-restart-'));
+const resources = new TestResources();
 const sockets = [];
 const pids = [];
-after(() => {
+after(async () => {
   for (const pid of pids) { try { process.kill(pid, 'SIGTERM'); } catch { /* gone */ } }
+  await Promise.all(pids.map(pid => waitFor(() => !alive(pid), { description: `test server ${pid} to exit`, timeoutMs: 3000 }).catch(() => {
+    try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ }
+  })));
   for (const s of sockets) { try { execFileSync('tmux', ['-L', s, 'kill-server'], { stdio: 'ignore' }); } catch { /* none */ } }
   for (const s of sockets) rmSync(join(process.env.TMUX_TMPDIR || '/tmp', `tmux-${process.getuid()}`, s), { force: true });
   rmSync(root, { recursive: true, force: true });
@@ -31,7 +36,7 @@ const info = async url => { try { const r = await fetch(url + '/api/info', { sig
 
 // a sandbox server of this checkout, with one task whose agent session is a `sleep` in the sandbox's tmux socket
 async function sandbox(name) {
-  const dir = join(root, name), port = await freePort(), socket = `tbrst-test-${process.pid}-${name}`;
+  const dir = join(root, name), port = await freePort(), socket = resources.socket(`tbrst-test-${process.pid}-${name}`);
   sockets.push(socket);
   mkdirSync(join(dir, 'tbdir'), { recursive: true }); mkdirSync(join(dir, 'vault', 'tasks'), { recursive: true });
   writeFileSync(join(dir, 'tbdir', 'machine.json'), JSON.stringify({ name: 'restart-test', controller: { autostart: false, remoteControl: false } }));
@@ -40,6 +45,7 @@ async function sandbox(name) {
   const sbEnv = { ...env, TASKBOARD_DIR: join(dir, 'tbdir'), TASKBOARD_VAULT: join(dir, 'vault'), TASKBOARD_PORT: String(port), TASKBOARD_TMUX_SOCKET: socket, TASKBOARD_MACHINE_NAME: 'restart-test' };
   const out = join(dir, 'tbdir', 'server.log');
   const child = spawn(join(checkout, 'node_modules', '.bin', 'tsx'), ['server/index.ts'], { cwd: checkout, env: sbEnv, detached: true, stdio: ['ignore', 'ignore', 'ignore'] });
+  resources.child(child);
   if (child.pid) pids.push(child.pid);
   child.unref();
   const url = `http://127.0.0.1:${port}`;

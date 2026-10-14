@@ -1,3 +1,4 @@
+import { TestResources } from './helpers/test-resources.ts';
 // Messages to a busy agent (task 178). The screen cases use screens captured from Claude Code 2.1.287 in a test tmux
 // session (tests/fixtures/screens) and the fake agent in tests/fixtures/fake-agent.cjs, in a temporary Taskboard folder
 // and tmux socket. Covers: which screens take a message, the queue in the task folder, the retry, the expiry, the
@@ -11,7 +12,8 @@ import test from 'node:test';
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-message-queue-')));
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-message-queue-${process.pid}`;
+const resources = new TestResources();
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-message-queue-${process.pid}`);
 process.env.CODEX_HOME = join(root, 'codex');
 process.env.CLAUDE_CONFIG_DIR = join(root, 'claude');
 mkdirSync(process.env.CODEX_HOME, { recursive: true });

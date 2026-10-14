@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 // Settings > Controller agent and Controller: skip permission prompts. Covers the migration of the older Claude Code
 // only setting, the controller command of each agent with the skip setting on and off, the launch key, the generated
 // AGENTS.md, the handoff note, and the Codex controller hooks (inbox notice, queued messages, usage). No agent runs.
@@ -10,7 +12,7 @@ import test from 'node:test';
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-controller-agent-')));
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-controller-agent-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-controller-agent-${process.pid}`);
 process.env.TASKBOARD_MACHINE_NAME = 'agent-test';
 // the default Codex account reads its session files from HOME/.codex/sessions
 process.env.HOME = join(root, 'home');

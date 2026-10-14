@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 // Queued messages reach the agent through its hooks (task 217): Claude Code at PostToolUse, UserPromptSubmit and Stop,
 // Antigravity at Stop, the controller on Codex at its Codex hooks. Covers: the text with its sender and the note that a task's message is not the user's
 // approval, delivery once only, the order, the size limit of one hook answer, a long message, the warning after 5
@@ -13,7 +15,7 @@ import test from 'node:test';
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-queue-hook-')));
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-queue-hook-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-queue-hook-${process.pid}`);
 process.env.CLAUDE_CONFIG_DIR = join(root, 'claude');
 mkdirSync(process.env.TASKBOARD_DIR, { recursive: true });
 writeFileSync(join(process.env.TASKBOARD_DIR, 'machine.json'), JSON.stringify({ controller: { autostart: false }, permissions: { trustWorkspaces: false } }));

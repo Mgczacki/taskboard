@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 import assert from 'node:assert/strict';
 import { existsSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -8,7 +10,7 @@ import { waitFor } from './helpers/wait-for.ts';
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-tmux-launch-')));
 process.env.TASKBOARD_DIR = root;
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-launch-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-launch-${process.pid}`);
 const tmux = await import('../server/tmux.ts');
 
 test('an oversized tmux request starts with exact arguments and environment', { timeout: 30000 }, async () => {

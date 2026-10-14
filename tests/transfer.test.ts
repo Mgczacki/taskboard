@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -9,7 +11,7 @@ import test from 'node:test';
 const root = mkdtempSync(join(tmpdir(), 'tb-transfer-test-'));
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-transfer-test-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-transfer-test-${process.pid}`);
 mkdirSync(process.env.TASKBOARD_DIR, { recursive: true });
 writeFileSync(join(process.env.TASKBOARD_DIR, 'machine.json'), JSON.stringify({ name: 'transfer-test', controller: { autostart: false }, permissions: { trustWorkspaces: false } }));
 const bin = join(root, 'bin'); mkdirSync(bin);

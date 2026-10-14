@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 // Comment and BTW for a document in the viewers (server/document-context.ts), in a temporary Taskboard folder and
 // tmux socket. The task agent is the fake agent of tests/fixtures/fake-agent.cjs. The BTW process is a stub `claude`
 // that records its arguments, its working folder and the files in it, then prints one answer.
@@ -11,7 +13,7 @@ import express from 'express';
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-document-context-')));
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-document-context-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-document-context-${process.pid}`);
 process.env.CLAUDE_CONFIG_DIR = join(root, 'claude');
 process.env.CODEX_HOME = join(root, 'codex');
 const record = join(root, 'btw-runs.jsonl');

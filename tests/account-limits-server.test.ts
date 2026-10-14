@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
@@ -11,7 +13,7 @@ import { waitFor } from './helpers/wait-for.ts';
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-account-limits-server-test-')));
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-account-limits-server-test-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-account-limits-server-test-${process.pid}`);
 mkdirSync(join(root, 'state'), { recursive: true });
 const now = new Date().toISOString();
 const acctDir = (name: string) => join(root, 'accounts', name);

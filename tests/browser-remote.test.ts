@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 // The browser of a task on another machine: the pipe of /ws/browser to the other server (server/browser-forward.ts),
 // and the sign-ins that one machine sends to another (exportSites, checkCookies and importCookies in
 // server/browser-signins.ts). The pipe tests use fake sockets. The export and import test uses real headless Chrome in a
@@ -10,9 +12,10 @@ import { join } from 'node:path';
 import test, { after } from 'node:test';
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-remote-')));
+resources.browserRoot(root);
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-remote-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-remote-${process.pid}`);
 mkdirSync(process.env.TASKBOARD_DIR);
 writeFileSync(join(root, 'state', 'machine.json'), JSON.stringify({ name: 'remote-test', controller: { autostart: false, remoteControl: false } }));
 const forward = await import('../server/browser-forward.ts');

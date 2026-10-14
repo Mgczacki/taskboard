@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -7,7 +9,7 @@ import { join } from 'node:path';
 const root = mkdtempSync(join(tmpdir(), 'tb-manager-events-'));
 process.env.TASKBOARD_DIR = join(root, 'private');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-manager-events-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-manager-events-${process.pid}`);
 process.env.HOME = join(root, 'home');
 mkdirSync(join(root, 'private'), { recursive: true });
 mkdirSync(join(root, 'home', '.codex'), { recursive: true });

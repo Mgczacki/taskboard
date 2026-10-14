@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 // Sessions launched before the release that added TB_TASK_TOKEN (task 275). Such a session keeps its old environment:
 // TASK_ID is set, TB_TOKEN_FILE is the shared ~/.taskboard/token and TB_TASK_TOKEN is missing. Covers, on a test
 // Taskboard server with its own port, folders and tmux socket (nothing here uses the real Taskboard):
@@ -16,7 +18,7 @@ import assert from 'node:assert/strict';
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-token-fallback-')));
 const tbdir = join(root, 'tbdir'), vault = join(root, 'vault'), workspace = join(root, 'workspace'), home = join(root, 'home');
 for (const d of [tbdir, join(vault, 'tasks'), workspace, home]) mkdirSync(d, { recursive: true });
-const socket = `tb-token-fallback-${process.pid}`;
+const socket = resources.socket(`tb-token-fallback-${process.pid}`);
 const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(TASK_|TB_|TASKBOARD_)/.test(k))) as NodeJS.ProcessEnv;
 const taskNote = (f: Record<string, string | number | boolean>) => writeFileSync(join(vault, 'tasks', `${f.id}.md`),
   `---\n${Object.entries({ created: '2026-01-01T00:00:00.000Z', updated: '2026-01-01T00:00:00.000Z', statusAt: '2026-01-01T00:00:00.000Z', ...f }).map(([k, v]) => `${k}: ${typeof v === 'string' ? JSON.stringify(v) : v}`).join('\n')}\n---\n# ${f.title}\n`);

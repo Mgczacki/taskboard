@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 // A release must not remove a release folder that a running process uses, and Taskboard must not start its tmux
 // server from such a folder (the outage of 4 October 2026: the tmux server of the socket taskboard ran from a removed
 // release folder, and every new task session failed with "getcwd: cannot access parent directories").
@@ -14,7 +16,7 @@ import { cwdOf, parseLsof, planPrune, releasesInUse, tmuxFolderProblem, tmuxServ
 import { waitFor } from './helpers/wait-for.ts';
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-release-in-use-')));
-const SOCKET = `tb-release-in-use-${process.pid}`;
+const SOCKET = resources.socket(`tb-release-in-use-${process.pid}`);
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
 process.env.TASKBOARD_TMUX_SOCKET = SOCKET;

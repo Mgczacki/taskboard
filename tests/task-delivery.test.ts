@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -10,7 +12,7 @@ import { waitFor } from './helpers/wait-for.ts';
 const root = mkdtempSync(join(tmpdir(), 'tb-delivery-'));
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-delivery-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-delivery-${process.pid}`);
 process.env.CODEX_HOME = join(root, 'codex');
 mkdirSync(process.env.CODEX_HOME, { recursive: true });
 const bin = join(root, 'bin'); mkdirSync(bin, { recursive: true });

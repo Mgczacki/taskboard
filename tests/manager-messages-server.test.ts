@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 // The group manager rule (task 273) on a test Taskboard server with its own port, folders and tmux socket, and
 // stand-in agents that draw a Claude Code input box (tests/fixtures/fake-agent.cjs). Nothing here uses the real Taskboard.
 // One manager and three tasks: #11 manages group Messages, #12 and #13 are in the group, #20 is outside it.
@@ -18,7 +20,7 @@ import assert from 'node:assert/strict';
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-mgr-msg-')));
 const tbdir = join(root, 'tbdir'), vault = join(root, 'vault'), bin = join(root, 'bin'), workspace = join(root, 'workspace');
 for (const d of [tbdir, join(vault, 'tasks'), join(vault, 'groups'), bin, workspace]) mkdirSync(d, { recursive: true });
-const socket = `tb-mgr-msg-${process.pid}`;
+const socket = resources.socket(`tb-mgr-msg-${process.pid}`);
 const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(TASK_|TB_|TASKBOARD_)/.test(k))) as NodeJS.ProcessEnv;
 const tmux = (...args: string[]) => spawnSync('tmux', ['-L', socket, ...args], { encoding: 'utf8' });
 const fake = readFileSync(join(import.meta.dirname, 'fixtures', 'fake-agent.cjs'), 'utf8');

@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -7,7 +9,7 @@ import test from 'node:test';
 const root = mkdtempSync(join(tmpdir(), 'tb-type-command-'));
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-type-command-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-type-command-${process.pid}`);
 const { commandError, inputBox, readyForInput, showsCommand, typeCommand } = await import('../server/type-command.ts');
 type Task = Parameters<typeof typeCommand>[0];
 

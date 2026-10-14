@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, realpathSync } from 'node:fs';
@@ -10,7 +12,7 @@ import type { Agent, Task } from '../server/store.ts';
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-move-test-')));
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-move-test-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-move-test-${process.pid}`);
 const { buildHandoff, conversationExcerpt, HANDOFF_BYTES } = await import('../server/handoff.ts');
 const store = await import('../server/store.ts');
 const { TOKEN_FILE } = await import('../server/config.ts');

@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { once } from 'node:events';
@@ -11,7 +13,7 @@ test('tb new places a manager task in its group and requires a choice for severa
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-manager-new-')));
   const dir = join(root, 'state'), vault = join(root, 'vault'), work = join(root, 'work'), bin = join(root, 'bin');
   for (const path of [dir, join(vault, 'tasks'), join(vault, 'groups'), work, bin]) mkdirSync(path, { recursive: true });
-  const socket = `tb-manager-new-${process.pid}`;
+  const socket = resources.socket(`tb-manager-new-${process.pid}`);
   const clean = Object.fromEntries(Object.entries(process.env).filter(([key]) => !/^(TASK_|TB_|TASKBOARD_)/.test(key))) as NodeJS.ProcessEnv;
   const agent = join(bin, 'claude');
   writeFileSync(agent, '#!/bin/sh\n[ "$1" = auth ] && { echo \'{"loggedIn":true,"email":"test@example.invalid"}\'; exit 0; }\nexec sleep 600\n');

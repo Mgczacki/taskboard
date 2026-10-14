@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -10,7 +12,7 @@ import { waitFor } from './helpers/wait-for.ts';
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-controller-resume-')));
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-controller-resume-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-controller-resume-${process.pid}`);
 mkdirSync(process.env.TASKBOARD_DIR);
 const now = new Date().toISOString();
 writeFileSync(join(root, 'state', 'accounts.json'), JSON.stringify([

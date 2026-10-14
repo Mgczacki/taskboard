@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 // Claude in Chrome for the Claude Code sessions that Taskboard starts (machine.ts claudeInChrome, agents.ts
 // claudeNoChrome). Off adds --no-chrome, so Claude Code does not show "Claude in Chrome extension detected" at start.
 import assert from 'node:assert/strict';
@@ -10,7 +12,7 @@ const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-cic-')));
 for (const k of Object.keys(process.env)) if (/^(TASK_|TB_)/.test(k)) delete process.env[k];
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-cic-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-cic-${process.pid}`);
 mkdirSync(process.env.TASKBOARD_DIR); mkdirSync(join(root, 'vault', 'tasks'), { recursive: true });
 // a machine.json from before the setting: the browser mode "task" gave tasks Claude in Chrome, and there is no claudeInChrome
 writeFileSync(join(root, 'state', 'machine.json'), JSON.stringify({ name: 'cic-test', controller: { autostart: false, remoteControl: false }, browser: { claude: 'task', codex: 'only' } }));

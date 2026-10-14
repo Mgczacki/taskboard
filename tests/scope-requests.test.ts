@@ -1,3 +1,4 @@
+import { TestResources } from './helpers/test-resources.ts';
 // Scope requests on a test Taskboard server with its own port, folders and tmux socket, temporary repositories and
 // stand-in agent programs. Nothing here uses the real Taskboard or a real repository.
 import { execFileSync, spawn, spawnSync } from 'node:child_process';
@@ -7,13 +8,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { once } from 'node:events';
 import { waitFor } from './helpers/wait-for.ts';
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-scope-')));
 const tbdir = join(root, 'tbdir'), vault = join(root, 'vault'), bin = join(root, 'bin'), workspace = join(root, 'workspace');
 for (const d of [tbdir, join(vault, 'tasks'), bin, workspace, join(root, 'code'), join(root, 'remotes')]) mkdirSync(d, { recursive: true });
-const socket = `tb-scope-${process.pid}`;
+const resources = new TestResources();
+const socket = resources.socket(`tb-scope-${process.pid}`);
 // this test can run inside a Taskboard task: drop the variables of that task and of the real server
 const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(TASK_|TB_|TASKBOARD_)/.test(k))) as NodeJS.ProcessEnv;
 const git = (cwd: string, ...args: string[]) => { const r = spawnSync('git', args, { cwd, encoding: 'utf8' }); if (r.status) throw new Error(`git ${args.join(' ')}: ${r.stderr}`); return r.stdout.trim(); };
@@ -32,8 +33,11 @@ function repo(name: string): string {
 const alpha = repo('alpha'), beta = repo('beta'), gamma = repo('gamma');
 // task #2 holds a worktree of beta at <beta>-wt, so a new worktree of beta for task #1 would be inside it
 git(beta, 'worktree', 'add', '-q', '-b', 'task/other', `${beta}-wt`);
-const taskNote = (f: Record<string, string | number | boolean>) => writeFileSync(join(vault, 'tasks', `${f.id}.md`),
-  `---\n${Object.entries({ created: '2026-01-01T00:00:00.000Z', updated: '2026-01-01T00:00:00.000Z', statusAt: '2026-01-01T00:00:00.000Z', ...f }).map(([k, v]) => `${k}: ${typeof v === 'string' ? JSON.stringify(v) : v}`).join('\n')}\n---\n# ${f.title}\n`);
+const taskNote = (f: Record<string, string | number | boolean>) => {
+  mkdirSync(join(vault, 'tasks', String(f.id)), { recursive: true });
+  writeFileSync(join(vault, 'tasks', `${f.id}.md`),
+    `---\n${Object.entries({ created: '2026-01-01T00:00:00.000Z', updated: '2026-01-01T00:00:00.000Z', statusAt: '2026-01-01T00:00:00.000Z', ...f }).map(([k, v]) => `${k}: ${typeof v === 'string' ? JSON.stringify(v) : v}`).join('\n')}\n---\n# ${f.title}\n`);
+};
 // accounts in the test folder, not marked as default: Taskboard writes the folder trust of a default account into the
 // real ~/.claude.json and ~/.codex/config.toml (workspace-trust.ts)
 const testAccounts = ['claude', 'codex'].map(agent => ({ id: `${agent}-test`, agent, name: agent, dir: join(root, 'accounts', agent), isDefault: false, maxParallel: 8, created: new Date().toISOString() }));
@@ -48,11 +52,11 @@ writeFileSync(join(tbdir, 'machine.json'), JSON.stringify({ name: 'scope-test', 
 // a live session for task #1, so the approval must restart it after its turn
 tmux('new-session', '-d', '-s', 'task-1', 'sleep 600');
 
-test('a task without a worktree asks for scopes, and only the user approves them', async () => {
+test('a task without a worktree asks for scopes, and only the user approves them', { timeout: 180000 }, async () => {
   const port = await new Promise<number>(resolve => { const s = createServer(); s.listen(0, '127.0.0.1', () => { const a = s.address(); const p = typeof a === 'object' && a ? a.port : 0; s.close(() => resolve(p)); }); });
   const base = `http://127.0.0.1:${port}`;
   const env = { ...clean, PATH: `${bin}:${process.env.PATH}`, TASKBOARD_PORT: String(port), TASKBOARD_DIR: tbdir, TASKBOARD_VAULT: vault, TASKBOARD_TMUX_SOCKET: socket, TASKBOARD_MACHINE_NAME: 'scope-test' };
-  const child = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { cwd: process.cwd(), env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = resources.child(spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { cwd: process.cwd(), env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] }));
   let output = ''; child.stdout.on('data', b => { output += b.toString(); }); child.stderr.on('data', b => { output += b.toString(); });
   try {
     await waitFor(async () => {
@@ -349,8 +353,7 @@ test('a task without a worktree asks for scopes, and only the user approves them
     assert.equal(git(alpha, 'branch', '--list', 'task/alpha-change').trim().replace(/^[*+ ]+/, ''), 'task/alpha-change');
     assert.deepEqual((await getTask('plain-task')).scopes.map((s: { name: string }) => s.name), ['gamma', 'read-reference', 'read-reference-2']);
   } finally {
-    child.kill('SIGTERM');
-    if (child.exitCode === null && child.signalCode === null) await once(child, 'exit');
+    await resources.stop();
     try { execFileSync('tmux', ['-L', socket, 'kill-server'], { stdio: 'ignore' }); } catch { /* no tmux server */ }
     rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 });
   }

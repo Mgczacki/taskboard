@@ -1,3 +1,4 @@
+import { TestResources } from './helpers/test-resources.ts';
 // When a task browser runs: a test Taskboard server (own port, folders and tmux socket) with one Claude Code task, and
 // the real chrome-devtools-mcp server that the task's agent gets, driven over stdio as Claude Code and Codex drive it.
 // Checked: no browser at task start or after the MCP handshake, a start at the first tool call, no idle stop while the
@@ -23,7 +24,9 @@ const NODE = [process.execPath, '/opt/homebrew/opt/node@22/bin/node', '/opt/home
 });
 const skip = !CHROME ? 'Chrome is not installed' : !existsSync(SCRIPT) ? 'chrome-devtools-mcp is not installed' : !NODE ? 'no Node 20.19+ or 22.12+' : false;
 
+const resources = new TestResources();
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-browser-idle-')));
+resources.browserRoot(root);
 const tbdir = join(root, 'tbdir'), vault = join(root, 'vault'), work = join(root, 'work');
 const ID = 'idle-task';
 const profile = join(tbdir, 'browsers', ID, 'profile');
@@ -43,9 +46,9 @@ before(async () => {
   await new Promise<void>(r => page.listen(0, '127.0.0.1', () => r()));
   const a = page.address(); pageUrl = `http://127.0.0.1:${typeof a === 'object' && a ? a.port : 0}/kept`;
   port = await freePort(); base = `http://127.0.0.1:${port}`;
-  server = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { cwd: process.cwd(),
-    env: { ...process.env, TASKBOARD_PORT: String(port), TASKBOARD_DIR: tbdir, TASKBOARD_VAULT: vault, TASKBOARD_TMUX_SOCKET: `tb-browser-idle-${port}`, TASKBOARD_MACHINE_NAME: 'browser-idle-test' },
-    stdio: ['ignore', 'pipe', 'pipe'] });
+  server = resources.child(spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { cwd: process.cwd(),
+    env: { ...process.env, TASKBOARD_PORT: String(port), TASKBOARD_DIR: tbdir, TASKBOARD_VAULT: vault, TASKBOARD_TMUX_SOCKET: resources.socket(`tb-browser-idle-${port}`), TASKBOARD_MACHINE_NAME: 'browser-idle-test' },
+    detached: true, stdio: ['ignore', 'pipe', 'pipe'] }));
   server.stdout!.on('data', b => { output += b.toString(); }); server.stderr!.on('data', b => { output += b.toString(); });
   for (let i = 0; i < 200; i++) {
     if (server.exitCode !== null) throw new Error(output);
@@ -56,9 +59,12 @@ before(async () => {
 });
 after(async () => {
   for (const c of clients) c.close();
+  await Promise.all(clients.map(c => resources.stopChild(c.proc)));
   if (token) await fetch(`${base}/api/tasks/${ID}/browser/stop`, { method: 'POST', headers: { 'x-taskboard-token': token } }).catch(() => {});
-  server?.kill(); page.close();
+  if (server) await resources.stopChild(server);
+  page.close();
   try { execFileSync('tmux', ['-L', `tb-browser-idle-${port}`, 'kill-server'], { stdio: 'ignore' }); } catch { /* no tmux server */ }
+  await resources.stop();
   rmSync(root, { recursive: true, force: true });
 });
 
@@ -77,8 +83,8 @@ class Mcp {
   proc: ChildProcess; next = 0; buf = ''; waiting = new Map<number, (m: any) => void>();
   constructor() {
     const key = createHmac('sha256', token).update(`cdp:${ID}`).digest('hex').slice(0, 32);
-    this.proc = spawn(NODE!, [SCRIPT, '--wsEndpoint', `ws://127.0.0.1:${port}/ws/cdp/${ID}?key=${key}`, '--no-usage-statistics', '--no-performance-crux'],
-      { env: { ...process.env, CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS: '1' }, stdio: ['pipe', 'pipe', 'pipe'] });
+    this.proc = resources.directChild(spawn(NODE!, [SCRIPT, '--wsEndpoint', `ws://127.0.0.1:${port}/ws/cdp/${ID}?key=${key}`, '--no-usage-statistics', '--no-performance-crux'],
+      { env: { ...process.env, CHROME_DEVTOOLS_MCP_NO_USAGE_STATISTICS: '1' }, stdio: ['pipe', 'pipe', 'pipe'] }));
     this.proc.stdout!.on('data', b => {
       this.buf += b.toString();
       let i; while ((i = this.buf.indexOf('\n')) >= 0) {

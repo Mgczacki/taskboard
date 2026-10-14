@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 // The real state of the sound of a task browser (judge, checkSound, checkSounds and the --mute-audio start flag in
 // server/task-browser.ts), with a real headless Chrome in a temporary Taskboard folder and a local page that plays a
 // very quiet tone (Web Audio, gain 0.003, no network). The test reads each tab's mutedInfo.muted and audible from
@@ -16,9 +18,10 @@ import WebSocket from 'ws';
 import { waitFor } from './helpers/wait-for.ts';
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-sound-verify-')));
+resources.browserRoot(root);
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-sound-verify-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-sound-verify-${process.pid}`);
 mkdirSync(process.env.TASKBOARD_DIR);
 writeFileSync(join(root, 'state', 'machine.json'), JSON.stringify({ name: 'sound-verify-test', controller: { autostart: false, remoteControl: false } }));
 const browser = await import('../server/task-browser.ts');

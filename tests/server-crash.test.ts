@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 // The server keeps running when a terminal cannot attach, and records why it stopped. Every server here is a test
 // server of this checkout: its own TASKBOARD_DIR, vault, port and tmux socket in the system temp folder, no controller
 // and no launchd. Nothing touches ~/.taskboard or the tmux socket "taskboard".
@@ -13,7 +15,7 @@ import WebSocket from 'ws';
 
 const checkout = fileURLToPath(new URL('..', import.meta.url));
 const root = mkdtempSync(join(tmpdir(), 'tb-crash-'));
-const socket = `tbcrash-${process.pid}`;
+const socket = resources.socket(`tbcrash-${process.pid}`);
 const pids: number[] = [];
 after(() => {
   for (const pid of pids) { try { process.kill(pid, 'SIGKILL'); } catch { /* ended */ } }

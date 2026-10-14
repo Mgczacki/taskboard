@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -7,7 +9,7 @@ import test from 'node:test';
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-computer-use-')));
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-computer-use-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-computer-use-${process.pid}`);
 process.env.HOME = join(root, 'home');
 mkdirSync(process.env.TASKBOARD_DIR, { recursive: true });
 mkdirSync(join(root, 'vault', 'tasks'), { recursive: true });

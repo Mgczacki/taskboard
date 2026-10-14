@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 // /ws/events with 300 tasks with long descriptions: the dashboard stays connected. On 2026-10-04 the server closed each
 // dashboard with 1013 'event client is too slow' right after its task list (0.99 MB for 240 tasks), and the page
 // connected again in a loop. The server here is a test server of this checkout: its own TASKBOARD_DIR, vault, port and
@@ -15,7 +17,7 @@ import { waitFor } from './helpers/wait-for.ts';
 
 const checkout = fileURLToPath(new URL('..', import.meta.url));
 const root = mkdtempSync(join(tmpdir(), 'tb-events-'));
-const socket = `tbevents-${process.pid}`;
+const socket = resources.socket(`tbevents-${process.pid}`);
 let pid = 0;
 after(() => {
   if (pid) { try { process.kill(pid, 'SIGKILL'); } catch { /* ended */ } }
