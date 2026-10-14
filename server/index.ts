@@ -3022,7 +3022,7 @@ void tmux.listSessions().then(async sessions => {
     return !!current && !current.some(session => session.name === store.get(id)?.session && !session.dead);
   });
   if (result.found) console.log(`Task browser MCP audit: ${result.found} orphaned wrappers found, ${result.stopped} signaled.`);
-}).catch(e => console.error('task browser MCP audit', e));
+}).catch(e => console.error('task browser MCP audit', e instanceof Error ? e.message : String(e)));
 // Events sent while the server was down are lost; take the status from the transcripts once at start.
 for (const t of store.all()) {
   if (!t.transcript || t.openElsewhere || !['working', 'needs-you', 'idle', 'unread', 'review'].includes(t.status)) continue;
