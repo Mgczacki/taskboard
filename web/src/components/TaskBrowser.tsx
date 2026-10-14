@@ -584,6 +584,16 @@ function Live({ id, title, autostart, floating, archived, isTemplate, onCanvas, 
       {memoryNote}
     </div></div>
   );
+  if (running === false && state?.unresponsive) return (
+    <div className="bw-empty"><div className="bw-card">
+      <div className="bw-card-icon"><Icon d={I.globe} size={28} /></div>
+      <h3>Chrome is open but did not answer</h3>
+      <p>Taskboard found Chrome on this browser profile. Retry waits for that process, then ends it if it still does not answer.</p>
+      <div className="bw-actions"><button className="btn primary" onClick={startNow}>Retry</button></div>
+      {memoryNote}
+      {err && <div className="banner">{err}</div>}
+    </div></div>
+  );
   // the last start failed (error), or Chrome ended by itself after its start (exited)
   const failed = !!state?.error && !archived;
   if (running === false) return (

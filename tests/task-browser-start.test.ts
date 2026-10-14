@@ -5,7 +5,7 @@ import { TestResources } from './helpers/test-resources.ts';
 // is not installed. A slow start must not be shown as a failure, no second Chrome may run on one profile, and the agent
 // gets an answer that says what happens.
 import assert from 'node:assert/strict';
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { chmodSync, mkdirSync, readlinkSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 import { tmpdir } from 'node:os';
@@ -28,7 +28,7 @@ const memory = await import('../server/memory.ts');
 const machine = await import('../server/machine.ts');
 const CHROME = browser.chromePath();
 const skip = CHROME ? false : 'Chrome is not installed';
-const IDS = ['slow', 'fails', 'limit', 'exits', 'double', 'agent-slow', 'agent-fails'];
+const IDS = ['slow', 'fails', 'limit', 'exits', 'double', 'agent-slow', 'agent-fails', 'unrelated'];
 after(async () => { machine.update({ chromePath: CHROME || '' }); for (const id of IDS) await browser.stop(id).catch(() => {}); });
 
 const script = (name: string, body: string) => { const f = join(root, name); writeFileSync(f, `#!/bin/bash\n${body}\n`); chmodSync(f, 0o755); return f; };
@@ -36,7 +36,7 @@ const useChrome = (path: string) => { machine.update({ chromePath: path }); };
 const wait = (ms: number) => new Promise(r => setTimeout(r, ms));
 // main Chrome processes (and wrapper scripts) that run on the profile of this browser
 const onProfile = (id: string) => {
-  const out = execFileSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf8' });
+  const out = execFileSync('ps', ['-axo', 'pid=,command='], { encoding: 'utf8', maxBuffer: 128 * 1024 * 1024 });
   return out.split('\n').filter(l => l.includes(`--user-data-dir=${browser.profileDir(id)}`) && !l.includes('--type=')).map(l => Number(l.trim().split(/\s+/)[0]));
 };
 const problems: { id: string; message: string; lines: string[] }[] = [];
@@ -119,6 +119,29 @@ test('a Chrome that does not answer by the limit is ended, and no process is lef
   } finally { delete process.env.TASKBOARD_BROWSER_START_LIMIT_MS; }
 });
 
+test('a timeout leaves no process and the next request can fail independently', async () => {
+  useChrome(script('never-retry.sh', 'sleep 60'));
+  process.env.TASKBOARD_BROWSER_START_LIMIT_MS = '1000';
+  try {
+    await assert.rejects(browser.ensure('limit'), /did not answer within 1 s/);
+  } finally { delete process.env.TASKBOARD_BROWSER_START_LIMIT_MS; }
+  assert.deepEqual(onProfile('limit'), []);
+  useChrome(script('retry-fails.sh', 'exit 23'));
+  await assert.rejects(browser.ensure('limit'), /exit code 23/);
+  assert.deepEqual(onProfile('limit'), []);
+});
+
+test('stop does not signal a process whose PID was recorded for a different profile', async () => {
+  const child = resources.directChild(spawn('sleep', ['60']));
+  assert.ok(child.pid);
+  const pidStart = execFileSync('ps', ['-p', String(child.pid), '-o', 'lstart='], { encoding: 'utf8' }).trim();
+  mkdirSync(join(root, 'state', 'browsers', 'unrelated'), { recursive: true });
+  writeFileSync(join(root, 'state', 'browsers', 'unrelated', 'browser.json'), JSON.stringify({ pid: child.pid, pidStart, port: 1 }));
+  assert.equal(await browser.stop('unrelated'), false);
+  assert.equal(child.exitCode, null, 'the unrelated process still runs');
+  await resources.stopChild(child);
+});
+
 test('a slow start (35 s, longer than the old 30 s limit) shows progress and then works; a second call waits for the same Chrome', { skip, timeout: 120000 }, async () => {
   useChrome(script('slow.sh', `sleep 35\nexec "${CHROME}" "$@"`));
   problems.length = 0;
@@ -172,22 +195,26 @@ test('a Chrome that holds the profile but did not answer is used again: no secon
   // browser.json loses the port, so live() gets no answer (as from a Chrome that is too busy to answer)
   const meta = browser.readMeta('double');
   writeFileSync(join(root, 'state', 'browsers', 'double', 'browser.json'), JSON.stringify({ ...meta, port: 1 }));
+  const stalled = await browser.status('double');
+  assert.equal(stalled.running, false);
+  assert.equal(stalled.unresponsive, true, 'a live Chrome that cannot answer is not shown as stopped');
   const again = await browser.ensure('double');
   assert.equal(again.pid, b.pid, 'the same Chrome');
   assert.deepEqual(onProfile('double'), [b.pid], 'one Chrome on the profile');
   // browser.json lost the process too (a failed start of an older version did this): stop() still ends it
   writeFileSync(join(root, 'state', 'browsers', 'double', 'browser.json'), JSON.stringify({ ...meta, pid: undefined, port: undefined }));
   assert.match(readlinkSync(join(browser.profileDir('double'), 'SingletonLock')), new RegExp(`-${b.pid}$`), 'the profile lock names the Chrome');
-  await browser.stop('double');
+  assert.equal(await browser.stop('double'), true, 'stopping an unresponsive profile holder succeeds');
   assert.deepEqual(onProfile('double'), [], 'stop() ended the Chrome that browser.json did not name');
 });
 
-test('a frozen Chrome that holds the profile is ended at the limit, then one new Chrome starts', { skip, timeout: 60000 }, async () => {
+test('a frozen Chrome that holds the profile is ended at the limit; retry starts one new Chrome', { skip, timeout: 60000 }, async () => {
   useChrome(CHROME!);
   const b = await browser.ensure('double');
   process.kill(b.pid!, 'SIGSTOP');
   process.env.TASKBOARD_BROWSER_START_LIMIT_MS = '5000';
   try {
+    await assert.rejects(browser.ensure('double'), /held the profile but did not answer within 5 s/);
     const again = await browser.ensure('double');
     assert.notEqual(again.pid, b.pid);
     assert.deepEqual(onProfile('double'), [again.pid], 'only the new Chrome runs on the profile');
