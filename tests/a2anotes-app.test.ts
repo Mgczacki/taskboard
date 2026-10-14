@@ -8,10 +8,13 @@ import {SlackTransport, NotesService, Store, type AppConnection, type AppSnapsho
 test('the bundled app transport accepts an owner request and confirms receipt without API credentials', async () => {
   const dir=mkdtempSync(join(tmpdir(),'tb-app-transport-'));
   writeFileSync(join(dir,'slack-credentials.json'),'invalid old credentials that must stay unread');
-  const s:AppSnapshot={team:'TEXAMPLE',user:'UMARIO01',channel:'DSELF01',peers:[{id:'DSELF01',user:'UMARIO01'}],people:[{id:'UMARIO01',name:'Mario',realName:'Mario',title:'',active:true}],editor:true,draft:'',messages:[{channel:'DSELF01',user:'UMARIO01',text:'A2A #7\nPlease read the report.',ts:'1791936000.001',reactions:[]}]};
+  const s:AppSnapshot={team:'TEXAMPLE',user:'UMARIO01',channel:'DSELF01',peers:[{id:'DSELF01',user:'UMARIO01'}],people:[{id:'UMARIO01',name:'Mario',realName:'Mario',title:'',active:true}],messages:[{channel:'DSELF01',user:'UMARIO01',text:'A2A #7\nPlease read the report.',ts:'1791936000.001',reactions:[]}]};
   let posts=0, reactions=0;
-  const app:AppConnection={async snapshot(){return structuredClone(s);},async navigate(){},async compose(){},async submit(){posts++;},async react(ts,name){assert.equal(ts,s.messages[0].ts);s.messages[0].reactions.push({name,users:[s.user]});reactions++;},async close(){}};
+  const app:AppConnection={async snapshot(){return structuredClone(s);},async navigate(){},async message(){},async load(){},async directory(){return structuredClone(s.people);},async close(){}};
   const transport=new SlackTransport(join(dir,'account.json'),{teamId:s.team},undefined,{open:async()=>app});
+  // The bundled transport posts and confirms receipt only through native app calls.
+  transport.desktopSender={canSend:()=>true,canRead:()=>true,post:async()=>{posts++;throw new Error('No post is expected');},
+    react:async input=>{assert.equal(input.ts,s.messages[0].ts);s.messages[0].reactions.push({name:input.name,users:[s.user]});reactions++;}};
   await transport.connect(); assert.equal(transport.fileField,'Slack');
   const service=new NotesService({store:new Store(dir),transport,scanIntervalMs:0,retryIntervalMs:0});
   await service.scanNow(); await service.scanNow();
