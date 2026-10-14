@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 // "Ask task to refresh" on a stale merge card (task 390), on a test Taskboard server with its own port, folders and
 // tmux socket, a temporary repository and fake tasks. Nothing here uses the real Taskboard or a real repository.
 // The rules of the card are in tests/stale-merge-cards.test.ts. This file covers the routes, the real Git heads, the
@@ -13,7 +15,7 @@ import assert from 'node:assert/strict';
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-stale-merge-srv-')));
 const tbdir = join(root, 'tbdir'), vault = join(root, 'vault'), workspace = join(root, 'workspace');
 for (const d of [tbdir, join(vault, 'tasks'), workspace, join(root, 'code')]) mkdirSync(d, { recursive: true });
-const socket = `tb-stale-merge-${process.pid}`;
+const socket = resources.socket(`tb-stale-merge-${process.pid}`);
 // this test can run inside a Taskboard task: drop the variables of that task and of the real server
 const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(TASK_|TB_|TASKBOARD_)/.test(k))) as NodeJS.ProcessEnv;
 const git = (cwd: string, ...args: string[]) => { const r = spawnSync('git', args, { cwd, encoding: 'utf8' }); if (r.status) throw new Error(`git ${args.join(' ')}: ${r.stderr}`); return r.stdout.trim(); };

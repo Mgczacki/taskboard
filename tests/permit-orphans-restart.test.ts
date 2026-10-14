@@ -1,3 +1,4 @@
+import { TestResources } from './helpers/test-resources.ts';
 // A real server restart with a pending permit card: the second server expires the permit, the task can request again,
 // and `tb permit withdraw` cancels a pending permit and closes its card (server/index.ts, permits.closeOrphans).
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -9,7 +10,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { waitFor } from './helpers/wait-for.ts';
 
-test('a restart expires a permit whose card expired, and a task can withdraw its pending permit', async () => {
+test('a restart expires a permit whose card expired, and a task can withdraw its pending permit', { timeout: 60000 }, async () => {
+  const resources = new TestResources();
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-permit-orphans-restart-')));
   const tbdir = join(root, 'tbdir'), vault = join(root, 'vault'), work = join(root, 'work');
   const clean = Object.fromEntries(Object.entries(process.env).filter(([name]) => !/^(TASK_|TB_|TASKBOARD_)/.test(name)));
@@ -22,16 +24,17 @@ test('a restart expires a permit whose card expired, and a task can withdraw its
     server.listen(0, '127.0.0.1', () => { const address = server.address(); server.close(() => resolvePort((address as { port: number }).port)); });
   });
   const base = `http://127.0.0.1:${port}`;
+  const socket = resources.socket(`tb-permit-orphans-${port}`);
   let child: ChildProcess | undefined;
   let output = '';
   const start = async () => {
     output = '';
-    const c = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { env: { ...clean, TASKBOARD_PORT: String(port), TASKBOARD_DIR: tbdir, TASKBOARD_VAULT: vault, TASKBOARD_TMUX_SOCKET: `tb-permit-orphans-${port}`, TASKBOARD_MACHINE_NAME: 'permit-test' }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const c = resources.child(spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { env: { ...clean, TASKBOARD_PORT: String(port), TASKBOARD_DIR: tbdir, TASKBOARD_VAULT: vault, TASKBOARD_TMUX_SOCKET: socket, TASKBOARD_MACHINE_NAME: 'permit-test' }, detached: true, stdio: ['ignore', 'pipe', 'pipe'] }));
     c.stdout!.on('data', data => { output += data; }); c.stderr!.on('data', data => { output += data; });
     child = c;
     await waitFor(async () => { if (c.exitCode !== null) throw new Error(output); return (await fetch(base + '/api/info')).ok; }, { description: 'the isolated permit test server', timeoutMs: 15000, state: () => output });
   };
-  const stop = async () => { const c = child; if (c && c.exitCode === null) await new Promise<void>(done => { c.once('exit', () => done()); c.kill('SIGTERM'); }); };
+  const stop = async () => { if (child) await resources.stopChild(child); };
   const cli = (args: string[]) => new Promise<{ code: number | null; out: string }>(done => {
     const proc = spawn(process.execPath, [resolve('bin/tb'), ...args], { cwd: work, env: { ...clean, TASK_ID: 't216', TB_URL: base, TB_TOKEN_FILE: join(tbdir, 'token') }, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = ''; proc.stdout.on('data', data => { out += data; }); proc.stderr.on('data', data => { out += data; }); proc.on('close', code => done({ code, out }));
@@ -87,6 +90,7 @@ test('a restart expires a permit whose card expired, and a task can withdraw its
     assert.equal((await request('pwd')).state, 'pending');
   } finally {
     await stop();
+    await resources.stop();
     rmSync(root, { recursive: true, force: true });
   }
 });

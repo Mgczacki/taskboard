@@ -1,3 +1,4 @@
+import { TestResources } from './helpers/test-resources.ts';
 // The browser of a task (server/task-browser.ts) with a real headless Chrome in a temporary Taskboard folder:
 // the template copy with its cookies, a stop that keeps the open pages for the next start, the refusal to copy an
 // open template, and the key that lets only one task's agents reach its browser. Skipped when Chrome is not installed.
@@ -9,10 +10,12 @@ import test, { after } from 'node:test';
 import { EventEmitter } from 'node:events';
 import WebSocket from 'ws';
 
+const resources = new TestResources();
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-browser-')));
+resources.browserRoot(root);
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-browser-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-browser-${process.pid}`);
 mkdirSync(process.env.TASKBOARD_DIR);
 writeFileSync(join(root, 'state', 'machine.json'), JSON.stringify({ name: 'browser-test', controller: { autostart: false, remoteControl: false } }));
 const browser = await import('../server/task-browser.ts');

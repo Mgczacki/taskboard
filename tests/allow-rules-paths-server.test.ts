@@ -1,3 +1,4 @@
+import { TestResources } from './helpers/test-resources.ts';
 // The Allow always choice on each card where one task asks to type a message into another task, on a test Taskboard
 // server with its own port, folders and tmux socket, and stand-in agents (tests/fixtures/fake-agent.cjs). Nothing here
 // uses the real Taskboard.
@@ -19,7 +20,8 @@ import assert from 'node:assert/strict';
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-allow-paths-')));
 const tbdir = join(root, 'tbdir'), vault = join(root, 'vault'), bin = join(root, 'bin'), workspace = join(root, 'workspace');
 for (const d of [tbdir, join(vault, 'tasks'), join(vault, 'groups'), bin, workspace]) mkdirSync(d, { recursive: true });
-const socket = `tb-allow-paths-${process.pid}`;
+const resources = new TestResources();
+const socket = resources.socket(`tb-allow-paths-${process.pid}`);
 const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(TASK_|TB_|TASKBOARD_)/.test(k))) as NodeJS.ProcessEnv;
 const tmux = (...args: string[]) => spawnSync('tmux', ['-L', socket, ...args], { encoding: 'utf8' });
 const fake = readFileSync(join(import.meta.dirname, 'fixtures', 'fake-agent.cjs'), 'utf8');
@@ -58,7 +60,7 @@ test('allow always on ordinary, cross-group and manager message cards: one way o
   const port = await new Promise<number>(resolve => { const s = createServer(); s.listen(0, '127.0.0.1', () => { const a = s.address(); const p = typeof a === 'object' && a ? a.port : 0; s.close(() => resolve(p)); }); });
   const base = `http://127.0.0.1:${port}`;
   const env = { ...clean, PATH: `${bin}:${process.env.PATH}`, TASKBOARD_PORT: String(port), TASKBOARD_DIR: tbdir, TASKBOARD_VAULT: vault, TASKBOARD_TMUX_SOCKET: socket, TASKBOARD_MACHINE_NAME: 'allow-paths-test' };
-  const child = spawn(join(process.cwd(), 'node_modules/.bin/tsx'), ['server/index.ts'], { cwd: process.cwd(), env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = resources.child(spawn(join(process.cwd(), 'node_modules/.bin/tsx'), ['server/index.ts'], { cwd: process.cwd(), env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] }));
   let output = ''; child.stdout.on('data', b => { output += b.toString(); }); child.stderr.on('data', b => { output += b.toString(); });
   try {
     assert.ok(await until(async () => { if (child.exitCode !== null) throw new Error(output); try { return (await fetch(base + '/api/info')).ok; } catch { return false; } }), output);
@@ -264,6 +266,6 @@ test('allow always on ordinary, cross-group and manager message cards: one way o
     assert.deepEqual(scopes(await cardThenDeny('b1', 'a1', 'Beta after revoke all')), ['pair', 'both']);
     assert.equal(readFileSync(join(tbdir, 'allow-rules.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l)).filter(x => x.event === 'removed').length, 4);
   } finally {
-    child.kill('SIGTERM'); tmux('kill-server');
+    await resources.stop();
   }
 });

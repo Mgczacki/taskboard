@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -9,7 +11,7 @@ import test from 'node:test';
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-account-probe-test-')));
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-account-probe-test-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-account-probe-test-${process.pid}`);
 process.env.TASKBOARD_PROBE_TIMEOUT_MS = '1500';
 process.env.PROBE_TEST_CALLS = join(root, 'calls');
 process.env.TASK_ID = 'must-not-reach-the-cli';

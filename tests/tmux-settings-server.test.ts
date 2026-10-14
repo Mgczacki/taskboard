@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 // A scratch Taskboard server (its own port, TASKBOARD_DIR, TASKBOARD_VAULT and tmux socket) with a stand-in for
 // Claude Code. The scratch tmux server ends while the Taskboard server runs, and the next task start must give the new
 // tmux server the Taskboard settings again (on 4 October 2026 it did not: every console showed a green status bar).
@@ -10,7 +12,7 @@ import { once } from 'node:events';
 import test from 'node:test';
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-tmux-settings-server-')));
-const socket = `tb-tmux-settings-server-${process.pid}`;
+const socket = resources.socket(`tb-tmux-settings-server-${process.pid}`);
 const dir = join(root, 'state'); mkdirSync(dir); mkdirSync(join(root, 'vault'));
 writeFileSync(join(dir, 'machine.json'), JSON.stringify({ name: 'tmux-settings-test', controller: { autostart: false, remoteControl: false }, permissions: { controllerNeedsApproval: false, agentsNeedApproval: false, trustWorkspaces: false, autoReview: false } }));
 // a stand-in for Claude Code: signed in, and it keeps running

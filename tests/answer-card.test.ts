@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 // The answer to a question card for a question at the end of a turn (task 204). Before the fix, agents.sendTaskText
 // refused every answer while the task was "needs you" from the Stop hook, and the card exists only in that status.
 // The cases use the fake agent (tests/fixtures/fake-agent.cjs) in a test tmux socket, the real Stop and
@@ -12,7 +14,7 @@ import test from 'node:test';
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-answer-card-')));
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-answer-card-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-answer-card-${process.pid}`);
 process.env.CODEX_HOME = join(root, 'codex');
 process.env.CLAUDE_CONFIG_DIR = join(root, 'claude');
 mkdirSync(process.env.CODEX_HOME, { recursive: true });

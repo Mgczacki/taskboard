@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
@@ -7,7 +9,7 @@ import { join } from 'node:path';
 const root = mkdtempSync(join(tmpdir(), 'tb-manager-'));
 process.env.TASKBOARD_DIR = join(root, 'private');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-manager-test-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-manager-test-${process.pid}`);
 // A message to an idle task resumes it. These tests must not start the real Codex or write to the real ~/.codex:
 // HOME is a scratch folder, and `codex` on PATH ends at once, so the start fails and the message stays queued.
 process.env.HOME = join(root, 'home');

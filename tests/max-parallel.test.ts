@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
@@ -10,7 +12,7 @@ import test from 'node:test';
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-max-parallel-test-')));
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-max-parallel-test-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-max-parallel-test-${process.pid}`);
 mkdirSync(join(root, 'state'), { recursive: true });
 const now = new Date().toISOString();
 const fixtureAccounts = [

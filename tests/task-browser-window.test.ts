@@ -1,3 +1,4 @@
+import { TestResources } from './helpers/test-resources.ts';
 // Open in a window (setWindow in server/task-browser.ts): a task browser changes from headless Chrome to a normal Chrome
 // window with the same profile and pages, and back. The view is a stand-in for the dashboard's WebSocket. A Chrome
 // window appears on the screen, so this test runs only with TASKBOARD_TEST_WINDOWS=1 (and when Chrome is installed).
@@ -11,10 +12,12 @@ import { join } from 'node:path';
 import test, { after } from 'node:test';
 import WebSocket from 'ws';
 
+const resources = new TestResources();
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-window-')));
+resources.browserRoot(root);
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-window-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-window-${process.pid}`);
 mkdirSync(process.env.TASKBOARD_DIR);
 writeFileSync(join(root, 'state', 'machine.json'), JSON.stringify({ name: 'window-test', controller: { autostart: false, remoteControl: false } }));
 const browser = await import('../server/task-browser.ts');

@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 // The browsers and processes of each task (server/runtime-summary.ts, runtime-routes.ts) and the text the dashboard
 // shows for them (web/src/runtimeText.ts). The route test runs a test server with its own port, folders and tmux socket.
 import assert from 'node:assert/strict';
@@ -73,7 +75,7 @@ test('a group lists the processes of its tasks, a task that leaves takes its ite
   for (const [id, num] of [['rt-a', 1], ['rt-b', 2]] as const)
     writeFileSync(join(vault, 'tasks', `${id}.md`), `---\nid: ${id}\nnum: ${num}\ntitle: Task ${num}\nagent: claude\nstatus: idle\ncwd: ${work}\nfolder: ${work}\nsession: tb-rt-${id}\ncreated: 2026-01-01T00:00:00.000Z\nupdated: 2026-01-01T00:00:00.000Z\nstatusAt: 2026-01-01T00:00:00.000Z\n---\n# Task ${num}\n`);
   const port = await new Promise<number>(resolve => { const s = createServer(); s.listen(0, '127.0.0.1', () => { const a = s.address(); const p = typeof a === 'object' && a ? a.port : 0; s.close(() => resolve(p)); }); });
-  const socket = `tb-rt-route-${port}`;
+  const socket = resources.socket(`tb-rt-route-${port}`);
   const base = `http://127.0.0.1:${port}`;
   const child = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { cwd: process.cwd(),
     env: { ...process.env, TASKBOARD_PORT: String(port), TASKBOARD_DIR: tbdir, TASKBOARD_VAULT: vault, TASKBOARD_TMUX_SOCKET: socket, TASKBOARD_MACHINE_NAME: 'runtime-test' },

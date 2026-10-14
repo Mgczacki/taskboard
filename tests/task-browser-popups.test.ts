@@ -1,3 +1,4 @@
+import { TestResources } from './helpers/test-resources.ts';
 // The dashboard view of a task browser (attachViewer) with a real headless Chrome and the local test site
 // tests/fixtures/popup-site.mjs, in a temporary Taskboard folder. The view is a stand-in for its WebSocket. Clicks go
 // through the view (mouse messages), like the user's clicks. Each case checks whether the view switches to the new tab
@@ -13,10 +14,12 @@ import WebSocket from 'ws';
 import { startPopupSite } from './fixtures/popup-site.mjs';
 import { waitFor } from './helpers/wait-for.ts';
 
+const resources = new TestResources();
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-popups-')));
+resources.browserRoot(root);
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-popups-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-popups-${process.pid}`);
 mkdirSync(process.env.TASKBOARD_DIR);
 writeFileSync(join(root, 'state', 'machine.json'), JSON.stringify({ name: 'popups-test', controller: { autostart: false, remoteControl: false } }));
 const browser = await import('../server/task-browser.ts');

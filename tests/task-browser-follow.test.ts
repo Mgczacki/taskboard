@@ -1,3 +1,4 @@
+import { TestResources } from './helpers/test-resources.ts';
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
 import { mkdirSync, mkdtempSync, realpathSync, writeFileSync } from 'node:fs';
@@ -6,10 +7,12 @@ import { join } from 'node:path';
 import test from 'node:test';
 import WebSocket from 'ws';
 
+const resources = new TestResources();
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-follow-')));
+resources.browserRoot(root);
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-follow-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-follow-${process.pid}`);
 mkdirSync(process.env.TASKBOARD_DIR);
 writeFileSync(join(root, 'state', 'machine.json'), JSON.stringify({ name: 'follow-test', controller: { autostart: false, remoteControl: false } }));
 const browser = await import('../server/task-browser.ts');

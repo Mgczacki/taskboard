@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { once } from 'node:events';
@@ -22,7 +24,7 @@ test('new tasks use the creator current group across API and tb batch paths', { 
   group('alpha', ['ordinary', 'manager', 'multi'], 'manager'); group('beta', ['manager', 'multi']);
   const port = await new Promise<number>(resolve => { const s = createServer(); s.listen(0, '127.0.0.1', () => { const a = s.address(); s.close(() => resolve(typeof a === 'object' && a ? a.port : 0)); }); });
   const url = `http://127.0.0.1:${port}`;
-  const socket = `tb-task-group-${process.pid}`;
+  const socket = resources.socket(`tb-task-group-${process.pid}`);
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, TASKBOARD_PORT: String(port), TASKBOARD_DIR: dir, TASKBOARD_VAULT: vault, TASKBOARD_TMUX_SOCKET: socket, TASKBOARD_MACHINE_NAME: 'task-group-test' };
   const server = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { cwd: process.cwd(), env, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = ''; server.stdout.on('data', b => output += b); server.stderr.on('data', b => output += b);

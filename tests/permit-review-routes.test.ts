@@ -1,3 +1,4 @@
+import { TestResources } from './helpers/test-resources.ts';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -7,7 +8,8 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { waitFor } from './helpers/wait-for.ts';
 
-test('CLI and routes review exact settings and explain a conflicting directory', async () => {
+test('CLI and routes review exact settings and explain a conflicting directory', { timeout: 90000 }, async () => {
+  const resources = new TestResources();
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-permit-review-')));
   const tbdir = join(root, 'tbdir'), vault = join(root, 'vault'), parent = join(root, 'workspace');
   const attached = join(parent, 'attached'), other = join(parent, 'other'), config = join(root, 'config');
@@ -26,7 +28,8 @@ test('CLI and routes review exact settings and explain a conflicting directory',
     server.listen(0, '127.0.0.1', () => { const address = server.address(); server.close(() => resolvePort((address as { port: number }).port)); });
   });
   const base = `http://127.0.0.1:${port}`;
-  const child = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { env: { ...clean, TASKBOARD_PORT: String(port), TASKBOARD_DIR: tbdir, TASKBOARD_VAULT: vault, TASKBOARD_TMUX_SOCKET: `tb-permit-review-${port}`, TASKBOARD_MACHINE_NAME: 'permit-test' }, stdio: ['ignore', 'pipe', 'pipe'] });
+  const socket = resources.socket(`tb-permit-review-${port}`);
+  const child = resources.child(spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { env: { ...clean, TASKBOARD_PORT: String(port), TASKBOARD_DIR: tbdir, TASKBOARD_VAULT: vault, TASKBOARD_TMUX_SOCKET: socket, TASKBOARD_MACHINE_NAME: 'permit-test' }, detached: true, stdio: ['ignore', 'pipe', 'pipe'] }));
   let output = '';
   child.stdout.on('data', data => { output += data; }); child.stderr.on('data', data => { output += data; });
   try {
@@ -188,7 +191,7 @@ test('CLI and routes review exact settings and explain a conflicting directory',
     assert.equal(runDirectory.data.diagnostic.rule, 'cwd-overlaps-other-worktree');
     assert.ok(runDirectory.data.refusal);
   } finally {
-    if (child.exitCode === null) await new Promise<void>(done => { child.once('exit', () => done()); child.kill('SIGTERM'); });
+    await resources.stop();
     rmSync(root, { recursive: true, force: true });
   }
 });

@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 // Long text and first prompts typed into agents through tmux, with the fake agent in tests/fixtures/fake-agent.cjs.
 // Covers: tb send with long text (task 51), a new Codex task with a long first prompt (task 158), tb resume of a task
 // without a saved session, and Codex's update dialog (task 144).
@@ -12,7 +14,7 @@ import { waitFor } from './helpers/wait-for.ts';
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-long-text-')));
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-long-text-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-long-text-${process.pid}`);
 process.env.CODEX_HOME = join(root, 'codex');
 process.env.CLAUDE_CONFIG_DIR = join(root, 'claude');
 mkdirSync(process.env.CODEX_HOME, { recursive: true });

@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 // The sound switch of a task browser (setSound and muteTabs in server/task-browser.ts) with a real headless Chrome in a
 // temporary Taskboard folder. The test reads the mute state of each tab from Chrome (chrome.tabs in the sound
 // extension). Checks: a first start is muted with --mute-audio; the sound on restarts that browser without the flag;
@@ -17,9 +19,10 @@ import WebSocket from 'ws';
 import { waitFor } from './helpers/wait-for.ts';
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-sound-')));
+resources.browserRoot(root);
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-sound-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-sound-${process.pid}`);
 mkdirSync(process.env.TASKBOARD_DIR);
 writeFileSync(join(root, 'state', 'machine.json'), JSON.stringify({ name: 'sound-test', controller: { autostart: false, remoteControl: false } }));
 const browser = await import('../server/task-browser.ts');
@@ -238,10 +241,11 @@ test('only the dashboard changes the sound', { skip, timeout: 60000 }, async () 
   writeFileSync(join(tbdir, 'machine.json'), JSON.stringify({ controller: { autostart: false, remoteControl: false } }));
   writeFileSync(join(vault, 'tasks', 's2.md'), `---\nid: s2\nnum: 1\ntitle: Task 1\nagent: claude\nstatus: idle\ncwd: ${work}\nfolder: ${work}\nsession: tb-sound-s2\ncreated: 2026-01-01T00:00:00.000Z\nupdated: 2026-01-01T00:00:00.000Z\nstatusAt: 2026-01-01T00:00:00.000Z\n---\n# Task 1\n`);
   const port = await new Promise<number>(resolve => { const s = createServer(); s.listen(0, '127.0.0.1', () => { const a = s.address(); const p = typeof a === 'object' && a ? a.port : 0; s.close(() => resolve(p)); }); });
-  const socket = `tb-sound-route-${port}`, base = `http://127.0.0.1:${port}`;
-  const child = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { cwd: process.cwd(),
+  const socket = resources.socket(`tb-sound-route-${port}`), base = `http://127.0.0.1:${port}`;
+  resources.browserRoot(dir);
+  const child = resources.child(spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { cwd: process.cwd(),
     env: { ...process.env, TASKBOARD_PORT: String(port), TASKBOARD_DIR: tbdir, TASKBOARD_VAULT: vault, TASKBOARD_TMUX_SOCKET: socket, TASKBOARD_MACHINE_NAME: 'sound-test' },
-    stdio: ['ignore', 'pipe', 'pipe'] });
+    detached: true, stdio: ['ignore', 'pipe', 'pipe'] }));
   let output = ''; child.stdout.on('data', b => { output += b; }); child.stderr.on('data', b => { output += b; });
   try {
     for (let i = 0; i < 150; i++) {
@@ -261,7 +265,7 @@ test('only the dashboard changes the sound', { skip, timeout: 60000 }, async () 
     assert.equal(t.status, 200);
     assert.equal(((await t.json()) as { muted: boolean }).muted, true);
   } finally {
-    child.kill();
+    await resources.stopChild(child);
     try { execFileSync('tmux', ['-L', socket, 'kill-server'], { stdio: 'ignore' }); } catch { /* no server */ }
   }
 });

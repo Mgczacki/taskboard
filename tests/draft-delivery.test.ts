@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 // Task 271: Taskboard moves a person's draft out of the agent's input box, types a message, and puts the draft back.
 // These cases check the parts that do not need tmux: how the draft is read from a screen, and how keys from the
 // dashboard terminals are held during that time.
@@ -10,7 +12,7 @@ import test from 'node:test';
 const root = mkdtempSync(join(tmpdir(), 'tb-draft-'));
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-draft-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-draft-${process.pid}`);
 const { draftText, draftQuiet, DRAFT_QUIET_MS, WIDE_COLS } = await import('../server/deliver-text.ts');
 const input = await import('../server/terminal-input.ts');
 

@@ -1,3 +1,4 @@
+import { TestResources } from './helpers/test-resources.ts';
 // Sign-in in a normal Chrome window for a task browser (signinWindow in server/browser-signins.ts), the start flags of task
 // browsers and of the template window (launchArgs, templateWindowArgs in server/task-browser.ts), and the sign-in pages
 // that the view knows (web/src/signinPages.ts). The window test uses a stand-in for Chrome: with --headless it runs the
@@ -14,10 +15,12 @@ import { signinPage } from '../web/src/signinPages.ts';
 import { waitFor } from './helpers/wait-for.ts';
 
 const CHROME = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
+const resources = new TestResources();
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-signin-window-')));
+resources.browserRoot(root);
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-signin-window-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-signin-window-${process.pid}`);
 mkdirSync(process.env.TASKBOARD_DIR);
 const fake = join(root, 'chrome.sh');
 writeFileSync(fake, `#!/bin/sh\ncase "$*" in *--headless*) exec "${CHROME}" "$@";; esac\necho "$@" > "${root}/window-args"\nsleep 2\n`);

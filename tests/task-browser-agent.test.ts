@@ -1,3 +1,4 @@
+import { TestResources } from './helpers/test-resources.ts';
 // What the agent does in its task browser, as the dashboard view sees it (agentWatch, onAgentEvent and attachViewer in
 // server/task-browser.ts), and the agent's request for help (setAsk, answerAsk). A real headless Chrome runs in a
 // temporary Taskboard folder. The agent is a stand-in for chrome-devtools-mcp: it sends DevTools commands through
@@ -10,10 +11,12 @@ import { join } from 'node:path';
 import test, { after, before } from 'node:test';
 import WebSocket from 'ws';
 
+const resources = new TestResources();
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-agent-')));
+resources.browserRoot(root);
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-agent-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-agent-${process.pid}`);
 mkdirSync(process.env.TASKBOARD_DIR);
 writeFileSync(join(root, 'state', 'machine.json'), JSON.stringify({ name: 'agent-test', controller: { autostart: false, remoteControl: false } }));
 const browser = await import('../server/task-browser.ts');

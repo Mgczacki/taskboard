@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 // The command line and the instructions that each agent gets for the scopes of its task (server/scopes.ts).
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -9,7 +11,7 @@ const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-scope-cmd-')));
 for (const k of Object.keys(process.env)) if (/^(TASK_|TB_)/.test(k)) delete process.env[k];
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
-process.env.TASKBOARD_TMUX_SOCKET = `tb-scope-cmd-${process.pid}`;
+process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-scope-cmd-${process.pid}`);
 mkdirSync(process.env.TASKBOARD_DIR); mkdirSync(join(root, 'vault', 'tasks'), { recursive: true });
 writeFileSync(join(root, 'state', 'machine.json'), JSON.stringify({ name: 'scope-cmd-test', controller: { autostart: false, remoteControl: false } }));
 const store = await import('../server/store.ts');

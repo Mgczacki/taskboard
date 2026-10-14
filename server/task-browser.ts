@@ -13,8 +13,8 @@
 // page. It closes the agent connections first: chrome-devtools-mcp connects again at the agent's next tool call.
 import { type ChildProcess, execFileSync, spawn } from 'node:child_process';
 import { createHmac, randomBytes } from 'node:crypto';
-import { closeSync, cpSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { basename, join } from 'node:path';
+import { appendFileSync, closeSync, cpSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { basename, dirname, join } from 'node:path';
 import WebSocket from 'ws';
 import { PORT, ROOT, TB_DIR, TOKEN } from './config.ts';
 import * as machine from './machine.ts';
@@ -23,6 +23,15 @@ import { TabSwitch } from './tab-switch.ts';
 
 export const DIR = join(TB_DIR, 'browsers');
 export const TEMPLATE = 'template';
+function recordTestChrome(child: import('node:child_process').ChildProcess, profile: string): void {
+  const file = process.env.TEST_BROWSER_CHILDREN_FILE;
+  const pid = child.pid;
+  if (!file || !pid) return;
+  if (!profile.startsWith(dirname(file) + '/')) throw new Error('Test browser profile is outside its temporary folder');
+  try { appendFileSync(file, JSON.stringify({ pid, profile, event: 'start' }) + '\n'); }
+  catch (error) { try { process.kill(-pid, 'SIGTERM'); } catch { /* already exited */ } throw error; }
+  child.once('exit', () => { try { appendFileSync(file, JSON.stringify({ pid, event: 'exit' }) + '\n'); } catch { /* test folder ended */ } });
+}
 const ID = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,120}$/;
 
 // sound: the user's choice for this browser. muted: the state of the running browser. muteFlag: the running browser
@@ -277,6 +286,7 @@ async function start(id: string, t0: number): Promise<Meta & { ws: string }> {
     const offset = logSize(id), began = Date.now();
     const log = openSync(join(folder(id), 'chrome.log'), 'a');
     const child = spawn(bin, args, { detached: true, stdio: ['ignore', log, log] });
+    recordTestChrome(child, profileDir(id));
     const childStart = processStart(child.pid);
     closeSync(log);
     child.unref();
@@ -777,6 +787,7 @@ export async function openTemplateWindow(url = 'https://accounts.google.com/') {
   mkdirSync(profileDir(TEMPLATE), { recursive: true });
   const log = openSync(join(folder(TEMPLATE), 'chrome.log'), 'a');
   const child = spawn(bin, templateWindowArgs(profileDir(TEMPLATE), url, !readMeta(TEMPLATE).sound), { detached: true, stdio: ['ignore', log, log] });
+  recordTestChrome(child, profileDir(TEMPLATE));
   closeSync(log);
   child.unref();
   if (!child.pid) throw new Error('Chrome did not start.');

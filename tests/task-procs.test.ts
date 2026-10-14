@@ -1,3 +1,5 @@
+import { TestResources } from './helpers/test-resources.ts';
+const resources = new TestResources();
 // Processes of a task (server/task-procs.ts) on a tmux server of the test's own: start, log, exit, stop of the whole
 // process group, a child that left the group (setsid), suspend and resume, and the port read from the log.
 import assert from 'node:assert/strict';
@@ -8,7 +10,7 @@ import { join } from 'node:path';
 import test, { after } from 'node:test';
 
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-procs-')));
-const socket = `tb-procs-${process.pid}`;
+const socket = resources.socket(`tb-procs-${process.pid}`);
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
 process.env.TASKBOARD_TMUX_SOCKET = socket;

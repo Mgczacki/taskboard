@@ -1,3 +1,4 @@
+import { TestResources } from './helpers/test-resources.ts';
 // Allow always rules on a test Taskboard server with its own port, folders and tmux socket, and stand-in agents that
 // draw a Claude Code input box (tests/fixtures/fake-agent.cjs). Nothing here uses the real Taskboard.
 // Covers: the first "type into" card works as before and offers Allow always; a task, the controller and a request
@@ -16,7 +17,8 @@ import assert from 'node:assert/strict';
 const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-allow-')));
 const tbdir = join(root, 'tbdir'), vault = join(root, 'vault'), bin = join(root, 'bin'), workspace = join(root, 'workspace');
 for (const d of [tbdir, join(vault, 'tasks'), bin, workspace]) mkdirSync(d, { recursive: true });
-const socket = `tb-allow-${process.pid}`;
+const resources = new TestResources();
+const socket = resources.socket(`tb-allow-${process.pid}`);
 const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(TASK_|TB_|TASKBOARD_)/.test(k))) as NodeJS.ProcessEnv;
 const tmux = (...args: string[]) => spawnSync('tmux', ['-L', socket, ...args], { encoding: 'utf8' });
 const fake = readFileSync(join(import.meta.dirname, 'fixtures', 'fake-agent.cjs'), 'utf8');
@@ -45,7 +47,7 @@ test('allow always: the user adds a rule on the card, later messages skip the ca
   const port = await new Promise<number>(resolve => { const s = createServer(); s.listen(0, '127.0.0.1', () => { const a = s.address(); const p = typeof a === 'object' && a ? a.port : 0; s.close(() => resolve(p)); }); });
   const base = `http://127.0.0.1:${port}`;
   const env = { ...clean, PATH: `${bin}:${process.env.PATH}`, TASKBOARD_PORT: String(port), TASKBOARD_DIR: tbdir, TASKBOARD_VAULT: vault, TASKBOARD_TMUX_SOCKET: socket, TASKBOARD_MACHINE_NAME: 'allow-test' };
-  const child = spawn(join(process.cwd(), 'node_modules/.bin/tsx'), ['server/index.ts'], { cwd: process.cwd(), env, stdio: ['ignore', 'pipe', 'pipe'] });
+  const child = resources.child(spawn(join(process.cwd(), 'node_modules/.bin/tsx'), ['server/index.ts'], { cwd: process.cwd(), env, detached: true, stdio: ['ignore', 'pipe', 'pipe'] }));
   let output = ''; child.stdout.on('data', b => { output += b.toString(); }); child.stderr.on('data', b => { output += b.toString(); });
   try {
     assert.ok(await until(async () => { if (child.exitCode !== null) throw new Error(output); try { return (await fetch(base + '/api/info')).ok; } catch { return false; } }), output);
@@ -201,6 +203,6 @@ test('allow always: the user adds a rule on the card, later messages skip the ca
     assert.equal(again.status, 202);
     assert.ok(again.data.approval.allow, 'the card offers Allow always again');
   } finally {
-    child.kill(); tmux('kill-server');
+    await resources.stop();
   }
 });
