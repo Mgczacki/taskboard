@@ -150,6 +150,7 @@ export function MessageList({ tasks, direction, focus }: { tasks: Task[]; direct
           {controls.reject && <button className="btn" disabled={busy} onClick={() => act(() => request(`/messages/${m.id}/approve`, { hash: m.hash, decision: 'reject' }), m.id)}>Reject</button>}
           {controls.removeFlagged && d && <button className="btn" disabled={busy} onClick={() => act(() => request(`/messages/${m.id}/remove-flagged`, { hash: m.hash }), m.id)}>Remove flagged text</button>}
           {controls.send && <button className="btn" disabled={busy} onClick={() => act(() => request(`/messages/${m.id}/send`, { hash: m.hash }), m.id)}>{controls.sendLabel}</button>}
+          {controls.retrySend && <button className="btn" disabled={busy} onClick={() => act(() => request(`/messages/${m.id}/retry-send`, { hash: m.hash }), m.id)}>Retry approved note</button>}
           {controls.route && <>
             <select className="mail-input" aria-label={`Task for ${m.subject}`} value={destinations[m.id] || m.proposed_route?.task || m.suggested_task?.id || ''} onChange={e => setDestinations(x => ({ ...x, [m.id]: e.target.value }))}>
               <option value="">Choose a task</option>{tasks.filter(t => t.id !== 'controller').map(t => <option key={t.id} value={t.id}>{t.title}</option>)}

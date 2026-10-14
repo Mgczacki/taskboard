@@ -29,7 +29,7 @@ Larger files fail before posting.
 People search and history recovery use records available in the app.
 Changed controls produce visible errors.
 
-Taskboard bundles `integrations/a2a-notes/a2a-notes-0.11.1.tgz`.
+Taskboard bundles `integrations/a2a-notes/a2a-notes-0.11.2.tgz`.
 The lockfile records its integrity.
 This package update changes no running service.
 
@@ -39,9 +39,9 @@ Restore that config with the earlier package when rolling back.
 Pause outgoing delivery before rollback.
 Do not reuse app attachment checkpoints with the older API transport.
 
-The A2A Notes source revision is `2505a479b5b126b9f0db96326f278baf7e7029a9`.
+The A2A Notes source revision is `a134222b1dffaab525ba2388bf08c67f0ec833cd`.
 
-The integrated package SHA256 is `bf4385121aceccd327b5b8cc4fa4e18eda5f3ab7b2fb8c4b0345570c7a6edb9c`.
+The integrated package SHA256 is `b0d409828fa59122172d0b7965847540e9e1a588345fa47b06b5666878235fc4`.
 
 ## Optional native posting
 
@@ -84,3 +84,14 @@ Version 0.11.1 reads current avatar records for verified member names.
 It resolves the saved DM before navigation and waits for account loading.
 A cleared renderer context triggers a new verified debugger connection.
 Taskboard setup preserves the selected native posting preference.
+
+## Retry an approved note after failure before posting
+
+The selected native sender now waits for readiness after navigation.
+Use `tb mail retry-send <id> <hash>` to queue an unchanged approved note after a verified app failure before posting.
+Only the user or controller can request this retry.
+The service checks saved attempts before it queues the same message ID.
+It retains the approval and saved file progress.
+Uncertain delivery cannot use this operation.
+The Inbox shows **Retry approved note** when the service permits retry.
+The installed service must run 0.11.2 before this operation is available.
