@@ -32,7 +32,7 @@ People search reads up to 2,000 members with `users.list`.
 History recovery reads the 50 latest records of up to 20 direct conversations.
 A changed app interface produces a visible error before posting.
 
-Taskboard bundles `integrations/a2a-notes/a2a-notes-0.12.0.tgz`.
+Taskboard bundles `integrations/a2a-notes/a2a-notes-0.13.0.tgz`.
 The lockfile records its integrity.
 This package update changes no running service.
 
@@ -42,9 +42,9 @@ Restore that config with the earlier package when rolling back.
 Pause outgoing delivery before rollback.
 Do not reuse app attachment checkpoints with the older API transport.
 
-The A2A Notes source revision is `2e382e74dd49d1a5efea0743f0c9718000ad3d14`.
+The A2A Notes source revision is `031afe5eb910667c14d4419681a0f9b2f4742ae1`.
 
-The integrated package SHA256 is `172d27744057fbcc0f941b93fb032ab68ba5b92454c27c13505806fdcf60535f`.
+The integrated package SHA256 is `168afe5348063a1a32ef20d59f72fd48edb958cf61638334e9ee3793957d6a5d`.
 
 ## Optional native posting
 
@@ -115,3 +115,15 @@ The adapter no longer navigates, types in the composer, or clicks controls.
 Reads use only `conversations.info`, `conversations.open`, `conversations.history`, `users.info`, and `users.list`.
 Delivery notices use the native `chat.postMessage` call with the operation ID as the client message ID.
 Without native sending, the service reads and confirms receipt, but it does not post.
+
+## Visible file attachments
+
+Version 0.13.0 sends supporting files as visible Slack attachments.
+The signed-in app grants an upload ticket and completes the file share.
+The A2A Notes host sends only the checked bytes to the signed `files.slack.com` upload URL.
+This upload is the only direct Slack HTTP request. It sends no cookie or token, and the service saves no upload URL.
+Agent request data stays inline with a 26,000-byte limit.
+Each attachment has a 2 MiB limit, and the note text has a 39,000-byte limit.
+The service checks these limits before approval.
+A refused file share returns the note to the queue with its approval.
+An uncertain file share is reconciled from conversation history and is never completed twice.
