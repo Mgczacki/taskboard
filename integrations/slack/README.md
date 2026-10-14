@@ -29,7 +29,7 @@ Larger files fail before posting.
 People search and history recovery use records available in the app.
 Changed controls produce visible errors.
 
-Taskboard bundles `integrations/a2a-notes/a2a-notes-0.11.0.tgz`.
+Taskboard bundles `integrations/a2a-notes/a2a-notes-0.11.1.tgz`.
 The lockfile records its integrity.
 This package update changes no running service.
 
@@ -39,9 +39,9 @@ Restore that config with the earlier package when rolling back.
 Pause outgoing delivery before rollback.
 Do not reuse app attachment checkpoints with the older API transport.
 
-The A2A Notes source revision is `8d58119c2e91a240807ea2d182f10777133b39a8`.
+The A2A Notes source revision is `2505a479b5b126b9f0db96326f278baf7e7029a9`.
 
-The integrated package SHA256 is `7020c8cfcdb26cbd66c218523af17890c9bd428f90e5300176ec94b512da1bc7`.
+The integrated package SHA256 is `bf4385121aceccd327b5b8cc4fa4e18eda5f3ab7b2fb8c4b0345570c7a6edb9c`.
 
 ## Optional native posting
 
@@ -79,3 +79,8 @@ Acknowledgement remains separate from acceptance and action approval.
 
 Saved Web API upload progress stops before app-only delivery.
 The adapter cannot replace an earlier shared file with an inline attachment.
+
+Version 0.11.1 reads current avatar records for verified member names.
+It resolves the saved DM before navigation and waits for account loading.
+A cleared renderer context triggers a new verified debugger connection.
+Taskboard setup preserves the selected native posting preference.
