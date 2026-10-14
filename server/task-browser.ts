@@ -170,10 +170,14 @@ function profileHolder(id: string): number | undefined {
   return undefined;
 }
 // End a Chrome process and its helpers (its process group), and wait up to 5 s until the main process is gone.
-async function killChrome(pid: number, start: string | undefined) {
-  if (!start || processStart(pid) !== start) return;
-  try { process.kill(-pid, 'SIGKILL'); } catch { try { process.kill(pid, 'SIGKILL'); } catch { /* ended */ } }
+async function killChrome(id: string, pid: number, start: string | undefined): Promise<boolean> {
+  // A recorded PID can be reused. The process must still hold this browser's profile.
+  if (!start || processStart(pid) !== start || profileHolder(id) !== pid) return !pidAlive(pid);
+  let group = false;
+  try { group = Number(execFileSync('ps', ['-p', String(pid), '-o', 'pgid='], { encoding: 'utf8', timeout: 3000 }).trim()) === pid; } catch { /* no group proof */ }
+  try { process.kill(group ? -pid : pid, 'SIGKILL'); } catch { /* ended */ }
   for (let i = 0; i < 50 && pidAlive(pid); i++) await new Promise(r => setTimeout(r, 100));
+  return !pidAlive(pid);
 }
 // Wait until this Chrome process writes DevToolsActivePort and answers on that port. The result is 'exited' as soon as
 // the process ends, and 'timeout' at the deadline.
@@ -219,7 +223,11 @@ export function ensure(id: string): Promise<Meta & { ws: string }> {
     try { return await start(id, t0); }
     catch (e) {
       const lines = e instanceof StartError ? e.lines : [];
-      writeMeta(id, { ...readMeta(id), pid: undefined, port: undefined, exited: undefined, error: (e as Error).message, errorLines: lines.length ? lines : undefined, errorAt: new Date().toISOString() });
+      const holder = profileHolder(id);
+      if (holder) await killChrome(id, holder, processStart(holder));
+      const m = readMeta(id);
+      const survivor = profileHolder(id);
+      writeMeta(id, { ...m, pid: survivor ?? (pidAlive(m.pid) ? m.pid : undefined), pidStart: survivor ? processStart(survivor) : m.pidStart, port: undefined, exited: undefined, error: (e as Error).message, errorLines: lines.length ? lines : undefined, errorAt: new Date().toISOString() });
       console.error(`${new Date().toISOString()} task browser ${id}: ${(e as Error).message}${lines.length ? `\n  ${lines.join('\n  ')}` : ''}`);
       problem(id, (e as Error).message, lines);
       throw e;
@@ -278,7 +286,10 @@ async function start(id: string, t0: number): Promise<Meta & { ws: string }> {
     progress.set(id, { since: t0, pid: holder }); changed(id);
     const r = await waitReady(id, holder, t0 + startLimitMs());
     if (typeof r === 'object') { b = { pid: holder, ...r }; console.log(`${new Date().toISOString()} task browser ${id}: Chrome ${holder} holds the profile and answered after ${Math.round((Date.now() - t0) / 1000)} s, so no second Chrome started`); }
-    else if (r === 'timeout') { console.error(`${new Date().toISOString()} task browser ${id}: Chrome ${holder} holds the profile and did not answer in ${startLimitMs() / 1000} s, so it was ended`); await killChrome(holder, holderStart); }
+    else if (r === 'timeout') {
+      if (!await killChrome(id, holder, holderStart)) throw new StartError(`Chrome ${holder} did not answer and could not be ended. Try again.`);
+      throw new StartError(`Chrome ${holder} held the profile but did not answer within ${startLimitMs() / 1000} s. Taskboard ended it. Try again.`);
+    }
   }
   const launch = async (muteFlag: boolean) => {
     rmSync(portFile, { force: true });
@@ -288,17 +299,18 @@ async function start(id: string, t0: number): Promise<Meta & { ws: string }> {
     const child = spawn(bin, args, { detached: true, stdio: ['ignore', log, log] });
     recordTestChrome(child, profileDir(id));
     const childStart = processStart(child.pid);
+    if (child.pid) writeMeta(id, { ...readMeta(id), pid: child.pid, pidStart: childStart, port: undefined });
     closeSync(log);
     child.unref();
     let how = '';
     child.once('exit', (code, signal) => { how = code !== null ? `exit code ${code}` : `signal ${signal}`; });
     child.once('error', e => { how = e.message; });
     progress.set(id, { since: t0, pid: child.pid }); changed(id);
-    const r = child.pid ? await waitReady(id, child.pid, began + startLimitMs(), () => !!how) : 'exited';
+    const r = child.pid ? await waitReady(id, child.pid, t0 + startLimitMs(), () => !!how) : 'exited';
     if (typeof r === 'object') return { pid: child.pid!, ...r, child };
     const lines = usefulLines(logSince(id, offset));
     if (r === 'timeout') {
-      await killChrome(child.pid!, childStart);
+      await killChrome(id, child.pid!, childStart);
       throw new StartError(`Chrome did not answer within ${startLimitMs() / 1000} s, so Taskboard ended it. The computer can be too busy. Try again.`, lines);
     }
     throw new StartError(`Chrome ended ${Math.round((Date.now() - began) / 100) / 10} s after its start (${how || 'no exit code'}). It did not open its debugging port.`, lines);
@@ -322,7 +334,7 @@ async function start(id: string, t0: number): Promise<Meta & { ws: string }> {
     // a reused Chrome without the flag that could not be muted, or a Chrome with the flag and the sound on
     if ((muted && check.state !== 'muted') || (!muted && muteFlag)) {
       console.log(`${new Date().toISOString()} task browser ${id}: Chrome starts again ${muted ? 'with' : 'without'} --mute-audio (${check.reason || 'the sound is on'})`);
-      if (!await closeChrome(b.ws, b.pid)) throw new StartError('Chrome did not close before its sound setting changed.');
+      if (!await closeChrome(id, b.ws, b.pid)) throw new StartError('Chrome did not close before its sound setting changed.');
       b = await launch(muted); reused = false;
       muteFlag = hasMuteFlag(b.pid);
       check = muted ? (muteFlag ? { state: 'muted', how: 'flag', at: new Date().toISOString() } : { state: 'unverified', at: new Date().toISOString(), reason: 'Chrome started without --mute-audio.' })
@@ -425,18 +437,25 @@ const problem = (id: string, message: string, lines: string[]) => { for (const f
 // chrome-devtools-mcp then lists no pages. So the agent's connection, which waits for ensure(), finds loaded pages.
 // Chrome closes a page after /json/close returns, so this waits until the blank page is gone (an agent would select it).
 async function openSaved(port: number, browserWs: string, urls: string[]) {
-  const list = () => fetch(`http://127.0.0.1:${port}/json/list`).then(r => r.json() as Promise<{ id: string; type: string }[]>).catch(() => []);
+  const list = () => fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(1500) }).then(r => r.json() as Promise<{ id: string; type: string }[]>).catch(() => []);
   const blank = (await list()).filter(t => t.type === 'page').map(t => t.id);
   const ws = new WebSocket(browserWs, { perMessageDeflate: false });
   let next = 0;
   const waiting = new Map<number, (m: any) => void>(), events = new Set<(m: any) => void>();
   ws.on('message', d => { const m = JSON.parse(d.toString()); if (m.id && waiting.has(m.id)) { waiting.get(m.id)!(m); waiting.delete(m.id); } else for (const fn of events) fn(m); });
   const call = (method: string, params: object = {}, sessionId?: string) => new Promise<any>((resolve, reject) => {
-    const n = ++next; waiting.set(n, m => m.error ? reject(new Error(m.error.message)) : resolve(m.result));
-    ws.send(JSON.stringify({ id: n, method, params, ...(sessionId ? { sessionId } : {}) }));
+    const n = ++next;
+    const timer = setTimeout(() => { waiting.delete(n); reject(new Error(`${method} timed out`)); }, 30000);
+    waiting.set(n, m => { clearTimeout(timer); m.error ? reject(new Error(m.error.message)) : resolve(m.result); });
+    try { ws.send(JSON.stringify({ id: n, method, params, ...(sessionId ? { sessionId } : {}) })); }
+    catch (error) { clearTimeout(timer); waiting.delete(n); reject(error); }
   });
   try {
-    await new Promise((resolve, reject) => { ws.once('open', resolve); ws.once('error', reject); });
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => { ws.terminate(); reject(new Error('Chrome connection timed out')); }, 15000);
+      ws.once('open', () => { clearTimeout(timer); resolve(); });
+      ws.once('error', error => { clearTimeout(timer); reject(error); });
+    });
     await Promise.all(urls.map(async url => {
       const { targetId } = await call('Target.createTarget', { url: 'about:blank' });
       const { sessionId } = await call('Target.attachToTarget', { targetId, flatten: true });
@@ -449,8 +468,10 @@ async function openSaved(port: number, browserWs: string, urls: string[]) {
       await loaded;
       await call('Target.detachFromTarget', { sessionId }).catch(() => {});
     }));
-  } catch { /* the pages that opened stay open; the agent can open the others */ } finally { ws.close(); }
-  for (const t of blank) await fetch(`http://127.0.0.1:${port}/json/close/${t}`).catch(() => {});
+  } catch (error) {
+    console.error(`task browser ${port}: saved pages did not all open: ${(error as Error).message}`);
+  } finally { ws.terminate(); }
+  for (const t of blank) await fetch(`http://127.0.0.1:${port}/json/close/${t}`, { signal: AbortSignal.timeout(1500) }).catch(() => {});
   for (let i = 0; i < 50 && (await list()).some(t => blank.includes(t.id)); i++) await new Promise(r => setTimeout(r, 100));
 }
 
@@ -481,12 +502,12 @@ async function stopNow(id: string, opts: { suspended?: boolean; idle?: boolean; 
   // a start that runs ends first, so a stop (for example the archive of the task) does not leave its Chrome running
   await starting.get(id)?.catch(() => {});
   const m = readMeta(id);
-  const verifiedPid = m.pid && m.pidStart && processStart(m.pid) === m.pidStart ? m.pid : profileHolder(id);
+  const verifiedPid = profileHolder(id);
   // the template in a normal Chrome window: SIGTERM lets Chrome close its profile and write its cookies
   if (m.headed && m.pid) {
     if (!verifiedPid) return false;
     if (pidAlive(verifiedPid)) { try { process.kill(verifiedPid, 'SIGTERM'); } catch { /* ended */ } }
-    if (!await closeChrome(undefined, verifiedPid, 30000)) return false;
+    if (!await closeChrome(id, undefined, verifiedPid, 30000)) return false;
     writeMeta(id, { ...readMeta(id), pid: undefined, headed: undefined, stoppedAt: new Date().toISOString() });
     changed(id);
     windowEnded();
@@ -503,19 +524,20 @@ async function stopNow(id: string, opts: { suspended?: boolean; idle?: boolean; 
   const open = listed && !opts.keepTabs ? listed.map(t => t.url).filter(u => /^(https?|file):/.test(u)) : m.tabs;
   // The template waits up to 30 s: new task browsers copy its cookies. On a busy Mac (load average 140 on 10 cores,
   // 2 October 2026) Chrome took more than 10 s to close, and the end of the wait lost cookies that it had not written.
-  if (!await closeChrome(running?.ws, verifiedPid, id === TEMPLATE ? 30000 : 10000)) return false;
+  if (!await closeChrome(id, running?.ws, verifiedPid, id === TEMPLATE ? 30000 : 10000)) return false;
   writeMeta(id, { ...readMeta(id), pid: undefined, port: undefined, tabs: open, stoppedAt: new Date().toISOString(), suspended: opts.suspended || undefined, idleStopped: opts.idle || undefined });
   changed(id);
-  return !!running;
+  return !!verifiedPid;
 }
 
 // Close Chrome with Browser.close. Chrome writes cookies to disk when it closes: wait up to 10 s before the kill, so a
 // busy Chrome keeps its sign-ins.
-async function closeChrome(ws: string | undefined, pid: number | undefined, waitMs = 10000): Promise<boolean> {
+async function closeChrome(id: string, ws: string | undefined, pid: number | undefined, waitMs = 10000): Promise<boolean> {
+  if (pid && profileHolder(id) !== pid) return false;
   const start = processStart(pid);
   if (ws) await once(ws, 'Browser.close').catch(() => {});
   for (let i = 0; i < waitMs / 100 && pidAlive(pid); i++) await new Promise(r => setTimeout(r, 100));
-  if (pid && start && processStart(pid) === start) { try { process.kill(-pid, 'SIGKILL'); } catch { try { process.kill(pid, 'SIGKILL'); } catch { /* ended */ } } }
+  if (pid && start && pidAlive(pid)) await killChrome(id, pid, start);
   for (let i = 0; i < 10 && pidAlive(pid); i++) await new Promise(r => setTimeout(r, 100));
   return !pidAlive(pid);
 }
@@ -863,7 +885,7 @@ export async function remove(id: string) { await stop(id).catch(() => {}); rmSyn
 
 // starting: a start runs (seconds since it began, the limit, and the Chrome process it waits for). systemMemory: the
 // free memory of the computer, sent while the browser is not running, so the dashboard can warn before a start.
-export interface Status { id: string; running: boolean; port?: number; tabs: Tab[]; profile: boolean; copiedFromTemplate?: string; suspended?: boolean; idleStopped?: boolean; idleStopMinutes: number; startMs?: number; started?: string; stoppedAt?: string; error?: string; errorLines?: string[]; errorAt?: string; exited?: boolean; starting?: { seconds: number; limitSeconds: number; pid?: number }; systemMemory?: memory.SystemMemory | null; memMb?: number | null; rssMb?: number | null; agents: number; viewers: number; chrome: string | null; sound: boolean; muted: boolean; sharp: boolean;
+export interface Status { id: string; running: boolean; unresponsive?: boolean; port?: number; tabs: Tab[]; profile: boolean; copiedFromTemplate?: string; suspended?: boolean; idleStopped?: boolean; idleStopMinutes: number; startMs?: number; started?: string; stoppedAt?: string; error?: string; errorLines?: string[]; errorAt?: string; exited?: boolean; starting?: { seconds: number; limitSeconds: number; pid?: number }; systemMemory?: memory.SystemMemory | null; memMb?: number | null; rssMb?: number | null; agents: number; viewers: number; chrome: string | null; sound: boolean; muted: boolean; sharp: boolean;
   // soundState: the real state of the sound (checkSound): 'muted' (confirmed), 'on', or 'unverified' (soundReason says
   // why). A stopped browser shows the state of its next start.
   soundState: SoundState; soundReason?: string;
@@ -885,8 +907,9 @@ const startingNow = (id: string) => { const s = progress.get(id); return s ? { s
 export async function status(id: string): Promise<Status> {
   // a start that runs is reported without asking Chrome: its port does not answer yet
   const m = readMeta(id), running = progress.has(id) ? null : await live(id);
+  const holder = !running && !progress.has(id) ? profileHolder(id) : undefined;
   const mem = running ? await memory.groupMb(m.pid) : null;
-  return { id, running: !!running, port: running?.port, tabs: running ? await tabs(id) : (m.tabs || []).map((url, i) => ({ id: `saved-${i}`, title: url, url })),
+  return { id, running: !!running, unresponsive: !!holder || undefined, port: running?.port, tabs: running ? await tabs(id) : (m.tabs || []).map((url, i) => ({ id: `saved-${i}`, title: url, url })),
     profile: existsSync(profileDir(id)), copiedFromTemplate: m.copiedFromTemplate, suspended: m.suspended, idleStopped: m.idleStopped, idleStopMinutes: idleStopMs() / 60000,
     startMs: m.startMs, started: running ? m.started : undefined, stoppedAt: m.stoppedAt, error: running ? undefined : m.error, errorLines: running ? undefined : m.errorLines, errorAt: running ? undefined : m.errorAt, exited: running ? undefined : m.exited,
     starting: startingNow(id), systemMemory: running ? undefined : await memory.systemMemory(),
