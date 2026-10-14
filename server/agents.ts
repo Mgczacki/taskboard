@@ -29,7 +29,7 @@ import { credentialGuidance } from './credential-guidance.ts';
 import * as rules from './rules.ts';
 import { readScopes, worktreeScopes } from './scopes.ts';
 import * as taskBrowser from './task-browser.ts';
-import { auditOrphanedTaskBrowserMcp } from './task-browser-mcp-cleanup.ts';
+import { auditAfterSessionEnd } from './task-browser-mcp-cleanup.ts';
 import { deliverText, NotTyped, notReadyReason, textError, type Delivered } from './deliver-text.ts';
 import { boxState, readyForInput, type PromptAgent } from './type-command.ts';
 
@@ -997,7 +997,7 @@ export async function resumeTask(t: Task, force = false): Promise<Task> {
     if (!s.dead) { launching.delete(t.id); return store.update(t.id, { status: 'idle', statusSource: 'Its session was still running.' })!; }
     await tmux.killSession(t.session);
   }
-  await auditOrphanedTaskBrowserMcp(new Set([t.id]));
+  await auditAfterSessionEnd(new Set([t.id]));
   checkResumeAccount(t);
   if (t.handoff && (!t.sessionId || (t.agent === 'claude' && !t.transcript))) {
     await launch(t, handoffPrompt(t.handoff), false);
@@ -1178,7 +1178,7 @@ export async function setControllerAccount(toId: string): Promise<Task> {
   // another agent: the same steps as Settings > Controller agent (a handoff, and the old conversation is kept)
   if (to.agent !== t.agent) return setControllerAgent(to.agent, to.id);
   await tmux.killSession(t.session);
-  await auditOrphanedTaskBrowserMcp(new Set([t.id]));
+  await auditAfterSessionEnd(new Set([t.id]));
   let transcript: string | undefined;
   if (to.agent === 'claude' && t.agent === 'claude' && t.transcript && existsSync(t.transcript)) {
     try { transcript = accounts.copyClaudeSession(t.transcript, from, to); } catch { transcript = undefined; }
@@ -1199,7 +1199,7 @@ export async function newControllerSession(): Promise<Task> {
   const t = store.get('controller');
   if (!t) return startController();
   await tmux.killSession(t.session);
-  await auditOrphanedTaskBrowserMcp(new Set([t.id]));
+  await auditAfterSessionEnd(new Set([t.id]));
   store.update(t.id, {
     transcript: undefined, sessionId: t.agent === 'claude' ? randomUUID() : undefined,
     remoteUrl: undefined, newSessionWhenDone: undefined, ask: '', now: '',
@@ -1243,7 +1243,7 @@ export async function moveAccount(task: Task, toId: string, instruction = '', op
     if (present === null) throw new Error('Could not check the old session. Try again.');
     if (present) await tmux.tmux('kill-session', '-t', '=' + t.session);
     stopped = true;
-    await auditOrphanedTaskBrowserMcp(new Set([t.id]));
+    await auditAfterSessionEnd(new Set([t.id]));
     pendingPrompt.delete(t.id);
     const transcript = t.transcript || (t.sessionId ? transcriptFor(t.agent, t.sessionId, from.dir) : undefined);
     const resume = t.agent === 'claude' && to.agent === 'claude' && !!t.sessionId && !!transcript && existsSync(transcript);

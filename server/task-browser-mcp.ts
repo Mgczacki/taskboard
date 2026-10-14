@@ -5,6 +5,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { CallToolRequestSchema, ListToolsRequestSchema, type CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { BrowserClickEvidence, clickEvidenceTools } from './browser-click-evidence.ts';
 
+const PARENT_CHECK_MS = 2000;
 const argv = process.argv.slice(2);
 const evidenceEnabled = argv[0] === '--click-evidence';
 const [script, ...args] = evidenceEnabled ? argv.slice(1) : argv;
@@ -46,6 +47,10 @@ const close = async () => {
 };
 process.stdin.once('end', () => { void close(); });
 process.stdin.once('close', () => { void close(); });
+// Another process can still hold the write end of stdin after the agent dies, so stdin does not end. The parent PID
+// changes when the agent dies (the system gives the wrapper a new parent), and a dead parent's PID never comes back here.
+const parent = process.ppid;
+if (parent > 1) setInterval(() => { if (process.ppid !== parent) void close(); }, PARENT_CHECK_MS).unref();
 process.on('SIGTERM', () => { void close(); });
 process.on('SIGINT', () => { void close(); });
 server.onclose = () => { void close(); };
