@@ -45,7 +45,7 @@ async function tmuxQuiet(...args: string[]): Promise<string | null> {
   try { return await tmux(...args); } catch { return null; }
 }
 
-export interface SessionInfo { name: string; activity: number; bell: boolean; panePid: number; dead: boolean; unscrollable: boolean }
+export interface SessionInfo { name: string; activity: number; bell: boolean; panePid: number; dead: boolean; unscrollable: boolean; exitStatus?: number }
 
 const SEP = '|~|'; // printable, so no locale changes it; session names never contain it
 // tmux's answer when its server (and so every session) is gone, as opposed to tmux failing to run or answer
@@ -54,13 +54,14 @@ const errText = (e: unknown) => `${(e as { stderr?: string }).stderr || ''} ${(e
 // null means tmux could not be asked (the caller must not conclude that sessions are gone); [] means there are none
 export async function listSessions(): Promise<SessionInfo[] | null> {
   let out: string;
-  try { out = await tmux('list-panes', '-a', '-F', ['#{session_name}', '#{window_activity}', '#{window_bell_flag}', '#{pane_pid}', '#{pane_dead}', '#{alternate_on}', '#{mouse_any_flag}'].join(SEP)); }
+  try { out = await tmux('list-panes', '-a', '-F', ['#{session_name}', '#{window_activity}', '#{window_bell_flag}', '#{pane_pid}', '#{pane_dead}', '#{alternate_on}', '#{mouse_any_flag}', '#{pane_dead_status}'].join(SEP)); }
   catch (e) { return NO_SERVER.test(errText(e)) ? [] : null; }
   if (out.trim() && !out.includes(SEP)) return null; // output in a format we did not ask for: do not guess
   return out.trim().split('\n').filter(Boolean).map(l => {
-    const [name, activity, bell, pid, dead, alt, mouse] = l.split(SEP);
+    const [name, activity, bell, pid, dead, alt, mouse, status] = l.split(SEP);
     // full screen without mouse reporting: tmux has no history for it and the program ignores the wheel, so it cannot be scrolled
-    return { name, activity: Number(activity) * 1000, bell: bell === '1', panePid: Number(pid), dead: dead === '1', unscrollable: alt === '1' && mouse !== '1' };
+    return { name, activity: Number(activity) * 1000, bell: bell === '1', panePid: Number(pid), dead: dead === '1', unscrollable: alt === '1' && mouse !== '1',
+      ...(dead === '1' && /^\d+$/.test(status || '') ? { exitStatus: Number(status) } : {}) };
   });
 }
 

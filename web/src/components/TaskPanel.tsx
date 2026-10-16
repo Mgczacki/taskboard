@@ -78,8 +78,8 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
   const [sinceOpen, setSinceOpen] = useState(false);
   useEffect(() => { api.since(t.id).then(s => { setSince(s); api.seen(t.id).catch(() => {}); }).catch(() => api.seen(t.id).catch(() => {})); }, [t.id]);
   useEffect(() => { if (tab === 'log') api.log(t.id).then(setLog).catch(() => setLog('')); }, [tab, t.id, t.updated]);
-  // opening a suspended task resumes it
-  useEffect(() => { if (t.status === 'suspended' && !t.transfer) api.resume(t.id).catch(e => setErr(String(e.message || e))); }, [t.id]);
+  // opening a suspended task resumes it, except after a failed start: then the dead pane shows why, and Resume tries again
+  useEffect(() => { if (t.status === 'suspended' && !t.transfer && !t.startFailed) api.resume(t.id).catch(e => setErr(String(e.message || e))); }, [t.id]);
 
   const act = (p: Promise<unknown>) => p.catch(e => setErr(String(e.message || e)));
   const [confirmRm, setConfirmRm] = useState(false);
@@ -296,7 +296,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
       <div className={`dr-body ${tab !== 'terminal' && tab !== 'browser' ? 'pad' : ''}`}>
         {tab === 'docs' && <DocsTab t={t} tasks={tasks} documentLink={documentLink} />}
         {tab === 'terminal' && t.openElsewhere && <div className="empty" style={{ padding: 20 }}>The terminal for this session belongs to {t.openElsewhere?.tty}. Last message from the agent:<pre className="logtext" style={{ marginTop: 10 }}>{t.now || '—'}</pre></div>}
-        {tab === 'terminal' && !t.openElsewhere && (t.status === 'suspended'
+        {tab === 'terminal' && !t.openElsewhere && (t.status === 'suspended' && !t.startFailed
           ? <div className="empty" style={{ padding: 20 }}>Resuming with {t.agent === 'claude' ? 'claude --resume' : t.agent === 'codex' ? 'codex resume' : 'agy --conversation'} {t.sessionId}…</div>
           : <div className="term-wrap">{!collapsed && <div className={`term-brief ${briefOpen ? 'open' : ''}`} onClick={() => setBriefOpen(o => !o)} title={briefOpen ? 'Click to show only the first lines' : 'Click to show the whole task description'}><b>Task</b><span><TaskFileText taskId={t.id} text={desc} /></span><i className="more">{briefOpen ? 'less' : 'more'}</i></div>}<Terminal taskId={t.id} autoFocus glass={see ? glassAlpha(see) : 1} tint={see ? see.tint : 'panel'} /></div>)}
         {tab === 'log' && <>{noticeHistory(t.id).length > 0 && <div className="ns-history"><b>Notices in this panel since the page loaded</b><ul>{noticeHistory(t.id).map(h => <li key={h.key}><span className="sub">{new Date(h.at).toLocaleTimeString()}</span> {h.title}: {h.reason}</li>)}</ul></div>}<pre className="logtext">{log || 'No log entries yet.'}</pre></>}

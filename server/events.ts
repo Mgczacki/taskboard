@@ -92,6 +92,13 @@ export function claudeEvent(taskId: string, input: any): { output?: unknown } {
   else if (['UserPromptSubmit', 'Stop', 'StopFailure', 'SessionStart'].includes(ev)) pending.releaseClaude(t.id);
   switch (ev) {
     case 'SessionStart':
+      // Taskboard starts Claude Code with --session-id or --resume and the task's sessionId, so a startup or resume
+      // with another id is a second process that inherited TASK_ID (task 495: a claude run in the task's vault
+      // folder replaced the id with one that has no transcript there, and every resume failed afterwards).
+      if (t.sessionId && input.session_id && input.session_id !== t.sessionId && ['startup', 'resume'].includes(input.source)) {
+        console.error(`${new Date().toISOString()} #${t.num}: ignored SessionStart (${input.source}) of session ${input.session_id}, which is not the task's session ${t.sessionId}`);
+        return {};
+      }
       sessionStarted.add(t.id);
       // source is startup, resume, clear or compact; only clear starts a new conversation in the same process
       store.update(t.id, { sessionId: input.session_id || t.sessionId, transcript: input.transcript_path, ...(t.status === 'suspended' ? { status: 'idle' as const } : {}),

@@ -92,6 +92,7 @@ import * as taskToken from './task-token.ts';
 import * as waitingBoard from './waiting-board.ts';
 import * as managerEvents from './manager-events.ts';
 import * as agentErrorWatch from './agent-error-watch.ts';
+import * as agentExit from './agent-exit.ts';
 import * as managerRole from './manager-role.ts';
 import * as taskGroup from './task-group.ts';
 import * as managerArchive from './manager-archive.ts';
@@ -2951,7 +2952,7 @@ async function reconcile(first = false) {
     const s = byName.get(t.session);
     // marked suspended but its session is running (for example after a listing problem): take it back
     if (t.status === 'suspended') {
-      if (s && !s.dead && !t.openElsewhere) store.update(t.id, { status: 'idle', interrupted: undefined, statusSource: `Found its session running at ${new Date().toTimeString().slice(0, 5)}.` });
+      if (s && !s.dead && !t.openElsewhere) store.update(t.id, { status: 'idle', interrupted: undefined, startFailed: undefined, statusSource: `Found its session running at ${new Date().toTimeString().slice(0, 5)}.` });
       continue;
     }
     // missing from the list: confirm with tmux directly before treating the session as gone
@@ -2959,7 +2960,17 @@ async function reconcile(first = false) {
     // a task stopped for its account (launch-limit.ts ends the session) keeps its reason until you act on it
     if (!s && t.status === 'stopped') continue;
     if (!s) { store.update(t.id, { status: 'suspended', interrupted: t.status === 'working' ? 'The session ended while the agent was working.' : undefined, statusSource: 'The tmux session is gone (restart or crash). Opening the task resumes it.' }); continue; }
-    if (s.dead) { store.update(t.id, { status: 'suspended', statusSource: 'The agent exited. Resume to continue the conversation.' }); continue; }
+    if (s.dead) {
+      // The pane stays open with the agent's last output (remain-on-exit), and the reason goes on the card. An exit
+      // soon after a start or resume is a failed start: the task window keeps showing the pane and the task actions,
+      // and opening the task does not start the agent again by itself (web Canvas.tsx and TaskPanel.tsx).
+      const reason = agentExit.exitReason(s.exitStatus, await tmux.capture(t.session, 40));
+      const failed = agentExit.failedStart(store.launchedAt.get(t.id), Date.now());
+      console.error(`${new Date().toISOString()} #${t.num}: ${reason}`);
+      store.update(t.id, { status: 'suspended', ...(failed ? { startFailed: reason } : {}),
+        statusSource: failed ? `Did not start. ${reason.replace(/\.$/, '')}. Fix the cause, then resume.` : `${reason.replace(/\.$/, '')}. Resume to continue the conversation.` });
+      continue;
+    }
     if (!!t.unscrollable !== s.unscrollable) store.update(t.id, { unscrollable: s.unscrollable || undefined });
     // no credit, a billing problem, a usage limit or an expired sign-in, read from the screen or the Codex rollout file
     if (await launchLimit.check(t)) continue;

@@ -160,8 +160,9 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
   useLayoutEffect(() => { setW(stage.current?.clientWidth || 1200); }, []);
   useEffect(() => { const ro = new ResizeObserver(() => setW(stage.current?.clientWidth || 1200)); if (stage.current) ro.observe(stage.current); return () => ro.disconnect(); }, []);
 
-  // windows are for running agents: archived and suspended tasks are left out (suspended ones: see the Resume button)
-  const live = (t?: Task) => !!t && t.status !== 'archived' && t.status !== 'suspended';
+  // windows are for running agents: archived and suspended tasks are left out (suspended ones: see the Resume button).
+  // A task whose agent exited at start (startFailed) keeps its window: its dead pane shows why, and its actions stay.
+  const live = (t?: Task) => !!t && t.status !== 'archived' && (t.status !== 'suspended' || !!t.startFailed);
   const liveSet = useCallback(() => view === 'needs' ? tasks.filter(t => ATTN.includes(t.status) || t.status === 'unread').map(t => t.id) : tasks.filter(t => live(t) && t.status !== 'parked').map(t => t.id), [tasks, view]);
   useEffect(() => { if ((view === 'needs' || view === 'live') && !frozen && tasks.length) setFrozen(liveSet()); }, [view, frozen, tasks.length, liveSet]);
   const group = view.startsWith('g:') ? groups.find(g => g.id === view.slice(2)) : undefined;
@@ -607,7 +608,7 @@ const CanvasWin = memo(function CanvasWin({ t, accounts, i, act, linkTasks, cls,
   const a = () => act.current!;
   const sp: Split = { open: splitOpen, side: splitSide };
   // Keep the frequent actions in the header. The menu holds the other actions.
-  const showBrowser = canBrowse(t) && !t.openElsewhere && t.status !== 'suspended' && !heldTerminal && !heldBrowser;
+  const showBrowser = canBrowse(t) && !t.openElsewhere && (t.status !== 'suspended' || !!t.startFailed) && !heldTerminal && !heldBrowser;
   const acts: { k: string; icon: React.ReactNode; text: string; title: string; on?: boolean; aria?: string; fn: () => void }[] = [];
   if (showBrowser) {
     acts.push({ k: 'browser', icon: '🌐', text: sp.open ? 'Close the browser here' : 'Show the browser here', on: sp.open, title: sp.open ? 'Close the browser here and show only the terminal. The browser keeps running.' : 'Open the browser of this task here, above a smaller terminal. A stopped browser starts.', fn: () => a().toggleBrowser(t.id) });
@@ -642,9 +643,10 @@ const CanvasWin = memo(function CanvasWin({ t, accounts, i, act, linkTasks, cls,
         </PopMenu>}</>}
       </div>
       {t.restartWhenDone && t.restartFor && <div className="win-note" title={t.restartWait}>{t.restartOverdue ? t.restartWait : `Waiting for the end of the turn ${t.restartFor}.`}{t.restartOverdue && <button className="b" onClick={() => api.restart(t.id, 'now').catch(e => a().toast(String(e.message || e)))}>Restart now</button>}</div>}
+      {t.startFailed && !t.restartFailed && <div className="win-note bad" title={t.startFailed}>Did not start. {t.startFailed}<button className="b" onClick={() => api.resume(t.id).catch(e => a().toast(String(e.message || e)))}>Try again</button></div>}
       {t.restartFailed && <div className="win-note bad">The restart failed: {t.restartFailed}<button className="b" onClick={() => api.resume(t.id).catch(e => a().toast(String(e.message || e)))}>Try again</button></div>}
       <div className={`wb ${sp.open && canBrowse(t) && !heldBrowser ? `split ${sp.side}` : ''}`}>{asking && <AskPanel task={t} close={() => a().toggleAsk(t.id)} onSpinOff={(x, y) => a().onSpinOff(x, y)} />}{t.openElsewhere ? <div className="empty" style={{ padding: 16 }}>Running in another terminal ({t.openElsewhere?.tty}). <button className="btn" onClick={() => a().openPanel(t.id)}>Options…</button></div>
-        : t.status === 'suspended' ? <div className="empty" style={{ padding: 16 }}>Suspended. <button className="btn" onClick={() => a().openPanel(t.id)}>Resume…</button></div>
+        : t.status === 'suspended' && !t.startFailed ? <div className="empty" style={{ padding: 16 }}>Suspended. <button className="btn" onClick={() => a().openPanel(t.id)}>Resume…</button></div>
         // a tmux window has one size: while this task's panel shows its terminal, the tile waits
         : heldTerminal ? <div className="tile-in-panel"><div>The terminal shows in the Terminal tab of the task panel.</div><div className="sub">One terminal per task at a time, so neither is cut off. Another tab in the panel, or closing the panel, brings it back here.</div><button className="btn" onClick={() => a().openPanel(null)}>Show it here instead</button></div>
         // the terminal stays the last child, so opening or closing the browser does not mount it again

@@ -19,7 +19,7 @@ export interface Task {
   lastFailure?: { account?: string; name?: string; agent: Agent; reason: string; at?: string };
   // the length of the whole description when desc has only its start (the /ws/events task list, server/index.ts listView)
   descCut?: number;
-  waitMin: number; waitSig?: string; attach: string; docs?: { inbox: number; outbox: number }; role?: 'controller'; computerUse?: boolean; parent?: string; links?: TaskLink[]; link?: LinkInfo; account?: string; model?: string; machine?: { id: string; name: string }; imported?: string; openElsewhere?: { pid: number; tty: string }; moveWhenDone?: boolean; remoteUrl?: string; restartWhenDone?: boolean; restartFor?: string; restartWait?: string; restartOverdue?: boolean; restartFailed?: string; urgent?: { startedAt: string; by: 'user' | 'controller'; reason: string }; newSessionWhenDone?: boolean; unscrollable?: boolean; tokenEstimate?: number | null;
+  waitMin: number; waitSig?: string; attach: string; docs?: { inbox: number; outbox: number }; role?: 'controller'; computerUse?: boolean; parent?: string; links?: TaskLink[]; link?: LinkInfo; account?: string; model?: string; machine?: { id: string; name: string }; imported?: string; openElsewhere?: { pid: number; tty: string }; moveWhenDone?: boolean; remoteUrl?: string; restartWhenDone?: boolean; restartFor?: string; restartWait?: string; restartOverdue?: boolean; restartFailed?: string; startFailed?: string; urgent?: { startedAt: string; by: 'user' | 'controller'; reason: string }; newSessionWhenDone?: boolean; unscrollable?: boolean; tokenEstimate?: number | null;
   // the agent's open request for help in the task browser (tb browser ask)
   browserAsk?: string;
   scopes?: Scope[];
