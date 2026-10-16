@@ -34,13 +34,30 @@ test('an existing task without a grant stays denied on first start and resume', 
   for (const resume of [false, true]) {
     const cmd = agents.command({ ...t, sessionId: 'thread-1' }, null, resume);
     assert.ok(cmd.includes(codexDenied));
-    assert.ok(cmd.includes('mcp_servers.computer-use.enabled=false'));
-    assert.ok(cmd.includes('mcp_servers.cua_repl.enabled=false'));
     if (resume) assert.equal(cmd[1], 'resume');
   }
   const saved = store.get(t.id)!;
   assert.equal(saved.computerUse, undefined);
   assert.equal(agents.computerUseAllowed(saved), false);
+});
+
+test('a Codex task turns off only the computer-use MCP servers that a config defines', () => {
+  const t = store.get('computer-codex-no')!;
+  const flags = () => agents.command({ ...t, sessionId: 'thread-1' }, null, true).filter(x => x.startsWith('mcp_servers.computer-use.') || x.startsWith('mcp_servers.cua_repl.'));
+  // no table: Codex would exit with "invalid transport" for an enabled=false override
+  assert.deepEqual(flags(), []);
+  const config = join(process.env.HOME!, '.codex', 'config.toml');
+  mkdirSync(join(config, '..'), { recursive: true });
+  writeFileSync(config, '[mcp_servers.cua_repl]\ncommand = "x"\n\n[mcp_servers."computer-use".env]\nA = "1"\n');
+  try {
+    assert.deepEqual(agents.codexMcpServers(t), new Set(['cua_repl', 'computer-use']));
+    assert.deepEqual(flags().sort(), ['mcp_servers.computer-use.enabled=false', 'mcp_servers.cua_repl.enabled=false']);
+  } finally { rmSync(config, { force: true }); }
+  // a project config in the task folder counts too
+  mkdirSync(join(root, '.codex'), { recursive: true });
+  writeFileSync(join(root, '.codex', 'config.toml'), '[mcp_servers.cua_repl]\ncommand = "x"\n');
+  try { assert.deepEqual(flags(), ['mcp_servers.cua_repl.enabled=false']); }
+  finally { rmSync(join(root, '.codex'), { recursive: true, force: true }); }
 });
 
 test('a task with an explicit stored grant keeps it on resume and account move commands', () => {

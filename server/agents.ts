@@ -554,8 +554,25 @@ function codexComputerUseFlags(t: Task): string[] {
   }
   // Account config can enable the bundled plugin or either direct MCP server.
   // The task-browser MCP server remains available under its own setting.
+  // Codex exits with "invalid transport" when -c names a server that no config defines (it then has no command and
+  // no url), so a server is turned off only when a config defines it. A server that no config defines cannot start.
+  const defined = codexMcpServers(t);
   return ['-c', 'plugins.computer-use@openai-bundled.enabled=false',
-    '-c', 'mcp_servers.computer-use.enabled=false', '-c', 'mcp_servers.cua_repl.enabled=false'];
+    ...['computer-use', 'cua_repl'].filter(name => defined.has(name)).flatMap(name => ['-c', `mcp_servers.${name}.enabled=false`])];
+}
+
+// The names of the MCP servers that the account config and the project config of the task folder define, read from
+// their [mcp_servers.<name>] and [mcp_servers.<name>.<key>] table headers.
+export function codexMcpServers(t: Pick<Task, 'account' | 'cwd'>): Set<string> {
+  const acct = accounts.get(t.account) || accounts.defaultFor('codex');
+  const files = [join(acct.isDefault ? join(HOME, '.codex') : acct.dir, 'config.toml'), join(t.cwd, '.codex', 'config.toml')];
+  const names = new Set<string>();
+  for (const file of files) {
+    let body = '';
+    try { body = readFileSync(file, 'utf8'); } catch { continue; }
+    for (const m of body.matchAll(/^\s*\[\s*mcp_servers\s*\.\s*(?:"([^"]+)"|'([^']+)'|([A-Za-z0-9_-]+))\s*[\].]/gm)) names.add(m[1] ?? m[2] ?? m[3]);
+  }
+  return names;
 }
 
 function computerUseCommand(): string | null {
@@ -995,22 +1012,22 @@ export async function resumeTask(t: Task, force = false): Promise<Task> {
   if ((await tmux.hasSession(t.session)) !== false) {
     const s = (await tmux.listSessions())?.find(x => x.name === t.session);
     if (!s) throw new Error('Could not check the task\'s tmux session (tmux did not answer). Try again in a moment.');
-    if (!s.dead) { launching.delete(t.id); return store.update(t.id, { status: 'idle', statusSource: 'Its session was still running.' })!; }
+    if (!s.dead) { launching.delete(t.id); return store.update(t.id, { status: 'idle', startFailed: undefined, statusSource: 'Its session was still running.' })!; }
     await tmux.killSession(t.session);
   }
   await auditAfterSessionEnd(new Set([t.id]));
   checkResumeAccount(t);
   if (t.handoff && (!t.sessionId || (t.agent === 'claude' && !t.transcript))) {
     await launch(t, handoffPrompt(t.handoff), false);
-    return store.update(t.id, { status: 'working', statusSource: 'Started again with the saved handoff.' })!;
+    return store.update(t.id, { status: 'working', startFailed: undefined, statusSource: 'Started again with the saved handoff.' })!;
   }
   if (neverStarted(t)) {
     await launch(t, firstPrompt(t), false);
-    return store.update(t.id, { status: 'working', statusSource: 'Started a new session with its first prompt, because it had no saved session.' })!;
+    return store.update(t.id, { status: 'working', startFailed: undefined, statusSource: 'Started a new session with its first prompt, because it had no saved session.' })!;
   }
   if (!t.sessionId) throw new Error('No session id recorded for this task, so it cannot be resumed.');
   await launch(t, null, true);
-  return store.update(t.id, { status: 'idle', agentError: undefined, statusSource: `Resumed with ${resumeCommand(t.agent)} ${t.sessionId}.` })!;
+  return store.update(t.id, { status: 'idle', agentError: undefined, startFailed: undefined, statusSource: `Resumed with ${resumeCommand(t.agent)} ${t.sessionId}.` })!;
 }
 
 // A task whose agent never saved a conversation: Codex and Antigravity report their session id only after they
