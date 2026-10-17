@@ -115,7 +115,7 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
     addEventListener('hashchange', go);
     return () => { clearTimeout(timer); removeEventListener('hashchange', go); };
   }, []);
-  const save = async (p: { routingRules?: string; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; allTaskCommunication?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; controllerCanApprovePermits?: boolean; holdPermissionHook?: boolean; permitFolders?: string[]; permitRequestLimits?: Partial<MachineInfo['settings']['permitRequestLimits']>; scopeLimit?: Partial<MachineInfo['settings']['scopeLimit']>; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; checkPrivateNotes?: boolean; confirmLowerControl?: boolean; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; confirmRisk?: Partial<ConfirmRisk>; controllerApprovals?: Partial<ControllerApprovals>; agentErrors?: Parameters<typeof api.updateInfo>[0]['agentErrors'] }) => {
+  const save = async (p: { routingRules?: string; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; allTaskCommunication?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; agySkipPermissions?: boolean; controllerCanApprovePermits?: boolean; holdPermissionHook?: boolean; permitFolders?: string[]; permitRequestLimits?: Partial<MachineInfo['settings']['permitRequestLimits']>; scopeLimit?: Partial<MachineInfo['settings']['scopeLimit']>; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; checkPrivateNotes?: boolean; confirmLowerControl?: boolean; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; confirmRisk?: Partial<ConfirmRisk>; controllerApprovals?: Partial<ControllerApprovals>; agentErrors?: Parameters<typeof api.updateInfo>[0]['agentErrors'] }) => {
     setBusy(true); try { setInfo(await api.updateInfo(p)); } catch (e) { setErr(String((e as Error).message || e)); } setBusy(false);
   };
   const ctl = tasks.find(t => t.role === 'controller');
@@ -258,13 +258,17 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
                   <SettingItem id="trustWorkspaces"><label className="opt"><input type="checkbox" disabled={busy} checked={p.trustWorkspaces} onChange={e => save({ trustWorkspaces: e.target.checked })} /> Trust each task folder before an agent starts</label></SettingItem>
                   <SettingItem id="autoReview">
                     <label className="opt"><input type="checkbox" disabled={busy} checked={p.autoReview} onChange={e => save({ autoReview: e.target.checked })} /> Review tool requests automatically</label>
-                    <div className="sub">Claude Code and Codex use their own auto review. Taskboard reviews Antigravity tool calls with the account below. A reviewer can still ask you.</div>
+                    <div className="sub">Claude Code and Codex use their own auto review. Taskboard reviews Antigravity tool calls when its permission bypass is off. A reviewer can still ask you.</div>
+                  </SettingItem>
+                  <SettingItem id="agySkipPermissions">
+                    <label className="opt"><input type="checkbox" disabled={busy} checked={p.agySkipPermissions} onChange={e => save({ agySkipPermissions: e.target.checked })} /> Skip Antigravity task permission prompts</label>
+                    <div className="sub">New Antigravity task sessions use <code>--dangerously-skip-permissions</code>. Taskboard keeps the command guard on. The controller uses its own setting.</div>
                   </SettingItem>
                   {info && <>
                     <SettingItem id="reviewAccount"><label className="opt">Review account <select disabled={busy || !p.autoReview} value={info.settings.review.account} onChange={e => save({ reviewAccount: e.target.value })}>{accts.filter(a => a.agent === 'claude').map(a => <option key={a.id} value={a.id}>{a.name}</option>)}</select></label></SettingItem>
                     <SettingItem id="reviewModel"><label className="opt">Review model <select disabled={busy || !p.autoReview} value={info.settings.review.model} onChange={e => save({ reviewModel: e.target.value })}><option value="sonnet">Sonnet</option><option value="opus">Opus</option></select></label></SettingItem>
                   </>}
-                  <div className="sub">Claude Code and Codex use these choices when they start or resume. Antigravity uses the current review choice for each tool call. Taskboard keeps the command guard on.</div>
+                  <div className="sub">Claude Code and Codex use these choices when they start or resume. Antigravity uses the current review choice when its permission bypass is off. Taskboard keeps the command guard on.</div>
                 </>}
               </SettingGroup>
               <SettingGroup section="sessions" id="ask" title="BTW: side questions about a session" help={<>The <b>BTW</b> button in a Canvas window asks a separate agent a side question about a session. It reads the terminal and transcript. The session's own agent does not see the question. Claude Code questions have a $0.50 limit. Codex questions use the selected account's usage.</>}>

@@ -72,6 +72,7 @@ export const SECTIONS: SectionDef[] = [
     { id: 'start', settings: [
       { id: 'trustWorkspaces', label: 'Trust each task folder before an agent starts', words: 'workspace' },
       { id: 'autoReview', label: 'Review tool requests automatically', words: 'auto review permission' },
+      { id: 'agySkipPermissions', label: 'Skip Antigravity task permission prompts', words: 'agy dangerously skip permissions sandbox' },
       { id: 'reviewAccount', label: 'Review account', words: 'auto review antigravity' },
       { id: 'reviewModel', label: 'Review model', words: 'auto review sonnet opus' },
     ] },

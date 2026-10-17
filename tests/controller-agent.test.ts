@@ -122,7 +122,8 @@ test('Codex: --dangerously-bypass-approvals-and-sandbox replaces the approval an
   assert.ok(task.includes('approvals_reviewer="auto_review"'));
 });
 
-test('Antigravity: --dangerously-skip-permissions is added; --sandbox follows auto review', () => {
+test('Antigravity task permission setting selects skip or sandbox; controller setting stays separate', () => {
+  assert.equal(machine.get().permissions.agySkipPermissions, true);
   skip('antigravity', false);
   let c = agents.controllerCommand(ctl('antigravity'), null, false);
   assert.ok(!c.includes('--dangerously-skip-permissions'));
@@ -132,11 +133,19 @@ test('Antigravity: --dangerously-skip-permissions is added; --sandbox follows au
   assert.ok(c.includes('--dangerously-skip-permissions'));
   assert.deepEqual(c.slice(-2), ['--conversation', 'conv-1']);
   skip('antigravity', false);
-  // a task never gets the flag, also when the controller has it
+  // The task setting applies to new and resumed task sessions.
   skip('antigravity', true);
   const task = agents.command({ ...ctl('antigravity'), id: 'agy-task-8', num: 8, role: undefined, sessionId: 'c8' }, null, true);
-  assert.ok(!task.includes('--dangerously-skip-permissions'));
+  assert.ok(task.includes('--dangerously-skip-permissions'));
+  assert.ok(!task.includes('--sandbox'));
   skip('antigravity', false);
+  machine.update({ agySkipPermissions: false });
+  assert.equal(machine.get().permissions.agySkipPermissions, false);
+  assert.ok(agents.command({ ...ctl('antigravity'), id: 'agy-task-8', num: 8, role: undefined }, null, false).includes('--sandbox'));
+  assert.ok(!agents.command({ ...ctl('antigravity'), id: 'agy-task-8', num: 8, role: undefined }, null, false).includes('--dangerously-skip-permissions'));
+  machine.update({ autoReview: false });
+  assert.ok(!agents.command({ ...ctl('antigravity'), id: 'agy-task-8', num: 8, role: undefined }, null, false).includes('--sandbox'));
+  machine.update({ autoReview: true, agySkipPermissions: true });
 });
 
 test('the launch key changes with the skip setting of the running agent only', () => {

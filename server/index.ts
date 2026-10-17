@@ -285,9 +285,10 @@ app.post('/api/hooks/antigravity', async (req, res) => {
   const event = String(req.body.event || '');
   const input = req.body.input || {};
   const result = events.antigravityEvent(taskId, event, input);
-  // the controller with Settings > Controller: skip permission prompts gets no auto review, as on Claude Code and Codex
-  if (event === 'PreToolUse' && machine.get().permissions.autoReview && !(store.get(taskId)?.role === 'controller' && machine.get().controller.skipPermissions.antigravity)) {
-    const t = store.get(taskId);
+  // Agy sessions with skipped permission prompts do not ask the auto reviewer. The command guard stays in the agy plugin.
+  const t = store.get(taskId);
+  const skip = t?.role === 'controller' ? machine.get().controller.skipPermissions.antigravity : machine.get().permissions.agySkipPermissions;
+  if (event === 'PreToolUse' && machine.get().permissions.autoReview && !skip) {
     if (t?.agent === 'antigravity') {
       const verdict = await agyReview.review(t, input);
       const command = input.toolCall?.name === 'run_command' ? input.toolCall?.args?.CommandLine : null;
@@ -1539,7 +1540,7 @@ app.get('/api/server', async (_req, res) => { const h = life.health(); res.json(
 app.patch('/api/info', async (req, res) => {
   if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Machine settings are changed on the dashboard.' });
   try {
-    const { name, routingRules, autostart, remoteControl, controllerComputerUse, dangerouslySkipPermissions, controllerSkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, allTaskCommunication: allTaskCommunicationOn, trustWorkspaces, autoReview, controllerCanApprovePermits, holdPermissionHook, permitFolders, permitRequestLimits, scopeLimit, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, confirmLowerControl, defaultMaxParallel, newTaskDefaultAgent, applyMaxParallelToAll, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp, browserScale, browserAutoSwitch, claudeInChromeTasks, claudeInChromeController, confirmRisk, a2aSlackClientId, a2aSlackTeamId, controllerApprovals, agentErrors } = req.body;
+    const { name, routingRules, autostart, remoteControl, controllerComputerUse, dangerouslySkipPermissions, controllerSkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, allTaskCommunication: allTaskCommunicationOn, trustWorkspaces, autoReview, agySkipPermissions, controllerCanApprovePermits, holdPermissionHook, permitFolders, permitRequestLimits, scopeLimit, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, confirmLowerControl, defaultMaxParallel, newTaskDefaultAgent, applyMaxParallelToAll, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp, browserScale, browserAutoSwitch, claudeInChromeTasks, claudeInChromeController, confirmRisk, a2aSlackClientId, a2aSlackTeamId, controllerApprovals, agentErrors } = req.body;
     // Letting the controller approve permits gives the user less control. The page asks first and then sends confirmLowerControl.
     if (confirmLowerControl !== true && controllerCanApprovePermits === true && !machine.get().permissions.controllerCanApprovePermits)
       return res.status(400).json({ error: 'Confirm on the Settings page before you give the controller more control.' });
@@ -1550,7 +1551,7 @@ app.patch('/api/info', async (req, res) => {
       return res.status(400).json({ error: 'Pick a valid model for questions.' });
     if (reviewAccount && accounts.get(reviewAccount)?.agent !== 'claude') return res.status(400).json({ error: 'Pick a Claude Code account for auto review.' });
     if (defaultMaxParallel !== undefined) machine.checkMaxParallel(defaultMaxParallel); // refuse before anything is saved
-    machine.update({ name, routingRules, autostart, remoteControl, controllerComputerUse, dangerouslySkipPermissions, controllerSkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, allTaskCommunication: allTaskCommunicationOn, trustWorkspaces, autoReview, controllerCanApprovePermits, holdPermissionHook, permitFolders, permitRequestLimits, scopeLimit, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, defaultMaxParallel, newTaskDefaultAgent, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp, browserScale, browserAutoSwitch, claudeInChromeTasks, claudeInChromeController, confirmRisk, a2aSlackClientId, a2aSlackTeamId, controllerApprovals, agentErrors });
+    machine.update({ name, routingRules, autostart, remoteControl, controllerComputerUse, dangerouslySkipPermissions, controllerSkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, allTaskCommunication: allTaskCommunicationOn, trustWorkspaces, autoReview, agySkipPermissions, controllerCanApprovePermits, holdPermissionHook, permitFolders, permitRequestLimits, scopeLimit, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, defaultMaxParallel, newTaskDefaultAgent, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp, browserScale, browserAutoSwitch, claudeInChromeTasks, claudeInChromeController, confirmRisk, a2aSlackClientId, a2aSlackTeamId, controllerApprovals, agentErrors });
     // the Settings page confirms first; running tasks keep running, only new starts check the new maximum
     if (applyMaxParallelToAll === true) accounts.setAllMaxParallel(machine.get().accounts.defaultMaxParallel);
     if (trustWorkspaces === false) trust.restore();

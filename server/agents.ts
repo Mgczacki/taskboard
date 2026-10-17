@@ -874,7 +874,8 @@ function buildCommand(t: Task, prompt: string | null, resume: boolean, codexTrus
     // agy has no flag for a system prompt: the instructions go before the first prompt, and a resumed conversation
     // already has them. The controller reads AGENTS.md in its folder instead. --add-dir lets it write the task's log.
     // the real path: agy compares real paths, and a vault behind a symbolic link (/var → /private/var) is "outside workspace"
-    const c = [agyBin(), '--add-dir', realpathSync(VAULT), ...scopeDirs(t), ...(machine.get().permissions.autoReview ? ['--sandbox'] : []), ...(skipsPermissions(t) ? [CONTROLLER_SKIP_FLAGS.antigravity] : [])];
+    const skip = t.role === 'controller' ? skipsPermissions(t) : machine.get().permissions.agySkipPermissions;
+    const c = [agyBin(), '--add-dir', realpathSync(VAULT), ...scopeDirs(t), ...(!skip && machine.get().permissions.autoReview ? ['--sandbox'] : []), ...(skip ? [CONTROLLER_SKIP_FLAGS.antigravity] : [])];
     if (t.model) c.push('--model', t.model);
     if (resume && t.sessionId) return [...c, '--conversation', t.sessionId];
     if (prompt) {
