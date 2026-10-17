@@ -9,6 +9,19 @@ import { RELEASE_REF, checkRef, releaseCommand, writePermit } from '../server/re
 
 const guard = fileURLToPath(new URL('../server/hooks/guard.mjs', import.meta.url));
 
+test('Antigravity command guard denies a command that stops the Taskboard server', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tb-agy-guard-'));
+  try {
+    const result = spawnSync(process.execPath, [guard, '--agy'], {
+      input: JSON.stringify({ toolCall: { name: 'run_command', args: { CommandLine: 'pkill -f "tsx server/index.ts"' } } }),
+      encoding: 'utf8', env: { ...process.env, TASKBOARD_DIR: dir, TASK_ID: 'agy-task-8', TASKBOARD_TMUX_SOCKET: 'tb-agy-test' },
+    });
+    assert.equal(result.status, 0);
+    assert.equal(JSON.parse(result.stdout).decision, 'deny');
+    assert.match(JSON.parse(result.stdout).reason, /real Taskboard server/);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 // a scratch TASKBOARD_DIR with a release-permits folder; run(command, taskId) gives the guard's deny reason or ''
 function releaseGuard() {
   const dir = mkdtempSync(join(tmpdir(), 'tb-release-guard-'));
