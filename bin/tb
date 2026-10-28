@@ -42,6 +42,8 @@ async function guide(topic) {
 }
 async function call(method, path, body) {
   const r = await fetch(URL_BASE + path, { method, headers: { 'content-type': 'application/json', 'x-taskboard-token': token, ...actorHeaders() }, body: body ? JSON.stringify(body) : undefined });
+  const warning = r.headers.get('x-taskboard-warning');
+  if (warning) console.error(`tb: Warning: ${decodeURIComponent(warning)}`);
   const text = await r.text(); let data; try { data = JSON.parse(text); } catch { data = text; }
   if (!r.ok) { console.error(`tb: ${data && data.error ? data.error : r.statusText}${data?.next ? ` Next: ${data.next}` : ''}`); if (data?.matches) console.error(JSON.stringify({ matches: data.matches, hasMore: data.hasMore }, null, 2)); process.exit(1); }
   if (r.status === 202 && data.permit) return data;

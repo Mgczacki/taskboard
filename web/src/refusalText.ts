@@ -18,6 +18,12 @@ export function refusalText(a: Pick<Approval, 'payload' | 'detail'>, agent?: Age
     todo: a.payload.diagnostic.correction,
     command,
   };
+  if (a.payload?.permitValidation) return {
+    who: 'Taskboard refused this permit request. Nothing ran.',
+    where: a.payload.reason || a.detail,
+    todo: a.payload.correction || 'Correct the request, then submit it again.',
+    command: '',
+  };
   if (!a.payload?.id) return {
     who: 'Taskboard refused this command, because it needs its own request.',
     where: 'The detail above names the command to use instead.',

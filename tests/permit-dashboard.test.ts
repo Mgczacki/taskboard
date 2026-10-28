@@ -4,6 +4,7 @@ import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { PermitSettings } from '../web/src/components/PermitSettings.tsx';
 import { refusalText } from '../web/src/refusalText.ts';
+import { statusAfterCards, DISMISSED_STATUS } from '../server/card-close.ts';
 
 test('the dashboard renders reviewed settings apart from the command', () => {
   const markup = renderToStaticMarkup(createElement(PermitSettings, { step: {
@@ -35,4 +36,18 @@ test('the dashboard explains directory conflicts without suggesting a bypass', (
   assert.match(text.where, /\/work\/other/);
   assert.equal(text.todo, correction);
   assert.equal(text.command, 'pwd');
+});
+
+
+test('validation refusals explain the correction without an execution instruction', () => {
+  const text = refusalText({ detail: 'Protected path: /vault/tasks', payload: {
+    canPermit: false, permitValidation: true, reason: 'Protected path: /vault/tasks',
+    correction: 'Use --cwd with a project folder.',
+  } });
+  assert.match(text.who, /Nothing ran/);
+  assert.equal(text.where, 'Protected path: /vault/tasks');
+  assert.equal(text.todo, 'Use --cwd with a project folder.');
+  assert.equal(text.command, '');
+  assert.deepEqual(statusAfterCards({ status: 'needs-you', ask: 'Refused: correct the permit request.', statusSource: text.where },
+    { open: 0, refusalDismissed: true }), { status: 'working', ask: '', statusSource: DISMISSED_STATUS });
 });

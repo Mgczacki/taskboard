@@ -283,7 +283,10 @@ A move between windows never changes a task's groups. A new task goes after the 
   stops nothing.
 - **Permit commands:** `tb suggest "program args" --why "reason"` uses the CLI's current directory.
   This includes each step without a cwd in a `--steps` file. `--cwd` selects another directory for a single command.
-  A directory rejection creates a card that grants no access. The card gives these facts:
+  A permit validation failure creates a dashboard card that grants no access.
+  The card gives the error and a correction. Invalid command text and settings do not enter the card.
+  Repeated failures update the existing card for that task.
+  A worktree conflict gives these facts:
   - The resolved cwd.
   - The conflicting worktree and its task.
   - The rule `cwd-overlaps-other-worktree`.
@@ -317,8 +320,13 @@ A move between windows never changes a task's groups. A new task goes after the 
   A permit cannot grant access to another task's worktree.
   A reviewed permit can use the requesting task's folder under `AgentVault/tasks` as its working directory.
   Child folders also qualify. Taskboard resolves symlinks before it checks access.
+  A task can also use a parent of the tasks folder, such as the vault root, as its working directory.
+  `tb new` warns when the selected folder contains the tasks folder. A symlink uses its resolved target for this check.
+  Commands can name ordinary files within the vault. Command arguments cannot target the tasks folder or its parents.
   The global task directory and other task folders remain protected.
-  The Taskboard installation and task control files remain protected.
+  The installation folder and task control files remain protected.
+  These checks also apply to environment paths and paths through symlinks.
+  A protected path error names the requested path and the protected path. The error gives a correction.
   This folder access also applies to `tb permit run-request`. The usual approval checks still apply.
 - **Approved task run:** `tb permit run-request <name> --reason "text" --risk "text" --command "python3 /absolute/script.py" --cwd /absolute/folder --network`
   asks the user to start one script. The card shows the command, script SHA-256 hash, folder, network flag, task owner,
