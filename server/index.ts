@@ -781,13 +781,15 @@ app.post('/api/approvals/:id/controller-approve', async (req, res) => {
   res.status(x.state === 'approved' ? 200 : 409).json({ approval: agentCard(x), said, ...(x.state === 'approved' ? {} : { error: said }) });
 });
 const scopeHintText = taskGit.scopeHint;
-function refusePermitDirectory(res: express.Response, task: store.Task, error: unknown, inputs: permits.StepInput[]): boolean {
+function refusePermitValidation(res: express.Response, task: store.Task, error: unknown): boolean {
   if (!(error instanceof permits.PermitValidationError)) return false;
-  const command = permits.redactOutput(inputs.map(s => s.command).join('\n'));
-  const card = approvals.request({ actor: task.id, action: 'tool-refusal', summary: 'review a refused permit directory',
-    detail: error.message, payload: { command, canPermit: false, reason: error.message, diagnostic: error.diagnostic } }, async () => error.diagnostic.correction);
-  store.update(task.id, { status: 'needs-you', ask: 'Correct the permit working directory.', statusSource: error.message });
-  res.status(400).json({ error: error.message, diagnostic: error.diagnostic, refusal: card.id });
+  // Invalid input can contain secrets. Store the error without the submitted command or settings.
+  const message = permits.redactOutput(error.message);
+  const correction = error.diagnostic?.correction || 'Correct the request using the error above, then submit it again.';
+  const card = approvals.request({ actor: task.id, action: 'tool-refusal', summary: 'review a refused permit',
+    detail: message, payload: { canPermit: false, reason: message, permitValidation: true, diagnostic: error.diagnostic, correction } }, async () => correction);
+  store.update(task.id, { status: 'needs-you', ask: 'Refused: correct the permit request.', statusSource: message });
+  res.status(400).json({ error: message, diagnostic: error.diagnostic, refusal: card.id });
   return true;
 }
 function createPermit(task: store.Task, reason: string, steps: permits.StepInput[], refusalId?: string, statedRisk = '', externalAction?: { action: 'deploy' | 'catalog-release'; covers: Record<string, string>; target: string }) {
@@ -823,7 +825,7 @@ app.post('/api/external/request', async (req, res) => {
       }
     }
     res.status(p.approvalId && approvals.get(p.approvalId)?.state === 'approved' ? 200 : 202).json({ permit: p, approval: p.approvalId ? approvals.get(p.approvalId) : undefined });
-  } catch (e) { fail(res, e); }
+  } catch (e) { if (!refusePermitValidation(res, task, e)) fail(res, e); }
 });
 app.post('/api/permits', (req, res) => {
   const actor = req.get('x-tb-actor') || '';
@@ -861,7 +863,6 @@ app.post('/api/permits', (req, res) => {
     res.status(202).json({ permit: p });
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    if (refusePermitDirectory(res, task, e, steps || [])) return;
     if (/task Git commands|release or rollback|restart of Taskboard|GitHub write/.test(message)) {
       const command = permits.redactOutput(steps?.map(s => s.command).join('\n') || '');
       const help = /restart/.test(message) ? 'Only the user restarts Taskboard, from the dashboard or a terminal.' : /release|rollback/.test(message) ? 'Use tb release-request for a release. Rollback needs a user action.' : task.worktree || task.scopes?.some(x => x.kind === 'worktree') ? 'Use tb git commit, tb git rebase, tb git repair, tb git merge-request, or tb git push-request. For another repository, run tb scope request worktree.' : `Use the tb git commands in a worktree. ${scopeHintText}`;
@@ -869,7 +870,7 @@ app.post('/api/permits', (req, res) => {
       store.update(actor, { status: 'needs-you', ask: `Refused: ${command}`, statusSource: help });
       return res.status(400).json({ error: `${message} ${help}`, refusal: card.id });
     }
-    fail(res, e);
+    if (!refusePermitValidation(res, task, e)) fail(res, e);
   }
 });
 app.post('/api/permits/supervised', (req, res) => {
@@ -891,7 +892,7 @@ app.post('/api/permits/supervised', (req, res) => {
     store.update(task.id, { status: 'needs-you', ask: `Approve run ${p.id}`, statusSource: 'Waiting for a supervised run decision on the dashboard.' });
     res.status(202).json({ permit: p });
   } catch (e) {
-    if (!refusePermitDirectory(res, task, e, [{ command: String(req.body.command || '') }])) fail(res, e);
+    if (!refusePermitValidation(res, task, e)) fail(res, e);
   }
 });
 app.post('/api/refusals/:id/permit', (req, res) => {
@@ -905,7 +906,7 @@ app.post('/api/refusals/:id/permit', (req, res) => {
     const p = createPermit(t, `Run the command refused by ${t.agent}: ${refusal.reason}`, [{ command: refusal.command, cwd: refusal.cwd || t.cwd }], refusal.id);
     approvals.close(card.id, 'expired', `Use permit ${p.id} for this command.`);
     res.status(202).json({ permit: p });
-  } catch (e) { fail(res, e); }
+  } catch (e) { if (!refusePermitValidation(res, t, e)) fail(res, e); }
 });
 app.get('/api/permits', (req, res) => {
   if (!req.get('referer')?.startsWith(URL_BASE + '/') && !tokenOk(req)) return res.status(403).end();
@@ -1666,6 +1667,8 @@ app.post('/api/tasks', async (req, res) => {
     const startLinks = links.planStart(req.body.links, startBy);
     const prompt = (req.body.spinOff ? spinOffPrompt(req.body.spinOff) : (desc || title)) + (startLinks.length ? '\n\n' + startLinks.map(l => l.line).join('\n') : '');
     const images = agents.checkImages(req.body.images);
+    const folderWarning = permits.taskFolderWarning(folder);
+    if (folderWarning) res.setHeader('x-taskboard-warning', encodeURIComponent(folderWarning));
     await guarded(req, res, `start “${title}” (${agent === 'auto' ? 'Auto' : agents.agentName(agent)})`, `Folder: ${folder} · worktree: ${worktree === false ? 'no' : worktree === true ? 'yes' : 'automatic'}${branch ? ` · branch ${branch}` : ''}\nAccount: ${account && account !== 'auto' ? account : 'automatic'}\nModel: ${model || 'agent default'}\nPrompt: ${prompt}${images.length ? `\nImages: ${images.length} attached` : ''}`, 'new',
       async () => {
         const currentGroup = taskGroup.forNewTask(actor, req.body.group);
@@ -1674,7 +1677,7 @@ app.post('/api/tasks', async (req, res) => {
         if (currentGroup) { const g = typeof currentGroup === 'string' ? groups.create(currentGroup) : currentGroup; groups.update(g.id, { tasks: [...g.tasks, t.id] }); }
         const linkProblems = links.addAtStart(t.id, startLinks, startBy);
         return { ...view(store.get(t.id) || t), ...(linkProblems.length ? { linkProblems } : {}) };
-      }, (t: any) => `Started #${t.num} ${t.title} with ${t.agent} on ${t.account} in ${t.cwd}${groupRef ? ` (group ${groupRef})` : ''}`);
+      }, (t: any) => `Started #${t.num} ${t.title} with ${t.agent} on ${t.account} in ${t.cwd}${groupRef ? ` (group ${groupRef})` : ''}`, { note: folderWarning });
   } catch (e) {
     if (e instanceof Error && e.message === 'The action names another group.') return res.status(403).json({ error: e.message });
     fail(res, e);

@@ -1,7 +1,7 @@
 import { TestResources } from './helpers/test-resources.ts';
 import { spawn } from 'node:child_process';
 import { createServer } from 'node:net';
-import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { test } from 'node:test';
@@ -18,7 +18,7 @@ test('CLI and routes review exact settings and explain a conflicting directory',
   writeFileSync(join(tbdir, 'machine.json'), JSON.stringify({ controller: { autostart: false, remoteControl: false }, permitRequestLimits: { enabled: false } }));
   const note = (id: string, fields: Record<string, unknown>) => writeFileSync(join(vault, 'tasks', id + '.md'),
     `---\n${Object.entries({ id, title: id, agent: 'codex', status: 'idle', session: id, created: '2026-01-01T00:00:00.000Z', ...fields }).map(([name, value]) => `${name}: ${JSON.stringify(value)}`).join('\n')}\n---\n# ${id}\n`);
-  note('t216', { num: 216, cwd: parent, folder: parent, scopes: [{ id: 'attached', kind: 'worktree', name: 'attached', path: attached, folder: parent, branch: 'task/attached' }] });
+  note('t216', { num: 216, cwd: vault, folder: vault, scopes: [{ id: 'attached', kind: 'worktree', name: 'attached', path: attached, folder: parent, branch: 'task/attached' }] });
   note('other', { num: 217, cwd: other, folder: parent, worktree: true, branch: 'task/other' });
   const transcript = join(root, 'controller.jsonl');
   writeFileSync(transcript, '');
@@ -96,12 +96,50 @@ test('CLI and routes review exact settings and explain a conflicting directory',
     const controllerCards = await (await fetch(base + '/api/controller/approvals', { headers: controllerHeaders })).json();
     assert.equal(controllerCards.cards.find((c: any) => c.id === refusal.id).controllerMayApprove, false);
 
-    // Unknown names fail before any values enter records or cards.
+    // Vault-root tasks can request permits, including from the vault itself.
+    const vaultRequest = await cli(['suggest', 'pwd', '--why', 'Inspect the vault'], vault);
+    assert.equal(vaultRequest.code, 0, vaultRequest.out);
+    const vp = await latest();
+    assert.equal(vp.steps[0].cwd, vault);
+    const vaultRun = await post(`/api/permits/${vp.id}/decide`, { approve: true }, userHeaders);
+    assert.equal(vaultRun.data.state, 'succeeded');
+    assert.equal(vaultRun.data.steps[0].outputTail.trim(), vault);
+
+    // Protected paths produce a visible refusal with no execution action.
+    const alias = join(attached, 'tasks-alias');
+    symlinkSync(join(vault, 'tasks'), alias);
+    for (const body of [
+      { reason: 'Protected directory', steps: [{ command: 'pwd', cwd: alias }] },
+      { reason: 'Protected command', steps: [{ command: `cat ${vault}/tasks/t216/ask.json`, cwd: vault }] },
+      { reason: 'Invalid sequence', steps: null },
+      { reason: 'Invalid command', steps: [{ command: 'echo first; echo second' }] },
+    ]) {
+      const result = await post('/api/permits', body);
+      assert.equal(result.status, 400);
+      assert.ok(result.data.refusal, JSON.stringify(result.data));
+      const card = (await cards()).find(item => item.id === result.data.refusal);
+      assert.equal(card.payload.canPermit, false);
+      assert.equal(card.payload.permitValidation, true);
+      assert.equal((await post(`/api/refusals/${card.id}/permit`, {}, userHeaders)).status, 400);
+      const task = (await (await fetch(base + '/api/tasks')).json()).find((item: any) => item.id === 't216');
+      assert.equal(task.status, 'needs-you');
+      assert.match(task.ask, /Refused: correct the permit request/);
+    }
+
+    // A new task warns before waiting for approval. No agent starts in this test.
+    const newTask = await cli(['new', '--folder', vault, '--no-worktree', '--title', 'Vault warning', 'Inspect ordinary files.']);
+    assert.equal(newTask.code, 2, newTask.out);
+    assert.ok(newTask.out.includes(`Folder ${vault} contains the tasks folder ${vault}/tasks`));
+    const newCard = (await cards()).find(card => card.action === 'new' && card.summary.includes('Vault warning'));
+    assert.match(newCard.detail, /Use a project child folder/);
+
+    // Invalid settings make notices without storing their submitted values.
     const before = (await cards()).length;
     const rejectedEnv = await cli(['suggest', 'pwd', '--why', 'Check a secret setting', '--env', 'GH_TOKEN=do-not-store-this']);
     assert.equal(rejectedEnv.code, 1);
     assert.ok(!rejectedEnv.out.includes('do-not-store-this'));
     assert.equal((await cards()).length, before);
+    assert.ok(!JSON.stringify(await cards()).includes('do-not-store-this'));
     assert.ok(!JSON.stringify(await permits()).includes('do-not-store-this'));
 
     for (const name of ['AWS_ACCESS_KEY_ID', 'AWS_SECRET_ACCESS_KEY', 'AWS_SESSION_TOKEN']) {
@@ -109,6 +147,7 @@ test('CLI and routes review exact settings and explain a conflicting directory',
       assert.equal(rejectedAws.code, 1);
       assert.ok(!rejectedAws.out.includes('do-not-store-this'));
       assert.equal((await cards()).length, before);
+      assert.ok(!JSON.stringify(await cards()).includes('do-not-store-this'));
       assert.ok(!JSON.stringify(await permits()).includes('do-not-store-this'));
     }
 
@@ -190,6 +229,13 @@ test('CLI and routes review exact settings and explain a conflicting directory',
     assert.ok(runDirectory.data.diagnostic, JSON.stringify(runDirectory.data));
     assert.equal(runDirectory.data.diagnostic.rule, 'cwd-overlaps-other-worktree');
     assert.ok(runDirectory.data.refusal);
+    const protectedRun = await post('/api/permits/supervised', { ...runBody, cwd: alias });
+    assert.equal(protectedRun.status, 400);
+    assert.equal(protectedRun.data.diagnostic.protectedPath, join(vault, 'tasks'));
+    assert.ok(protectedRun.data.refusal);
+    const malformedRun = await post('/api/permits/supervised', { ...runBody, command: 'echo first; echo second' });
+    assert.equal(malformedRun.status, 400);
+    assert.ok(malformedRun.data.refusal);
   } finally {
     await resources.stop();
     rmSync(root, { recursive: true, force: true });

@@ -33,9 +33,9 @@ export interface Permit {
   withdrawnAt?: string;
 }
 export interface StepInput { command: string; cwd?: string; timeoutSeconds?: number; network?: boolean; continueOnFailure?: boolean; env?: Record<string, string>; unsetEnv?: string[] }
-export interface PermitDiagnostic { rule: string; cwd: string; conflictingWorktree: string; conflictingTask: string; correction: string }
+export interface PermitDiagnostic { rule: string; cwd: string; conflictingWorktree?: string; conflictingTask?: string; protectedPath?: string; correction: string }
 export class PermitValidationError extends Error {
-  constructor(message: string, public diagnostic: PermitDiagnostic) { super(message); }
+  constructor(message: string, public diagnostic?: PermitDiagnostic) { super(message); }
 }
 
 const pathSettings = new Set(['GH_CONFIG_DIR', 'GIT_CONFIG_GLOBAL', 'CLOUDSDK_CONFIG', 'GOOGLE_APPLICATION_CREDENTIALS']);
@@ -115,13 +115,30 @@ const listeners = new Set<(p: Permit) => void>();
 const now = () => new Date().toISOString();
 const inside = (root: string, path: string) => path === root || (!relative(root, path).startsWith('..' + sep) && relative(root, path) !== '..' && !isAbsolute(relative(root, path)));
 const taskControlFiles = ['pending-prompt.txt', 'message-queue.json', 'queued-messages', 'ask.json', 'answer-history.json', 'procs.json', 'workspace-stage.json'];
-function unsafeRoot(root: string, ownTaskFolder?: string): boolean {
+// A working directory can contain tasks. A command path cannot name their parent.
+function unsafeRoot(root: string, ownTaskFolder?: string, allowTasksParent = false): string | undefined {
   const installation = realpathSync(TB_DIR), tasks = realpathSync(TASKS_DIR);
-  if (inside(root, installation) || inside(installation, root) || inside(root, tasks)) return true;
-  if (ownTaskFolder && taskControlFiles.some(name => inside(realTarget(join(ownTaskFolder, name)), root))) return true;
-  if (!inside(tasks, root)) return false;
-  return !ownTaskFolder || !inside(ownTaskFolder, root);
+  if (inside(root, installation) || inside(installation, root)) return installation;
+  if (inside(root, tasks) && (!allowTasksParent || root === tasks)) return tasks;
+  const control = ownTaskFolder && taskControlFiles.map(name => realTarget(join(ownTaskFolder, name))).find(path => inside(path, root));
+  if (control) return control;
+  if (inside(tasks, root) && (!ownTaskFolder || !inside(ownTaskFolder, root))) {
+    return join(tasks, relative(tasks, root).split(sep)[0]);
+  }
 }
+function checkTaskboardPath(path: string, ownTaskFolder?: string, allowTasksParent = false, correction?: string) {
+  const protectedPath = unsafeRoot(path, ownTaskFolder, allowTasksParent);
+  if (!protectedPath) return;
+  const diagnostic = { rule: 'protected-taskboard-path', cwd: path, protectedPath,
+    correction: correction || 'Use --cwd with an ordinary project folder or this task’s output folder. Use command and environment paths outside the protected path.' };
+  throw new PermitValidationError(`The folder or path ${path} overlaps protected Taskboard files. Protected path: ${protectedPath}. ${diagnostic.correction}`, diagnostic);
+}
+export function taskFolderWarning(folder: string): string | undefined {
+  const path = realTarget(resolve(folder)), tasks = realpathSync(TASKS_DIR);
+  if (!inside(path, tasks)) return;
+  return `Folder ${path} contains the tasks folder ${tasks}. Use a project child folder for narrower access. Permits still protect Taskboard control files and other tasks. Commands that target the tasks folder or its parents are refused.`;
+}
+
 const file = (id: string) => join(DIR, id + '.json');
 const save = (p: Permit) => {
   mkdirSync(DIR, { recursive: true });
@@ -255,7 +272,7 @@ function checkTaskboardAccess(argv: string[], cwd: string, ownTaskFolder: string
   for (const arg of argv) {
     const value = arg.startsWith('-') && arg.includes('=') ? arg.slice(arg.indexOf('=') + 1) : arg;
     if (value.startsWith('-') || value.includes('://') || !value) continue;
-    if (unsafeRoot(realTarget(resolve(cwd, value)), ownTaskFolder)) throw new Error('The command accesses protected Taskboard files.');
+    checkTaskboardPath(realTarget(resolve(cwd, value)), ownTaskFolder);
   }
 }
 function checkWorktreeAccess(argv: string[], cwd: string, others: string[], task?: Task) {
@@ -278,14 +295,29 @@ function checkWorktreeAccess(argv: string[], cwd: string, others: string[], task
   }
 }
 export function validate(task: Task, inputs: StepInput[]): { steps: PermitStep[]; riskFlags: string[] } {
+  try { return validateSteps(task, inputs); }
+  catch (error) {
+    if (error instanceof PermitValidationError) throw error;
+    throw new PermitValidationError(redactOutput(error instanceof Error ? error.message : String(error)));
+  }
+}
+function validateSteps(task: Task, inputs: StepInput[]): { steps: PermitStep[]; riskFlags: string[] } {
   if (!Array.isArray(inputs) || inputs.length < 1 || inputs.length > 8) throw new Error('Give one through eight steps.');
   if (task.role === 'controller') throw new Error('The controller cannot request a permit for itself.');
   const ownTaskFolder = join(realpathSync(TASKS_DIR), task.id);
   // A task folder symlink must not grant access to another task or to the installation.
-  if (realpathSync(store.taskDir(task.id)) !== ownTaskFolder) throw new Error('The task folder contains protected Taskboard files.');
+  const actualTaskFolder = realpathSync(store.taskDir(task.id));
+  if (actualTaskFolder !== ownTaskFolder) {
+    const correction = 'Restore this task’s own directory in place of the symlink before requesting a permit.';
+    throw new PermitValidationError(`The task folder ${ownTaskFolder} resolves to protected Taskboard files at ${actualTaskFolder}. ${correction}`,
+      { rule: 'protected-taskboard-path', cwd: ownTaskFolder, protectedPath: actualTaskFolder, correction });
+  }
   const roots = [task.cwd, ownTaskFolder, ...worktreeScopes(task).map(s => s.path), ...machine.get().permitFolders].filter(existsSync).map(p => realpathSync(p));
-  if (unsafeRoot(realpathSync(task.cwd), ownTaskFolder)) throw new Error('The task folder contains protected Taskboard files.');
-  if (machine.get().permitFolders.some(p => !existsSync(p) || unsafeRoot(realpathSync(p)))) throw new Error('An extra folder contains protected Taskboard files.');
+  checkTaskboardPath(realpathSync(task.cwd), ownTaskFolder, true, 'Choose a task folder outside the protected path. A project folder or a worktree is allowed.');
+  for (const folder of machine.get().permitFolders) {
+    if (!existsSync(folder)) throw new Error(`Extra permit folder ${folder} does not exist. Remove or correct it in Settings.`);
+    checkTaskboardPath(realpathSync(folder), undefined, false, 'Remove or replace this extra permit folder in Settings.');
+  }
   const otherWorktrees = taskWorktrees().filter(w => w.task.id !== task.id && existsSync(w.path)).map(w => w.path);
   const steps = inputs.map(input => {
     if (input.continueOnFailure) throw new Error('Steps must stop after a failure.');
@@ -294,14 +326,14 @@ export function validate(task: Task, inputs: StepInput[]): { steps: PermitStep[]
     const requested = input.cwd || task.cwd;
     if (!isAbsolute(requested)) throw new Error('A working directory must be absolute.');
     const cwd = realpathSync(requested);
-    if (unsafeRoot(cwd, ownTaskFolder)) throw new Error('The working directory contains protected Taskboard files.');
+    checkTaskboardPath(cwd, ownTaskFolder, true);
     checkTaskboardAccess(argv, cwd, ownTaskFolder);
     checkWorktreeAccess(argv, cwd, otherWorktrees, task);
     const envPaths: Record<string, string> = {};
     for (const [name, value] of Object.entries(settings.env || {})) {
       if (!pathSettings.has(name)) continue;
       const path = realTarget(value);
-      if (unsafeRoot(path, ownTaskFolder)) throw new Error('An environment path overlaps protected Taskboard files.');
+      checkTaskboardPath(path, ownTaskFolder);
       if (otherWorktrees.some(other => path !== other && inside(path, other))) throw new Error('An environment path contains another task worktree.');
       checkWorktreeAccess([path], cwd, otherWorktrees, task);
       envPaths[name] = path;

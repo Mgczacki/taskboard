@@ -140,11 +140,64 @@ test('a task can request a reviewed Python permit from its own folder or a child
   assert.doesNotThrow(() => permits.validate({ ...task, cwd: own }, [{ command: 'python3 scripts/create.py' }]));
 });
 
-test('the global task directory and its ancestors cannot be permit working directories', () => {
+test('the global task directory and installation ancestors cannot be permit working directories', () => {
   const task = freshTask('task-root');
-  for (const cwd of [join(root, 'vault', 'tasks'), join(root, 'vault'), root]) {
+  for (const cwd of [join(root, 'vault', 'tasks'), root]) {
     assert.throws(() => permits.validate(task, [{ command: 'pwd', cwd }]), /protected Taskboard files/);
   }
+});
+
+test('vault roots, child folders, and worktrees allow ordinary commands and protect Taskboard paths', () => {
+  const vault = join(root, 'vault'), tasks = join(vault, 'tasks');
+  const child = join(vault, 'project'), worktree = join(root, 'worktree');
+  for (const folder of [child, worktree]) mkdirSync(folder, { recursive: true });
+  const other = freshTask('parent-other');
+  for (const [index, cwd] of [vault, child, worktree].entries()) {
+    const task = { ...freshTask(`parent-${index}`), cwd, folder: cwd, worktree: cwd === worktree, branch: cwd === worktree ? 'task/test' : undefined };
+    const own = taskDir(task.id);
+    writeFileSync(join(cwd, 'ordinary.txt'), 'ordinary');
+    assert.doesNotThrow(() => permits.validate(task, [{ command: 'pwd' }, { command: 'cat ordinary.txt' }]));
+    assert.doesNotThrow(() => permits.validate(task, [{ command: 'echo output', cwd: own }]));
+    for (const path of [tasks, taskDir(other.id), join(own, 'pending-prompt.txt'), join(own, 'queued-messages', 'next.txt'), join(root, 'tbdir')]) {
+      assert.throws(() => permits.validate(task, [{ command: `cat --file=${path}` }]), (error: unknown) => {
+        assert.ok(error instanceof permits.PermitValidationError);
+        assert.ok(error.message.includes(realpathSync(root)));
+        assert.ok(error.message.includes('Protected path:'));
+        assert.ok(error.diagnostic?.correction);
+        return true;
+      });
+      assert.throws(() => permits.validate(task, [{ command: 'pwd', env: { GH_CONFIG_DIR: path } }]), /protected Taskboard files/);
+    }
+    for (const cwd of [tasks, taskDir(other.id), join(root, 'tbdir')]) {
+      assert.throws(() => permits.validate(task, [{ command: 'pwd', cwd }]), /protected Taskboard files/);
+    }
+  }
+  const task = { ...freshTask('parent-recursive'), cwd: vault };
+  assert.throws(() => permits.validate(task, [{ command: 'rm -rf .' }]), /protected Taskboard files/);
+  assert.throws(() => permits.validate(task, [{ command: `find ${vault}` }]), /protected Taskboard files/);
+});
+
+test('symlinks to the tasks folder cannot grant cwd or path access', () => {
+  const task = freshTask('tasks-alias');
+  const alias = join(task.cwd, 'tasks-alias');
+  symlinkSync(join(root, 'vault', 'tasks'), alias);
+  assert.throws(() => permits.validate({ ...task, cwd: alias }, [{ command: 'pwd' }]), /protected Taskboard files/);
+  assert.throws(() => permits.validate(task, [{ command: 'pwd', cwd: alias }]), /protected Taskboard files/);
+  assert.throws(() => permits.validate(task, [{ command: `cat ${alias}/new-task.md` }]), /protected Taskboard files/);
+  assert.throws(() => permits.validate(task, [{ command: 'pwd', env: { GH_CONFIG_DIR: alias } }]), /protected Taskboard files/);
+});
+
+test('folder warnings resolve symlinks and distinguish task parents from projects', () => {
+  const vault = join(root, 'vault');
+  const alias = join(root, 'vault-alias');
+  symlinkSync(vault, alias);
+  for (const path of [vault, alias, join(vault, 'tasks')]) {
+    const warning = permits.taskFolderWarning(path);
+    assert.ok(warning?.includes(realpathSync(join(vault, 'tasks'))));
+    assert.match(warning!, /Use a project child folder/);
+  }
+  assert.equal(permits.taskFolderWarning(join(root, 'work')), undefined);
+  assert.equal(permits.taskFolderWarning(join(vault, 'project')), undefined);
 });
 
 test('another task folder stays protected through cwd, arguments, settings, and symlinks', () => {
