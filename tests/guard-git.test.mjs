@@ -24,7 +24,7 @@ test('the guard still blocks raw Git ref changes in a task and lets the tb git c
       'cd /tmp && git reset --soft master', '/usr/bin/git rebase --onto a b'])
       assert.match(run(command), /permissionDecision.*deny.*tb git repair/, command);
     for (const command of ['tb git repair --squash --base origin/master -m "One commit"', '/Users/me/.taskboard/bin/tb git rebase origin/prod',
-      'tb git check --base origin/prod', 'git log --oneline master..HEAD', 'git diff origin/master...HEAD',
+      'tb git check --base origin/prod', 'tb git reword "Correct the message"', 'git log --oneline master..HEAD', 'git diff origin/master...HEAD',
       'git status --short; git branch --show-current', 'git -C /tmp/repo status --short && git -C /tmp/repo branch --show-current'])
       assert.equal(run(command), '', command);
     const scopes = JSON.stringify([{ name: 'python', path: '/tmp/python-wt' }, { name: 'sekai-agent-ts', path: '/tmp/sekai-wt' }]);

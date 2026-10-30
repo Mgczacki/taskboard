@@ -1301,6 +1301,12 @@ app.post('/api/git/commit', async (req, res) => {
   if (!task || task.role === 'controller') return res.status(403).json({ error: 'A Taskboard task must commit its own branch.' });
   try { res.json({ result: await taskGit.commitTask(gitTask(task, req.body.worktree), String(req.body.message || '')) }); } catch (e) { fail(res, e); }
 });
+app.post('/api/git/reword', async (req, res) => {
+  const task = store.get(req.get('x-tb-actor') || '');
+  if (!task || task.role === 'controller') return res.status(403).json({ error: 'A Taskboard task must reword its own branch.' });
+  if (typeof req.body.message !== 'string') return res.status(400).json({ error: 'Give tb git reword a message.' });
+  try { res.json({ result: await taskRepair.rewordTask(gitTask(task, req.body.worktree), req.body.message) }); } catch (e) { fail(res, e); }
+});
 app.post('/api/git/rebase', async (req, res) => {
   const task = store.get(req.get('x-tb-actor') || '');
   if (!task || task.role === 'controller') return res.status(403).json({ error: 'A Taskboard task must run tb git rebase on its own branch.' });

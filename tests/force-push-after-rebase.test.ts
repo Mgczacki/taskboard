@@ -203,7 +203,7 @@ test('a repair after a push offers a force push whose card names the backup', as
   const [backup] = backupsOf(work, task);
   const state = await push.inspectPush(task, 'Push the repaired branch');
   assert.equal(state.forcePush, true);
-  assert.equal(state.forceBasis, `${pushedHead} is in the backup ${backup} that tb git rebase or tb git repair made for this task.`);
+  assert.equal(state.forceBasis, `${pushedHead} is in the backup ${backup} that Taskboard saved for this task.`);
   assert.match(push.pushCardDetail(state), new RegExp(`Why Taskboard offers a force push: ${pushedHead} is in the backup`));
   await push.runPush(task, state);
   assert.equal(remoteHead(), git(work, 'rev-parse', 'HEAD'));
