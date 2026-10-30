@@ -314,6 +314,51 @@ test('a supervised script starts once only after user approval and keeps its exi
   assert.equal(p.steps[0].outputTail, 'approved\n');
 });
 
+for (const change of ['none', 'script', 'argv', 'folder', 'owner', 'card-owner', 'archived', 'controller'] as const) {
+  test(`urgent supervised execution retains checks: ${change}`, async () => {
+    const urgent = await import('../server/urgent.ts');
+    const task = freshTask(`urgent-supervised-${change}`);
+    const script = `urgent-${change}.sh`;
+    writeFileSync(join(task.cwd, script), 'echo original\n');
+    urgent.turnOn(task, 'user', 'Test urgent supervised execution');
+    try {
+      const p = permits.requestSupervised(task, 'check', 'Run one script', `bash ${script}`, task.cwd, false, 'Writes test output.');
+      let starts = 0;
+      const start = (async () => { starts++; return {} as any; }) as any;
+      const card = approvals.request({ actor: task.id, action: 'permit', summary: p.id, detail: p.steps[0].command, payload: { permitId: p.id } }, async () => {
+        await permits.runSupervised(p, task, start);
+        if (p.state !== 'running') throw new Error(p.error || p.state);
+        return 'Started.';
+      });
+      permits.attachApproval(p, card.id);
+      if (change === 'script') writeFileSync(join(task.cwd, script), 'echo changed\n');
+      if (change === 'argv') p.steps[0].argv.push('changed');
+      if (change === 'folder') {
+        const folder = join(task.cwd, 'changed-folder');
+        mkdirSync(folder, { recursive: true });
+        writeFileSync(join(folder, script), 'echo original\n');
+        p.steps[0].cwd = realpathSync(folder);
+      }
+      if (change === 'owner') p.taskId = 'another-task';
+      if (change === 'card-owner') card.actor = 'another-task';
+      if (change === 'archived') task.status = 'archived';
+      await approvals.decide(card.id, true, { by: change === 'controller' ? 'controller' : 'urgent' });
+      assert.equal(starts, change === 'none' ? 1 : 0);
+      assert.equal(card.state, change === 'none' ? 'approved' : 'failed', card.result);
+      if (change === 'none') {
+        await permits.runSupervised(p, task, start);
+        assert.equal(starts, 1, 'the process starts once');
+      } else {
+        const error = change === 'argv' ? /arguments changed/ : change === 'script' || change === 'folder' ? /command, folder, or script changed/
+          : change === 'owner' || change === 'archived' ? /task cannot start/ : /not approved/;
+        assert.match(card.result || '', error);
+      }
+    } finally {
+      urgent.turnOff(task, 'user', 'Test finished');
+    }
+  });
+}
+
 test('denial, expiry, and a changed script never start a supervised process', async () => {
   const task = freshTask('supervised-denied');
   const script = join(task.cwd, 'supervised-denied.sh');

@@ -329,7 +329,9 @@ A move between windows never changes a task's groups. A new task goes after the 
   A protected path error names the requested path and the protected path. The error gives a correction.
   This folder access also applies to `tb permit run-request`. The usual approval checks still apply.
 - **Approved task run:** `tb permit run-request <name> --reason "text" --risk "text" --command "python3 /absolute/script.py" --cwd /absolute/folder --network`
-  asks the user to start one script. The card shows the command, script SHA-256 hash, folder, network flag, task owner,
+  asks the user to start one script. Urgent mode approves new run requests without a dashboard decision.
+  Taskboard still checks the approved script and command before it starts the process.
+  The card shows the command, script SHA-256 hash, folder, network flag, task owner,
   and risk. Taskboard checks these facts again after approval. It starts the script as a task process without the short
   permit timeout. `tb permit result <id> --wait` reports its exit code and log tail. `tb proc logs <process-name>` shows
   more output. `tb proc stop <process-name>` sends SIGINT and allows 120 seconds for cleanup before stronger signals.
