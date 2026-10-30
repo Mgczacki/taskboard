@@ -14,6 +14,7 @@ after(() => rmSync(root, { recursive: true, force: true }));
 const main = join(root, 'main'), work = join(root, 'work'), bare = join(root, 'remote.git');
 const tbdir = join(root, 'tbdir'), vault = join(root, 'vault');
 mkdirSync(main); mkdirSync(tbdir); mkdirSync(join(vault, 'tasks'), { recursive: true });
+mkdirSync(join(vault, 'tasks', 'repair-task'));
 const git = (cwd: string, ...args: string[]) => { const r = spawnSync('git', args, { cwd, encoding: 'utf8' }); if (r.status) throw new Error(r.stderr); return r.stdout.trim(); };
 git(main, 'init', '-b', 'master'); git(main, 'config', 'user.email', 'repair-test@example.invalid'); git(main, 'config', 'user.name', 'Repair Test');
 writeFileSync(join(main, 'base.txt'), 'base\n'); git(main, 'add', '-A'); git(main, 'commit', '-m', 'base');
@@ -40,7 +41,8 @@ test('the routes repair the branch, and the next push needs a force push card th
       await new Promise(resolve => setTimeout(resolve, 100));
     }
     const token = readFileSync(join(tbdir, 'token'), 'utf8').trim();
-    const taskHeaders = { 'content-type': 'application/json', 'x-taskboard-token': token, 'x-tb-actor': 'repair-task' };
+    const taskToken = readFileSync(join(tbdir, 'task-tokens', 'repair-task'), 'utf8').trim();
+    const taskHeaders = { 'content-type': 'application/json', 'x-taskboard-token': token, 'x-tb-task-token': taskToken, 'x-tb-actor': 'repair-task' };
     const userHeaders = { 'content-type': 'application/json', origin: base };
     const post = async (path: string, body: unknown, headers: Record<string, string> = taskHeaders) => {
       const response = await fetch(base + path, { method: 'POST', headers, body: JSON.stringify(body) });
@@ -52,6 +54,17 @@ test('the routes repair the branch, and the next push needs a force push card th
     assert.equal((await post('/api/git/repair', { mode: 'reset' })).status, 400);
     assert.equal((await post('/api/git/rebase', { action: 'continue', base: 'origin/master' })).status, 400);
     assert.equal((await post('/api/git/push-request', { reason: 'test', force: true })).status, 400);
+    const initialHead = git(work, 'rev-parse', 'HEAD');
+    for (const path of ['/api/git/commit', '/api/git/reword']) {
+      for (const message of ['--help', '-a change', ' --help']) {
+        assert.equal((await post(path, { message })).status, 400);
+        assert.equal(git(work, 'rev-parse', 'HEAD'), initialHead);
+      }
+    }
+    assert.equal((await post('/api/git/reword', { message: 'New' }, userHeaders)).status, 403);
+    assert.equal((await post('/api/git/reword', { message: 'New' }, { ...taskHeaders, 'x-tb-actor': 'controller' })).status, 403);
+    assert.equal((await post('/api/git/reword', { message: 'New', worktree: main })).status, 400);
+    assert.equal((await post('/api/git/reword', { message: 123 })).status, 400);
     for (const command of ['git reset --soft master', 'git rebase origin/prod', 'git update-ref refs/heads/task-repair HEAD~1', 'git push --force origin task-repair']) {
       const refused = await post('/api/permits', { reason: 'repair', steps: [{ command }] });
       assert.equal(refused.status, 400, command);
@@ -69,7 +82,7 @@ test('the routes repair the branch, and the next push needs a force push card th
     assert.equal((await post(`/api/git/pushes/${first.data.push.id}/decide`, { approve: true }, userHeaders)).data.state, 'succeeded');
     const oldRemote = git(main, 'ls-remote', 'origin', 'refs/heads/task-repair').split(/\s/)[0];
 
-    const squash = await post('/api/git/repair', { mode: 'squash', base: 'master', message: 'Add the app' });
+    const squash = await post('/api/git/repair', { mode: 'squash', base: git(main, 'rev-parse', 'master'), message: 'Add the app' });
     assert.equal(squash.status, 200, JSON.stringify(squash.data));
     assert.match(squash.data.result, /Backup: refs\/taskboard-backup\/repair-task\//);
     assert.doesNotMatch(squash.data.result, /Warning/);
@@ -89,6 +102,22 @@ test('the routes repair the branch, and the next push needs a force push card th
     assert.equal(approved.data.state, 'succeeded', JSON.stringify(approved.data));
     assert.equal(git(main, 'ls-remote', 'origin', 'refs/heads/task-repair').split(/\s/)[0], git(work, 'rev-parse', 'HEAD'));
     assert.equal(git(main, 'ls-remote', 'origin', 'refs/heads/master').split(/\s/)[0], git(main, 'rev-parse', 'master'));
+
+    const beforeReword = git(work, 'rev-parse', 'HEAD');
+    const treeAndParents = git(work, 'show', '-s', '--format=%T%n%P', 'HEAD');
+    const reword = await post('/api/git/reword', { message: 'Describe the app' });
+    assert.equal(reword.status, 200, JSON.stringify(reword.data));
+    assert.match(reword.data.result, /Backup: refs\/taskboard-backup\/repair-task\//);
+    assert.equal(git(work, 'show', '-s', '--format=%T%n%P', 'HEAD'), treeAndParents);
+    const request = await post('/api/git/push-request', { reason: 'Publish the new message' });
+    assert.equal(request.status, 202, JSON.stringify(request.data));
+    assert.match(request.data.approval.detail, /^FORCE PUSH: Yes\./);
+    assert.equal(git(bare, 'rev-parse', 'refs/heads/task-repair'), beforeReword);
+    const decision = `/api/git/pushes/${request.data.push.id}/decide`;
+    assert.equal((await post(decision, { approve: true })).status, 403);
+    assert.equal(git(bare, 'rev-parse', 'refs/heads/task-repair'), beforeReword);
+    assert.equal((await post(decision, { approve: true }, userHeaders)).data.state, 'succeeded');
+    assert.equal(git(bare, 'rev-parse', 'refs/heads/task-repair'), git(work, 'rev-parse', 'HEAD'));
   } finally {
     if (child.exitCode === null) { child.kill('SIGTERM'); await new Promise(resolve => child.once('exit', resolve)); }
   }
@@ -103,7 +132,7 @@ test('the tb command sends the base and repair options and refuses force flags b
   const port = await new Promise<number>(resolve => server.listen(0, '127.0.0.1', () => resolve((server.address() as { port: number }).port)));
   const tb = fileURLToPath(new URL('../bin/tb', import.meta.url));
   const run = (...args: string[]) => new Promise<{ code: number | null; err: string }>(resolve => {
-    const c = spawn(process.execPath, [tb, ...args], { env: { ...process.env, TB_URL: `http://127.0.0.1:${port}`, TB_TOKEN_FILE: join(root, 'no-token'), TASK_ID: 'repair-task' } });
+    const c = spawn(process.execPath, [tb, ...args], { env: { ...process.env, TB_URL: `http://127.0.0.1:${port}`, TB_TOKEN_FILE: join(root, 'no-token'), TB_TASK_TOKEN: 'test-only', TASK_ID: 'repair-task' } });
     let err = ''; c.stderr.on('data', d => { err += d; }); c.on('close', code => resolve({ code, err }));
   });
   try {

@@ -144,7 +144,7 @@ async function isAncestor(cwd: string, oldHead: string, newHead: string) {
 // - the branch is not protected (master, main, prod, release/*, the remote default branch, or a protected branch in the settings),
 // - no other task uses the same branch in the same repository,
 // - the remote head is a head that Taskboard pushed for this task (pushes.json), or it is in a backup that
-//   tb git rebase or tb git repair made for this task (refs/taskboard-backup/<task id>/).
+//   Taskboard saved for this task (refs/taskboard-backup/<task id>/).
 // It always needs the user's approval on the push card. The result gives the reason for the card or the refusal.
 async function checkForcePush(task: Task, cwd: string, o: { branch: string; taskBranch: string; remote: string; remoteUrl: string; oldHead: string; oldAvailable: boolean; defaultBranch?: string }):
   Promise<{ basis: string } | { refusal: string }> {
@@ -163,7 +163,7 @@ async function checkForcePush(task: Task, cwd: string, o: { branch: string; task
   const backups = (await git(cwd, 'for-each-ref', '--format=%(objectname) %(refname)', backupPrefix(task))).split('\n').filter(Boolean);
   for (const line of backups) {
     const [commit, name] = line.split(' ');
-    if (await isAncestor(cwd, o.oldHead, commit)) return { basis: `${o.oldHead} is in the backup ${name} that tb git rebase or tb git repair made for this task.` };
+    if (await isAncestor(cwd, o.oldHead, commit)) return { basis: `${o.oldHead} is in the backup ${name} that Taskboard saved for this task.` };
   }
   return { refusal: `both checks failed. Check 1: ${o.oldHead} is not a head that Taskboard pushed for this task to ${o.remote}/${o.branch}. ` +
     `Check 2: ${o.oldHead} is not in a backup of this task (tb git repair --list shows the backups).` };

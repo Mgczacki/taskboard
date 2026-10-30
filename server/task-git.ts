@@ -34,7 +34,7 @@ async function withMasterLock<T>(run: () => Promise<T>): Promise<T> {
 
 export interface MergeState { source: string; target: string; branch: string }
 
-// tb git repair and tb git rebase save the old head of the task branch in refs/taskboard-backup/<task id>/<time>
+// Branch rewrites save the old head in refs/taskboard-backup/<task id>/<time>.
 // before they rewrite the branch. tb git repair --list and --restore read these refs, and tb git push-request
 // offers a force push card when the remote head is in one of them.
 export const backupPrefix = (t: Task) => `refs/taskboard-backup/${gitKey(t)}/`;
@@ -89,8 +89,13 @@ export async function mergeState(t: Task): Promise<MergeState> {
   return { source, target, branch: t.branch };
 }
 
+export function validateCommitMessage(message: string) {
+  if (!message.trim() || message.length > 200 || /[\r\n\0]/.test(message)) throw new Error('Give a one-line message of at most 200 characters.');
+  if (message.trimStart().startsWith('-')) throw new Error('The commit message cannot start with a dash. Use tb git commit --help for help.');
+}
+
 export async function commitTask(t: Task, message: string): Promise<string> {
-  if (!message.trim() || message.length > 200 || /[\r\n]/.test(message)) throw new Error('Run tb git commit with a one-line message under 200 characters.');
+  validateCommitMessage(message);
   await mergeStateForSource(t);
   // git add -A would also stage the conflict markers of an unfinished tb git merge-from.
   if (existsSync(await gitPath(t.cwd, 'MERGE_HEAD'))) throw new Error('A merge is in progress; run tb git merge-from --continue --stage PATH for each resolved file, or tb git merge-from --abort.');
@@ -130,14 +135,26 @@ async function remoteBranch(t: Task, base: string): Promise<{ remote: string; br
   return { remote, branch, ref: `refs/remotes/${remote}/${branch}` };
 }
 
-// A base is local master or a branch of a configured remote of the task repository, such as origin/prod.
+// A commit hash can name a base only when the commit is an ancestor of this branch's head.
+async function ancestorBase(t: Task, base: string): Promise<string | null> {
+  if (!/^[0-9a-f]{7,64}$/i.test(base)) return null;
+  const commit = await git(t.cwd, 'rev-parse', '--verify', '--end-of-options', `${base}^{commit}`).catch(() => '');
+  if (!commit) throw new Error(`${base} is not a commit in this repository.`);
+  try { await exec('git', ['merge-base', '--is-ancestor', commit, 'HEAD'], { cwd: t.cwd }); }
+  catch { throw new Error(`The base ${base} is not an ancestor of the branch head.`); }
+  return commit;
+}
+
+// A base is local master, a remote branch, or the hash of an ancestor of the branch head.
 // For a remote base, git fetch updates refs/remotes/<remote>/<branch> first. Only that remote-tracking ref changes.
 export async function resolveBase(t: Task, base = 'master'): Promise<{ name: string; ref: string; remote?: string }> {
+  const commit = await ancestorBase(t, base);
+  if (commit) return { name: commit, ref: commit };
   if (base === 'master') {
     if (!await hasCommit(t.cwd, 'refs/heads/master')) throw new Error(noMaster);
     return { name: 'master', ref: 'refs/heads/master' };
   }
-  const refuse = () => new Error(`${base} is not a remote branch of this repository; give master or a remote branch such as origin/master.`);
+  const refuse = () => new Error(`${base} is not a remote branch of this repository. Give master, a remote branch, or an ancestor commit hash.`);
   const parsed = await remoteBranch(t, base);
   if (!parsed) throw refuse();
   const { remote, branch, ref } = parsed;
@@ -177,13 +194,15 @@ export interface TaskBase { name: string; ref: string; source: string }
 export async function findBase(t: Task, options: { named?: string; remote?: string; localFirst?: boolean } = {}): Promise<TaskBase> {
   const remote = options.remote || 'origin';
   const lookup = async (name: string) => {
+    const commit = await ancestorBase(t, name);
+    if (commit) return commit;
     if (name === 'master') return await hasCommit(t.cwd, 'refs/heads/master') ? 'refs/heads/master' : null;
     const parsed = await remoteBranch(t, name);
     return parsed && await hasCommit(t.cwd, parsed.ref) ? parsed.ref : null;
   };
   const use = async (name: string, source: string) => {
     const ref = await lookup(name);
-    if (!ref) throw new Error(`The base ${name} (${source}) is not a branch of this repository; give master or a remote branch such as origin/prod with --base.`);
+    if (!ref) throw new Error(`The base ${name} (${source}) is not a branch of this repository. Give master, a remote branch, or an ancestor commit hash with --base.`);
     return { name, ref, source };
   };
   if (options.named) return use(options.named, 'given with --base');
@@ -269,7 +288,7 @@ export async function rebaseTask(t: Task, action: 'start' | 'continue' | 'abort'
   }
   if (target?.remote) return `Rebased ${t.branch} onto ${target.name}.${backupText}\n\n${await historyReport(t.cwd, target.ref, target.name)}`;
   if (action === 'continue') return `Finished the rebase of ${t.branch}; run tb git merge-request to request a merge.${backupText}`;
-  return `Rebased ${t.branch} onto local master; run tb git merge-request to request a merge.${backupText}`;
+  return `Rebased ${t.branch} onto ${target?.name === 'master' ? 'local master' : target?.name}; run tb git merge-request to request a merge.${backupText}`;
 }
 
 async function restoreMaster(t: Task, head: string) {

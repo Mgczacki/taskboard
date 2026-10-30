@@ -10,8 +10,8 @@ const top = mkdtempSync(join(tmpdir(), 'tb-repair-'));
 process.env.TASKBOARD_DIR = join(top, 'tbdir');
 process.env.TASKBOARD_VAULT = join(top, 'vault');
 mkdirSync(join(top, 'tbdir'), { recursive: true });
-const { squashTask, dropCommit, restoreBackup, listBackups, checkTask } = await import('../server/task-repair.ts');
-const { rebaseTask } = await import('../server/task-git.ts');
+const { squashTask, rewordTask, dropCommit, restoreBackup, listBackups, checkTask } = await import('../server/task-repair.ts');
+const { rebaseTask, commitTask, recordedBase, findBase } = await import('../server/task-git.ts');
 const { historyReport, riskyPath } = await import('../server/task-history.ts');
 const push = await import('../server/push.ts');
 type Task = import('../server/store.ts').Task;
@@ -51,6 +51,146 @@ function setup() {
   return { root, main, work, bare, task, commit, refs };
 }
 const backupsOf = (cwd: string, t: Task) => git(cwd, 'for-each-ref', '--format=%(refname)', `refs/taskboard-backup/${t.id}/`).split('\n').filter(Boolean);
+
+test('commit and repair reject flag messages before staging files or changing refs', async () => {
+  const { work, task, commit, refs } = setup();
+  commit({ 'a.txt': 'committed\n' }, 'First');
+  const before = refs();
+  for (const message of ['--help', '-a change', '  --help', '-m', '', 'two\nlines', 'x\0y', 'x'.repeat(201)]) {
+    await assert.rejects(squashTask(task, 'master', message), /message/);
+    await assert.rejects(rewordTask(task, message), /message/);
+    writeFileSync(join(work, 'a.txt'), 'local edit\n');
+    const status = git(work, 'status', '--porcelain');
+    const index = git(work, 'write-tree');
+    await assert.rejects(commitTask(task, message), /message/);
+    assert.equal(git(work, 'status', '--porcelain'), status);
+    assert.equal(git(work, 'write-tree'), index);
+    writeFileSync(join(work, 'a.txt'), 'committed\n');
+    assert.equal(refs(), before);
+    assert.deepEqual(backupsOf(work, task), []);
+  }
+  writeFileSync(join(work, 'a.txt'), 'valid change\n');
+  assert.match(await commitTask(task, 'Handle --help without a commit'), /Committed/);
+});
+
+test('reword keeps the last tree, parents and author, saves a backup, and restores it', async () => {
+  const { main, work, task, commit } = setup();
+  commit({ 'a.txt': 'a\n' }, 'First');
+  const oldHead = commit({ 'b.txt': 'b\n' }, 'Wrong message');
+  const format = '--format=%T%n%P%n%an%n%ae%n%aI';
+  const before = git(work, 'show', '-s', format, 'HEAD');
+  git(work, 'config', 'user.name', 'New Committer');
+  const master = git(main, 'rev-parse', 'master');
+  const out = await rewordTask(task, 'Correct message');
+  assert.equal(git(work, 'show', '-s', format, 'HEAD'), before);
+  assert.equal(git(work, 'log', '-1', '--format=%B'), 'Correct message');
+  assert.notEqual(git(work, 'rev-parse', 'HEAD'), oldHead);
+  assert.equal(git(work, 'status', '--porcelain'), '');
+  assert.equal(git(main, 'rev-parse', 'master'), master);
+  const [backup] = backupsOf(work, task);
+  assert.equal(git(work, 'rev-parse', backup), oldHead);
+  assert.match(out, /force push card/);
+  await restoreBackup(task, backup);
+  assert.equal(git(work, 'rev-parse', 'HEAD'), oldHead);
+});
+
+test('reword preserves all parents of a merge and supports a root commit', async () => {
+  const { main, work, task, commit } = setup();
+  const root = git(work, 'rev-parse', 'HEAD');
+  await rewordTask(task, 'Root message');
+  assert.equal(git(work, 'show', '-s', '--format=%P', 'HEAD'), '');
+  assert.equal(git(work, 'rev-parse', 'HEAD^{tree}'), git(work, 'rev-parse', `${root}^{tree}`));
+  await restoreBackup(task, backupsOf(work, task)[0]);
+  commit({ 'task.txt': 'task\n' }, 'Task');
+  writeFileSync(join(main, 'main.txt'), 'main\n');
+  git(main, 'add', '-A'); git(main, 'commit', '-m', 'Master');
+  git(work, 'merge', '--no-ff', '-m', 'Merge master', 'master');
+  const before = git(work, 'show', '-s', '--format=%T%n%P', 'HEAD');
+  await rewordTask(task, 'Describe merge');
+  assert.equal(git(work, 'show', '-s', '--format=%T%n%P', 'HEAD'), before);
+});
+
+test('reword refuses local changes, another branch, protected branches, and unfinished operations', async () => {
+  const { main, work, task, commit, refs } = setup();
+  commit({ 'a.txt': 'a\n' }, 'First');
+  const before = refs();
+  for (const other of [{ cwd: main }, { branch: 'main' }, { branch: 'task/other' }, { role: 'controller' }, { worktree: false }])
+    await assert.rejects(rewordTask({ ...task, ...other } as Task, 'New'), /main checkout|does not change|branch changed|no worktree/);
+  writeFileSync(join(work, 'a.txt'), 'dirty\n');
+  await assert.rejects(rewordTask(task, 'New'), /uncommitted changes/);
+  git(work, 'add', 'a.txt');
+  await assert.rejects(rewordTask(task, 'New'), /uncommitted changes/);
+  git(work, 'reset', '--hard', 'HEAD');
+  writeFileSync(join(work, 'untracked.txt'), 'new\n');
+  await assert.rejects(rewordTask(task, 'New'), /uncommitted changes/);
+  rmSync(join(work, 'untracked.txt'));
+  for (const state of ['MERGE_HEAD', 'CHERRY_PICK_HEAD', 'REVERT_HEAD', 'sequencer']) {
+    const path = git(work, 'rev-parse', '--git-path', state);
+    writeFileSync(path, git(work, 'rev-parse', 'HEAD') + '\n');
+    await assert.rejects(rewordTask(task, 'New'), /operation is in progress/);
+    rmSync(path);
+  }
+  const rebase = git(work, 'rev-parse', '--git-path', 'rebase-merge');
+  mkdirSync(rebase);
+  await assert.rejects(rewordTask(task, 'New'), /unfinished rebase/);
+  rmSync(rebase, { recursive: true });
+  assert.equal(refs(), before);
+  assert.deepEqual(backupsOf(work, task), []);
+});
+
+test('repair accepts the original base hash after master moves and records its full hash', async () => {
+  const { main, work, task, commit } = setup();
+  const base = git(work, 'rev-parse', 'HEAD');
+  commit({ 'a.txt': 'a\n' }, 'First');
+  const oldHead = commit({ 'b.txt': 'b\n' }, 'Second');
+  writeFileSync(join(main, 'main.txt'), 'main\n');
+  git(main, 'add', '-A'); git(main, 'commit', '-m', 'Master moves');
+  await squashTask(task, base.slice(0, 10), 'One commit');
+  assert.equal(git(work, 'rev-parse', 'HEAD^'), base);
+  assert.equal(git(work, 'rev-parse', 'HEAD^{tree}'), git(work, 'rev-parse', `${oldHead}^{tree}`));
+  assert.equal(recordedBase(task), base);
+  assert.equal((await findBase(task)).ref, base);
+  assert.match(await checkTask(task, base), /Files changed: 2/);
+  assert.equal((await push.inspectPush(task, 'Check repaired branch')).base, base);
+  const drop = commit({ 'drop.txt': 'drop\n' }, 'Drop this');
+  commit({ 'keep.txt': 'keep\n' }, 'Keep this');
+  await dropCommit(task, drop, base);
+  assert.equal(existsSync(join(work, 'drop.txt')), false);
+  assert.equal(existsSync(join(work, 'keep.txt')), true);
+});
+
+test('repair rejects unsafe base refs, missing commits and non-ancestor commits without backups or recorded bases', async () => {
+  const { main, work, task, commit, refs } = setup();
+  const own = commit({ 'a.txt': 'a\n' }, 'Task');
+  writeFileSync(join(main, 'main.txt'), 'main\n');
+  git(main, 'add', '-A'); git(main, 'commit', '-m', 'Other');
+  const before = refs();
+  for (const base of ['--help', '--exec=true', 'HEAD~1', 'refs/heads/master', 'origin/../master', 'origin/HEAD', 'deadbeefdeadbeef', git(main, 'rev-parse', 'HEAD'), git(work, 'rev-parse', 'HEAD^{tree}')]) {
+    await assert.rejects(squashTask(task, base, 'One'), /not a remote branch|not a commit|not an ancestor/);
+    await assert.rejects(dropCommit(task, own, base), /not a remote branch|not a commit|not an ancestor/);
+    assert.equal(refs(), before);
+    assert.deepEqual(backupsOf(work, task), []);
+    assert.equal(recordedBase(task), undefined);
+  }
+});
+
+test('reword of a pushed commit needs the existing force push card and rejects a stale approval', async () => {
+  const { main, work, bare, task, commit } = setup();
+  const oldHead = commit({ 'a.txt': 'a\n' }, 'Old message');
+  git(work, 'push', 'origin', 'task/example');
+  await rewordTask(task, 'New message');
+  const state = await push.inspectPush(task, 'Publish the new message');
+  assert.equal(state.fastForward, false);
+  assert.equal(state.forcePush, true);
+  assert.equal(state.needsCard, true);
+  assert.equal(state.oldHead, oldHead);
+  assert.match(state.forceBasis!, /backup/);
+  assert.deepEqual(state.replaced!.map(c => c.subject), ['Old message']);
+  assert.equal(git(bare, 'rev-parse', 'refs/heads/task/example'), oldHead);
+  // A moved remote invalidates the existing card, including when it moves to an ancestor.
+  git(bare, 'update-ref', 'refs/heads/task/example', git(main, 'rev-parse', 'master'));
+  await assert.rejects(push.runPush(task, state), /branch changed/i);
+});
 
 test('squash makes one commit over the base, keeps the files, and keeps a backup that restores the old head', async () => {
   const { main, work, task, commit } = setup();

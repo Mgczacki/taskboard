@@ -214,31 +214,35 @@ const HELP = `tb — Taskboard command line
                                      the branch moves before the approval, the user can close the card as stale.
                                      That is not a denial: run tb git rebase, then tb git merge-request again
   tb git commit "<message>"           commit changes in your own worktree
-  tb git rebase [BASE]                rebase your own branch onto local master, or onto a remote branch such as
-                                     origin/master or origin/prod (runs git fetch first). It saves the old
+                                     Messages cannot start with a dash. Use --help to show help without a request.
+  tb git reword "<message>"           replace only the last commit message. Keep its tree and parents.
+                                     Save a backup first. A pushed commit still needs a force push card to publish.
+  tb git rebase [BASE]                rebase onto local master, a remote branch, or an ancestor commit hash.
+                                     A remote branch such as origin/prod runs git fetch first. It saves the old
                                      head as a backup before it changes the branch
   tb git rebase --continue            stage resolved conflicts and finish the approved merge
   tb git rebase --continue --stage PATH stage one named file before continuing a rebase
   tb git rebase --abort               stop a rebase in your own worktree
-  tb git merge-from BASE              merge BASE (master, or a remote branch such as origin/main; runs git fetch
-                                     first) into your branch with one merge commit. The branch commits do not
+  tb git merge-from BASE              merge master or a remote branch into your branch. A remote base runs git fetch
+                                     first. An ancestor commit hash is also accepted. The branch commits do not
                                      change, so a pushed branch needs no force push. It saves the old head as a backup
   tb git merge-from --continue --stage PATH [--stage PATH ...]
                                      stage only the named resolved files and make the merge commit
   tb git merge-from --abort           stop a merge and restore the branch as before it
   tb git repair --squash --base BASE -m "<message>"
-                                     make your branch one commit over BASE (master or a remote branch)
+                                     make your branch one commit over BASE (master, a remote branch, or an ancestor hash)
   tb git repair --drop COMMIT [--base BASE]
                                      remove one commit that only your branch holds
   tb git repair --restore BACKUP | --list
-                                     undo a repair or rebase with the backup it printed, or list the backups
+                                     undo a repair, rebase, or reword with its backup, or list the backups
   tb git check [--base BASE]          list the files your branch changes and warn about large or unsafe files
                                      Without a base, rebase, repair and check use local master. A repository
                                      without master uses the same base as tb git push-request.
   tb git push-request --reason "text" [--branch BRANCH] [--remote REMOTE] [--base BASE] [--then-release]
-                                     BASE is master or a remote branch such as origin/prod. Without it, Taskboard
+                                     BASE is master, a remote branch such as origin/prod, or an ancestor commit hash.
+                                     Without it, Taskboard
                                      uses the base from tb git rebase or tb git repair, then origin/HEAD.
-                                     After a rebase or repair of a pushed branch, the user can approve a force
+                                     After a rebase, repair, or reword of a pushed branch, the user can approve a force
                                      push on the card. The task cannot ask for --force itself
   tb git push-result ID [--wait]      read the push result
   tb git pr-request --title "text" [--body "text" | --body-file PATH] [--base BRANCH] [--remote REMOTE] [--draft]
@@ -1024,15 +1028,63 @@ switch (cmd) {
     break;
   }
   case 'git': {
+    if (args.includes('--help') || args.includes('-h') || args.length === 1) {
+      const lines = HELP.split('\n');
+      const start = lines.findIndex(line => line.startsWith('  tb git '));
+      const end = lines.findIndex((line, i) => i > start && line.startsWith('  tb ') && !line.startsWith('  tb git '));
+      console.log(lines.slice(start, end < 0 ? undefined : end).join('\n'));
+      break;
+    }
     if (!process.env.TASK_ID) { console.error('tb git: run this inside a Taskboard task'); process.exit(1); }
     // --worktree <name or path> picks an attached worktree (tb scope request worktree). flag() removes it from args.
     const named = args.includes('--worktree');
     const worktree = flag('--worktree');
-    if ((named && (!worktree || worktree.startsWith('--'))) || args.includes('--worktree')) { console.error('tb git: give --worktree a name or a path.'); process.exit(1); }
+    if ((named && (!worktree?.trim() || worktree.trimStart().startsWith('-'))) || args.includes('--worktree')) { console.error('tb git: give --worktree a name or a path.'); process.exit(1); }
     const rest = args.slice(1);
     const wt = worktree ? { worktree } : {};
+    // Validate all Git arguments before a handler consumes flags or sends a request.
+    const specs = {
+      'merge-request': [[], [], 0, 0],
+      commit: [[], [], 1, Infinity],
+      reword: [[], [], 1, Infinity],
+      rebase: [['--stage'], ['--continue', '--abort'], 0, 1],
+      'merge-from': [['--stage'], ['--continue', '--abort'], 0, 1],
+      repair: [['--base', '-m', '--drop', '--restore'], ['--squash', '--list'], 0, 0],
+      check: [['--base'], [], 0, 0],
+      'push-request': [['--reason', '--branch', '--remote', '--base'], ['--then-release'], 0, 0],
+      'pr-request': [['--title', '--body', '--body-file', '--base', '--remote'], ['--draft'], 0, 0],
+      'pr-merge-request': [['--pr', '--head', '--repo', '--method'], [], 0, 0],
+      'pr-ready-request': [['--pr', '--head', '--repo'], [], 0, 0],
+      'push-result': [[], ['--wait'], 1, 1],
+      'pr-result': [[], ['--wait'], 1, 1],
+      'pr-merge-result': [[], ['--wait'], 1, 1],
+      'pr-ready-result': [[], ['--wait'], 1, 1],
+    };
+    const spec = Object.hasOwn(specs, rest[0]) ? specs[rest[0]] : undefined;
+    const invalid = () => { console.error(`tb git ${rest[0]}: invalid arguments or missing value. Use tb git ${rest[0]} --help.`); process.exit(1); };
+    if (!spec) invalid();
+    const [values, switches, min, max] = spec;
+    const seen = new Set();
+    let positionals = 0;
+    for (let i = 1; i < rest.length; i++) {
+      const word = rest[i];
+      if (values.includes(word) || switches.includes(word)) {
+        if (seen.has(word) && !(rest[0] === 'merge-from' && word === '--stage')) invalid();
+        seen.add(word);
+        if (values.includes(word)) {
+          const value = rest[++i];
+          // A pull request body can start with a Markdown bullet. A flag alone is never its body.
+          const bulletBody = word === '--body' && /^-\s/.test(value?.trimStart() || '');
+          if (value === undefined || (!value.trim() && word !== '--body') || (value.trimStart().startsWith('-') && !bulletBody)) invalid();
+        }
+      } else {
+        if (!word.trim() || word.trimStart().startsWith('-')) invalid();
+        positionals++;
+      }
+    }
+    if (positionals < min || positionals > max) invalid();
     if (rest[0] === 'merge-request') await call('POST', '/api/git/merge-request', wt);
-    else if (rest[0] === 'commit') console.log((await call('POST', '/api/git/commit', { message: rest.slice(1).join(' '), ...wt })).result);
+    else if (rest[0] === 'commit' || rest[0] === 'reword') console.log((await call('POST', `/api/git/${rest[0]}`, { message: rest.slice(1).join(' '), ...wt })).result);
     else if (rest[0] === 'rebase') {
       const stage = rest[1] === '--continue' && rest[2] === '--stage' ? rest[3] : undefined;
       if (rest.length > (stage === undefined ? 2 : 4) || (rest[1]?.startsWith('-') && !['--continue', '--abort'].includes(rest[1])) || (rest[2] === '--stage' && !stage) || (rest.length > 2 && stage === undefined)) { console.error('tb git rebase: run tb git rebase [BASE], tb git rebase --continue [--stage PATH], or tb git rebase --abort.'); process.exit(1); }
@@ -1059,7 +1111,7 @@ switch (cmd) {
       const base = flag('--base'); const message = flag('-m'); const commit = flag('--drop'); const backup = flag('--restore');
       const squash = has('--squash'); const list = has('--list');
       const modes = [squash, !!commit, !!backup, list].filter(Boolean).length;
-      if (modes !== 1 || args.length > 2) { console.error('tb git repair: run --squash --base BASE -m "message", --drop COMMIT [--base BASE], --restore BACKUP, or --list.'); process.exit(1); }
+      if (modes !== 1 || args.length > 2 || (squash && (!base || !message)) || (!squash && message !== undefined) || ((backup || list) && base !== undefined)) { console.error('tb git repair: run --squash --base BASE -m "message", --drop COMMIT [--base BASE], --restore BACKUP, or --list.'); process.exit(1); }
       const mode = squash ? 'squash' : commit ? 'drop' : backup ? 'restore' : 'list';
       console.log((await call('POST', '/api/git/repair', { mode, base, message, commit, backup, ...wt })).result);
     }
@@ -1092,24 +1144,24 @@ switch (cmd) {
       const m = result.prReady;
       console.log(`Ready for review request ${m.id}: ${m.state}. ${m.repository}#${m.number} at ${m.headCommit}. The user decides card ${result.approval.id} on the dashboard. Read the result with tb git pr-ready-result ${m.id} --wait.`);
     } else if (rest[0] === 'pr-ready-result') {
-      const id = rest[1]; if (!id) { console.error('tb git pr-ready-result: give an ID'); process.exit(1); }
       const wait = has('--wait');
+      const id = args[2];
       for (;;) {
         const result = await call('GET', `/api/git/pr-ready/${encodeURIComponent(id)}`);
         if (result.state !== 'pending' || !wait) { console.log(JSON.stringify(result, null, 2)); break; }
         await new Promise(resolve => setTimeout(resolve, 2000));
       }
     } else if (rest[0] === 'pr-merge-result') {
-      const id = rest[1]; if (!id) { console.error('tb git pr-merge-result: give an ID'); process.exit(1); }
       const wait = has('--wait');
+      const id = args[2];
       for (;;) {
         const result = await call('GET', `/api/git/pr-merges/${encodeURIComponent(id)}`);
         if (!['pending', 'queued'].includes(result.state) || !wait) { console.log(JSON.stringify(result, null, 2)); break; }
         await new Promise(resolve => setTimeout(resolve, 2000));
       }
     } else if (rest[0] === 'pr-result') {
-      const id = rest[1]; if (!id) { console.error('tb git pr-result: give an ID'); process.exit(1); }
       const wait = has('--wait');
+      const id = args[2];
       for (;;) {
         const result = await call('GET', `/api/git/pull-requests/${encodeURIComponent(id)}`);
         if (result.state !== 'pending' || !wait) { console.log(JSON.stringify(result, null, 2)); break; }
@@ -1123,8 +1175,8 @@ switch (cmd) {
       const result = await call('POST', '/api/git/push-request', { reason, branch, remote, base, thenRelease, ...wt });
       console.log(`Push ${result.push.id}: ${result.push.state}. Read it with tb git push-result ${result.push.id} --wait.`);
     } else if (rest[0] === 'push-result') {
-      const id = rest[1]; if (!id) { console.error('tb git push-result: give an ID'); process.exit(1); }
       const wait = has('--wait');
+      const id = args[2];
       for (;;) {
         const result = await call('GET', `/api/git/pushes/${encodeURIComponent(id)}`);
         if (result.state !== 'pending' || !wait) { console.log(JSON.stringify(result, null, 2)); break; }
