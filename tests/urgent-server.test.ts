@@ -117,6 +117,26 @@ test('only the user or the controller turns urgent mode on or off, and a task in
       const c = await settled(p.data.permit.approvalId);
       assert.equal(c.state, 'approved', JSON.stringify(c)); assert.equal(c.decidedBy.by, 'urgent');
     }
+    // An urgent supervised run starts without a dashboard decision.
+    const marker = join(w1, 'supervised-result.txt');
+    writeFileSync(join(w1, 'supervised.sh'), 'printf "urgent supervised run\\n" > supervised-result.txt\n');
+    const run = await post('/api/permits/supervised', {
+      name: 'urgent-check', reason: 'Check urgent supervised execution', command: 'bash supervised.sh',
+      cwd: w1, risk: 'Writes one test file.',
+    }, as('t1'));
+    assert.equal(run.status, 202, JSON.stringify(run.data));
+    const runCard = await settled(run.data.permit.approvalId);
+    assert.equal(runCard.state, 'approved', JSON.stringify(runCard));
+    assert.equal(runCard.decidedBy.by, 'urgent');
+    let result = await get(`/api/permits/${run.data.permit.id}`, as('t1'));
+    for (let i = 0; i < 100 && result.data.state === 'running'; i++) {
+      await new Promise(r => setTimeout(r, 50));
+      result = await get(`/api/permits/${run.data.permit.id}`, as('t1'));
+    }
+    assert.equal(result.data.state, 'succeeded', JSON.stringify(result.data));
+    assert.equal(result.data.steps[0].exitCode, 0);
+    assert.equal(readFileSync(marker, 'utf8'), 'urgent supervised run\n');
+
     // a merge into local master runs without a click
     writeFileSync(join(w1, 'one.txt'), 'one\n'); git(w1, 'add', '-A'); git(w1, 'commit', '-q', '-m', 'one');
     const m = await post('/api/git/merge-request', {}, as('t1'));
@@ -133,13 +153,13 @@ test('only the user or the controller turns urgent mode on or off, and a task in
     // ---------- 6. the user turns it off: the limits apply again, and the audit log has each event ----------
     r = await post('/api/tasks/t1/urgent', { on: false, reason: 'done' }, user);
     assert.equal(r.data.off, true); assert.ok(!existsSync(record));
-    const p3 = await post('/api/permits', { reason: 'after', steps: [{ command: 'true', cwd: w1 }] }, as('t1'));
+    const p3 = await post('/api/permits/supervised', { name: 'after', reason: 'After urgent mode ends', command: 'bash supervised.sh', cwd: w1, risk: 'Writes one test file.' }, as('t1'));
     assert.equal((await card(p3.data.permit.approvalId)).state, 'pending', 'a card waits again');
     assert.equal((await post('/api/permits', { reason: 'after 2', steps: [{ command: 'true', cwd: w1 }] }, as('t1'))).status, 400);
     const audit = readFileSync(join(tbdir, 'urgent-mode.jsonl'), 'utf8').trim().split('\n').map(l => JSON.parse(l));
-    assert.deepEqual(audit.map(a => a.event), ['on', 'off', 'on', 'card', 'card', 'card', 'off']);
+    assert.deepEqual(audit.map(a => a.event), ['on', 'off', 'on', 'card', 'card', 'card', 'card', 'off']);
     assert.equal(audit[0].userRequest, 'urgent mode for task 1 please');
-    assert.deepEqual(audit.filter(a => a.event === 'card').map(a => a.action), ['permit', 'permit', 'git-merge']);
+    assert.deepEqual(audit.filter(a => a.event === 'card').map(a => a.action), ['permit', 'permit', 'permit', 'git-merge']);
     assert.match(readFileSync(join(vault, 'tasks', 't1', 'log.md'), 'utf8'), /Urgent mode turned on by the user/);
   } finally {
     await new Promise<void>(resolve => { if (child.exitCode !== null) return resolve(); child.once('exit', () => resolve()); child.kill(); });

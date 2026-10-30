@@ -882,7 +882,7 @@ app.post('/api/permits/supervised', (req, res) => {
     const card = approvals.request({ actor: task.id, action: 'permit', summary: `start approved run ${p.supervised!.name}`,
       detail: `Task: #${task.num} ${task.title}\nOwner: ${task.id}\nReason: ${p.reason}\nRisk: ${p.statedRisk || p.riskFlags.join(', ')}\nCommand: ${step.command}\n${permits.settingsDetail(step)}\nScript SHA-256: ${step.scriptHash}\nFolder: ${step.cwd}\nNetwork: ${step.network ? 'Yes' : 'No'}\nExpires: ${p.expiresAt}`,
       payload: { permitId: p.id }, validUntil: p.expiresAt }, async decider => {
-        if (decider.by !== 'user') throw new Error('A supervised run needs a dashboard decision by the user.');
+        if (decider.by !== 'user' && decider.by !== 'urgent') throw new Error('A supervised run needs a dashboard decision by the user or urgent mode.');
         const result = await permits.runSupervised(p, task, undefined, agents.baseEnv(task));
         if (result.state !== 'running') throw new Error(result.error || result.state);
         return `Approved run ${p.id} started. Read its logs and result with tb permit result ${p.id}.`;
