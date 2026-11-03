@@ -252,3 +252,31 @@ test('a failed permit stays as an error notice for an hour, with Hide; an approv
   void acts[1].run();
   assert.deepEqual(hidden, [list[0].key]);
 });
+
+test('a delayed restart stays visible with its cause and a restart action', async () => {
+  const t = task({ restartWhenDone: true, restartOverdue: true, restartWait: 'Waiting for a terminal question.' });
+  const notice = N.taskNotices({ t, now }).find(n => n.kind === 'restart-pending')!;
+  assert.equal(notice.level, 'warn');
+  assert.equal(notice.title, 'Restart delayed');
+  assert.equal(notice.reason, t.restartWait);
+  assert.equal(notice.autoHide, undefined);
+  assert.ok(!N.taskNotices({ t: { ...t, restartOverdue: false }, now }).some(n => n.kind === 'restart-pending'));
+  const original = api.restart;
+  const calls: string[] = [];
+  api.restart = async (id, when) => { calls.push(`${id}:${when}`); return t; };
+  try {
+    const context = { t, act: (p: Promise<unknown>) => p, toast: () => {}, clearError: () => {}, clearDrop: () => {}, hide: () => {} };
+    const actions = noticeActions(notice, context);
+    assert.deepEqual(actions.map(a => a.label), ['Restart now']);
+    assert.match(actions[0].title, /Ends the current turn/);
+    await actions[0].run();
+    const failed = N.taskNotices({ t: { ...t, restartFailed: 'Could not start the agent.' }, now });
+    assert.ok(!failed.some(n => n.kind === 'restart-pending'));
+    const failure = failed.find(n => n.kind === 'restart-failed')!;
+    assert.equal(failure.level, 'error');
+    const retry = noticeActions(failure, context);
+    assert.deepEqual(retry.map(a => a.label), ['Try again']);
+    await retry[0].run();
+    assert.deepEqual(calls, [`${t.id}:now`, `${t.id}:now`]);
+  } finally { api.restart = original; }
+});

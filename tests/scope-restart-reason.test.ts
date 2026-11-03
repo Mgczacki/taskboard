@@ -1,10 +1,18 @@
 // restartWaitReason (server/scope-restart.ts): when a session that waits for a restart may restart, and why it waits.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { restartWaitReason, type RestartCheck } from '../server/scope-restart.ts';
+import { RESTART_WAIT_MS, restartWaitReason, type RestartCheck } from '../server/scope-restart.ts';
 
 const base: RestartCheck = { status: 'idle', ended: true, quiet: true, quietLong: true, screen: '> ', restartFor: 'to give access to the new worktree app', waitedMs: 1000, limitMs: 600000 };
 const check = (c: Partial<RestartCheck>) => restartWaitReason({ ...base, ...c });
+
+test('the default warning starts at one minute without interrupting a running turn', () => {
+  assert.equal(RESTART_WAIT_MS, 60000);
+  const c = { status: 'working' as const, ended: false, limitMs: RESTART_WAIT_MS };
+  assert.equal(check({ ...c, waitedMs: 59999 }).overdue, false);
+  assert.equal(check({ ...c, waitedMs: 60000 }).overdue, true);
+  assert.match(check({ ...c, waitedMs: 60000 }).reason, /1 minute/);
+});
 
 test('every status that means the agent waits lets the restart run', () => {
   for (const status of ['idle', 'unread', 'review'] as const) assert.equal(check({ status }).reason, '', status);

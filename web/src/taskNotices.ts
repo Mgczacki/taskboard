@@ -11,7 +11,7 @@ import { queueReason } from './components/QueuedMessage';
 import { autoText, errorDetail } from './agentErrorText';
 
 export type NoticeLevel = 'error' | 'warn' | 'info';
-export type NoticeKind = 'agent-error' | 'message' | 'inbox' | 'question' | 'card' | 'stopped' | 'restart-failed' | 'resumed' | 'error' | 'hook-note' | 'drop' | 'imported' | 'permit';
+export type NoticeKind = 'agent-error' | 'message' | 'inbox' | 'question' | 'card' | 'stopped' | 'restart-failed' | 'restart-pending' | 'resumed' | 'error' | 'hook-note' | 'drop' | 'imported' | 'permit';
 export interface TaskNotice {
   key: string; // stable: the same notice keeps its key while the task changes
   kind: NoticeKind; level: NoticeLevel;
@@ -34,7 +34,7 @@ const clock = (iso: string) => { const d = new Date(iso); return isNaN(+d) ? '' 
 export const isHookNote = (s?: string) => !!s && /queued messages? (was|were) given to the agent by the .* hook/.test(s);
 
 export interface NoticeInput {
-  t: Pick<Task, 'id' | 'num' | 'status' | 'statusAt' | 'statusSource' | 'stopReason' | 'queue' | 'interrupted' | 'restartFailed' | 'imported' | 'errorLabel' | 'agentError' | 'autoContinueOn'>;
+  t: Pick<Task, 'id' | 'num' | 'status' | 'statusAt' | 'statusSource' | 'stopReason' | 'queue' | 'interrupted' | 'restartFailed' | 'restartWhenDone' | 'restartOverdue' | 'restartWait' | 'imported' | 'errorLabel' | 'agentError' | 'autoContinueOn'>;
   pending?: PendingItem[]; // question cards of this task
   approvals?: Approval[]; // waiting approval cards of this task (liveApprovals in stack.ts)
   closed?: Approval[]; // closed approval cards of this task, for failed permits
@@ -102,6 +102,10 @@ export function taskNotices({ t, pending = [], approvals = [], closed = [], erro
     out.push({ key: `stopped:${t.statusAt}`, kind: 'stopped', level: 'error', title: why, reason: 'The agent is not working.', full: `${why}. The agent is not working.`, at: t.statusAt, count: 1, ids: [] });
   }
   if (t.restartFailed) out.push({ key: `restart:${t.restartFailed}`, kind: 'restart-failed', level: 'error', title: 'The restart failed', reason: oneLine(t.restartFailed), full: t.restartFailed, at: t.statusAt, count: 1, ids: [] });
+  else if (t.restartWhenDone && t.restartOverdue) {
+    const reason = t.restartWait || 'The session restart still waits. Open the task to check the cause.';
+    out.push({ key: 'restart-pending', kind: 'restart-pending', level: 'warn', title: 'Restart delayed', reason: oneLine(reason), full: reason, at: t.statusAt, count: 1, ids: [] });
+  }
   if (error) out.push({ key: `error:${error}`, kind: 'error', level: 'error', title: 'The last action failed', reason: oneLine(error), full: error, at: new Date(now).toISOString(), count: 1, ids: [] });
   if (t.interrupted && t.status !== 'suspended') out.push({ key: `resumed:${t.interrupted}`, kind: 'resumed', level: 'warn', title: 'Resumed', reason: oneLine(t.interrupted), full: t.interrupted, at: t.statusAt, count: 1, ids: [] });
   if (isHookNote(t.statusSource)) out.push({ key: `hook:${t.statusSource}`, kind: 'hook-note', level: 'info', title: 'Delivered by hook', reason: t.statusSource!, full: t.statusSource!, at: t.statusAt, count: 1, ids: [], autoHide: true });

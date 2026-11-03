@@ -114,7 +114,7 @@ test('a task without a worktree asks for scopes, and only the user approves them
     await cliDone;
     assert.match(cliOut, /Approval pending: card/);
     assert.match(approved.data.result, /Attached the worktree alpha/);
-    assert.match(approved.data.result, /restarts this session after this turn ends/);
+    assert.match(approved.data.result, /Run tb scope list to check the current state/);
     assert.equal(git(path1, 'branch', '--show-current'), 'task/alpha-change');
     assert.equal(git(alpha, 'rev-parse', 'HEAD'), alphaHead);
     assert.equal(git(alpha, 'branch', '--show-current'), 'master');
@@ -125,7 +125,9 @@ test('a task without a worktree asks for scopes, and only the user approves them
     assert.equal(plain.restartWhenDone, true);
 
     // 4. the restart after the turn: the stand-in agent starts with --add-dir for the new worktree, and the note arrives
-    await post('/api/hooks/claude', { taskId: 'plain-task', input: { hook_event_name: 'Stop' } }, { 'content-type': 'application/json', 'x-taskboard-token': token });
+    const stopped = await post('/api/hooks/claude', { taskId: 'plain-task', input: { hook_event_name: 'Stop' } }, { 'content-type': 'application/json', 'x-taskboard-token': token });
+    if (stopped.data.output?.decision === 'block')
+      await post('/api/hooks/claude', { taskId: 'plain-task', input: { hook_event_name: 'Stop' } }, { 'content-type': 'application/json', 'x-taskboard-token': token });
     const args = () => existsSync(join(root, 'args-claude')) ? readFileSync(join(root, 'args-claude'), 'utf8') : '';
     await waitFor(() => args().split('\n').join(' ').includes(`--add-dir ${path1}`), {
       description: 'the restarted agent to receive the attached worktree', timeoutMs: 90_000,

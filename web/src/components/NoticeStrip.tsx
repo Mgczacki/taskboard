@@ -71,7 +71,8 @@ export function noticeActions(n: TaskNotice, c: ActionContext): NoticeAction[] {
     ...(c.moveAccount ? [{ label: 'Move account…', title: 'Continue the task with another account', run: c.moveAccount }] : []),
     { label: 'Accounts…', title: 'The Accounts page', run: () => { location.hash = 'accounts'; } },
   ];
-  if (n.kind === 'restart-failed') return [{ label: 'Try again', title: 'Start the agent again', run: () => act(api.resume(t.id)) }];
+  if (n.kind === 'restart-failed') return [{ label: 'Try again', title: 'Restart with the approved settings and the saved conversation.', run: () => act(api.restart(t.id, 'now')) }];
+  if (n.kind === 'restart-pending') return [{ label: 'Restart now', title: 'Ends the current turn, including a running command. The saved conversation is kept.', run: () => act(api.restart(t.id, 'now')) }];
   if (n.kind === 'resumed') return [{ label: 'Continue', title: 'Type "continue where you left off" into the agent', run: () => act(api.send(t.id, 'continue where you left off')) }];
   if (n.kind === 'error') return [
     ...(n.full.startsWith('Still open') && c.resumeAnyway ? [{ label: 'Resume here anyway', title: 'Only if you are sure the other terminal is not using this conversation', run: c.resumeAnyway }] : []),

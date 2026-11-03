@@ -268,11 +268,14 @@ export const needsRestart = (t: Task, kind: Scope['kind']) => kind === 'worktree
 // What tb scope request prints after the approval when the session must restart first (index.ts applyScope). The
 // agent cannot know when the restart comes, so the text says it, and says that the controller has no part in it.
 export function restartText(s: Scope): string {
-  const access = s.kind === 'worktree' ? `You have no write access to ${s.path} until this session restarts.` : `You cannot read ${s.path} until this session restarts.`;
-  return [access, 'Taskboard restarts this session after this turn ends, and resumes the same conversation.',
-    'End your turn now and wait. Do not try to work around it: do not use another folder, and do not ask for a permit.',
-    'Do not wait for the controller, and do not send it a message for this. Taskboard restarts the session by itself.',
-    'After the restart, Taskboard puts a note in your inbox. Background shells that you started stop. Processes from tb run keep running.'].join('\n');
+  return [`The approved ${s.kind === 'worktree' ? 'worktree' : 'read folder'} needs a session restart: ${s.path}.`,
+    'This approval message can arrive after that restart. Run tb scope list to check the current state.',
+    'If it says Restart pending, end your turn. Taskboard resumes the same conversation with the approved access.',
+    'If it says Restart failed, report the failure. The dashboard offers Try again.',
+    'If no restart is pending or failed, read the scope note in your inbox and continue the approved work.',
+    'Do not wait for another restart because of this approval message. Do not ask the controller to restart you.',
+    'Do not work around a pending restart with another folder or a permit.',
+    'Background shells stop during a restart. Processes from tb run keep running.'].join('\n');
 }
 
 export function noticeText(t: Task, s: Scope): string {

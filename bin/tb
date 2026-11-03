@@ -1210,7 +1210,9 @@ Example: tb scope request worktree --repo ~/code/app --base origin/master --bran
       const lines = r.scopes.map(s => s.kind === 'worktree' ? `${s.name.padEnd(20)} worktree  ${s.branch}  ${s.path}  (repository ${s.repo}, base ${s.base})` : `${s.name.padEnd(20)} read      ${s.path}`);
       console.log(lines.join('\n') || 'This task has no attached worktree or folder.');
       if (r.pending.length) console.log(`Waiting for the user: ${r.pending.map(p => `${p.id} ${p.summary}`).join('; ')}`);
-      if (r.restart) console.log(`Restart pending: ${r.restart} Until the restart, this session has no access to the new folder. End your turn and wait.`);
+      if (r.restartFailed) console.log(`Restart failed: ${r.restartFailed} Open the task and use Try again.`);
+      else if (r.restart) console.log(`Restart pending: ${r.restart} Until the restart, this session has no access to the new folder. End your turn and wait.`);
+      else console.log('No restart is pending. Read the scope note in your inbox and continue the approved work.');
     } else if (action === 'approve') {
       if (process.env.TASK_ID !== 'controller') { console.error('tb scope approve: controller only. A task cannot approve its own scope request.'); process.exit(1); }
       if (!kind || !userRequest) { console.error('tb scope approve ID --user-request "<the user\'s exact chat message>"'); process.exit(1); }

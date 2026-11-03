@@ -19,6 +19,23 @@ const socket = resources.socket(`tb-scope-restart-${process.pid}`);
 const clean = Object.fromEntries(Object.entries(process.env).filter(([k]) => !/^(TASK_|TB_|TASKBOARD_)/.test(k))) as NodeJS.ProcessEnv;
 const git = (cwd: string, ...args: string[]) => { const r = spawnSync('git', args, { cwd, encoding: 'utf8' }); if (r.status) throw new Error(`git ${args.join(' ')}: ${r.stderr}`); return r.stdout.trim(); };
 const tmux = (...args: string[]) => spawnSync('tmux', ['-L', socket, ...args], { encoding: 'utf8' });
+const realTmux = spawnSync('which', ['tmux'], { encoding: 'utf8' }).stdout.trim();
+const failStart = join(root, 'fail-start');
+const failStop = join(root, 'fail-stop');
+writeFileSync(failStart, 'fail');
+writeFileSync(failStop, 'fail');
+writeFileSync(join(bin, 'tmux'), `#!/usr/bin/env node
+const args = process.argv.slice(2);
+if (args.includes('new-session') && args.includes('task-11') && require('node:fs').existsSync(${JSON.stringify(failStart)})) {
+  console.error('Test start failure'); process.exit(1);
+}
+if (args.includes('kill-session') && args.includes('=task-14') && require('node:fs').existsSync(${JSON.stringify(failStop)})) {
+  console.error('Test stop failure'); process.exit(1);
+}
+const r = require('node:child_process').spawnSync(${JSON.stringify(realTmux)}, args, { stdio: 'inherit' });
+process.exit(r.status ?? 1);
+`);
+chmodSync(join(bin, 'tmux'), 0o755);
 // stand-ins for the agents: each start records its arguments in args/<task id> and keeps running. The Codex stand-in
 // also answers the hook list that Taskboard reads before it starts Codex (agents.ts codexHookTrust).
 const fake = `#!/usr/bin/env node
@@ -62,6 +79,11 @@ const cases: Case[] = [
   { id: 'codex-question', num: 8, agent: 'codex' },
   { id: 'claude-fails', num: 9, agent: 'claude', extra: 'transfer: {"direction":"source","state":"started","peerIdentity":"x","task":"y"}\n' },
   { id: 'codex-resumed', num: 10, agent: 'codex' },
+  { id: 'claude-retry', num: 11, agent: 'claude' },
+  { id: 'claude-read', num: 12, agent: 'claude' },
+  { id: 'codex-read', num: 13, agent: 'codex' },
+  { id: 'claude-stop-fails', num: 14, agent: 'claude' },
+  { id: 'claude-note-fails', num: 15, agent: 'claude' },
 ];
 const sessionId = (n: number) => `0000000${n}-2222-3333-4444-555555555555`;
 for (const c of cases) {
@@ -97,20 +119,25 @@ test('an approved worktree restarts the session once the agent waits, for every 
       const r = await fetch(base + path, { method: 'POST', headers, body: JSON.stringify(body) });
       return { status: r.status, data: await r.json().catch(() => ({})) };
     };
-    const asTask = (id: string) => ({ ...hookHeaders, 'x-tb-actor': id });
+    const taskToken = (id: string) => readFileSync(join(tbdir, 'task-tokens', id), 'utf8').trim();
+    const asTask = (id: string) => ({ ...hookHeaders, 'x-tb-actor': id, 'x-tb-task-token': taskToken(id) });
     const user = { 'content-type': 'application/json', origin: base };
     const getTask = async (id: string) => (await (await fetch(base + '/api/tasks')).json()).find((t: { id: string }) => t.id === id);
     const worktree = (c: Case) => join(`${repo}-wt`, `${c.id}--app`);
-    const request = async (c: Case) => {
-      const r = await post('/api/scope/request', { kind: 'worktree', repo, base: 'origin/master', branch: `task/${c.id}`, reason: `Case ${c.id}` }, asTask(c.id));
+    const request = async (c: Case, kind = 'worktree') => {
+      const r = await post('/api/scope/request', { kind, repo, path: repo, base: 'origin/master', branch: `task/${c.id}`, reason: `Case ${c.id}` }, asTask(c.id));
       assert.equal(r.status, 202, JSON.stringify(r.data) + output);
       assert.equal((await getTask(c.id)).status, 'needs-you');
       return r.data.approval.id as string;
     };
     const approve = async (id: string) => { const r = await post(`/api/approvals/${id}/approve`, {}, user); assert.equal(r.data.state, 'approved', JSON.stringify(r.data) + output); return r.data.result as string; };
-    const endTurn = async (c: Case, text = 'Done.') => c.agent === 'claude'
-      ? post('/api/hooks/claude', { taskId: c.id, input: { hook_event_name: 'Stop', session_id: sessionId(c.num), last_assistant_message: text } }, hookHeaders)
-      : post('/api/hooks/codex', { taskId: c.id, payload: { type: 'agent-turn-complete', 'thread-id': sessionId(c.num), 'last-assistant-message': text } }, hookHeaders);
+    const endTurn = async (c: Case, text = 'Done.') => {
+      if (c.agent === 'codex') return post('/api/hooks/codex', { taskId: c.id, payload: { type: 'agent-turn-complete', 'thread-id': sessionId(c.num), 'last-assistant-message': text } }, hookHeaders);
+      const body = { taskId: c.id, input: { hook_event_name: 'Stop', session_id: sessionId(c.num), last_assistant_message: text } };
+      const result = await post('/api/hooks/claude', body, hookHeaders);
+      // Claude continues once when Stop delivers a queued approval, then ends its turn again.
+      return result.data.output?.decision === 'block' ? post('/api/hooks/claude', body, hookHeaders) : result;
+    };
     // the restart started the agent again with --add-dir for the new worktree, in the same conversation
     const restarted = (c: Case) => args(c.id).includes(worktree(c));
     const waitFor = async (ok: () => boolean | Promise<boolean>, ms: number) => { const end = Date.now() + ms; while (Date.now() < end) { if (await ok()) return true; await sleep(250); } return false; };
@@ -119,11 +146,11 @@ test('an approved worktree restarts the session once the agent waits, for every 
     // 1. Claude: the turn ended right after the request, and the user approves at once
     const c1 = by('claude-ended'); const a1 = await request(c1); await endTurn(c1);
     const result1 = await approve(a1);
-    // the agent reads plainly that it has no write access until the restart, and that it must not wait for the controller
-    assert.match(result1, /no write access to .* until this session restarts/);
-    assert.match(result1, /End your turn now and wait/);
-    assert.match(result1, /Do not try to work around it/);
-    assert.match(result1, /Do not wait for the controller/);
+    // The result remains correct when the message queue delivers it after the restart.
+    assert.match(result1, /approval message can arrive after that restart/);
+    assert.match(result1, /Run tb scope list to check the current state/);
+    assert.match(result1, /If it says Restart pending, end your turn/);
+    assert.match(result1, /If no restart is pending or failed, read the scope note in your inbox and continue/);
     // 2. Codex: the same order (the case of task 171 without a review)
     const c2 = by('codex-ended'); const a2 = await request(c2); await endTurn(c2); await approve(a2);
     // 3. Claude: the turn ended long before the approval
@@ -154,12 +181,26 @@ test('an approved worktree restarts the session once the agent waits, for every 
     const c9 = by('claude-fails'); const a9 = await request(c9); await endTurn(c9); await approve(a9);
     // 10. the session ends while the restart waits, and the user resumes it (task 171: tb park and tb resume)
     const c10 = by('codex-resumed'); await approve(await request(c10));
+    assert.ok(await waitFor(async () => {
+      const r = await post('/api/hooks/codex-hook', { taskId: c10.id, input: { hook_event_name: 'PostToolUse', session_id: sessionId(c10.num) } }, hookHeaders);
+      return JSON.stringify(r.data).includes('approval message can arrive');
+    }, 10000), 'The approval must leave the queue before the test stops the session.');
     tmux('kill-session', '-t', 'task-10');
-    assert.ok(await waitFor(async () => (await getTask(c10.id)).status === 'suspended', 10000));
+    assert.ok(await waitFor(async () => (await getTask(c10.id)).status === 'suspended', 10000), JSON.stringify(await getTask(c10.id)) + output);
+    assert.match((await getTask(c10.id)).restartFailed, /session ended/);
     assert.equal((await post(`/api/tasks/${c10.id}/resume`, {}, user)).status, 200);
+    const c11 = by('claude-retry'); const a11 = await request(c11); await endTurn(c11); await approve(a11);
+    const c12 = by('claude-read'); const a12 = await request(c12, 'read'); await endTurn(c12); await approve(a12);
+    const c13 = by('codex-read'); await approve(await request(c13, 'read'));
+    assert.equal((await getTask(c13.id)).restartWhenDone, undefined);
+    assert.equal(args(c13.id), '', 'Codex read access must not restart the session');
+    const c14 = by('claude-stop-fails'); const a14 = await request(c14); await endTurn(c14); await approve(a14);
+    const c15 = by('claude-note-fails');
+    mkdirSync(join(vault, 'tasks', c15.id, 'inbox', '.sent.json'), { recursive: true });
+    const a15 = await request(c15); await endTurn(c15); await approve(a15);
 
     // the waiting tasks show that a restart is pending and why
-    const list = spawnSync(process.execPath, ['bin/tb', 'scope', 'list'], { cwd: process.cwd(), encoding: 'utf8', env: { ...clean, TB_URL: base, TB_TOKEN_FILE: join(tbdir, 'token'), TASK_ID: c6.id } });
+    const list = spawnSync(process.execPath, ['bin/tb', 'scope', 'list'], { cwd: process.cwd(), encoding: 'utf8', env: { ...clean, TB_URL: base, TB_TOKEN_FILE: join(tbdir, 'token'), TASK_ID: c6.id, TB_TASK_TOKEN: taskToken(c6.id) } });
     assert.match(list.stdout, /Restart pending: Waiting for the end of the turn to give access to the new worktree app\. Until the restart/, list.stdout + list.stderr);
     const pending = await getTask(c6.id);
     assert.equal(pending.restartWhenDone, true);
@@ -179,6 +220,15 @@ test('an approved worktree restarts the session once the agent waits, for every 
     // the document still waits for review, so the restarted task stays in 'review'
     for (const c of [c4, c5]) assert.equal((await getTask(c.id)).status, 'review', c.id);
 
+    // #630: the approval stays queued until after the restart. The hook gets the scope note and the conditional result.
+    const late = await post('/api/hooks/claude', { taskId: c1.id, input: { hook_event_name: 'UserPromptSubmit', session_id: sessionId(c1.num), prompt: 'Continue' } }, hookHeaders);
+    const context = JSON.stringify(late.data);
+    assert.match(context, /scope-.*\.md/);
+    assert.match(context, /approval message can arrive after that restart/);
+    const ready = spawnSync(process.execPath, ['bin/tb', 'scope', 'list'], { encoding: 'utf8', env: { ...clean, TB_URL: base, TB_TOKEN_FILE: join(tbdir, 'token'), TASK_ID: c1.id, TB_TASK_TOKEN: taskToken(c1.id) } });
+    assert.match(ready.stdout, /No restart is pending.*continue the approved work/);
+    assert.equal((await getTask(c1.id)).restartWhenDone, undefined);
+
     // 7. the dialog keeps the restart waiting; once it is gone, the restart runs
     assert.ok(!restarted(c7), 'restarted while a dialog showed');
     assert.match((await getTask(c7.id)).restartWait || '', /question or a dialog/);
@@ -195,12 +245,60 @@ test('an approved worktree restarts the session once the agent waits, for every 
     assert.ok(await waitFor(async () => !!(await getTask(c9.id)).restartFailed, 30000), JSON.stringify(await getTask(c9.id)));
     const failed = await getTask(c9.id);
     assert.match(failed.restartFailed, /Check the target transfer/);
+    assert.equal(failed.restartWhenDone, true);
+    assert.match(failed.scopeNotice, /This session has write access/);
     assert.match(readFileSync(join(vault, 'tasks', c9.id, 'log.md'), 'utf8'), /The restart .* failed: Check the target transfer/);
 
     // 10. the resumed session has the new folder; Taskboard clears the wait and does not restart it a second time
     assert.ok(await waitFor(async () => (await getTask(c10.id)).restartWhenDone === undefined, 10000), JSON.stringify(await getTask(c10.id)));
     assert.equal(args(c10.id).split('\n').filter(l => l === worktree(c10)).length, 1, args(c10.id));
     assert.match(readFileSync(join(vault, 'tasks', c10.id, 'log.md'), 'utf8'), /did not restart it again/);
+
+    // A failed launch retains the request and its note. Retry starts the same conversation with the new worktree.
+    assert.ok(await waitFor(async () => !!(await getTask(c11.id)).restartFailed, 30000), JSON.stringify(await getTask(c11.id)));
+    const beforeRetry = await getTask(c11.id);
+    assert.match(beforeRetry.restartFailed, /Test start failure/);
+    assert.equal(beforeRetry.restartWhenDone, true);
+    assert.match(beforeRetry.scopeNotice, /This session has write access/);
+    const failedList = spawnSync(process.execPath, ['bin/tb', 'scope', 'list'], { encoding: 'utf8', env: { ...clean, TB_URL: base, TB_TOKEN_FILE: join(tbdir, 'token'), TASK_ID: c11.id, TB_TASK_TOKEN: taskToken(c11.id) } });
+    assert.match(failedList.stdout, /Restart failed:.*Test start failure/s);
+    assert.doesNotMatch(failedList.stdout, /No restart is pending/);
+    rmSync(failStart);
+    const retry = await post(`/api/tasks/${c11.id}/restart`, { when: 'now' }, user);
+    assert.equal(retry.status, 200, JSON.stringify(retry.data));
+    assert.ok(await waitFor(() => restarted(c11), 10000));
+    assert.match(args(c11.id), new RegExp(sessionId(c11.num)));
+    assert.equal((await getTask(c11.id)).restartFailed, undefined);
+    assert.equal((await getTask(c11.id)).restartWhenDone, undefined);
+    assert.equal((await getTask(c11.id)).scopeNotice, undefined);
+    const retryNote = await post('/api/hooks/claude', { taskId: c11.id, input: { hook_event_name: 'UserPromptSubmit', session_id: sessionId(c11.num) } }, hookHeaders);
+    assert.match(JSON.stringify(retryNote.data), /scope-.*\.md/);
+
+    // Claude read access uses a restart and a Read rule, without granting write access.
+    assert.ok(await waitFor(() => !!args(c12.id), 30000));
+    assert.equal((await getTask(c12.id)).restartWhenDone, undefined);
+    const argv = args(c12.id).split('\n');
+    const settings = JSON.parse(readFileSync(argv[argv.indexOf('--settings') + 1], 'utf8'));
+    assert.ok(settings.permissions.allow.includes(`Read(/${repo}/**)`));
+    assert.ok(!argv.includes(repo), 'A read scope must not become --add-dir');
+
+    // A failed stop must not claim that the old process has the new folder.
+    assert.ok(await waitFor(async () => !!(await getTask(c14.id)).restartFailed, 30000));
+    assert.match((await getTask(c14.id)).restartFailed, /Could not confirm that the old session stopped/);
+    assert.equal(args(c14.id), '');
+    assert.ok((await getTask(c14.id)).scopeNotice);
+    rmSync(failStop);
+    assert.equal((await post(`/api/tasks/${c14.id}/restart`, { when: 'now' }, user)).status, 200);
+    assert.ok(await waitFor(() => restarted(c14), 10000));
+
+    // A scope note that cannot be saved stays on the task. Retry must deliver it after the folder is fixed.
+    assert.ok(await waitFor(async () => !!(await getTask(c15.id)).restartFailed, 30000));
+    assert.match((await getTask(c15.id)).restartFailed, /EISDIR/);
+    assert.ok((await getTask(c15.id)).scopeNotice);
+    rmSync(join(vault, 'tasks', c15.id, 'inbox', '.sent.json'), { recursive: true });
+    assert.equal((await post(`/api/tasks/${c15.id}/restart`, { when: 'now' }, user)).status, 200);
+    assert.equal((await getTask(c15.id)).scopeNotice, undefined);
+    assert.equal((await getTask(c15.id)).restartFailed, undefined);
 
     // 6. after the set time the task offers Restart now and says why; Restart now restarts it
     assert.ok(!restarted(c6));

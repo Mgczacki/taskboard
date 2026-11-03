@@ -4,6 +4,8 @@
 // every 2 s with what it read from the task, its transcript and its screen, and restarts the session when the reason is ''.
 import type { Status } from './store.ts';
 
+export const RESTART_WAIT_MS = 60000;
+
 // Claude Code permission dialogs ("Do you want to proceed?", "Do you want to make this edit to x?") and the Codex
 // questions that wait above its input box ("? 2 questions" / "shift+← to answer"), in the bottom lines of the screen
 const DIALOG = /Do you want to (proceed|make this edit|create|allow|run|overwrite)|Esc to cancel|\?\s+\d+\s+questions?\b[^\n]*\n[^\n]*to answer|Allow command\?/i;

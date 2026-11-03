@@ -686,7 +686,7 @@ function scopeLines(t: Task): string[] {
     : 'This task has no Git worktree, so Taskboard blocks Git writes. To change a repository, run `tb scope request worktree --repo <main checkout> --base <remote branch or commit> --branch <new branch> --reason "<why>"`. ' +
       'The user approves it on the dashboard. Run `tb scope` for read access to one more folder.'];
   // an approved worktree reaches the agent only after a restart, which Taskboard does by itself (index.ts applyScope)
-  lines.push('If tb scope request says the session restarts, end your turn. Do not wait for the controller.');
+  lines.push('After a scope approval, run tb scope list. End your turn only if it reports Restart pending. If it reports Restart failed, report the cause. Otherwise, read the scope note and continue the approved work. An approval message can arrive after the restart.');
   for (const s of worktrees) lines.push(`Attached worktree ${s.name}: branch ${s.branch} in ${s.path}, from ${s.base}. Do not change its main checkout ${s.repo}. ` +
     `Add --worktree ${s.name} to the tb git commands${!t.worktree && worktrees.length === 1 ? ', or leave it out' : ''}.`);
   for (const s of (t.scopes || []).filter(x => x.kind === 'read')) lines.push(`You may read the folder ${s.path}. Do not write there.`);
@@ -1127,7 +1127,10 @@ export const launching = new Set<string>();
 
 async function launch(t: Task, prompt: string | null, resume: boolean) {
   launching.add(t.id); store.launchedAt.set(t.id, Date.now());
-  try { await launchInner(t, prompt, resume); } finally { launching.delete(t.id); }
+  try {
+    await launchInner(t, prompt, resume);
+    if (store.get(t.id)?.restartFailed) store.update(t.id, { restartFailed: undefined });
+  } finally { launching.delete(t.id); }
 }
 async function launchInner(t: Task, prompt: string | null, resume: boolean) {
   if (t.agent === 'antigravity') {

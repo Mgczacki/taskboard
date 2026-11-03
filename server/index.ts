@@ -1355,7 +1355,7 @@ app.post('/api/git/check', async (req, res) => {
 // user's exact words from its chat (POST /api/scope/:id/controller-approve).
 function scopeNotice(taskId: string, text: string, tell: boolean) {
   const name = `scope-${Date.now()}.md`;
-  try { docs.uploadSystem(taskId, name, text); } catch (e) { console.error('could not write the scope notice', e); return; }
+  docs.uploadSystem(taskId, name, text);
   if (tell) void inboxDelivery.deliver(taskId, name); else inboxDelivery.track(taskId, name);
 }
 async function applyScope(t: store.Task, s: store.Scope): Promise<string> {
@@ -1409,6 +1409,7 @@ app.get('/api/scope', (req, res) => {
   const task = store.get(actor);
   if (!task || task.role === 'controller') return res.status(403).json({ error: 'Run tb scope list inside a task.' });
   res.json({ scopes: task.scopes || [], scopeLimit: machine.get().scopeLimit, pending: approvals.pendingFor(actor).filter(a => a.action === 'scope').map(a => ({ id: a.id, summary: a.summary })),
+    restartFailed: task.restartFailed,
     restart: task.restartWhenDone ? task.restartWait || `Waiting for the end of the turn${task.restartFor ? ` ${task.restartFor}` : ''}.` : undefined });
 });
 app.post('/api/scope/:id/controller-approve', async (req, res) => {
@@ -1727,7 +1728,7 @@ app.post('/api/tasks/:id/seen', (req, res) => {
 });
 app.post('/api/tasks/:id/resume', async (req, res) => {
   const t = store.get(req.params.id); if (!t) return res.status(404).end();
-  try { const r = await agents.resumeTask(t, !!req.body.force); res.json(view(r.restartFailed ? store.update(t.id, { restartFailed: undefined })! : r)); } catch (e) { fail(res, e); }
+  try { res.json(view(await agents.resumeTask(t, !!req.body.force))); } catch (e) { fail(res, e); }
 });
 // Move a session from another terminal to here. Stopping that process cuts off a turn in progress, so
 // when: 'after-turn' only records the wish; watchElsewhere() does the move once the transcript shows the turn ended.
@@ -2861,6 +2862,11 @@ async function keepController(t: store.Task, s?: { dead: boolean }) {
 const RESTART_CLEARED = { restartWhenDone: undefined, restartWhenDoneAt: undefined, restartFor: undefined, restartWait: undefined, restartOverdue: undefined } as const;
 // a log that cannot be written must not change the result of the restart
 const restartLog = (id: string, entry: { did: string; wait?: string; next?: string }) => { try { store.appendLog(id, entry); } catch (e) { console.error('restart log', e); } };
+function failPendingRestart(t: store.Task, reason: string) {
+  if (!t.restartWhenDone || t.restartFailed) return;
+  store.update(t.id, { restartFailed: reason });
+  restartLog(t.id, { did: `The pending restart failed: ${reason}`, next: 'Open the task and use Try again.' });
+}
 async function restartTask(t: store.Task, by = 'Taskboard') {
   if (endingTasks.has(t.id) || store.get(t.id)?.status === 'archived') return;
   const running = activeRestarts.get(t.id);
@@ -2870,40 +2876,47 @@ async function restartTask(t: store.Task, by = 'Taskboard') {
   try { await attempt; } finally { if (activeRestarts.get(t.id) === attempt) activeRestarts.delete(t.id); }
 }
 async function restartTaskNow(t: store.Task, by: string) {
-  const notice = t.scopeNotice, why = t.restartFor ? ` ${t.restartFor}` : '';
-  store.update(t.id, { ...RESTART_CLEARED, scopeNotice: undefined, restartFailed: undefined });
-  let started = true;
+  const notice = t.scopeNotice, requestedAt = t.restartWhenDoneAt, why = t.restartFor ? ` ${t.restartFor}` : '';
+  // Keep the request until the start succeeds. A failed start must not lose the approved scope note.
+  store.update(t.id, { restartFailed: undefined });
   try {
     await tmux.killSession(t.session);
+    if ((await tmux.hasSession(t.session)) !== false) throw new Error('Could not confirm that the old session stopped. The approved settings are not confirmed.');
     await agents.resumeTask(store.get(t.id)!, true);
     // the resume sets 'idle'; a document that still waits for review keeps the task in 'review' (events.ts finishedStatus)
     const review = pendingFor(t.id);
     if (review) store.update(t.id, { status: 'review', ask: `Review ${review.name}` });
+    if (notice) scopeNotice(t.id, notice, true);
+    // Another approval can arrive while resumeTask waits. Leave that request for the next check.
+    const current = store.get(t.id)!;
+    if (current.restartWhenDoneAt === requestedAt && current.scopeNotice === notice)
+      store.update(t.id, { ...RESTART_CLEARED, scopeNotice: undefined });
     restartLog(t.id, { did: `Restarted the session${why} (${by}). It resumed the same conversation ${t.sessionId || ''}.`.replace(' .', '.'), next: notice ? 'Read the scope note in the inbox.' : '—' });
   } catch (e) {
-    started = false;
     const reason = e instanceof Error ? e.message : String(e);
     console.error(`restart of #${t.num} failed:`, reason);
     store.update(t.id, { status: 'suspended', restartFailed: reason, statusSource: `Restart failed: ${reason}` });
     restartLog(t.id, { did: `The restart${why} failed: ${reason}`, wait: 'The user: open the task and use Try again, or resume it.' });
   }
-  if (notice) scopeNotice(t.id, notice, started);
 }
 
 // A task with restartWhenDone: restart it when restartWaitReason() finds nothing that the restart would cut off.
 // Otherwise record why it waits (restartWait), and after RESTART_WAIT_MS offer "Restart now" (restartOverdue).
-const RESTART_WAIT_MS = Number(process.env.TASKBOARD_RESTART_WAIT_MS) || 10 * 60000;
+const RESTART_WAIT_MS = Number(process.env.TASKBOARD_RESTART_WAIT_MS) || scopeRestart.RESTART_WAIT_MS;
 function turnEnded(t: store.Task) {
   const r = t.transcript ? external.readState(t.agent, t.transcript) : null;
   return { ended: !!r && (r.state === 'finished' || r.state === 'aborted'), text: r?.text };
 }
 async function pendingRestart(t: store.Task): Promise<boolean> {
   if (endingTasks.has(t.id) || store.get(t.id)?.status === 'archived') return false;
+  if (activeRestarts.has(t.id)) return true;
+  if (t.restartFailed) return false; // Keep the cause visible until the user retries or resumes the task.
   // the session started again after the approval (tb resume, Resume, a move): it already has the new folder
   if ((store.launchedAt.get(t.id) || 0) > (Date.parse(t.restartWhenDoneAt || '') || Infinity)) {
-    store.update(t.id, RESTART_CLEARED);
+    try { if (t.scopeNotice) scopeNotice(t.id, t.scopeNotice, true); }
+    catch (e) { failPendingRestart(t, `The session started, but its scope note could not be saved: ${e instanceof Error ? e.message : String(e)}`); return false; }
+    store.update(t.id, { ...RESTART_CLEARED, scopeNotice: undefined });
     restartLog(t.id, { did: `The session started again after the approval, so it already runs${t.restartFor ? ` ${t.restartFor.replace(/^to give/, 'with')}` : ' with the new settings'}. Taskboard did not restart it again.` });
-    if (t.scopeNotice) { scopeNotice(t.id, t.scopeNotice, true); store.update(t.id, { scopeNotice: undefined }); }
     return false;
   }
   const turn = turnEnded(t);
@@ -2963,18 +2976,20 @@ async function reconcile(first = false) {
     // marked suspended but its session is running (for example after a listing problem): take it back
     if (t.status === 'suspended') {
       if (s && !s.dead && !t.openElsewhere) store.update(t.id, { status: 'idle', interrupted: undefined, startFailed: undefined, statusSource: `Found its session running at ${new Date().toTimeString().slice(0, 5)}.` });
+      else failPendingRestart(t, 'The session stopped before the pending restart completed.');
       continue;
     }
     // missing from the list: confirm with tmux directly before treating the session as gone
     if (!s && (await tmux.hasSession(t.session)) !== false) continue;
     // a task stopped for its account (launch-limit.ts ends the session) keeps its reason until you act on it
     if (!s && t.status === 'stopped') continue;
-    if (!s) { store.update(t.id, { status: 'suspended', interrupted: t.status === 'working' ? 'The session ended while the agent was working.' : undefined, statusSource: 'The tmux session is gone (restart or crash). Opening the task resumes it.' }); continue; }
+    if (!s) { failPendingRestart(t, 'The session ended before the pending restart completed.'); store.update(t.id, { status: 'suspended', interrupted: t.status === 'working' ? 'The session ended while the agent was working.' : undefined, statusSource: 'The tmux session is gone (restart or crash). Opening the task resumes it.' }); continue; }
     if (s.dead) {
       // The pane stays open with the agent's last output (remain-on-exit), and the reason goes on the card. An exit
       // soon after a start or resume is a failed start: the task window keeps showing the pane and the task actions,
       // and opening the task does not start the agent again by itself (web Canvas.tsx and TaskPanel.tsx).
       const reason = agentExit.exitReason(s.exitStatus, await tmux.capture(t.session, 40));
+      failPendingRestart(t, reason);
       const failed = agentExit.failedStart(store.launchedAt.get(t.id), Date.now());
       console.error(`${new Date().toISOString()} #${t.num}: ${reason}`);
       store.update(t.id, { status: 'suspended', ...(failed ? { startFailed: reason } : {}),
