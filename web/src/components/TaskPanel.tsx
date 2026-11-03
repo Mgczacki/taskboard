@@ -79,7 +79,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
   useEffect(() => { api.since(t.id).then(s => { setSince(s); api.seen(t.id).catch(() => {}); }).catch(() => api.seen(t.id).catch(() => {})); }, [t.id]);
   useEffect(() => { if (tab === 'log') api.log(t.id).then(setLog).catch(() => setLog('')); }, [tab, t.id, t.updated]);
   // opening a suspended task resumes it, except after a failed start: then the dead pane shows why, and Resume tries again
-  useEffect(() => { if (t.status === 'suspended' && !t.transfer && !t.startFailed) api.resume(t.id).catch(e => setErr(String(e.message || e))); }, [t.id]);
+  useEffect(() => { if (t.status === 'suspended' && !t.transfer && !t.startFailed && !t.restartFailed) api.resume(t.id).catch(e => setErr(String(e.message || e))); }, [t.id]);
 
   const act = (p: Promise<unknown>) => p.catch(e => setErr(String(e.message || e)));
   const [confirmRm, setConfirmRm] = useState(false);
@@ -234,8 +234,8 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
         {transferOpen && t.role !== 'controller' && <TransferPanel task={t} close={() => setTransferOpen(false)} openTarget={onOpenTask} />}
         {t.transfer && <div className="banner">{t.transfer.direction === 'source' ? 'This task moved to another machine.' : 'This task came from another machine.'} {t.transfer.state === 'started' && <button className="btn" onClick={() => act(linkedTaskId(t.transfer!.peerIdentity, t.transfer!.task).then(id => id ? onOpenTask(id) : toast('The linked machine is not paired with this dashboard.')))}>Open linked task</button>}{t.transfer.direction === 'source' && t.transfer.state !== 'started' && <><span>Check the target before either task resumes.</span><button className="btn" onClick={() => act(api.transferRecover(t.id, 'status').then(r => toast(`Target transfer: ${r.state}.`)))}>Check target</button><button className="btn" onClick={() => act(api.transferRecover(t.id, 'retry-target').then(r => toast(`Target transfer: ${r.state}.`)))}>Retry target</button><button className="btn" onClick={() => act(api.transferRecover(t.id, 'resume-source').then(() => api.resume(t.id)))}>Resume source</button></>}</div>}
         {/* a restart that gives the agent a new scope (server/index.ts applyScope), and a restart that failed */}
-        {t.restartWhenDone && t.restartFor && <div className="banner">
-          <div style={{ flex: '1 1 100%' }}><b>Restart pending.</b> {t.restartWait || `Waiting for the end of the turn ${t.restartFor}.`} The restart resumes the same conversation.</div>
+        {t.restartWhenDone && !t.restartFailed && <div className="banner">
+          <div role={t.restartOverdue ? 'alert' : undefined} style={{ flex: '1 1 100%' }}><b>{t.restartOverdue ? 'Restart delayed.' : 'Restart pending.'}</b> {t.restartWait || `Waiting for the end of the turn ${t.restartFor || 'to restart the session'}.`} The restart resumes the same conversation.</div>
           {t.restartOverdue && <button className="btn primary" onClick={() => act(api.restart(t.id, 'now'))} title="Ends the current turn, including a running command. The saved conversation is kept.">Restart now</button>}
           <button className="btn ghost" onClick={() => act(api.restart(t.id, 'cancel'))} title="The agent gets the new folder at the next start of this session">Cancel the restart</button>
         </div>}

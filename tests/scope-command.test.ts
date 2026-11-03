@@ -44,6 +44,9 @@ test('each agent gets --add-dir for an attached worktree, and Claude Code gets a
     assert.match(text, /tb dep add 2 --on <task>/);
     assert.match(text, /Do not add --replaces/);
     assert.match(text, /tb scope request worktree --repo <main checkout> --base <remote branch or commit> --branch <new branch>/);
+    assert.match(text, /After a scope approval, run tb scope list/);
+    assert.match(text, /End your turn only if it reports Restart pending/);
+    assert.match(text, /An approval message can arrive after the restart/);
     assert.match(text, /Attached worktree app: branch task\/app-fix/);
     assert.match(text, /Add --worktree app to the tb git commands, or leave it out/);
     assert.match(text, new RegExp(`You may read the folder ${docs}. Do not write there.`));

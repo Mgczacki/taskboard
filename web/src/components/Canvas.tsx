@@ -162,7 +162,7 @@ export function Canvas({ tasks, groups: saved, view, setView, openPanel, panelTa
 
   // windows are for running agents: archived and suspended tasks are left out (suspended ones: see the Resume button).
   // A task whose agent exited at start (startFailed) keeps its window: its dead pane shows why, and its actions stay.
-  const live = (t?: Task) => !!t && t.status !== 'archived' && (t.status !== 'suspended' || !!t.startFailed);
+  const live = (t?: Task) => !!t && t.status !== 'archived' && (t.status !== 'suspended' || !!t.startFailed || !!t.restartFailed);
   const liveSet = useCallback(() => view === 'needs' ? tasks.filter(t => ATTN.includes(t.status) || t.status === 'unread').map(t => t.id) : tasks.filter(t => live(t) && t.status !== 'parked').map(t => t.id), [tasks, view]);
   useEffect(() => { if ((view === 'needs' || view === 'live') && !frozen && tasks.length) setFrozen(liveSet()); }, [view, frozen, tasks.length, liveSet]);
   const group = view.startsWith('g:') ? groups.find(g => g.id === view.slice(2)) : undefined;
@@ -642,9 +642,9 @@ const CanvasWin = memo(function CanvasWin({ t, accounts, i, act, linkTasks, cls,
           <ManagerRoleButton t={t} variant="menu" toast={m => { setMenuOpen(false); a().toast(m); }} />
         </PopMenu>}</>}
       </div>
-      {t.restartWhenDone && t.restartFor && <div className="win-note" title={t.restartWait}>{t.restartOverdue ? t.restartWait : `Waiting for the end of the turn ${t.restartFor}.`}{t.restartOverdue && <button className="b" onClick={() => api.restart(t.id, 'now').catch(e => a().toast(String(e.message || e)))}>Restart now</button>}</div>}
+      {t.restartWhenDone && !t.restartFailed && <div className={`win-note${t.restartOverdue ? ' bad' : ''}`} title={t.restartWait}>{t.restartOverdue ? t.restartWait : `Waiting for the end of the turn ${t.restartFor || 'to restart the session'}.`}{t.restartOverdue && <button className="b" title="Ends the current turn and keeps the saved conversation." onClick={() => api.restart(t.id, 'now').catch(e => a().toast(String(e.message || e)))}>Restart now</button>}</div>}
       {t.startFailed && !t.restartFailed && <div className="win-note bad" title={t.startFailed}>Did not start. {t.startFailed}<button className="b" onClick={() => api.resume(t.id).catch(e => a().toast(String(e.message || e)))}>Try again</button></div>}
-      {t.restartFailed && <div className="win-note bad">The restart failed: {t.restartFailed}<button className="b" onClick={() => api.resume(t.id).catch(e => a().toast(String(e.message || e)))}>Try again</button></div>}
+      {t.restartFailed && <div className="win-note bad">The restart failed: {t.restartFailed}<button className="b" title="Retries the restart with the approved settings and the saved conversation." onClick={() => api.restart(t.id, 'now').catch(e => a().toast(String(e.message || e)))}>Try again</button></div>}
       <div className={`wb ${sp.open && canBrowse(t) && !heldBrowser ? `split ${sp.side}` : ''}`}>{asking && <AskPanel task={t} close={() => a().toggleAsk(t.id)} onSpinOff={(x, y) => a().onSpinOff(x, y)} />}{t.openElsewhere ? <div className="empty" style={{ padding: 16 }}>Running in another terminal ({t.openElsewhere?.tty}). <button className="btn" onClick={() => a().openPanel(t.id)}>Options…</button></div>
         : t.status === 'suspended' && !t.startFailed ? <div className="empty" style={{ padding: 16 }}>Suspended. <button className="btn" onClick={() => a().openPanel(t.id)}>Resume…</button></div>
         // a tmux window has one size: while this task's panel shows its terminal, the tile waits
