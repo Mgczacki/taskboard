@@ -767,6 +767,7 @@ export function codexKeychainArgs(platform = process.platform): string[] {
 
 export function baseEnv(t: Task): Record<string, string> {
   const env: Record<string, string> = {
+    TB_ACCOUNT_ID: t.account || accounts.defaultFor(t.agent).id,
     TASK_ID: t.id, TASK_DIR: store.taskDir(t.id), TASK_NUM: String(t.num),
     ...(t.worktree ? { TASK_WORKTREE: t.cwd } : {}),
     TASK_ATTACHED_WORKTREES: JSON.stringify(worktreeScopes(t).map(s => ({ name: s.name, path: realpathSync(s.path) }))),
@@ -950,7 +951,8 @@ function attachImages(t: Task, prompt: string, images: NewTaskImage[]) {
   const paths = images.map((i, n) => { const f = join(dir, `image-${n + 1}.${IMAGE_EXT[i.type]}`); writeFileSync(f, Buffer.from(i.data, 'base64')); return f; });
   return `${prompt}\n\nAttached ${paths.length === 1 ? 'image' : 'images'} (open ${paths.length === 1 ? 'it' : 'each file'} to view):\n${paths.map(f => `- ${f}`).join('\n')}`;
 }
-export const runningOn = (accountId: string) => store.all().filter(t => (t.account || accounts.defaultFor(t.agent).id) === accountId && ['working', 'needs-you', 'unread', 'idle', 'review', 'stopped'].includes(t.status)).length;
+const moveReservations = new Map<string, string>();
+export const runningOn = (accountId: string) => [...moveReservations].filter(([id, target]) => target === accountId && store.get(id)?.account !== target).length + store.all().filter(t => (t.account || accounts.defaultFor(t.agent).id) === accountId && ['working', 'needs-you', 'unread', 'idle', 'review', 'stopped'].includes(t.status)).length;
 
 export async function startTask(n: NewTask): Promise<Task> {
   const folder = n.folder.replace(/^~(?=\/|$)/, HOME);
@@ -1253,8 +1255,8 @@ function handoffPrompt(path: string): string {
 }
 
 // Claude Code can resume a copied conversation. Other transfers start with the saved task context.
-// auto: Taskboard moves the task after a failed first start on an account that it chose itself (launch-limit.ts).
-export async function moveAccount(task: Task, toId: string, instruction = '', opts: { auto?: boolean } = {}): Promise<Task> {
+// auto: Taskboard moves the task after an account limit (launch-limit.ts).
+export async function moveAccount(task: Task, toId: string, instruction = '', opts: { auto?: boolean; beforeStop?: () => void } = {}): Promise<Task> {
   const t = store.get(task.id);
   if (!t) throw new Error('Task no longer exists.');
   if (t.role === 'controller') throw new Error('Change the controller account on the Accounts page.');
@@ -1271,6 +1273,10 @@ export async function moveAccount(task: Task, toId: string, instruction = '', op
   let old = { ...t };
   try {
     if (!(await accounts.status(to)).signedIn) throw new Error(`Sign in to the target account first.${accounts.alternatives(to, runningOn)}`);
+    opts.beforeStop?.();
+    const noRoom = accounts.refusal(to, runningOn(to.id), runningOn);
+    if (noRoom) throw new Error(noRoom);
+    moveReservations.set(t.id, to.id);
     old = { ...t }; // status checks may have waited while the old agent reported its session id
     // Mark before stopping so late hooks from the old process cannot change the task.
     movingTasks.add(t.id);
@@ -1295,7 +1301,8 @@ export async function moveAccount(task: Task, toId: string, instruction = '', op
     }
     const source = `Moved from ${from.name} (${old.agent}) to ${to.name} (${to.agent}). ${resume ? 'Resumed the conversation.' : 'Started a new conversation with a handoff.'}`;
     store.update(t.id, {
-      agent: to.agent, account: to.id, transcript: copied, handoff, accountChosen: opts.auto ? 'auto' : 'user',
+      agent: to.agent, account: to.id, model: to.agent === old.agent ? old.model : undefined, transcript: copied, handoff, accountChosen: opts.auto ? 'auto' : 'user',
+      autoMoveAttempts: opts.auto ? old.autoMoveAttempts : undefined,
       lastFailure: failureAccountAfterMove(old.lastFailure, from),
       sessionId: resume ? old.sessionId : to.agent === 'claude' ? randomUUID() : undefined,
       pastSessions: !resume && old.sessionId ? [...new Set([...(old.pastSessions || []), old.sessionId])] : old.pastSessions,
@@ -1326,7 +1333,7 @@ export async function moveAccount(task: Task, toId: string, instruction = '', op
       store.appendLog(t.id, { did: `Move to ${to.name} failed: ${error}.`, next: 'Resume the old conversation or retry the move.' });
     }
     throw e;
-  } finally { launching.delete(t.id); movingTasks.delete(t.id); }
+  } finally { moveReservations.delete(t.id); launching.delete(t.id); movingTasks.delete(t.id); }
 }
 
 // Short-lived terminals for signing in and limit resets. Their tmux names start with util- so the UI can attach.

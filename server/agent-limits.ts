@@ -17,12 +17,12 @@ const PATTERNS: Record<Agent, [LimitKind, RegExp][]> = {
   // continue using codex. Request increase?". The "You've hit your usage limit" text is from earlier Codex versions.
   codex: [
     ['credit', line(String.raw`Your workspace is out of credits|You(?:'|’)re out of credits|Your credit balance is (?:too low|empty)`)],
-    ['limit', line(String.raw`Usage limit reached|You(?:'|’)ve hit your usage limit`)],
+    ['limit', line(String.raw`Usage limit reached|You(?:(?:'|’)ve| have) hit your (?:usage |weekly )?limit`)],
   ],
   // Claude Code texts as its documentation and earlier versions show them; not observed on this machine.
   claude: [
     ['credit', line(String.raw`(?:API Error: )?Credit balance is too low|Your credit balance is too low|billing_error`)],
-    ['limit', line(String.raw`Claude AI usage limit reached|You(?:'|’)ve hit your (?:usage )?limit|\d+-hour limit reached|Weekly limit reached`)],
+    ['limit', line(String.raw`Claude AI usage limit reached|You(?:(?:'|’)ve| have) hit your (?:usage |weekly )?limit|\d+-hour limit reached|Weekly limit reached`)],
     ['login', line(String.raw`OAuth token has expired|Invalid API key|Please run /login`)],
   ],
   // Observed with agy on task 33: "⚠ Individual quota reached. Please upgrade your subscription to increase your limits."
@@ -54,17 +54,19 @@ export function codexRolloutLimit(path: string): LimitHit | null {
   } catch { return null; }
   let last: any, reached: string | undefined, worked = false;
   for (const l of text.split('\n')) {
-    if (!l.includes('"task_complete"') && !l.includes('"rate_limit_reached_type"')) continue;
+    if (!/"(?:task_complete|task_started|user_message|token_count)"/.test(l)) continue;
     let o: any; try { o = JSON.parse(l); } catch { continue; }
     const p = o.payload || {};
-    if (p.type === 'task_complete') { last = o; if (!p.error) worked = true; }
+    if (p.type === 'task_started' || p.type === 'user_message') { last = undefined; reached = undefined; }
+    else if (p.type === 'task_complete') { last = o; if (!p.error) worked = true; }
     else if (p.rate_limits) reached = p.rate_limits.rate_limit_reached_type || undefined;
   }
   const err = last?.payload?.error;
   if (!err) return null;
   const info = String(err.codex_error_info || '');
   const message = String(err.message || '');
-  const credit = /credit|billing|payment/i.test(reached || '') || /out of credits|credit balance|billing|payment/i.test(message);
-  if (!credit && !/usage_limit|rate_limit|quota/i.test(info) && !/usage limit/i.test(message)) return null;
+  const credit = /credit|billing|payment/i.test(info) || /out of credits|credit balance|billing_error|insufficient credits/i.test(message) ||
+    (/usage_limit|quota/i.test(info) && /credit|billing|payment/i.test(reached || ''));
+  if (!credit && !/usage_limit|quota/i.test(info) && !/usage limit/i.test(message)) return null;
   return { kind: credit ? 'credit' : 'limit', text: `${message || 'Usage limit reached.'}${reached ? ` (${reached})` : ''}`.slice(0, 200), at: last.timestamp, neverWorked: !worked };
 }

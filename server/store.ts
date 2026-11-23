@@ -46,6 +46,8 @@ export interface Task {
   groups?: string[];
   account?: string;        // account id (settings folder) the agent runs with
   accountChosen?: 'auto' | 'user'; // who chose the account: the automatic choice may move a failed first start once
+  autoMoveAttempts?: string[]; // accounts already attempted; a manual move clears the sequence
+  lastAutoMove?: { at: string; from: string; to: string; reason: string };
   limitRetry?: string;     // the account a failed first start left (set once, so the retry happens only one time)
   model?: string;          // model selected for this task
   role?: 'controller';     // the controller agent is a task with this role; it is kept out of the task lists
