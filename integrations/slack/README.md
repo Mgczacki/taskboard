@@ -32,7 +32,7 @@ People search reads up to 2,000 members with `users.list`.
 History recovery reads the 50 latest records of up to 20 direct conversations.
 A changed app interface produces a visible error before posting.
 
-Taskboard bundles `integrations/a2a-notes/a2a-notes-0.14.0.tgz`.
+Taskboard bundles `integrations/a2a-notes/a2a-notes-0.15.0.tgz`.
 The lockfile records its integrity.
 This package update changes no running service.
 
@@ -42,9 +42,9 @@ Restore that config with the earlier package when rolling back.
 Pause outgoing delivery before rollback.
 Do not reuse app attachment checkpoints with the older API transport.
 
-The A2A Notes source revision is `7b057f04af4075b1b38d8c2e6e2a1bd7c65e9e1d`.
+The A2A Notes source revision is `e4b1ecb42cf6d733fbd65393ab43b39002a836c6`.
 
-The integrated package SHA256 is `43446d308373ac371a2b51b9735a69d66f7ee888b4fffdc77e5187f956909585`.
+The integrated package SHA256 is `fb9f5b0fd39e47d13c462b0a76eeec44448e96feb7ff1280f980a0ab7275c21b`.
 
 ## Optional native posting
 
@@ -136,3 +136,9 @@ Slack needs no restart after A2A Notes restarts.
 A2A Notes reads each such message back from Slack before intake.
 Slack still needs its debugging port. A Slack update, a reboot, or a manual restart starts it without the port.
 The A2A Notes card in Settings then shows **Restart Slack for A2A Notes**. Only the person can use it. It supports macOS only.
+
+## Slack updates and automatic restart
+
+Version 0.15.0 finds Slack's native functions by name. A Slack update that renames modules no longer stops background access.
+Settings can turn on an automatic Slack restart. A2A Notes then restarts Slack only within two minutes after Slack starts without its debugging port, at most three times an hour.
+The main view shows **Restart Slack for A2A Notes** whenever A2A Notes cannot reach Slack.

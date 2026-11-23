@@ -39,6 +39,7 @@ import { cancelHold, holdView, subscribeHold } from './holdRun';
 import { HOLD_MS, SHOW_MS } from './bangCommand';
 import type { PanelTab } from './panelShare';
 import { useScrollPosition } from './scrollPosition';
+import { SlackRestartBanner } from './components/SlackRestartBanner';
 
 type Page = 'list' | 'board' | 'canvas' | 'graph' | 'waiting' | 'inbox' | 'permits' | 'accounts' | 'stats' | 'settings';
 // #list · #board · #canvas · #canvas:<view>  (view = g:<group> | needs | live | t:<id,id>) · #settings:<section>
@@ -349,6 +350,7 @@ export function App() {
       {groupPrompt && <GroupPrompt ids={groupPrompt} close={() => setGroupPrompt(null)} done={(g, openWin) => { setGroupPrompt(null); setSelected(new Set()); toast(`Group “${g.name}” created`); if (openWin) openInWindow('g:' + g.id); else { setView('g:' + g.id); go('canvas'); } }} />}
       {role === 'sandbox' && <div className="sandbox-bar" title={`This is a sandbox: a separate test copy of Taskboard (${machineName}). Its agents and tasks are not your real ones.`}>Sandbox · {machineName} · not your real Taskboard</div>}
       {(away || banner) && <div className={`server-bar ${away ? 'away' : ''}`} role="status">{away || banner?.text}{!away && <button className="btn ghost" onClick={dismissBanner}>Close</button>}</div>}
+      <SlackRestartBanner />
       {overloadBanners(tasks).length > 0 && <div className="server-bar overload-bar" role="status" title="Taskboard does not switch accounts or models because of this. Each task shows its own error and its own auto-continue state.">
         <div>{overloadBanners(tasks).map(b => <div key={b.account}><b>{b.text}</b></div>)}It usually passes. This is a health note, not a limit.</div>
       </div>}
