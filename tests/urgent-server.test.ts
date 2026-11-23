@@ -44,7 +44,7 @@ const userSays = (text: string) => writeFileSync(transcript, JSON.stringify({ ty
 taskNote({ id: 'controller', num: 0, title: 'Controller', agent: 'claude', role: 'controller', status: 'idle', cwd: workspace, folder: workspace, session: 'controller', transcript });
 writeFileSync(join(tbdir, 'machine.json'), JSON.stringify({ name: 'urgent-test', controller: { autostart: false, remoteControl: false } }));
 
-test('only the user or the controller turns urgent mode on or off, and a task in urgent mode has no Taskboard restrictions', async () => {
+test('urgent mode and Permissions approve eligible requests while protected actions stay manual', async () => {
   const port = await new Promise<number>(resolve => { const s = createServer(); s.listen(0, '127.0.0.1', () => { const a = s.address(); const p = typeof a === 'object' && a ? a.port : 0; s.close(() => resolve(p)); }); });
   const base = `http://127.0.0.1:${port}`;
   const env = { ...clean, TASKBOARD_PORT: String(port), TASKBOARD_DIR: tbdir, TASKBOARD_VAULT: vault, TASKBOARD_TMUX_SOCKET: socket, TASKBOARD_MACHINE_NAME: 'urgent-test' };
@@ -161,6 +161,55 @@ test('only the user or the controller turns urgent mode on or off, and a task in
     assert.equal(audit[0].userRequest, 'urgent mode for task 1 please');
     assert.deepEqual(audit.filter(a => a.event === 'card').map(a => a.action), ['permit', 'permit', 'permit', 'git-merge']);
     assert.match(readFileSync(join(vault, 'tasks', 't1', 'log.md'), 'utf8'), /Urgent mode turned on by the user/);
+
+    // Permissions only change through the dashboard. Existing cards stay pending.
+    const patch = async (body: unknown, headers = user) => {
+      const response = await fetch(base + '/api/info', { method: 'PATCH', headers, body: JSON.stringify(body) });
+      return { status: response.status, data: await response.json() };
+    };
+    assert.ok(Object.values((await get('/api/info')).data.settings.permissionAutoApprove).every(on => on === false));
+    assert.equal((await patch({ permissionAutoApprove: { permit: true } }, { ...as('t1'), origin: base })).status, 403);
+    for (const type of ['forcePush', 'release', 'restart', 'rollback', 'github-pr', 'github-pr-merge'])
+      assert.equal((await patch({ permissionAutoApprove: { [type]: true } })).status, 400, type);
+    assert.equal((await patch({ permissionAutoApprove: { permit: 'true' } })).status, 400);
+    assert.equal((await patch({ permissionAutoApprove: { permit: true }, permitRequestLimits: { enabled: false } })).status, 200);
+    assert.equal((await card(p3.data.permit.approvalId)).state, 'pending');
+    assert.equal((await card(q1.data.permit.approvalId)).state, 'pending');
+    assert.equal(JSON.parse(readFileSync(join(tbdir, 'machine.json'), 'utf8')).permissionAutoApprove.permit, true);
+    await post(`/api/approvals/${p3.data.permit.approvalId}/deny`, {}, user);
+    const automatic = await post('/api/permits', { reason: 'Permissions check', steps: [{ command: 'true', cwd: w1 }] }, as('t1'));
+    assert.equal(automatic.status, 202, JSON.stringify(automatic.data));
+    const automaticCard = await settled(automatic.data.permit.approvalId);
+    assert.equal(automaticCard.state, 'approved');
+    assert.equal(automaticCard.decidedBy.by, 'permissions');
+    assert.equal((await get(`/api/permits/${automatic.data.permit.id}`, as('t1'))).data.approvedBy, 'permissions');
+    const supervised = await post('/api/permits/supervised', { name: 'permissions', reason: 'Permissions supervised check', command: 'bash supervised.sh', cwd: w1, risk: 'Writes one test file.' }, as('t1'));
+    assert.equal(supervised.status, 202, JSON.stringify(supervised.data));
+    assert.equal((await settled(supervised.data.permit.approvalId)).decidedBy.by, 'permissions');
+    assert.equal((await get(`/api/permits/${supervised.data.permit.id}`, as('t1'))).data.approvedBy, 'permissions');
+    for (let i = 0; i < 100 && (await get(`/api/permits/${supervised.data.permit.id}`, as('t1'))).data.state === 'running'; i++) await new Promise(r => setTimeout(r, 50));
+    assert.equal((await get(`/api/permits/${supervised.data.permit.id}`, as('t1'))).data.state, 'succeeded');
+    const decisions = readFileSync(join(tbdir, 'approval-decisions.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    assert.equal(decisions.filter(row => row.card === automaticCard.id && row.actor === 't1' && row.permissionType === 'permit' && row.by === 'permissions').length, 1);
+    assert.match(readFileSync(join(vault, 'tasks', 't1', 'log.md'), 'utf8'), new RegExp(`Auto-approved permit card ${automaticCard.id} for task #1`));
+    assert.equal((await patch({ permissionAutoApprove: { permit: false } })).status, 200);
+    // Request validation still rejects protected commands even when the permit switch is on.
+    assert.equal((await patch({ permissionAutoApprove: { permit: true } })).status, 200);
+    for (const command of ['git push --force origin task/t1', 'gh pr create', 'gh pr merge 42', 'pnpm rollback', 'tb restart'])
+      assert.equal((await post('/api/permits', { reason: 'Forbidden operation', steps: [{ command, cwd: w1 }] }, as('t1'))).status, 400, command);
+    const release = await post('/api/permits', { reason: 'Release needs its own card', steps: [{ command: 'pnpm release', cwd: w1 }] }, as('t1'));
+    assert.equal(release.status, 202);
+    assert.equal(release.data.approval.action, 'release');
+    assert.equal((await card(release.data.approval.id)).state, 'pending');
+    const reference = join(root, 'reference');
+    mkdirSync(reference);
+    assert.equal((await patch({ permissionAutoApprove: { scope: true } })).status, 200);
+    const scope = await post('/api/scope/request', { kind: 'read', path: reference, reason: 'Read reference files' }, as('t1'));
+    assert.equal(scope.status, 202, JSON.stringify(scope.data));
+    const scopeCard = await settled(scope.data.approval.id);
+    assert.equal(scopeCard.state, 'approved', JSON.stringify(scopeCard));
+    assert.equal(scopeCard.decidedBy.by, 'permissions');
+    assert.ok((await get('/api/scope', as('t1'))).data.scopes.some((entry: { path: string }) => entry.path === reference));
   } finally {
     await new Promise<void>(resolve => { if (child.exitCode !== null) return resolve(); child.once('exit', () => resolve()); child.kill(); });
     spawnSync('tmux', ['-L', socket, 'kill-server']);

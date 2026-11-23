@@ -77,6 +77,7 @@ import { controllerMailToken, human, isControllerToken } from './a2anotes/auth.t
 import * as tmux from './tmux.ts';
 import * as tmuxHealth from './tmux-health.ts';
 import * as urgent from './urgent.ts';
+import { permissionEnabled, permissionType } from '../shared/permission-policy.ts';
 import * as transfer from './transfer.ts';
 const MACHINE_ID = machineId();
 import { sampleResources } from './resource-log.ts';
@@ -126,7 +127,8 @@ links.start();
 permits.load();
 urgent.load();
 // a card of a task in urgent mode is approved at once (server/urgent.ts)
-approvals.setAutoApprover(card => urgent.autoApprove(card));
+approvals.setAutoApprover(card => permissionEnabled(machine.get().permissionAutoApprove, permissionType(card)) ? 'permissions' : urgent.autoApprove(card) ? 'urgent' : undefined);
+pending.setAutoApprover(() => machine.get().permissionAutoApprove['pending:command']);
 async function refreshSupervised(p: permits.Permit) {
   if (!p.supervised || p.state !== 'running') return p;
   const task = store.get(p.taskId);
@@ -812,7 +814,7 @@ function createPermit(task: store.Task, reason: string, steps: permits.StepInput
     const card = approvals.request({ actor, action: externalAction ? 'external' : 'permit', summary: externalAction ? `${externalAction.action} ${externalAction.target}` : `run ${p.steps.length} approved step${p.steps.length === 1 ? '' : 's'}`,
       detail: `Task: #${task.num} ${task.title}\nReason: ${p.reason}\n${p.steps.map((s, i) => `${i + 1}. ${s.command}\n   ${s.cwd} · ${s.timeoutSeconds} s · Network: ${s.network ? 'Yes' : 'No'}\n${permits.settingsDetail(s)}`).join('\n')}\nSHA-256: ${p.stepHash}\n${p.expiresAt ? `Expires: ${p.expiresAt}` : ''}`,
       payload: { permitId: p.id }, ...(p.expiresAt ? { validUntil: p.expiresAt } : {}), ...(externalAction ? { target: externalAction.target, covers: externalAction.covers } : {}) }, async decider => {
-        const result = await permits.run(p, task, decider.by === 'manager' ? 'manager' : 'user', p.decisionComment || '');
+        const result = await permits.run(p, task, decider.by, p.decisionComment || '');
         if (result.state !== 'succeeded') throw new Error(result.error || result.state);
         return `Permit ${p.id} succeeded.`;
       }, { onDeny: () => { permits.deny(p, 'Denied on the dashboard.'); }, onReopen: () => { permits.reopen(p); }, check: async () => permits.expire(p) ? 'The permit expired. Nothing ran.' : undefined });
@@ -896,7 +898,7 @@ app.post('/api/permits/supervised', (req, res) => {
     const card = approvals.request({ actor: task.id, action: 'permit', summary: `start approved run ${p.supervised!.name}`,
       detail: `Task: #${task.num} ${task.title}\nOwner: ${task.id}\nReason: ${p.reason}\nRisk: ${p.statedRisk || p.riskFlags.join(', ')}\nCommand: ${step.command}\n${permits.settingsDetail(step)}\nScript SHA-256: ${step.scriptHash}\nFolder: ${step.cwd}\nNetwork: ${step.network ? 'Yes' : 'No'}\nExpires: ${p.expiresAt}`,
       payload: { permitId: p.id }, validUntil: p.expiresAt }, async decider => {
-        if (decider.by !== 'user' && decider.by !== 'urgent' && decider.by !== 'manager') throw new Error('A supervised run needs a user decision or group delegation.');
+        if (!['user', 'urgent', 'permissions', 'manager'].includes(decider.by)) throw new Error('This supervised run has no valid approval.');
         const result = await permits.runSupervised(p, task, undefined, agents.baseEnv(task));
         if (result.state !== 'running') throw new Error(result.error || result.state);
         return `Approved run ${p.id} started. Read its logs and result with tb permit result ${p.id}.`;
@@ -1569,7 +1571,7 @@ app.get('/api/server', async (_req, res) => { const h = life.health(); res.json(
 app.patch('/api/info', async (req, res) => {
   if (!req.get('origin') || req.get('x-tb-actor')) return res.status(403).json({ error: 'Machine settings are changed on the dashboard.' });
   try {
-    const { name, routingRules, autostart, remoteControl, controllerComputerUse, dangerouslySkipPermissions, controllerSkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, allTaskCommunication: allTaskCommunicationOn, trustWorkspaces, autoReview, agySkipPermissions, controllerCanApprovePermits, holdPermissionHook, permitFolders, permitRequestLimits, scopeLimit, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, confirmLowerControl, defaultMaxParallel, newTaskDefaultAgent, applyMaxParallelToAll, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp, browserScale, browserAutoSwitch, claudeInChromeTasks, claudeInChromeController, confirmRisk, a2aSlackClientId, a2aSlackTeamId, controllerApprovals, agentErrors } = req.body;
+    const { permissionAutoApprove, name, routingRules, autostart, remoteControl, controllerComputerUse, dangerouslySkipPermissions, controllerSkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, allTaskCommunication: allTaskCommunicationOn, trustWorkspaces, autoReview, agySkipPermissions, controllerCanApprovePermits, holdPermissionHook, permitFolders, permitRequestLimits, scopeLimit, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, confirmLowerControl, defaultMaxParallel, newTaskDefaultAgent, applyMaxParallelToAll, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp, browserScale, browserAutoSwitch, claudeInChromeTasks, claudeInChromeController, confirmRisk, a2aSlackClientId, a2aSlackTeamId, controllerApprovals, agentErrors } = req.body;
     // Letting the controller approve permits gives the user less control. The page asks first and then sends confirmLowerControl.
     if (confirmLowerControl !== true && controllerCanApprovePermits === true && !machine.get().permissions.controllerCanApprovePermits)
       return res.status(400).json({ error: 'Confirm on the Settings page before you give the controller more control.' });
@@ -1580,7 +1582,7 @@ app.patch('/api/info', async (req, res) => {
       return res.status(400).json({ error: 'Pick a valid model for questions.' });
     if (reviewAccount && accounts.get(reviewAccount)?.agent !== 'claude') return res.status(400).json({ error: 'Pick a Claude Code account for auto review.' });
     if (defaultMaxParallel !== undefined) machine.checkMaxParallel(defaultMaxParallel); // refuse before anything is saved
-    machine.update({ name, routingRules, autostart, remoteControl, controllerComputerUse, dangerouslySkipPermissions, controllerSkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, allTaskCommunication: allTaskCommunicationOn, trustWorkspaces, autoReview, agySkipPermissions, controllerCanApprovePermits, holdPermissionHook, permitFolders, permitRequestLimits, scopeLimit, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, defaultMaxParallel, newTaskDefaultAgent, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp, browserScale, browserAutoSwitch, claudeInChromeTasks, claudeInChromeController, confirmRisk, a2aSlackClientId, a2aSlackTeamId, controllerApprovals, agentErrors });
+    machine.update({ permissionAutoApprove, name, routingRules, autostart, remoteControl, controllerComputerUse, dangerouslySkipPermissions, controllerSkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, allTaskCommunication: allTaskCommunicationOn, trustWorkspaces, autoReview, agySkipPermissions, controllerCanApprovePermits, holdPermissionHook, permitFolders, permitRequestLimits, scopeLimit, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, defaultMaxParallel, newTaskDefaultAgent, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp, browserScale, browserAutoSwitch, claudeInChromeTasks, claudeInChromeController, confirmRisk, a2aSlackClientId, a2aSlackTeamId, controllerApprovals, agentErrors });
     // the Settings page confirms first; running tasks keep running, only new starts check the new maximum
     if (applyMaxParallelToAll === true) accounts.setAllMaxParallel(machine.get().accounts.defaultMaxParallel);
     if (trustWorkspaces === false) trust.restore();
@@ -2677,6 +2679,10 @@ approvals.onDecision(card => {
   // A dismissed refused-command card holds no decision: the task is not told (server/approvals.ts dismiss).
   if (card.state === 'dismissed') { managerEvents.record(card.actor, 'card', `${card.action} ${card.id} dismissed. ${card.result || ''}`, true); return; }
   const requester = store.get(card.actor);
+  if (requester && (card.decidedBy?.by === 'permissions' || card.decidedBy?.by === 'urgent')) {
+    store.appendLog(requester.id, { did: `Auto-approved ${permissionType(card)} card ${card.id} for task #${requester.num} through ${card.decidedBy.by}. Result: ${card.state}.`, next: 'Read the card result.' });
+    if (card.decidedBy.by === 'urgent') urgent.audit({ event: 'card', taskId: card.actor, taskNum: requester.num, card: card.id, action: card.action, summary: card.summary });
+  }
   // "Ask task to refresh" closed a stale merge card. The message says "not denied" first. A parked task keeps the
   // message in its queue until the user resumes it. The card records what happened to the message.
   if (card.state === 'stale') {

@@ -128,7 +128,7 @@ export function a2aCards(deps: CardDeps) {
 
   // Sends an approved draft. A failure goes to the card result and to the task, in plain words.
   async function send(m: any, hash: string, d: approvals.Decider = { by: 'user' }) {
-    const who = d.by === 'manager' ? `Manager ${d.manager}, under group delegation,` : d.by === 'controller' ? 'The controller, on the user\'s request in its chat,' : 'The user';
+    const who = d.by === 'manager' ? `Manager ${d.manager}, under group delegation,` : d.by === 'permissions' ? 'Taskboard, through Settings > Permissions,' : d.by === 'controller' ? 'The controller, on the user\'s request in its chat,' : 'The user';
     let result: any;
     try { result = await deps.call('a2anotes_send', { id: m.id, expected_hash: hash, request_id: `card-${m.id}-${hash.slice(0, 16)}` }); }
     catch (e) {
@@ -190,7 +190,7 @@ export function a2aCards(deps: CardDeps) {
     open.set(id, { approval: card.id, key });
 
     async function decide(d: approvals.Decider) {
-      const context = d.by === 'manager' ? `Approved by manager ${d.manager} under group ${d.group} delegation. Reason: ${d.reason}` : d.by === 'controller' ? `Approved by the controller on the user's request: "${d.userRequest || ''}"`.slice(0, 2000) : 'Approved on the dashboard card.';
+      const context = d.by === 'manager' ? `Approved by manager ${d.manager} under group ${d.group} delegation. Reason: ${d.reason}` : d.by === 'permissions' ? 'Auto-approved through Settings > Permissions.' : d.by === 'controller' ? `Approved by the controller on the user's request: "${d.userRequest || ''}"`.slice(0, 2000) : 'Approved on the dashboard card.';
       let x = await current();
       if (stage === 'checking' || stage === 'held') throw new Error(stage === 'held' ? 'The safety check holds this draft. Nobody can approve it.' : 'The checks have not finished. Run the check again, or wait.');
       if (x.direction === 'out') {
