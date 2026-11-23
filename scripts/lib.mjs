@@ -28,7 +28,7 @@ export async function waitForInfo(url, tokenFile, ms = 20000) {
   const end = Date.now() + ms;
   while (Date.now() < end) {
     let token = ''; try { token = readFileSync(tokenFile, 'utf8').trim(); } catch { /* not created yet */ }
-    try { const r = await fetch(url + '/api/info', { headers: { 'x-taskboard-token': token }, signal: AbortSignal.timeout(2000) }); if (r.ok) return r.json(); } catch { /* not up yet */ }
+    try { const r = await fetch(url + '/api/info', { headers: { 'x-taskboard-token': token }, signal: AbortSignal.timeout(Math.min(10000, Math.max(1, end - Date.now()))) }); if (r.ok) return await r.json(); } catch { /* not up yet */ }
     await sleep(500);
   }
   return null;
@@ -82,7 +82,7 @@ export async function restartProduction(reason = 'release', detail) {
 // After a switch: the new server must keep the same process for `ms` (a release that starts and then crashes makes
 // launchd restart it, which shows up as a new pid or no answer). Returns true if it stayed up.
 export async function staysUp(pid, ms = 60000, {
-  probe = () => waitForInfo(PROD_URL, join(TB_DIR, 'token'), 4000),
+  probe = () => waitForInfo(PROD_URL, join(TB_DIR, 'token'), 12000),
   pause = sleep,
   clock = Date.now,
   isAlive = alive,
