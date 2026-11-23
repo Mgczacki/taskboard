@@ -102,12 +102,22 @@ async function refreshNow(o: Owner): Promise<Proc[]> {
   const map = await panes(o.session);
   if (!map) return list; // tmux did not answer: do not guess
   let dirty = false;
+  // A dead window keeps one `sh -c cat` from pipe-pane alive and one more row in every `tmux list-panes -a`.
+  // The exit code is in procs.json and the output is in the log file, so the window is closed when the process ends.
+  const closeDead = async (p: Proc) => {
+    if (p.window) await tmux('kill-window', '-t', p.window).catch(() => {});
+    p.window = undefined; p.pid = undefined; dirty = true;
+  };
   for (const p of list) {
-    if (p.state !== 'running' && p.state !== 'starting') continue;
+    if (p.state !== 'running' && p.state !== 'starting') {
+      // windows that an older version left after the process ended
+      if (p.window && map.get(p.window)?.dead) await closeDead(p);
+      continue;
+    }
     if (p.state === 'starting' && !p.window && p.permitId && p.started && Date.now() - Date.parse(p.started) < 10_000) continue;
     const pane = p.window ? map.get(p.window) : undefined;
     if (!pane) { Object.assign(p, { state: 'stopped', ended: new Date().toISOString(), stopNote: 'Its tmux window is gone (Taskboard or the Mac restarted, or it was closed outside Taskboard).' }); dirty = true; continue; }
-    if (pane.dead) { Object.assign(p, { state: 'exited', exitCode: pane.status ?? undefined, ended: new Date().toISOString() }); dirty = true; continue; }
+    if (pane.dead) { Object.assign(p, { state: 'exited', exitCode: pane.status ?? undefined, ended: new Date().toISOString() }); await closeDead(p); continue; }
     if (p.state === 'starting') { p.state = 'running'; dirty = true; }
     if (!p.port || p.portFromLog) {
       const port = portFromText(readHead(logFile(o, p.name), 65536));
@@ -266,7 +276,8 @@ export function restart(o: Owner, name: string): Promise<Proc> {
     const p = list.find(x => x.name === name);
     if (!p) throw new Error(`No process named ${name}.`);
     if (p.permitId) throw new Error('An approved run cannot restart. Request a new approval.');
-    if (p.state === 'running' || p.state === 'starting' || p.window) await stopOne(o, p, 'stopped');
+    // an exited process has no window any more, but a child that left its process group can still run
+    if (p.state === 'running' || p.state === 'starting' || p.state === 'exited' || p.window) await stopOne(o, p, 'stopped');
     if (!existsSync(p.cwd)) throw new Error(`The folder ${p.cwd} does not exist any more.`);
     Object.assign(p, { state: 'starting', started: new Date().toISOString(), ended: undefined, exitCode: undefined, stopNote: undefined });
     if (p.portFromLog) { p.port = undefined; p.portFromLog = undefined; }

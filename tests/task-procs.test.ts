@@ -62,6 +62,20 @@ test('a process that exits is shown as exited with its code', async () => {
   assert.equal((await procs.refresh(o)).find(x => x.name === 'fail')!.exitCode, 3);
 });
 
+test('the tmux window of a process closes when the process exits, and the log keeps its output', async () => {
+  const o = owner('t2b');
+  const windows = () => { try { return execFileSync('tmux', ['-L', socket, 'list-panes', '-s', '-t', '=proc-t2b', '-F', '#{pane_dead}'], { encoding: 'utf8' }).trim().split('\n').filter(Boolean); } catch { return []; } };
+  await procs.start(o, { name: 'keep', command: 'sleep 30', cwd: root, startedBy: 'agent' });
+  await procs.start(o, { name: 'once', command: 'echo last-line; exit 2', cwd: root, startedBy: 'agent' });
+  assert.ok(await until(async () => (await procs.refresh(o)).find(x => x.name === 'once')?.state === 'exited'));
+  const p = (await procs.refresh(o)).find(x => x.name === 'once')!;
+  assert.equal(p.exitCode, 2);
+  assert.equal(p.window, undefined);
+  assert.deepEqual(windows(), ['0'], 'only the running process keeps a window');
+  assert.ok(await until(() => readFileSync(procs.logFile(o, 'once'), 'utf8').includes('last-line')));
+  await procs.stopAll(o, 'stopped');
+});
+
 test('an approved process cannot start twice or restart after exit', async () => {
   const o = owner('approved-once');
   await procs.start(o, { name: 'permit-one', command: 'echo done; exit 4', cwd: root, startedBy: 'user', permitId: 'permit-one' });
@@ -87,7 +101,7 @@ test('stopAll also ends a child that left the process group, and runs the stop c
   await procs.start(o, { name: 'db', command: `python3 -c "import os,time; os.setsid(); time.sleep(300)" & sleep 302`, stop: `touch ${marker}`, cwd: root, startedBy: 'user' });
   let escaped: number[] = [];
   assert.ok(await until(async () => {
-    const out = execFileSync('ps', ['-axo', 'pid=,pgid=,command=']).toString();
+    const out = execFileSync('ps', ['-axo', 'pid=,pgid=,command='], { maxBuffer: 64 * 1024 * 1024 }).toString();
     escaped = out.split('\n').filter(l => l.includes('os.setsid()') && !l.includes('/bin/sh')).map(l => Number(l.trim().split(/\s+/)[0]));
     return escaped.length > 0;
   }), 'the setsid child runs');
