@@ -1,4 +1,7 @@
 // Turning hook events into task status. Status must be trustworthy, so each rule is tied to a specific event.
+import * as launchLimit from './launch-limit.ts';
+import { claudeKind } from './agent-errors.ts';
+import { resolve } from 'node:path';
 import { statSync } from 'node:fs';
 import { lastRefusal } from './claude-refusal.ts';
 import { lastCodexRefusal, type CommandRefusal } from './command-refusal.ts';
@@ -27,6 +30,7 @@ export const viewing = new Set<string>();       // task ids open in some UI wind
 // Ignore the old process while an account move stops it.
 export const movingTasks = new Set<string>();
 export function resetSessionEvents(id: string) {
+  launchLimit.reset(id);
   turnStart.delete(id); blockedOnce.delete(id); answerBeforeLog.delete(id);
   lastCodexEvent.delete(id); agyPendingTool.delete(id); sessionStarted.delete(id);
 }
@@ -84,6 +88,10 @@ function clearedPatch(t: Task, newId: string | undefined, how: string): Partial<
 
 export function claudeEvent(taskId: string, input: any): { output?: unknown } {
   const t = store.get(taskId); if (!t) return {};
+  const account = accounts.get(t.account) || accounts.defaultFor(t.agent);
+  // Claude keeps its session id across account moves. Reject hooks sent by the old account.
+  if (input.taskboard_account && input.taskboard_account !== account.id) return {};
+  if (!input.taskboard_account && input.taskboard_account_dir && resolve(input.taskboard_account_dir) !== resolve(account.dir)) return {};
   // an archived task stays archived whatever its agent still reports
   if (t.status === 'archived' || !acceptsEvent(t, 'claude', input.session_id)) return {};
   const ev = input.hook_event_name;
@@ -105,6 +113,7 @@ export function claudeEvent(taskId: string, input: any): { output?: unknown } {
         ...(input.source === 'clear' ? clearedPatch(t, input.session_id, '/clear') : {}) });
       break;
     case 'UserPromptSubmit':
+      launchLimit.reset(t.id);
       answerBeforeLog.delete(t.id); // a saved answer belongs to the previous turn only
       turnStart.set(t.id, Date.now()); blockedOnce.delete(t.id);
       store.update(t.id, { status: 'working', ask: '', stopReason: undefined, interrupted: undefined, ...agentErrors.promptSubmitted(t, input.prompt), statusSource: `Claude Code UserPromptSubmit hook at ${clock()}.` });
@@ -171,8 +180,15 @@ export function claudeEvent(taskId: string, input: any): { output?: unknown } {
       answerBeforeLog.delete(t.id);
       if (t.role !== 'controller' && agentErrors.stopFailure(t, input)) break;
       const error = String(input.error || 'API error'), text = String(input.last_assistant_message || '').replace(/\s+/g, ' ').trim().slice(0, 200);
-      accounts.markLimited(t.account || accounts.defaultFor(t.agent).id, `${text || error} (on #${t.num})`);
-      store.update(t.id, { status: 'stopped', stopReason: text || error, statusSource: `Claude Code StopFailure at ${clock()}: ${error}.` });
+      const kind = claudeKind(error, text || String(input.error_details || ''));
+      if (kind === 'limit' || kind === 'credit') {
+        accounts.markLimited(t.account || accounts.defaultFor(t.agent).id, `${text || error} (on #${t.num})`);
+        store.update(t.id, { status: 'stopped', stopReason: text || error, statusSource: `Claude Code StopFailure at ${clock()}: ${error}.` });
+        if (machine.get().accounts.autoMoveOnLimit !== 'off') {
+          void launchLimit.handle(t, { kind, text: text || String(input.error_details || error) }, false)
+            .catch(e => console.error(`Automatic move for #${t.num}:`, e));
+        }
+      }
       break;
     }
   }
@@ -198,6 +214,7 @@ export function codexHookEvent(taskId: string, input: any): { output?: unknown }
   if (input.transcript_path && input.transcript_path !== t.transcript) ids.transcript = input.transcript_path;
   switch (input.hook_event_name) {
     case 'UserPromptSubmit': {
+      launchLimit.reset(t.id);
       store.update(t.id, { ...ids, status: 'working', ask: '', stopReason: undefined, interrupted: undefined, statusSource: `Codex UserPromptSubmit hook at ${clock()}.` });
       const notice = docs.takeInboxNotice(t.id);
       const usage = t.role === 'controller' ? controllerUsage() : '';
