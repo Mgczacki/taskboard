@@ -784,6 +784,9 @@ table.keyset .keycell { text-align: right; white-space: normal; }
 .procs-table td.act .btn { margin-left: 4px; padding: 2px 8px; font-size: 12px; }
 .procs-table tr.sel td { background: var(--accent-bg); }
 .procs-table a { color: var(--accent); }
+.perm-table td:first-child { width: 34%; }
+.perm-table td:nth-child(2) { width: 140px; }
+.perm-table td.sub { font-size: 12px; }
 .procs-log { max-height: 320px; overflow: auto; margin: 0; }
 .procs-none { padding: 4px 0; }
 

@@ -1,12 +1,12 @@
 // Urgent mode approves eligible new cards for one task. It also removes request limits and allows local Git writes.
-// The mandatory manual types in permission-policy.ts remain manual. The shell guard retains protected operations.
+// The card kinds in KEPT and force pushes stay manual in urgent mode. The shell guard retains protected operations.
 // Only the user or the controller with a user message can switch urgent mode. A task cannot change it.
 // The server and guard read TB_DIR/urgent/<task id>.json. Changes and completed approvals go to urgent-mode.jsonl.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { TB_DIR } from './config.ts';
 import type { Approval } from './approvals.ts';
-import { cardNeedsManual } from '../shared/permission-policy.ts';
+import { cardNeedsManual, permissionType } from '../shared/permission-policy.ts';
 
 export interface Urgent { taskId: string; taskNum: number; startedAt: string; by: 'user' | 'controller'; reason: string; userRequest?: string }
 export interface UrgentAudit { at: string; event: 'on' | 'off' | 'card'; taskId: string; taskNum?: number; by?: 'user' | 'controller' | 'taskboard'; reason?: string; userRequest?: string; card?: string; action?: string; summary?: string }
@@ -22,8 +22,8 @@ export const onChange = (fn: (taskId: string) => void) => { listeners.add(fn); }
 export const KEPT: Partial<Record<Approval['action'], string>> = {
   'github-pr': 'Only the user approves opening a pull request.',
   'github-pr-merge': 'Only the user approves merging a pull request.',
-  release: 'A release needs a user decision in every mode.',
-  restart: 'A restart needs a user decision in every mode.',
+  release: 'A release needs a user decision in urgent mode.',
+  restart: 'A restart needs a user decision in urgent mode.',
   'mail-in': 'A message to or from a person uses Taskboard\'s own mail and Slack access. The user decides it.',
   'mail-out': 'A message to or from a person uses Taskboard\'s own mail and Slack access. The user decides it.',
   plan: 'A plan card asks the user a question.',
@@ -80,8 +80,9 @@ export function turnOff(task: { id: string; num: number }, by: 'user' | 'control
 }
 
 // approvals.ts asks this for each new card: a card of a task in urgent mode is approved at once, unless its kind is KEPT
+// or it is a force push. Settings > Permissions can still auto-approve those kinds for every task.
 export function autoApprove(card: Pick<Approval, 'id' | 'actor' | 'action' | 'summary'> & { payload?: unknown }): boolean {
-  return active(card.actor) && !KEPT[card.action] && !cardNeedsManual(card);
+  return active(card.actor) && !KEPT[card.action] && permissionType(card) !== 'forcePush' && !cardNeedsManual(card);
 }
 
 // The check for the controller: one user message in the controller chat that says urgent, names the task and has no

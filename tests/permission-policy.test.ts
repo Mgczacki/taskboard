@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PERMISSION_TYPES, MARIO_PERMISSIONS, readPermissionAutoApprove, checkPermissionPatch, manualReason, permissionEnabled, permissionType } from '../shared/permission-policy.ts';
+import { PERMISSION_TYPES, readPermissionAutoApprove, checkPermissionPatch, permissionEnabled, permissionType } from '../shared/permission-policy.ts';
 import { decidedByLine } from '../web/src/approvalHistory.ts';
 import type { Approval } from '../server/approvals.ts';
 
@@ -17,20 +17,19 @@ const tick = () => new Promise<void>(resolve => setImmediate(resolve));
 const request = (action: Approval['action'], summary: string, run = async () => 'done', payload: unknown = {}) => approvals.request({ action, actor: 't1', summary, detail: summary, payload }, run);
 const audit = () => readFileSync(join(root, 'approval-decisions.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
 
-test('every type defaults to manual and the starting choices do not change defaults', () => {
-  assert.equal(PERMISSION_TYPES.length, 28);
+test('every type defaults to manual', () => {
+  assert.equal(PERMISSION_TYPES.length, 20);
   assert.ok(Object.values(machine.get().permissionAutoApprove).every(value => value === false));
-  assert.deepEqual(Object.entries(MARIO_PERMISSIONS).filter(([, on]) => on).map(([id]) => id).sort(), ['git-push', 'new', 'permit', 'send']);
-  for (const saved of [undefined, null, [], 'true', { permit: 'true', new: 1, release: true, forcePush: true }])
+  for (const saved of [undefined, null, [], 'true', { permit: 'true', new: 1, release: 'yes', rollback: true }])
     assert.ok(Object.values(readPermissionAutoApprove(saved)).every(value => value === false));
 });
 
 test('settings validate all fields before mutation and save only the selected types', () => {
-  for (const patch of [null, [], true, { missing: true }, { permit: 'true' }, { permit: true, release: true }, { forcePush: true }]) {
+  for (const patch of [null, [], true, { missing: true }, { permit: 'true' }, { permit: true, rollback: true }, { 'tool-refusal': true }, { 'pending:choice': true }]) {
     assert.throws(() => machine.update({ permissionAutoApprove: patch as any }));
     assert.equal(machine.get().permissionAutoApprove.permit, false);
   }
-  for (const row of PERMISSION_TYPES) if (manualReason(row.id)) assert.throws(() => checkPermissionPatch({ [row.id]: true }));
+  for (const row of PERMISSION_TYPES) assert.doesNotThrow(() => checkPermissionPatch({ [row.id]: true }), row.id);
   machine.update({ permissionAutoApprove: { new: true } });
   assert.equal(machine.get().permissionAutoApprove.new, true);
   const saved = JSON.parse(readFileSync(join(root, 'machine.json'), 'utf8'));
@@ -130,20 +129,34 @@ test('denials and changed facts prevent scheduled execution', async () => {
   assert.equal(runs, 0);
 });
 
-test('protected types stay manual even when an automatic policy returns true', async () => {
+test('types that were always manual can be auto-approved through Permissions, but not through urgent mode', async () => {
+  let runs = 0;
+  const settings = readPermissionAutoApprove({ 'github-pr': true, 'github-pr-merge': true, release: true, restart: true, plan: true, forcePush: true });
+  approvals.setAutoApprover(card => permissionEnabled(settings, permissionType(card)) ? 'permissions' : undefined);
+  for (const action of ['github-pr', 'github-pr-merge', 'release', 'restart', 'plan'] as const) {
+    const card = request(action, `on-${action}`, async () => { runs++; return 'done'; });
+    await tick();
+    assert.equal(card.state, 'approved', action);
+  }
+  const force = request('git-push', 'on-force', async () => { runs++; return 'done'; }, { state: { forcePush: true } });
+  await tick();
+  assert.equal(force.state, 'approved');
+  assert.equal(runs, 6);
+  urgent.turnOn({ id: 't1', num: 1 }, 'user', 'test');
+  for (const action of ['github-pr', 'github-pr-merge', 'release', 'restart', 'plan'] as const)
+    assert.equal(urgent.autoApprove({ id: action, actor: 't1', action, summary: action }), false, action);
+  assert.equal(urgent.autoApprove({ id: 'force', actor: 't1', action: 'git-push', summary: 'force', payload: { state: { forcePush: true } } }), false);
+  urgent.turnOff({ id: 't1', num: 1 }, 'user');
+});
+
+test('cards with no automatic decision stay manual even when an automatic policy returns true', async () => {
   let runs = 0;
   for (const by of ['permissions', 'urgent'] as const) {
     approvals.setAutoApprover(() => by);
-    for (const action of ['github-pr', 'github-pr-merge', 'release', 'restart', 'plan', 'tool-refusal'] as const) {
-      const card = request(action, `${by}-${action}`, async () => { runs++; return 'bad'; });
-      await tick();
-      await approvals.decide(card.id, true, { by });
-      assert.equal(card.state, 'pending', action);
-    }
-    const force = request('git-push', `${by}-force`, async () => { runs++; return 'bad'; }, { state: { forcePush: true } });
+    const card = request('tool-refusal', `${by}-refusal`, async () => { runs++; return 'bad'; });
     await tick();
-    await approvals.decide(force.id, true, { by });
-    assert.equal(force.state, 'pending');
+    await approvals.decide(card.id, true, { by });
+    assert.equal(card.state, 'pending');
   }
   assert.equal(runs, 0);
   for (const stage of ['checking', 'held']) {
@@ -155,8 +168,5 @@ test('protected types stay manual even when an automatic policy returns true', a
   await tick();
   assert.equal(archive.state, 'pending');
   assert.equal(runs, 0);
-  urgent.turnOn({ id: 't1', num: 1 }, 'user', 'test');
-  assert.equal(urgent.autoApprove({ id: 'force', actor: 't1', action: 'git-push', summary: 'force', payload: { state: { forcePush: true } } }), false);
   assert.equal(permissionEnabled(readPermissionAutoApprove({ unknown: true }), 'unknown'), false);
-  urgent.turnOff({ id: 't1', num: 1 }, 'user');
 });

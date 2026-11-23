@@ -240,28 +240,20 @@ A move between windows never changes a task's groups. A new task goes after the 
 - **Settings page:** whether the controller, and separately other agents, may start, type into, set aside and archive
   tasks through `tb` without an approval card (defaults: controller yes, other agents no). Taskboard checks these
   settings for each action. Releasing, rolling back and stopping the server stay blocked for every agent.
-- **Permissions:** Settings has one row for each permission type. Every new setting starts manual.
-  The starting-choices button turns on four types:
-  - Pushes.
-  - Task creation.
-  - Command permits, including supervised runs.
-  - Messages and documents between agents.
-
-  All other types stay manual, including A2A mail. Existing direct permissions remain separate settings.
+- **Permissions:** Settings has a table with one row for each permission type. Each row has a Manual / Auto-approve
+  dropdown. Every type starts manual, and the user can set any type to Auto-approve. Existing direct permissions remain separate settings.
   Turning on a type applies to new requests. Existing cards stay pending, including cards updated or reopened later.
   Taskboard checks the current setting again before execution. An action already running finishes normally.
   `machine.update` saves `permissionAutoApprove` in `~/.taskboard/machine.json`. Only the dashboard can change it.
   Each automatic decision records its type, card ID, and task in `approval-decisions.jsonl`.
   The task log also records automatic decisions. Card history shows whether Permissions or urgent mode approved the card.
-  These operations stay manual in every mode:
-  - Open a pull request.
-  - Merge a pull request.
-  - Force push.
-  - Release Taskboard.
-  - Roll back Taskboard.
-  - Restart Taskboard.
+  Some requests have no row because Taskboard cannot answer them automatically:
+  - Roll back Taskboard. Only the user runs a rollback, and it has no approval card.
+  - Refused tool calls. The card holds no decision.
+  - Agent questions that need a choice, text, a dialog decision, a plan decision or a sign-in.
 
-  Questions without a supported automatic answer also stay manual. The command-question setting approves only these commands once:
+  Urgent mode does not approve pull requests, force pushes, releases or restarts. A row set to Auto-approve does.
+  Questions without a supported automatic answer stay manual. The command-question setting approves only these commands once:
   - `pwd`
   - `git status`, optionally with `--short` or `--porcelain`
   - `git branch --show-current`

@@ -129,9 +129,9 @@ const rollback = !readOnly && /\b(pnpm|npm|yarn|bun|npx)\b[^;&|\n]*\srollback\b|
 // reasons that are complete without the text about stopping the server
 const ownText = [];
 if (process.env.TASK_ID && /\bgit\b[^;&|\n]*\bpush\b/.test(cmd))
-  ownText.push('use `tb git push-request` for pushes. Force pushes need a user decision in every mode');
+  ownText.push('use `tb git push-request` for pushes. A force push gets its own approval card');
 if (/\bgh\b[^;&|\n]*\bpr\s+(create|merge)\b/.test(cmd))
-  ownText.push('use `tb git pr-request` or `tb git pr-merge-request`. Only the user approves these cards');
+  ownText.push('use `tb git pr-request` or `tb git pr-merge-request`. Each one gets an approval card');
 // Only the server writes the urgent mode records and their audit log. A command that only reads them may run.
 const urgentPaths = [join(tbDir, 'urgent'), join(tbDir, 'urgent-mode.jsonl')];
 if (process.env.TASK_ID && !readOnly && (/\.taskboard\/urgent(\b|-mode)/.test(cmd) || urgentPaths.some(path => cmd.includes(path))))

@@ -10,7 +10,6 @@ export interface SectionDef { id: string; title: string; help: string; groups: G
 export const SECTIONS: SectionDef[] = [
   { id: 'permissions', title: 'Permissions', help: 'Choose which new approval cards Taskboard approves automatically.', groups: [
     { id: 'permissionTypes', settings: [
-      { id: 'permissionPreset', label: 'Use Mario’s starting choices', words: 'auto approve manual permissions' },
       ...PERMISSION_TYPES.map(row => ({ id: `permission-${row.id}`, label: row.label, words: `${row.id} auto approve manual permissions` })),
     ] },
   ] },
