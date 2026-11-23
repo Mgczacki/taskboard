@@ -22,6 +22,8 @@ import { ACTIONS, CTX_NAME, comboOf, fmtCombo, isCustom, keysOf, resetKeys, setK
 import { filterSettings, matcher, settingText } from '../settingsIndex';
 import { SettingGroup, SettingItem, SettingSection, SettingsFilterProvider, SettingsNav, hashSection, sectionAnchor } from './SettingsLayout';
 import { Processes } from './Processes';
+import { PermissionSettings } from './PermissionSettings';
+import type { PermissionAutoApprove } from '../../../shared/permission-policy';
 
 type StandingRule = { id: string; action: 'push' | 'deploy-dev' | 'catalog-stage'; actor: string; target: string; limitPerDay: number };
 function StandingRules({ tasks }: { tasks: Task[] }) {
@@ -115,7 +117,7 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
     addEventListener('hashchange', go);
     return () => { clearTimeout(timer); removeEventListener('hashchange', go); };
   }, []);
-  const save = async (p: { routingRules?: string; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; allTaskCommunication?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; agySkipPermissions?: boolean; controllerCanApprovePermits?: boolean; holdPermissionHook?: boolean; permitFolders?: string[]; permitRequestLimits?: Partial<MachineInfo['settings']['permitRequestLimits']>; scopeLimit?: Partial<MachineInfo['settings']['scopeLimit']>; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; checkPrivateNotes?: boolean; confirmLowerControl?: boolean; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; confirmRisk?: Partial<ConfirmRisk>; controllerApprovals?: Partial<ControllerApprovals>; agentErrors?: Parameters<typeof api.updateInfo>[0]['agentErrors'] }) => {
+  const save = async (p: { permissionAutoApprove?: Partial<PermissionAutoApprove>; routingRules?: string; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; allTaskCommunication?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; agySkipPermissions?: boolean; controllerCanApprovePermits?: boolean; holdPermissionHook?: boolean; permitFolders?: string[]; permitRequestLimits?: Partial<MachineInfo['settings']['permitRequestLimits']>; scopeLimit?: Partial<MachineInfo['settings']['scopeLimit']>; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; checkPrivateNotes?: boolean; confirmLowerControl?: boolean; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; confirmRisk?: Partial<ConfirmRisk>; controllerApprovals?: Partial<ControllerApprovals>; agentErrors?: Parameters<typeof api.updateInfo>[0]['agentErrors'] }) => {
     setBusy(true); try { setInfo(await api.updateInfo(p)); } catch (e) { setErr(String((e as Error).message || e)); } setBusy(false);
   };
   const ctl = tasks.find(t => t.role === 'controller');
@@ -131,6 +133,7 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
           <div className="set-body">
             {filter.total === 0 && <div className="ctl-box"><div className="sub">No setting matches “{query.trim()}”.</div><div><button className="btn" onClick={() => setQuery('')}>Show all settings</button></div></div>}
 
+            <SettingSection id="permissions"><PermissionSettings values={info?.settings.permissionAutoApprove} busy={busy} save={save} /></SettingSection>
             <SettingSection id="approvals">
               <SettingGroup section="approvals" id="tasks" title="Managing tasks" help={<>Starting tasks, typing into them, setting them aside and archiving them with <code>tb</code> can run at once or wait for your Approve / Deny card on the dashboard. Neither Claude Code, Codex nor Antigravity asks separately for <code>tb</code> commands of the controller; this is the one place that decides.</>}>
                 {p && <>

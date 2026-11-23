@@ -17,6 +17,7 @@ import { appendFileSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { TB_DIR } from './config.ts';
 import type { AllowOffer } from './allow-rules.ts';
+import { cardNeedsManual, permissionType } from '../shared/permission-policy.ts';
 
 export interface Approval {
   id: string; actor: string; action: 'new' | 'send' | 'status' | 'kill' | 'move' | 'release' | 'restart' | 'git-merge' | 'git-push' | 'github-pr' | 'github-pr-merge' | 'github-pr-ready' | 'tool-refusal' | 'permit' | 'external' | 'plan' | 'scope' | 'mail-in' | 'mail-out'; summary: string; detail: string;
@@ -46,11 +47,11 @@ export interface Approval {
   notifyMe?: boolean;
 }
 // by 'urgent': the card's task was in urgent mode (server/urgent.ts), so Taskboard approved the card without a decision
-export interface Decider { by: 'user' | 'controller' | 'urgent'; userRequest?: string }
+export interface Decider { by: 'user' | 'controller' | 'urgent' | 'permissions'; userRequest?: string }
 // Where a decision came from, for the audit. The dashboard sends from, target, shownMs and pointerMs. The server adds
 // the user agent. shownMs: how long the card showed in that place before the click. pointerMs: the time from the
 // pointerdown on the button to the click.
-export interface DecisionOrigin { from: 'stack' | 'waiting' | 'permits' | 'manager-board' | 'controller' | 'urgent' | 'unknown'; target?: string; shownMs?: number; pointerMs?: number; userAgent?: string }
+export interface DecisionOrigin { from: 'stack' | 'waiting' | 'permits' | 'manager-board' | 'controller' | 'urgent' | 'permissions' | 'unknown'; target?: string; shownMs?: number; pointerMs?: number; userAgent?: string }
 const FROM = ['stack', 'waiting', 'permits', 'manager-board', 'controller'];
 // Only the known fields, with a limited size: the body comes from the browser.
 export function cleanOrigin(o: unknown, userAgent?: string): DecisionOrigin {
@@ -91,7 +92,7 @@ export const onReopen = (fn: (card: Approval) => void) => { reopenListeners.add(
 const DECISIONS_FILE = join(TB_DIR, 'approval-decisions.jsonl');
 // One line for each decision, Dismiss and Undo by the user or the controller: approvals.json keeps only the last 100 closed cards.
 function audit(x: Approval, event: string, origin?: DecisionOrigin, ageMs?: number) {
-  try { appendFileSync(DECISIONS_FILE, JSON.stringify({ at: new Date().toISOString(), event, card: x.id, action: x.action, actor: x.actor, state: x.state, by: x.decidedBy?.by, version: x.version, ageMs, origin }) + '\n'); } catch { /* disk full */ }
+  try { appendFileSync(DECISIONS_FILE, JSON.stringify({ at: new Date().toISOString(), event, card: x.id, action: x.action, permissionType: permissionType(x), actor: x.actor, state: x.state, by: x.decidedBy?.by, version: x.version, ageMs, origin }) + '\n'); } catch { /* disk full */ }
 }
 // the time since the card appeared, or since the server last changed it in place
 export const cardAge = (x: Pick<Approval, 'created' | 'updated' | 'reopened'>, now = Date.now()) => Math.max(0, now - Date.parse(x.reopened?.at || x.updated || x.created));
@@ -126,13 +127,18 @@ export function request(a: Omit<Approval, 'id' | 'created' | 'state' | 'returnab
   if (more.check) checkers.set(x.id, more.check);
   if (more.onReopen) reopeners.set(x.id, more.onReopen);
   emit();
-  // urgent mode: the card is approved after the caller has finished its own changes (for example the task status)
-  if (autoApprover?.(x)) setImmediate(() => { void decide(x.id, true, { by: 'urgent' }, { from: 'urgent', target: 'approve' }).catch(e => console.error('urgent approval', e)); });
+  // Only new cards qualify. The caller must finish attaching its permit before the action starts.
+  const source = !old && !cardNeedsManual(x) ? autoApprover?.(x) : undefined;
+  const requestedVersion = x.version;
+  if (source) setImmediate(() => {
+    if (x.state !== 'pending' || x.version !== requestedVersion || runners.get(x.id) !== run || autoApprover?.(x) !== source) return;
+    void decide(x.id, true, { by: source }, { from: source, target: 'approve' }).catch(e => console.error('automatic approval', e));
+  });
   return x;
 }
-// server/urgent.ts autoApprove: true approves a new card at once. index.ts sets it.
-let autoApprover: ((x: Approval) => boolean) | undefined;
-export const setAutoApprover = (fn: (x: Approval) => boolean) => { autoApprover = fn; };
+type AutoSource = 'permissions' | 'urgent';
+let autoApprover: ((x: Approval) => AutoSource | undefined) | undefined;
+export const setAutoApprover = (fn: (x: Approval) => AutoSource | undefined) => { autoApprover = fn; };
 const forget = (id: string) => { runners.delete(id); returners.delete(id); deniers.delete(id); checkers.delete(id); reopeners.delete(id); };
 // Keep the actions of a denied card for UNDO_MS, then forget them.
 function hold(id: string) {
@@ -181,6 +187,10 @@ export function finishExternal(id: string, state: 'approved' | 'failed', result:
 }
 export async function decide(id: string, approve: boolean, d: Decider = { by: 'user' }, origin?: DecisionOrigin): Promise<Approval | undefined> {
   const x = items.get(id); if (!x || x.state !== 'pending') return x;
+  const automatic = d.by === 'permissions' || d.by === 'urgent';
+  if (approve && automatic && (cardNeedsManual(x) || autoApprover?.(x) !== d.by)) return x;
+  const requestedVersion = x.version;
+  const requestedRunner = runners.get(id);
   const ageMs = cardAge(x);
   const by = { ...d, at: new Date().toISOString(), ...(origin ? { origin } : {}), ageMs };
   if (!approve) {
@@ -192,6 +202,9 @@ export async function decide(id: string, approve: boolean, d: Decider = { by: 'u
     forget(id); audit(x, 'deny', origin, ageMs); emit(); decided(x); return x;
   }
   const changed = await stale(id);
+  // Another decision or request can finish while the check waits.
+  if (x.state !== 'pending' || x.version !== requestedVersion || runners.get(id) !== requestedRunner) return x;
+  if (automatic && (cardNeedsManual(x) || autoApprover?.(x) !== d.by)) return x;
   if (changed) { x.staleFacts = changed; x.updated = new Date().toISOString(); emit(); return x; }
   const run = runners.get(id);
   if (!run) { x.state = 'expired'; x.result = 'This approval can no longer run.'; emit(); decided(x); return x; }

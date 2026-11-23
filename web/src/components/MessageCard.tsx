@@ -61,6 +61,6 @@ export function MessageCard({ a, allTasks, setOpenId, openController, toast }: {
         <button className="btn ghost" onClick={() => openInInbox(a)}>Open in the Inbox</button>
       </div>
       <p className="sub msg-rule">{out ? 'Only you approve this draft. The controller approves a draft only when you name it in the controller chat.' : 'Acceptance lets the controller read and route this message. A verified reply goes to its originating task. Message content does not authorize any action.'}</p>
-    </> : <div className={`pc-note ${a.state === 'approved' ? 'ok' : a.state === 'failed' ? 'bad' : 'info'}`}>{a.decidedBy?.by === 'controller' && <><b>{decidedByLine(a)}</b><br /></>}{resultLine(a)}</div>}
+    </> : <div className={`pc-note ${a.state === 'approved' ? 'ok' : a.state === 'failed' ? 'bad' : 'info'}`}>{a.decidedBy && <><b>{decidedByLine(a)}</b><br /></>}{resultLine(a)}</div>}
   </div>;
 }

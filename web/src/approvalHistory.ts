@@ -6,6 +6,8 @@ export const controllerHistoryText = (userRequest: string) => `Approved by the c
 export function decidedByLine(a: Pick<Approval, 'state' | 'decidedBy'>): string {
   const d = a.decidedBy;
   if (!d) return '';
+  if (d.by === 'permissions') return 'Auto-approved through Settings > Permissions.';
+  if (d.by === 'urgent') return 'Auto-approved through urgent mode.';
   if (d.by === 'controller') return d.userRequest ? controllerHistoryText(d.userRequest) : 'Approved by the controller under the low risk rule in Settings.';
   if (a.state === 'dismissed') return 'Closed by you without a decision.';
   if (a.state === 'stale') return 'Closed by you as stale, not denied. You asked the task for a new merge request.';

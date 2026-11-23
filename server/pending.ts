@@ -13,6 +13,9 @@
 // Only a click on the dashboard answers an item. The controller answers only what controllerRule allows.
 // Items live in memory: a held hook request does not survive a restart, and a screen prompt is read again.
 import { randomUUID } from 'node:crypto';
+import { appendFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { TB_DIR } from './config.ts';
 import { parsePrompt, type Risk, type ScreenPrompt } from './screen-prompts.ts';
 import type { Task } from './store.ts';
 import * as dismissed from './dismiss.ts';
@@ -38,7 +41,7 @@ export interface PendingItem {
   needsTerminal?: boolean;              // the last answer failed, and the user must act in the terminal
   reason?: string;
   inspect?: boolean;
-  answer?: { by: 'user' | 'controller'; label: string; sent: string; at: string; rule?: string; tasks?: number[] };
+  answer?: { by: 'user' | 'controller' | 'permissions'; label: string; sent: string; at: string; rule?: string; tasks?: number[] };
   repeats?: { count: number; lastAnswer: string };
   sameIn?: { id: string; taskId: string; taskNum: number }[];
   sig?: string;                          // the signature of a dismiss (dismiss.ts itemSignature)
@@ -74,6 +77,16 @@ const listeners = new Set<() => void>();
 export const onPendingChange = (fn: () => void) => { listeners.add(fn); };
 let emitTimer: NodeJS.Timeout | undefined;
 const emit = () => { clearTimeout(emitTimer); emitTimer = setTimeout(() => listeners.forEach(f => f()), 30); };
+let autoApprover: (() => boolean) | undefined;
+export const setAutoApprover = (fn: () => boolean) => { autoApprover = fn; };
+export function canAutoAnswer(item: PendingItem): boolean {
+  if (!item.answerable || item.state !== 'pending' || item.kind !== 'command' || item.repeats || item.dismissed) return false;
+  // Limit unattended answers to commands with no arguments that can execute another program or change files.
+  if (!/^(pwd|git status(?: --short| --porcelain)?|git branch --show-current)$/.test(item.details?.command || '')) return false;
+  const option = item.options.find(o => o.key === 'once');
+  if (!option || option.deny || option.risk) return false;
+  try { return controllerRule(item, { option: 'once' }, { ok: false }, true) === 'low-risk command'; } catch { return false; }
+}
 const clock = () => new Date().toTimeString().slice(0, 5);
 
 function close(l: Live, state: 'answered' | 'gone' | 'failed', result: string) {
@@ -96,7 +109,12 @@ function add(t: Task, base: Omit<PendingItem, 'id' | 'taskId' | 'taskNum' | 'tas
   const before = history.find(h => h.taskId === t.id && h.state === 'answered' && signatureOf(h) === signature && Date.now() - Date.parse(h.answer?.at || h.createdAt) < 3600_000);
   if (before) item.repeats = { count: (before.repeats?.count || 1) + 1, lastAnswer: `"${before.answer?.label}" at ${new Date(before.answer!.at).toTimeString().slice(0, 5)}` };
   const l: Live = { item, actions, textAction, resolve, signature };
-  live.set(item.id, l); emit(); return l;
+  live.set(item.id, l); emit();
+  if (autoApprover?.() && canAutoAnswer(item)) setImmediate(() => {
+    if (live.get(item.id) !== l || !autoApprover?.() || !canAutoAnswer(item)) return;
+    void answer(item.id, { option: 'once', by: 'permissions', rule: 'Settings > Permissions' }).catch(e => console.error('automatic command answer', e));
+  });
+  return l;
 }
 
 // ---------- Claude Code PermissionRequest hook ----------
@@ -285,7 +303,7 @@ export const get = (id: string) => live.get(id)?.item || history.find(h => h.id 
 
 // ---------- answers ----------
 // confirmRisk: the machine setting (machine.ts) for the user's clicks. Without it, every option with a risk needs confirm.
-export interface AnswerInput { option?: string; text?: string; confirm?: boolean; group?: string[]; by: 'user' | 'controller'; rule?: string; confirmRisk?: Partial<Record<RiskKey, boolean>> }
+export interface AnswerInput { option?: string; text?: string; confirm?: boolean; group?: string[]; by: 'user' | 'controller' | 'permissions'; rule?: string; confirmRisk?: Partial<Record<RiskKey, boolean>> }
 type RiskKey = 'wideAccess' | 'installs' | 'spends' | 'exits';
 const RISK_KEY: Record<Risk, RiskKey> = { 'wide-access': 'wideAccess', installs: 'installs', spends: 'spends', exits: 'exits' };
 // true when a user click on an option with this risk must come with the confirm step
@@ -458,6 +476,8 @@ export async function answer(id: string, input: AnswerInput): Promise<PendingIte
   const l = live.get(id);
   if (!l) { const h = history.find(x => x.id === id); throw new AnswerError(h ? `This card is closed: ${h.result || h.state}.` : 'This card does not exist.', h ? 409 : 404); }
   if (l.item.state !== 'pending') throw new AnswerError('This card is being answered now.');
+  if (input.by === 'permissions' && (!autoApprover?.() || !canAutoAnswer(l.item) || input.option !== 'once' || input.text || input.group?.length))
+    throw new AnswerError('This question needs a manual answer.', 403);
   if (!l.item.answerable) throw new AnswerError('Taskboard cannot answer this prompt. Open the terminal.', 400);
   const opt = input.option ? l.item.options.find(o => o.key === input.option) : undefined;
   if (input.option && input.option !== 'form' && !opt) throw new AnswerError('This answer does not exist for this card.', 400);
@@ -477,9 +497,12 @@ export async function answer(id: string, input: AnswerInput): Promise<PendingIte
     try {
       const sent = await sendOne(x, input);
       x.item.answer = { by: input.by, label, sent, at: new Date().toISOString(), rule: input.rule, ...(nums.length > 1 ? { tasks: nums } : {}) };
+      if (input.by === 'permissions') {
+        try { appendFileSync(join(TB_DIR, 'approval-decisions.jsonl'), JSON.stringify({ at: x.item.answer.at, event: 'approve', permissionType: 'pending:command', card: x.item.id, actor: x.item.taskId, by: 'permissions', state: 'answered' }) + '\n'); } catch { /* disk full */ }
+      }
       const t = io.getTask(x.item.taskId);
       if (t) {
-        const who = input.by === 'user' ? 'The user' : `The controller (${input.rule})`;
+        const who = input.by === 'permissions' ? `Taskboard auto-approved pending:command card ${x.item.id} for task #${t.num}. Taskboard` : input.by === 'user' ? 'The user' : `The controller (${input.rule})`;
         const risk = opt?.risk ? ` The option has the risk ${opt.risk}, sent ${input.confirm ? 'after' : 'without'} the confirm step.` : '';
         io.log(t, `${who} answered "${x.item.question.slice(0, 160)}" with "${label}" on the Waiting page${nums.length > 1 ? ` (one answer for ${nums.map(n => '#' + n).join(', ')})` : ''}. Taskboard sent ${sent}.${risk}`);
         // also after a typed answer: until the agent's prompt hook sets "working", scan() would make the card again

@@ -26,7 +26,7 @@ export interface Permit {
   id: string; taskId: string; taskNum: number; agent: string; reason: string; refusalId?: string;
   approvalId?: string;
   createdAt: string; expiresAt: string; state: PermitState; stepHash: string; riskFlags: string[];
-  steps: PermitStep[]; approvedBy?: 'user' | 'controller'; approvalRule?: string; riskClass?: 'low' | 'high'; controllerRequestText?: string; statedRisk?: string;
+  steps: PermitStep[]; approvedBy?: approvals.Decider['by']; approvalRule?: string; riskClass?: 'low' | 'high'; controllerRequestText?: string; statedRisk?: string;
   decidedAt?: string; decisionComment?: string; startedAt?: string; finishedAt?: string; error?: string;
   supervised?: { name: string };
   // the task cancelled its own pending request (withdraw below)
@@ -212,14 +212,14 @@ function hardRule(argv: string[], task?: Task) {
     throw new Error(argv.includes('worktree') || (task && !task.worktree)
       ? `Use the task Git commands for changes to Git refs. A permit cannot create a worktree. ${scopeHint}`
       : 'Use the task Git commands for changes to Git refs.');
-  if (/\bgit\s+push\b|\bgh\s+(repo|pr|api)\b/.test(text)) throw new Error(/\bgh\s+pr\s+create\b/.test(text)
+  if (/\bgit\b[^\n;&|]*\bpush\b|\bgh\b[^\n;&|]*\b(repo|pr|api)\b/.test(text)) throw new Error(/\bgh\s+pr\s+create\b/.test(text)
     ? 'A GitHub write needs a separate user decision. To open a pull request from your branch, run tb git pr-request.'
     : /\bgh\s+pr\s+merge\b/.test(text)
       ? 'A GitHub write needs a separate user decision. To merge a pull request at a reviewed head, run tb git pr-merge-request.'
       : /\bgh\s+pr\s+ready\b/.test(text)
         ? 'A GitHub write needs a separate user decision. To mark a draft pull request ready for review, run tb git pr-ready-request.'
       : 'A GitHub write needs a separate user decision.');
-  if (/\b(pnpm|npm|yarn)\b.*\b(release|rollback)\b|scripts\/release\.mjs|scripts\/rollback\.mjs/.test(text)) throw new Error('A release or rollback needs its own rule.');
+  if (/\b(pnpm|npm|yarn|bun|npx)\b.*\b(release|rollback)\b|scripts\/release\.mjs|scripts\/rollback\.mjs/.test(text)) throw new Error('A release or rollback needs its own rule.');
   if (/scripts\/restart\.mjs/.test(text)) throw new Error('A restart of Taskboard needs the user.');
   if (/\b(pkill|killall|launchctl)\b/.test(text)) throw new Error('This process command is outside permit scope.');
   if (/\.taskboard|server\.pid|server\/index\.ts|taskboard\s+kill-server/.test(text)) throw new Error('A permit cannot change the running Taskboard server.');
@@ -255,12 +255,14 @@ function scriptHash(argv: string[], cwd: string, roots: string[], otherWorktrees
     const real = realpathSync(target);
     if (!roots.some(root => inside(root, real))) throw new Error('The script file is outside this task.');
     const content = readFileSync(real);
-    if (/\bgit\s+push\b|\bgh\s+(repo|pr|api)\b/.test(content.toString('utf8'))) throw new Error('A GitHub write needs a separate user decision.');
+    if (/\bgit\b[^\n;&|]*\bpush\b|\bgh\b[^\n;&|]*\b(repo|pr|api)\b/.test(content.toString('utf8'))) throw new Error('A GitHub write needs a separate user decision.');
+    if (/\b(pnpm|npm|yarn|bun|npx)\b[^\n;&|]*\b(release|rollback)\b|scripts\/(release|rollback|restart)\.mjs|\btb\s+restart\b|\blaunchctl\b[^\n]*taskboard|server\.pid/.test(content.toString('utf8')))
+      throw new Error('A protected Taskboard operation needs its own user decision.');
     const paths = content.toString('utf8').match(/(?:\.\.?\/|\/)[^\s'"`;,)]+/g) || [];
     checkWorktreeAccess(paths, dirname(real), otherWorktrees);
     return createHash('sha256').update(content).digest('hex');
   }
-  catch (e) { if (e instanceof Error && /outside this task|GitHub write|another task worktree/.test(e.message)) throw e; throw new Error('The script file must exist when you request the permit.'); }
+  catch (e) { if (e instanceof Error && /outside this task|GitHub write|another task worktree|protected Taskboard operation/.test(e.message)) throw e; throw new Error('The script file must exist when you request the permit.'); }
 }
 // Resolve an existing parent as well, so a new output file below a symlink gets the same check.
 function realTarget(path: string): string {
@@ -401,7 +403,7 @@ export function requestSupervised(task: Task, name: string, reason: string, comm
 export async function runSupervised(p: Permit, task: Task, starter: typeof procs.start = procs.start, env: Record<string, string> = { PATH: process.env.PATH || '/usr/bin:/bin' }): Promise<Permit> {
   if (!p.supervised || p.state !== 'pending' || expire(p)) return p;
   const card = p.approvalId ? approvals.get(p.approvalId) : undefined;
-  if (card?.state !== 'running' || (card.decidedBy?.by !== 'user' && card.decidedBy?.by !== 'urgent') || card.actor !== task.id) throw new Error('The user has not approved this run.');
+  if (card?.state !== 'running' || (card.decidedBy?.by !== 'user' && card.decidedBy?.by !== 'urgent' && card.decidedBy?.by !== 'permissions') || card.actor !== task.id) throw new Error('The user has not approved this run.');
   if (p.taskId !== task.id || task.status === 'archived') throw new Error('The task cannot start this run.');
   const step = p.steps[0];
   try {
@@ -410,7 +412,7 @@ export async function runSupervised(p: Permit, task: Task, starter: typeof procs
     if (hash !== p.stepHash || checked.scriptHash !== step.scriptHash) throw new Error('The approved command, folder, or script changed.');
     if (JSON.stringify(checked.argv) !== JSON.stringify(step.argv)) throw new Error('The approved arguments changed.');
     await guard(task, step);
-    p.state = 'running'; p.approvedBy = 'user'; p.approvalRule = 'dashboard Run'; p.decidedAt = now(); p.startedAt = now();
+    p.state = 'running'; p.approvedBy = card.decidedBy.by; p.approvalRule = approvalRule(card.decidedBy.by); p.decidedAt = now(); p.startedAt = now();
     step.state = 'running'; step.startedAt = p.startedAt; save(p);
     const argv = [...(step.unsetEnv?.length ? ['env', ...step.unsetEnv.flatMap(name => ['-u', name])] : []), ...step.argv];
     const command = argv.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(' ');
@@ -550,7 +552,8 @@ async function guard(task: Task, step: PermitStep) {
     if (!(step.argv[0] === 'git' && (allowedTaskGit(step.argv) || allowedSharedGit(step.argv, task)) && reason.includes('run `tb git'))) throw new Error(reason);
   }
 }
-export async function run(p: Permit, task: Task, by: 'user' | 'controller', comment = '', controllerRequestText = '', executor: typeof execute = execute) {
+const approvalRule = (by: approvals.Decider['by'], riskClass?: string) => by === 'permissions' ? 'Permissions setting' : by === 'urgent' ? 'urgent mode' : by === 'user' ? 'dashboard Run' : riskClass === 'low' ? 'low-risk command' : 'explicit user request';
+export async function run(p: Permit, task: Task, by: approvals.Decider['by'], comment = '', controllerRequestText = '', executor: typeof execute = execute) {
   if (expire(p) || p.state !== 'pending') return p;
   if (p.taskId !== task.id) throw new Error('The task changed.');
   let approvedSteps: PermitStep[];
@@ -565,7 +568,7 @@ export async function run(p: Permit, task: Task, by: 'user' | 'controller', comm
     p.steps.forEach(s => s.state = 'cancelled'); p.finishedAt = now(); save(p); return p;
   }
   p.state = 'running'; p.approvedBy = by; p.decidedAt = now(); p.decisionComment = redactOutput(comment.slice(0, 2000));
-  p.approvalRule = by === 'user' ? 'dashboard Run' : p.riskClass === 'low' ? 'low-risk command' : 'explicit user request';
+  p.approvalRule = approvalRule(by, p.riskClass);
   if (by === 'controller') p.controllerRequestText = redactOutput(controllerRequestText.slice(0, 2000));
   p.startedAt = now(); save(p);
   for (let i = 0; i < p.steps.length; i++) {

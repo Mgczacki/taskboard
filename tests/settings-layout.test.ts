@@ -2,8 +2,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { SECTIONS, filterSettings, matcher, settingText } from '../web/src/settingsIndex.ts';
+import { PERMISSION_TYPES } from '../shared/permission-policy.ts';
 
-const source = ['Settings', 'SettingsLayout', 'Accounts', 'MessageLevels', 'Integrations', 'RulesFiles']
+const source = ['Settings', 'SettingsLayout', 'Accounts', 'MessageLevels', 'Integrations', 'RulesFiles', 'PermissionSettings']
   .map(name => readFileSync(new URL(`../web/src/components/${name}.tsx`, import.meta.url), 'utf8')).join('\n');
 const settings = SECTIONS.flatMap(s => s.groups.flatMap(g => g.settings));
 const ids = settings.map(d => d.id);
@@ -50,11 +51,11 @@ test('every setting label from before the redesign is still on the page', () => 
 test('each setting has one id, and the page wraps each id in a SettingItem', () => {
   assert.equal(new Set(ids).size, ids.length);
   assert.equal(new Set(SECTIONS.map(s => s.id)).size, SECTIONS.length);
-  for (const id of ids) assert.ok(source.includes(`id="${id}"`) || source.includes(`'${id}'`), id);
+  for (const id of ids) assert.ok(source.includes(`id="${id}"`) || source.includes(`'${id}'`) || PERMISSION_TYPES.some(row => id === `permission-${row.id}`) && source.includes('id={`permission-${row.id}`}'), id);
 });
 
 test('each setting label in the section list is text on the page', () => {
-  for (const d of settings) assert.ok(source.includes(d.label), d.label);
+  for (const d of settings) assert.ok(source.includes(d.label) || PERMISSION_TYPES.some(row => row.label === d.label) && source.includes('{row.label}'), d.label);
 });
 
 test('the page renders one SettingSection for each section, in the same order', () => {

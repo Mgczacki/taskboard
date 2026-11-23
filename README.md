@@ -58,7 +58,7 @@ each update of Node.
 
 On Linux, `scripts/install-systemd.sh` does the same with a systemd user service (`taskboard.service`). Run
 `loginctl enable-linger $USER` once if the server must start at boot without a login. On Windows, a task in Task
-Scheduler that runs at logon is the equivalent; there is no script for it yet.
+Scheduler can run the server at logon. There is no script for it yet.
 
 - **Update:** `pnpm release` again. If the new release does not answer within 30 s, it switches back by itself.
   `pnpm release --ref <commit>` releases a commit instead of the current files; `--no-switch` only builds and checks.
@@ -154,7 +154,7 @@ Agents that work on Taskboard itself run inside the real one, so the setup keeps
 | Inbox | Messages with other people (A2A Notes), notes from your tasks, and documents to review. The Sent tab shows drafts and sent messages. |
 | Accounts | Settings folders per account, sign-in, limit marks, and limit resets (only you can use them). |
 
-Keys (press `⌘/` in the app for the full list; change them on the Settings page): `⌘K` or `⌃⌥K` controller, also from inside
+Keys (press `⌘/` in the app for the full list. Change them on the Settings page): `⌘K` or `⌃⌥K` controller, also from inside
 a terminal · `⌘T` (Mac app) or `⌃⌥T` new task · `⌃⌥Q` triage (everything waiting on you, longest first) · `⌃⌥U` canvas view Needs you + unread · `⌘S` hide the sidebar.
 Every default key has ⌘, ⌃ or ⌥ in it, so typing a letter never runs a shortcut. Keys with ⌘ or ⌃ work everywhere, also inside a terminal.
 You can add a single-letter key on the Settings page. It works only when the cursor is not in a terminal, a text field or the task browser.
@@ -240,6 +240,33 @@ A move between windows never changes a task's groups. A new task goes after the 
 - **Settings page:** whether the controller, and separately other agents, may start, type into, set aside and archive
   tasks through `tb` without an approval card (defaults: controller yes, other agents no). Taskboard checks these
   settings for each action. Releasing, rolling back and stopping the server stay blocked for every agent.
+- **Permissions:** Settings has one row for each permission type. Every new setting starts manual.
+  The starting-choices button turns on four types:
+  - Pushes.
+  - Task creation.
+  - Command permits, including supervised runs.
+  - Messages and documents between agents.
+
+  All other types stay manual, including A2A mail. Existing direct permissions remain separate settings.
+  Turning on a type applies to new requests. Existing cards stay pending, including cards updated or reopened later.
+  Taskboard checks the current setting again before execution. An action already running finishes normally.
+  `machine.update` saves `permissionAutoApprove` in `~/.taskboard/machine.json`. Only the dashboard can change it.
+  Each automatic decision records its type, card ID, and task in `approval-decisions.jsonl`.
+  The task log also records automatic decisions. Card history shows whether Permissions or urgent mode approved the card.
+  These operations stay manual in every mode:
+  - Open a pull request.
+  - Merge a pull request.
+  - Force push.
+  - Release Taskboard.
+  - Roll back Taskboard.
+  - Restart Taskboard.
+
+  Questions without a supported automatic answer also stay manual. The command-question setting approves only these commands once:
+  - `pwd`
+  - `git status`, optionally with `--short` or `--porcelain`
+  - `git branch --show-current`
+
+  The controller's low-risk permit setting remains separate. It permits controller decisions without a user message.
 - **Controller (⌘K):** an agent session in `~/AgentVault/controller` that manages agents with the `tb` command.
   Choose its account on the Accounts page. The account sets the controller's agent.
   The Settings page controls whether its actions need an approval card.
@@ -266,7 +293,8 @@ A move between windows never changes a task's groups. A new task goes after the 
   Wait for the expected screen, file, or server state with `tests/helpers/wait-for.ts`.
   Include the last screen and expected state in a wait failure. Keep fixed sleeps only when elapsed time is the behavior under test.
 - **Attached scopes:** A task can request another worktree or read folder with `tb scope request`.
-  Each request needs user approval. Settings > Approvals > Scope requests controls the maximum attached scopes per task.
+  Each request creates an approval card. Settings > Permissions can auto-approve new scope cards.
+  Settings > Approvals > Scope requests controls the maximum attached scopes per task.
   The count maximum is off by default. When on, it accepts a positive whole number.
   Read folders and attached worktrees count together. The initial task folder does not count.
   Lowering the maximum keeps existing scopes. New attachments fail at or above the maximum.
@@ -301,7 +329,7 @@ A move between windows never changes a task's groups. A new task goes after the 
 
   Cloud selection settings accept names instead of paths:
 
-  - `AWS_PROFILE`: 1 through 128 characters. Start with a letter or digit. Then use letters, digits, underscores, periods, or hyphens.
+  - `AWS_PROFILE`: 1 through 128 characters. Start with a letter or digit. Later characters can include `_`, `.`, and `-`.
   - `AWS_REGION`: a region name, such as `us-east-1` or `us-gov-west-1`.
 
   For example, use `--env AWS_PROFILE=relay --env AWS_REGION=us-east-1` with `tb suggest` or `tb permit run-request`.
@@ -329,7 +357,8 @@ A move between windows never changes a task's groups. A new task goes after the 
   A protected path error names the requested path and the protected path. The error gives a correction.
   This folder access also applies to `tb permit run-request`. The usual approval checks still apply.
 - **Approved task run:** `tb permit run-request <name> --reason "text" --risk "text" --command "python3 /absolute/script.py" --cwd /absolute/folder --network`
-  asks the user to start one script. Urgent mode approves new run requests without a dashboard decision.
+  asks the user to start one script. Urgent mode can approve new run requests without a dashboard decision.
+  Settings > Permissions > Run commands can also approve new run requests.
   Taskboard still checks the approved script and command before it starts the process.
   The card shows the command, script SHA-256 hash, folder, network flag, task owner,
   and risk. Taskboard checks these facts again after approval. It starts the script as a task process without the short
@@ -360,7 +389,7 @@ A move between windows never changes a task's groups. A new task goes after the 
   Settings → Task browsers → Sharp view on Retina screens starts task browsers with `--force-device-scale-factor=2`,
   so the view gets two pixels for each CSS pixel. It sends about 2.4 times more data, and agent screenshots are twice
   as large. A running browser changes at its next start. (A DevTools pixel ratio override does not change the size of a
-  screencast frame; only this start flag does.)
+  screencast frame. Only this start flag does.)
   Settings → Task browsers chooses, for Claude Code and Codex, the task browser together with the shared Chrome
   extension, the task browser only (`--no-chrome` / `--disable browser_use_external`), or off.
 - **Usage limits:** the Accounts page shows each account's windows (5-hour, weekly) with % used and reset time.

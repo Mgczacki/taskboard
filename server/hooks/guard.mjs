@@ -19,10 +19,10 @@ try { const j = JSON.parse(input || '{}'); cmd = String((agy ? j.toolCall?.args?
 
 // the real server: the one this agent's Taskboard runs (TASKBOARD_DIR is only set for test servers)
 const tbDir = process.env.TASKBOARD_DIR || join(homedir(), '.taskboard');
-// Urgent mode (server/urgent.ts): the user or the controller turned off every Taskboard restriction of this task, so
-// every command runs. The record <tbDir>/urgent/<TASK_ID>.json must name this task. A missing or damaged record is off.
+// Urgent mode permits local Git writes. Protected operations still use the checks below.
 const urgentFile = /^[A-Za-z0-9_-]+$/.test(process.env.TASK_ID || '') && process.env.TASK_ID !== 'controller' ? join(tbDir, 'urgent', process.env.TASK_ID + '.json') : '';
-if (urgentFile) { try { if (JSON.parse(readFileSync(urgentFile, 'utf8'))?.taskId === process.env.TASK_ID) process.exit(0); } catch { /* urgent mode is off */ } }
+let urgent = false;
+if (urgentFile) { try { urgent = JSON.parse(readFileSync(urgentFile, 'utf8'))?.taskId === process.env.TASK_ID; } catch { /* urgent mode is off */ } }
 // These tb operations pass literal text to the server. Their arguments do not execute shell commands.
 // Match the whole line. Shell operators outside quotes and expansions inside double quotes still need review.
 const literalWord = /(?:'[^']*'|"(?:[^"$`\\]|\\[^\r\n])*"|\\[^\r\n]|[^\s;&|`$<>(){}'"\\#])+/.source;
@@ -54,7 +54,7 @@ const gitCommand = /^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:\S*\/)?git\s+(?:(?:-C|--g
 for (const p of parts) {
   const match = p.match(gitCommand);
   // `git branch --show-current` reads the branch name. Other branch forms can change refs.
-  if (process.env.TASK_ID && process.env.TASK_ID !== 'controller' && match && gitWrite.test(match[1]) &&
+  if ((!urgent || match?.[1] === 'push') && process.env.TASK_ID && process.env.TASK_ID !== 'controller' && match && gitWrite.test(match[1]) &&
       !(match[1] === 'branch' && /^\s+--show-current\s*$/.test(match[2])))
     reasons.push((/^(?:merge|pull)$/.test(match[1]) ? 'to merge a base such as origin/main into your task branch without a rebase, run `tb git merge-from origin/main`. Otherwise, ' : '') + (attached.length
       ? `run \`tb git commit\`, \`tb git rebase\`, \`tb git merge-from\`, \`tb git repair\`, or \`tb git merge-request\` for Git writes. This task has attached worktrees: ${attached.map(s => s.name).join(', ')}. Select one with \`--worktree <name>\`. The main checkouts and other tasks' worktrees are outside this task's write scope`
@@ -124,6 +124,10 @@ const release = !readOnly && /\b(pnpm|npm|yarn|bun|npx)\b[^;&|\n]*\srelease\b|\b
 const rollback = !readOnly && /\b(pnpm|npm|yarn|bun|npx)\b[^;&|\n]*\srollback\b|\brollback\.mjs\b/.test(cmd);
 // reasons that are complete without the text about stopping the server
 const ownText = [];
+if (process.env.TASK_ID && /\bgit\b[^;&|\n]*\bpush\b/.test(cmd))
+  ownText.push('use `tb git push-request` for pushes. Force pushes need a user decision in every mode');
+if (/\bgh\b[^;&|\n]*\bpr\s+(create|merge)\b/.test(cmd))
+  ownText.push('use `tb git pr-request` or `tb git pr-merge-request`. Only the user approves these cards');
 // Only the server writes the urgent mode records and their audit log. A command that only reads them may run.
 const urgentPaths = [join(tbDir, 'urgent'), join(tbDir, 'urgent-mode.jsonl')];
 if (process.env.TASK_ID && !readOnly && (/\.taskboard\/urgent(\b|-mode)/.test(cmd) || urgentPaths.some(path => cmd.includes(path))))
