@@ -1,0 +1,32 @@
+cat > /tmp/tb-802-native.py <<'PY'
+import os,json,tempfile,pty,subprocess,select,time,re
+repo=os.getcwd(); root=os.path.realpath(tempfile.mkdtemp(prefix='tb-802-native-'));cwd=root+'/new-worktree';os.makedirs(cwd)
+home=root+'/home';os.makedirs(home+'/.claude'); state=root+'/state';os.makedirs(state)
+base={'hasCompletedOnboarding':True,'theme':'dark','hasAcknowledgedCost':True,'projects':{}}
+configs=[('default',home+'/.claude.json',None),('work',root+'/work/.claude.json',root+'/work')]
+os.makedirs(root+'/work')
+json.dump([{'id':'work','agent':'claude','name':'Work fixture','dir':root+'/work','maxParallel':8,'created':'2026-11-21'}],open(state+'/accounts.json','w'))
+env=dict(os.environ,HOME=home,TASKBOARD_DIR=state,TASKBOARD_VAULT=root+'/vault',ANTHROPIC_API_KEY='test-placeholder',CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC='1',DISABLE_AUTOUPDATER='1',TERM='xterm-256color');env.pop('CLAUDECODE',None);env.pop('CLAUDE_CONFIG_DIR',None)
+def launch(e):
+ master,slave=pty.openpty();p=subprocess.Popen(['/Users/mariogarrido/.local/bin/claude','--strict-mcp-config','--mcp-config','{"mcpServers":{}}'],cwd=cwd,env=e,stdin=slave,stdout=slave,stderr=slave,start_new_session=True);os.close(slave);out=b'';end=time.monotonic()+5
+ while time.monotonic()<end:
+  if select.select([master],[],[],.1)[0]:
+   try:out+=os.read(master,100000)
+   except OSError:break
+ p.terminate()
+ try:p.wait(timeout=1)
+ except subprocess.TimeoutExpired:p.kill();p.wait()
+ os.close(master);s=re.sub(r'\x1b\[[0-?]*[ -/]*[@-~]','',out.decode(errors='replace'));s=re.sub(r'\s','',s)
+ return {'trustPrompt':'Yes,Itrustthisfolder' in s,'apiKeyPrompt':'DetectedacustomAPIkey' in s}
+for name,file,configdir in configs:
+ json.dump(base,open(file,'w')); e=dict(env)
+ if configdir:e['CLAUDE_CONFIG_DIR']=configdir
+ before=launch(e)
+ command="import {trust} from " + json.dumps(repo+'/server/trust.ts') + ";await trust(" + json.dumps({'agent':'claude','account':'claude-default' if name=='default' else 'work','cwd':cwd}) + ");"
+ subprocess.run(['node','--import','tsx','--input-type=module','-e',command],cwd=repo,env=env,check=True,capture_output=True)
+ after=launch(e)
+ assert before['trustPrompt'] and not after['trustPrompt'],(name,before,after)
+ print(json.dumps({'account':name,'before':before,'after':after,'storedTrust':json.load(open(file))['projects'][cwd]['hasTrustDialogAccepted']}),flush=True)
+print('Scratch folder: '+root)
+PY
+python3 -u /tmp/tb-802-native.py

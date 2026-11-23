@@ -1562,7 +1562,7 @@ app.patch('/api/info', async (req, res) => {
     machine.update({ name, routingRules, autostart, remoteControl, controllerComputerUse, dangerouslySkipPermissions, controllerSkipPermissions, controllerModels, controllerNeedsApproval, agentsNeedApproval, allTaskCommunication: allTaskCommunicationOn, trustWorkspaces, autoReview, agySkipPermissions, controllerCanApprovePermits, holdPermissionHook, permitFolders, permitRequestLimits, scopeLimit, pushTaskBranches, ownRepositories, protectedBranches, askAgent, askAccount, askModel, reviewAccount, reviewModel, defaultMaxParallel, newTaskDefaultAgent, browserClaude, browserCodex, chromePath, browserIdleStopMinutes, browserSharp, browserScale, browserAutoSwitch, claudeInChromeTasks, claudeInChromeController, confirmRisk, a2aSlackClientId, a2aSlackTeamId, controllerApprovals, agentErrors });
     // the Settings page confirms first; running tasks keep running, only new starts check the new maximum
     if (applyMaxParallelToAll === true) accounts.setAllMaxParallel(machine.get().accounts.defaultMaxParallel);
-    if (trustWorkspaces === false) trust.restore();
+    if (trustWorkspaces === false) await trust.restore();
     res.json(info());
   } catch (e) { fail(res, e); }
 });

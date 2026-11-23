@@ -404,7 +404,7 @@ export async function startController(opts: { prompt?: string } = {}): Promise<T
   if ((await tmux.hasSession(t.session)) !== false) { const s = (await tmux.listSessions())?.find(x => x.name === t!.session); if (!s || !s.dead) return t; await tmux.killSession(t.session); }
   const resume = t.agent === 'claude' ? !!t.transcript : !!t.sessionId;
   if (t.agent === 'antigravity') { const a = accounts.get(t.account) || accounts.defaultFor('antigravity'); await accounts.prepare(a); await installAgyPlugin(a); }
-  if (machine.get().permissions.trustWorkspaces) workspaceTrust.trust(t);
+  if (machine.get().permissions.trustWorkspaces) await workspaceTrust.trust(t);
   launching.add(t.id); store.launchedAt.set(t.id, Date.now());
   try {
     let c = namedCommand(t, controllerCommand(t, opts.prompt || null, resume, await codexHookTrust(t)));
@@ -1138,7 +1138,7 @@ async function launchInner(t: Task, prompt: string | null, resume: boolean) {
     await accounts.prepare(a);
     await installAgyPlugin(a);
   }
-  if (machine.get().permissions.trustWorkspaces) workspaceTrust.trust(t);
+  if (machine.get().permissions.trustWorkspaces) await workspaceTrust.trust(t);
   const codexTrust = await codexHookTrust(t);
   const env = baseEnv(t);
   let cmd = namedCommand(t, command(t, prompt, resume, codexTrust));

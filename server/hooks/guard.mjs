@@ -142,7 +142,16 @@ if (/\b(rm|mv|rsync\s+--delete)\b[^\n]*(~|\$HOME|\/Users\/[^/\s]+)\/\.taskboard(
   // tmux kill-server / kill-session are judged by the socket rule above; a bare "taskboard" (the repository folder
   // ~/taskboard) is not the server
   const c = cmd.replace(/taskboard-(sandbox|wt)[^\s'"]*/g, '').replace(/\bkill-(server|session|pane|window)\b/g, '');
-  if (/\b(kill|pkill|killall)\b/.test(c) && /server\.pid|server[\\/\[\]]*index|index\.ts|\btsx\b|\.taskboard\b/i.test(c)) reasons.push('this stop command names the real Taskboard server');
+  // A script may start Node with tsx as its loader (`node --import tsx`, also as list items such as 'node','--import','tsx')
+  // and stop that child with a method call that has no arguments (`p.kill()`). That call stops the process object the
+  // script holds; it cannot name the server's process id. The real server's command line also contains `--import tsx`,
+  // so the exception ends as soon as the command looks up processes (pgrep -f -- '--import tsx' | xargs kill), names
+  // another server marker, mentions tsx in any other way, or uses kill in any other form.
+  const ownChild = !/server\.pid|server[\\/\[\]]*index|index\.ts|\.taskboard\b/i.test(c) &&
+    !/\btsx\b/i.test(c.replace(/(?:--(?:import|loader|require)|(?<![\w-])-r)(?:=|['"]?[\s,]*['"]?)tsx\b/g, '')) &&
+    !/\b(kill|pkill|killall)\b/.test(c.replace(/\.kill\(\s*\)/g, '')) &&
+    !/\b(pgrep|pidof|ps|lsof|fuser|xargs|psutil|process_iter)\b|\/proc\//.test(c);
+  if (/\b(kill|pkill|killall)\b/.test(c) && /server\.pid|server[\\/\[\]]*index|index\.ts|\btsx\b|\.taskboard\b/i.test(c) && !ownChild) reasons.push('this stop command names the real Taskboard server');
 }
 // whole command: killing whatever listens on the real server's port (lsof -ti tcp:4317 | xargs kill, fuser -k)
 const port = process.env.TASKBOARD_PORT || '4317';
