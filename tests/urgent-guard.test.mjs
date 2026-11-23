@@ -1,5 +1,4 @@
-// The guard (server/hooks/guard.mjs) in urgent mode (server/urgent.ts): with a record that names the task, every command
-// runs. Without it, or with a record of another task, the normal rules apply. A task cannot write the urgent mode files.
+// Urgent mode permits local Git writes. Protected commands still need their normal approval path.
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -10,7 +9,7 @@ import assert from 'node:assert/strict';
 
 const guard = fileURLToPath(new URL('../server/hooks/guard.mjs', import.meta.url));
 
-test('urgent mode lets every command of its task run, and only that task', () => {
+test('urgent mode permits local Git writes and keeps protected commands blocked', () => {
   const dir = mkdtempSync(join(tmpdir(), 'tb-urgent-guard-'));
   const run = (command, env = {}) => {
     const result = spawnSync(process.execPath, [guard], {
@@ -25,7 +24,9 @@ test('urgent mode lets every command of its task run, and only that task', () =>
     for (const c of blocked) assert.match(run(c), /permissionDecision.*deny/, `off: ${c}`);
     mkdirSync(join(dir, 'urgent'));
     writeFileSync(join(dir, 'urgent', 'task-9.json'), JSON.stringify({ taskId: 'task-9', taskNum: 9, by: 'user', reason: 'outage', startedAt: '2026-10-09T00:00:00Z' }));
-    for (const c of blocked) assert.equal(run(c), '', `on: ${c}`);
+    for (const c of ['git commit -m x', 'git -C /tmp/main reset --hard']) assert.equal(run(c), '', `on: ${c}`);
+    for (const c of [...blocked.filter(c => !['git commit -m x', 'git -C /tmp/main reset --hard'].includes(c)), 'git push --force origin task/x', 'git -c core.pager=cat push --force-with-lease origin task/x', 'gh pr create', 'gh pr merge 42', 'gh --repo owner/repo pr merge 42'])
+      assert.match(run(c), /permissionDecision.*deny/, `on: ${c}`);
     // another task, the controller, a record that names another task, a damaged record
     assert.match(run('git commit -m x', { TASK_ID: 'task-8' }), /deny/);
     assert.match(run('pnpm release', { TASK_ID: 'controller' }), /deny/);

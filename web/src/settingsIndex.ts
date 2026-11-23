@@ -2,11 +2,18 @@
 // read this list. Each `label` is the text that the page shows for the setting. `words` adds search terms that are
 // not in the label. A section with no settings is hidden.
 
+import { PERMISSION_TYPES } from '../../shared/permission-policy';
 export interface SettingDef { id: string; label: string; words?: string }
 export interface GroupDef { id: string; title?: string; settings: SettingDef[] }
 export interface SectionDef { id: string; title: string; help: string; groups: GroupDef[] }
 
 export const SECTIONS: SectionDef[] = [
+  { id: 'permissions', title: 'Permissions', help: 'Choose which new approval cards Taskboard approves automatically.', groups: [
+    { id: 'permissionTypes', settings: [
+      { id: 'permissionPreset', label: 'Use Mario’s starting choices', words: 'auto approve manual permissions' },
+      ...PERMISSION_TYPES.map(row => ({ id: `permission-${row.id}`, label: row.label, words: `${row.id} auto approve manual permissions` })),
+    ] },
+  ] },
   { id: 'approvals', title: 'Approvals', help: 'What the controller and other agents can do without your approval.', groups: [
     { id: 'tasks', title: 'Managing tasks', settings: [
       { id: 'controllerManagesTasks', label: 'The controller may create and manage tasks without asking', words: 'tb new send park archive resume approval' },

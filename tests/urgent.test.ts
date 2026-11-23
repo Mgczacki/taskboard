@@ -24,14 +24,14 @@ test('the controller turns urgent mode on only with one user message that says u
   assert.equal(urgent.checkUserRequest('urgent mode for 216', 216, wrote(2), wrote(1)), 'urgent mode for 216', 'the user wrote it twice');
 });
 
-test('urgent mode approves the cards of its task, except messages to people, plans and refused commands', () => {
+test('urgent mode approves eligible cards and keeps protected operations manual', () => {
   const t = { id: 't7', num: 7 };
   assert.equal(urgent.active('t7'), false);
   assert.equal(urgent.autoApprove({ id: 'c0', actor: 't7', action: 'permit', summary: 'x' }), false, 'off by default');
   urgent.turnOn(t, 'user', 'outage');
-  for (const action of ['permit', 'scope', 'git-merge', 'git-push', 'github-pr', 'release', 'send', 'kill', 'external'] as const)
+  for (const action of ['permit', 'scope', 'git-merge', 'git-push', 'send', 'kill', 'external'] as const)
     assert.equal(urgent.autoApprove({ id: 'c1', actor: 't7', action, summary: 'x' }), true, action);
-  for (const action of ['mail-in', 'mail-out', 'plan', 'tool-refusal'] as const)
+  for (const action of ['mail-in', 'mail-out', 'plan', 'tool-refusal', 'github-pr', 'github-pr-merge', 'release', 'restart'] as const)
     assert.equal(urgent.autoApprove({ id: 'c2', actor: 't7', action, summary: 'x' }), false, action);
   assert.equal(urgent.autoApprove({ id: 'c3', actor: 't8', action: 'permit', summary: 'x' }), false, 'another task');
   assert.throws(() => urgent.turnOn({ id: 'controller', num: 0, role: 'controller' }, 'user', 'x'), /controller/);

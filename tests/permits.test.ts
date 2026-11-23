@@ -22,6 +22,16 @@ copyFileSync(fileURLToPath(new URL('../server/hooks/guard.mjs', import.meta.url)
 const freshTask = (id: string) => { mkdirSync(taskDir(id), { recursive: true }); return { id, num: 1, agent: 'codex', cwd: join(root, 'work'), folder: join(root, 'work'), role: undefined, worktree: false } as Task; };
 after(() => rmSync(root, { recursive: true, force: true }));
 
+test('scripts cannot wrap operations that need their own user decision', () => {
+  const task = freshTask('protected-script');
+  for (const command of ['gh --repo owner/repo pr create', 'gh --repo owner/repo pr merge 42', 'bun run release', 'npx pnpm rollback'])
+    assert.throws(() => permits.validate(task, [{ command, cwd: task.cwd }]), /separate user decision|release or rollback/, command);
+  for (const command of ['git -c core.pager=cat push --force origin task/x', 'gh --repo owner/repo pr merge 42', 'pnpm release', 'pnpm rollback', 'node scripts/restart.mjs', 'tb restart']) {
+    writeFileSync(join(task.cwd, 'protected.sh'), `${command}\n`);
+    assert.throws(() => permits.validate(task, [{ command: 'bash protected.sh', cwd: task.cwd }]), /separate user decision|protected Taskboard operation/, command);
+  }
+});
+
 test('rolling permit windows use the current setting and give the next request time', () => {
   const at = Date.parse('2026-10-06T12:00:00.000Z');
   const limits = { enabled: true, tenMinutes: 2, day: 4 };
@@ -314,10 +324,10 @@ test('a supervised script starts once only after user approval and keeps its exi
   assert.equal(p.steps[0].outputTail, 'approved\n');
 });
 
-for (const change of ['none', 'script', 'argv', 'folder', 'owner', 'card-owner', 'archived', 'controller'] as const) {
-  test(`urgent supervised execution retains checks: ${change}`, async () => {
+for (const source of ['urgent', 'permissions'] as const) for (const change of ['none', 'script', 'argv', 'folder', 'owner', 'card-owner', 'archived', 'controller'] as const) {
+  test(`${source} supervised execution retains checks: ${change}`, async () => {
     const urgent = await import('../server/urgent.ts');
-    const task = freshTask(`urgent-supervised-${change}`);
+    const task = freshTask(`${source}-supervised-${change}`);
     const script = `urgent-${change}.sh`;
     writeFileSync(join(task.cwd, script), 'echo original\n');
     urgent.turnOn(task, 'user', 'Test urgent supervised execution');
@@ -342,7 +352,8 @@ for (const change of ['none', 'script', 'argv', 'folder', 'owner', 'card-owner',
       if (change === 'owner') p.taskId = 'another-task';
       if (change === 'card-owner') card.actor = 'another-task';
       if (change === 'archived') task.status = 'archived';
-      await approvals.decide(card.id, true, { by: change === 'controller' ? 'controller' : 'urgent' });
+      approvals.setAutoApprover(() => source);
+      await approvals.decide(card.id, true, { by: change === 'controller' ? 'controller' : source });
       assert.equal(starts, change === 'none' ? 1 : 0);
       assert.equal(card.state, change === 'none' ? 'approved' : 'failed', card.result);
       if (change === 'none') {
@@ -354,6 +365,7 @@ for (const change of ['none', 'script', 'argv', 'folder', 'owner', 'card-owner',
         assert.match(card.result || '', error);
       }
     } finally {
+      approvals.setAutoApprover(() => undefined);
       urgent.turnOff(task, 'user', 'Test finished');
     }
   });

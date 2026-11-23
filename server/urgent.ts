@@ -1,22 +1,12 @@
-// Urgent mode: the user or the controller turns off every Taskboard restriction of one task, so that its agent works as
-// a normal session of its coding agent. It is off by default and has no time limit. Only the user (dashboard) or the
-// controller (with the user's chat message) turns it on, and only they turn it off. A task cannot change it.
-// The record is TB_DIR/urgent/<task id>.json. The server and the guard (server/hooks/guard.mjs) read it. It is not in
-// the task note, because the agent can write its own note in the vault. Each start, end and each card that urgent mode
-// approved is one line in TB_DIR/urgent-mode.jsonl.
-// What urgent mode changes for the task (the callers check active()):
-//   - guard.mjs lets every shell command run (Git writes and pushes, release, the server rules: everything)
-//   - approvals.ts approves each card of the task at once (autoApprove below): permits, scope requests, merges,
-//     pushes, pull requests, releases, messages and documents to other tasks, actions on other tasks
-//   - the limits that refuse a request without a card are off: one pending permit, the permit rate limit, three open
-//     scope requests, the scope limit, the hourly limit of all-task communication
-// What stays: message drafts to people (mail-in, mail-out) send with Taskboard's own Slack and mail access, so they
-// still need the user. A plan card asks the user a question. A refused-command card holds no decision. The agent's own
-// permission check (Claude Code, Codex, Antigravity) and the access of external services do not change.
+// Urgent mode approves eligible new cards for one task. It also removes request limits and allows local Git writes.
+// The mandatory manual types in permission-policy.ts remain manual. The shell guard retains protected operations.
+// Only the user or the controller with a user message can switch urgent mode. A task cannot change it.
+// The server and guard read TB_DIR/urgent/<task id>.json. Changes and completed approvals go to urgent-mode.jsonl.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { TB_DIR } from './config.ts';
 import type { Approval } from './approvals.ts';
+import { cardNeedsManual } from '../shared/permission-policy.ts';
 
 export interface Urgent { taskId: string; taskNum: number; startedAt: string; by: 'user' | 'controller'; reason: string; userRequest?: string }
 export interface UrgentAudit { at: string; event: 'on' | 'off' | 'card'; taskId: string; taskNum?: number; by?: 'user' | 'controller' | 'taskboard'; reason?: string; userRequest?: string; card?: string; action?: string; summary?: string }
@@ -30,6 +20,10 @@ export const onChange = (fn: (taskId: string) => void) => { listeners.add(fn); }
 
 // the card kinds that urgent mode never approves, and why
 export const KEPT: Partial<Record<Approval['action'], string>> = {
+  'github-pr': 'Only the user approves opening a pull request.',
+  'github-pr-merge': 'Only the user approves merging a pull request.',
+  release: 'A release needs a user decision in every mode.',
+  restart: 'A restart needs a user decision in every mode.',
   'mail-in': 'A message to or from a person uses Taskboard\'s own mail and Slack access. The user decides it.',
   'mail-out': 'A message to or from a person uses Taskboard\'s own mail and Slack access. The user decides it.',
   plan: 'A plan card asks the user a question.',
@@ -86,10 +80,8 @@ export function turnOff(task: { id: string; num: number }, by: 'user' | 'control
 }
 
 // approvals.ts asks this for each new card: a card of a task in urgent mode is approved at once, unless its kind is KEPT
-export function autoApprove(card: Pick<Approval, 'id' | 'actor' | 'action' | 'summary'>): boolean {
-  if (!active(card.actor) || KEPT[card.action]) return false;
-  audit({ event: 'card', taskId: card.actor, taskNum: records.get(card.actor)?.taskNum, card: card.id, action: card.action, summary: card.summary });
-  return true;
+export function autoApprove(card: Pick<Approval, 'id' | 'actor' | 'action' | 'summary'> & { payload?: unknown }): boolean {
+  return active(card.actor) && !KEPT[card.action] && !cardNeedsManual(card);
 }
 
 // The check for the controller: one user message in the controller chat that says urgent, names the task and has no
@@ -114,12 +106,19 @@ export const onText = (r: Urgent) => [
   '# Urgent mode is on', '',
   `${r.by === 'user' ? 'The user' : 'The controller, on the user\'s request,'} turned on urgent mode for this task at ${r.startedAt}.`,
   `Reason: ${r.reason}`, '',
-  'Taskboard does not restrict this task now. Work as in a normal session of your coding agent:',
-  '- The Taskboard guard lets every shell command run, also raw Git writes, `git push`, and work in other repositories.',
-  '- Taskboard approves your permits, scope requests, merges, pushes, pull requests, and messages to other tasks at once. You do not need permits.',
+  'Taskboard approves eligible new cards for this task:',
+  '- Command permits, including supervised runs.',
+  '- Scope requests.',
+  '- Local merges and ordinary pushes. Use `tb git push-request` for pushes.',
+  '- Messages and documents to other tasks.',
+  '- Local Git writes can run through the shell guard.',
   '- The limits on pending permits, permit rates, and scope requests are off.', '',
   'These stay the same:',
-  '- Message drafts to people (`tb mail draft`) still need the user.',
+  '- Opening or merging pull requests needs the user.',
+  '- Force pushes need a user decision.',
+  '- Releases need a user decision.',
+  '- Rollbacks and Taskboard restarts need the user.',
+  '- Mail uses Settings > Permissions. Urgent mode alone does not approve mail.',
   '- Your coding agent\'s own permission checks and the permissions of external services do not change.',
   '- Only the user or the controller turns urgent mode off. You cannot change it.', '',
   'Other tasks and the user depend on the Taskboard server. Do not stop it.', '',
