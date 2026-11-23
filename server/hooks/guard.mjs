@@ -27,6 +27,10 @@ if (urgentFile) { try { urgent = JSON.parse(readFileSync(urgentFile, 'utf8'))?.t
 // Match the whole line. Shell operators outside quotes and expansions inside double quotes still need review.
 const literalWord = /(?:'[^']*'|"(?:[^"$`\\]|\\[^\r\n])*"|\\[^\r\n]|[^\s;&|`$<>(){}'"\\#])+/.source;
 const literalLine = new RegExp(`^(${literalWord})(?:[ \t]+(${literalWord}))*[ \t]*$`);
+// These commands ask Taskboard to check a push or read its result. They do not run Git directly.
+const tbPush = cmd.trim().match(/^(tb|\/[^\s]+)[ \t]+git[ \t]+(push-request|push-result)(?=[ \t]|$)/);
+if (tbPush && (tbPush[1] === 'tb' || tbPush[1] === join(tbDir, 'bin', 'tb')) && literalLine.test(cmd.trim()))
+  process.exit(0);
 const tbText = cmd.trim().match(/^(tb|\/[^\s]+)[ \t]+(send|new|approve|pending|scope|permit|mail)(?=[ \t]|$)([\s\S]*)$/);
 if (tbText && (tbText[1] === 'tb' || tbText[1] === join(tbDir, 'bin', 'tb')) &&
     literalLine.test(cmd.trim())) {

@@ -9,6 +9,36 @@ import assert from 'node:assert/strict';
 
 const guard = fileURLToPath(new URL('../server/hooks/guard.mjs', import.meta.url));
 
+test('Taskboard push requests and results pass while shell pushes stay blocked', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'tb-push-guard-'));
+  const run = command => {
+    const result = spawnSync(process.execPath, [guard], {
+      input: JSON.stringify({ tool_input: { command } }), encoding: 'utf8',
+      env: { ...process.env, TASKBOARD_DIR: dir, TASK_ID: 'task-9' },
+    });
+    assert.equal(result.status, 0);
+    return result.stdout;
+  };
+  try {
+    for (const command of [
+      'tb git push-request --reason "Publish the tested feature"',
+      `${join(dir, 'bin', 'tb')} git push-request --branch master --reason "Publish the tested feature"`,
+      'tb git push-result card-id --wait',
+      `${join(dir, 'bin', 'tb')} git push-result card-id`,
+      'tb git push-request --reason "This asks for git push approval"',
+    ]) assert.equal(run(command), '', command);
+    for (const command of [
+      'git push origin master',
+      'git push --force origin task/x',
+      'tb git push-request --reason x && git push origin master',
+      'tb git push-result id; git push origin master',
+      'tb git push-request --reason "$(git push origin master)"',
+      'tb git push-request --reason `git push origin master`',
+      '/tmp/other/tb git push-request --reason x',
+    ]) assert.match(run(command), /permissionDecision.*deny/, command);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
 test('urgent mode permits local Git writes and keeps protected commands blocked', () => {
   const dir = mkdtempSync(join(tmpdir(), 'tb-urgent-guard-'));
   const run = (command, env = {}) => {
