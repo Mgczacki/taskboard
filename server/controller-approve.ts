@@ -53,7 +53,7 @@ export function kindOf(a: Approval): { kind: ControllerKind } | { userOnly: stri
 // A short hash of everything that the card shows and runs. A card does not change after it is made (a changed draft
 // or a new request gets a new card), so a different value means that the controller listed another card.
 export const versionOf = (a: Approval) =>
-  createHash('sha256').update(JSON.stringify([a.id, a.action, a.actor, a.summary, a.detail, a.payload ?? null])).digest('hex').slice(0, 12);
+  createHash('sha256').update(JSON.stringify([a.id, a.action, a.actor, a.summary, a.detail, a.payload ?? null, a.affectedTasks ?? null])).digest('hex').slice(0, 12);
 
 // The branch head and the range of a merge or a push card: the commits that the card merges or pushes.
 export function headOf(a: Approval): { head: string; range: string; branch: string } | undefined {

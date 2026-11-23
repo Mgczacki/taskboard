@@ -37,6 +37,7 @@ const schedule = (group: string) => {
 };
 
 export function record(task: string, kind: string, text: string, immediate = false) {
+  store.communicate(task);
   for (const g of groups.groupsOf(task)) {
     if (!g.manager || g.manager === task) continue;
     const event: ManagerEvent = { at: new Date().toISOString(), group: g.id, task, kind, text: safe(text).slice(0, 500) };
@@ -58,7 +59,9 @@ function groupChanged() {
     for (const managerId of new Set([before.manager, now.manager].filter((x): x is string => !!x))) {
       for (const message of messageQueue.list(managerId)) {
         if (message.state === 'queued' && message.from === 'taskboard' &&
-            [before.name, now.name].some(name => message.text.startsWith(`[Taskboard event digest, `) && message.text.includes(`, group ${name}, `)))
+            [before.name, now.name].some(name =>
+              (message.text.startsWith(`[Taskboard event digest, `) && message.text.includes(`, group ${name}, `)) ||
+              (message.text.startsWith(`[Taskboard check-in, group ${name}, task #`))))
           messageQueue.remove(managerId, message.id);
       }
     }
@@ -142,6 +145,8 @@ async function checkCi() {
 }
 
 export function start() {
+  for (const g of groups.all()) if (g.manager && store.get(g.manager)?.status === 'archived' && g.delegation)
+    groups.update(g.id, { delegation: undefined });
   lastGroups = groupSnapshot();
   groups.onGroupsChange(groupChanged);
   // Older queue files may hold events from the manager itself. Remove them before scheduling delivery.
@@ -158,6 +163,8 @@ export function start() {
   store.onTaskChange(t => {
     const before = status.get(t.id); status.set(t.id, t.status);
     const oldAccount = accounts.get(t.id); accounts.set(t.id, t.account);
+    if (t.status === 'archived') for (const g of groups.all().filter(g => g.manager === t.id && g.delegation))
+      groups.update(g.id, { delegation: undefined });
     if (before && before !== t.status) record(t.id, 'status', `${before} to ${t.status}`, t.status === 'stopped');
     if (oldAccount !== t.account) for (const g of groups.all().filter(g => g.manager === t.id)) {
       const event: ManagerEvent = { at: new Date().toISOString(), group: g.id, task: 'taskboard', kind: 'account', text: `Manager #${t.num} moved to account ${t.account || 'default'}.` };

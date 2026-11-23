@@ -26,7 +26,7 @@ export interface Permit {
   id: string; taskId: string; taskNum: number; agent: string; reason: string; refusalId?: string;
   approvalId?: string;
   createdAt: string; expiresAt: string; state: PermitState; stepHash: string; riskFlags: string[];
-  steps: PermitStep[]; approvedBy?: 'user' | 'controller'; approvalRule?: string; riskClass?: 'low' | 'high'; controllerRequestText?: string; statedRisk?: string;
+  steps: PermitStep[]; approvedBy?: 'user' | 'controller' | 'manager'; approvalRule?: string; riskClass?: 'low' | 'high'; controllerRequestText?: string; statedRisk?: string;
   decidedAt?: string; decisionComment?: string; startedAt?: string; finishedAt?: string; error?: string;
   supervised?: { name: string };
   // the task cancelled its own pending request (withdraw below)
@@ -401,7 +401,7 @@ export function requestSupervised(task: Task, name: string, reason: string, comm
 export async function runSupervised(p: Permit, task: Task, starter: typeof procs.start = procs.start, env: Record<string, string> = { PATH: process.env.PATH || '/usr/bin:/bin' }): Promise<Permit> {
   if (!p.supervised || p.state !== 'pending' || expire(p)) return p;
   const card = p.approvalId ? approvals.get(p.approvalId) : undefined;
-  if (card?.state !== 'running' || (card.decidedBy?.by !== 'user' && card.decidedBy?.by !== 'urgent') || card.actor !== task.id) throw new Error('The user has not approved this run.');
+  if (card?.state !== 'running' || !['user', 'urgent', 'manager'].includes(card.decidedBy?.by || '') || card.actor !== task.id) throw new Error('The user has not approved this run.');
   if (p.taskId !== task.id || task.status === 'archived') throw new Error('The task cannot start this run.');
   const step = p.steps[0];
   try {
@@ -410,7 +410,8 @@ export async function runSupervised(p: Permit, task: Task, starter: typeof procs
     if (hash !== p.stepHash || checked.scriptHash !== step.scriptHash) throw new Error('The approved command, folder, or script changed.');
     if (JSON.stringify(checked.argv) !== JSON.stringify(step.argv)) throw new Error('The approved arguments changed.');
     await guard(task, step);
-    p.state = 'running'; p.approvedBy = 'user'; p.approvalRule = 'dashboard Run'; p.decidedAt = now(); p.startedAt = now();
+    p.state = 'running'; p.approvedBy = card.decidedBy?.by === 'manager' ? 'manager' : 'user';
+    p.approvalRule = p.approvedBy === 'manager' ? 'group delegation' : 'dashboard Run'; p.decidedAt = now(); p.startedAt = now();
     step.state = 'running'; step.startedAt = p.startedAt; save(p);
     const argv = [...(step.unsetEnv?.length ? ['env', ...step.unsetEnv.flatMap(name => ['-u', name])] : []), ...step.argv];
     const command = argv.map(a => `'${a.replace(/'/g, "'\\''")}'`).join(' ');
@@ -550,7 +551,7 @@ async function guard(task: Task, step: PermitStep) {
     if (!(step.argv[0] === 'git' && (allowedTaskGit(step.argv) || allowedSharedGit(step.argv, task)) && reason.includes('run `tb git'))) throw new Error(reason);
   }
 }
-export async function run(p: Permit, task: Task, by: 'user' | 'controller', comment = '', controllerRequestText = '', executor: typeof execute = execute) {
+export async function run(p: Permit, task: Task, by: 'user' | 'controller' | 'manager', comment = '', controllerRequestText = '', executor: typeof execute = execute) {
   if (expire(p) || p.state !== 'pending') return p;
   if (p.taskId !== task.id) throw new Error('The task changed.');
   let approvedSteps: PermitStep[];
@@ -565,7 +566,7 @@ export async function run(p: Permit, task: Task, by: 'user' | 'controller', comm
     p.steps.forEach(s => s.state = 'cancelled'); p.finishedAt = now(); save(p); return p;
   }
   p.state = 'running'; p.approvedBy = by; p.decidedAt = now(); p.decisionComment = redactOutput(comment.slice(0, 2000));
-  p.approvalRule = by === 'user' ? 'dashboard Run' : p.riskClass === 'low' ? 'low-risk command' : 'explicit user request';
+  p.approvalRule = by === 'manager' ? 'group delegation' : by === 'user' ? 'dashboard Run' : p.riskClass === 'low' ? 'low-risk command' : 'explicit user request';
   if (by === 'controller') p.controllerRequestText = redactOutput(controllerRequestText.slice(0, 2000));
   p.startedAt = now(); save(p);
   for (let i = 0; i < p.steps.length; i++) {

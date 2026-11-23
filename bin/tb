@@ -157,6 +157,14 @@ const HELP = `tb — Taskboard command line
   tb group create <name> [--task <task> …] --user-request "exact user message"   controller only
   tb manager set <task> --group <group> [--preset watch|direct|create] --user-request "exact user message"
   tb manager remove --group <group> --user-request "exact user message"   controller only
+  tb manager cards --group <group>   list group cards with their versions and branch heads
+  tb manager approve|deny <card> --group <group> --version <version> [--head <head>] --reason "text"
+  tb manager archive <task> --group <group> --reason "text"   archive only finished work with a final result
+  tb complete --result "text"        record completion and a final result for this task
+  tb delegation status|audit --group <group>   read delegation settings or the decision record
+  tb delegation on --group <group> --kinds <kind,...> [--dangerous <kind,...> --confirm-dangerous]
+  tb delegation off --group <group> | tb delegation off --all   user CLI session only
+  tb delegation restart-request --group <group>   request a restart card only when this group delegates restarts
   tb doc send <task>:<file> <task>   send a named document from one task's outbox to another task's inbox.
                                      A card is needed unless an allow always rule or the all-task communication setting applies.
   tb doc read <task>:<file>          read a named Markdown or text file from another task's outbox when all-task communication is on.
@@ -516,7 +524,7 @@ switch (cmd) {
   }
   case 'show': {
     const t = await task(rest[0]); const log = await call('GET', `/api/tasks/${t.id}/log`);
-    console.log(`${line(t)}\nfolder: ${t.cwd}\ngoal: ${t.goal || t.title}\nnow: ${t.now || '—'}\nstatus: ${t.statusSource}\n\nLast log entry:\n${String(log).split(/\n(?=## )/).pop()}`);
+    console.log(`${line(t)}\nfolder: ${t.cwd}\ngoal: ${t.goal || t.title}\nnow: ${t.now || '—'}\nstatus: ${t.statusSource}\nwaiting: ${t.waitingOn ? `${t.waitingOn.on}: ${t.waitingOn.target} ${t.waitingOn.needs || t.waitingOn.reason}` : 'No reported wait'}\nfinal result: ${t.completion?.result || 'Not recorded'}\n\nLast log entry:\n${String(log).split(/\n(?=## )/).pop()}`);
     break;
   }
   case 'log': {
@@ -561,6 +569,21 @@ switch (cmd) {
     break;
   }
   case 'manager': {
+    if (['cards', 'approve', 'deny', 'archive'].includes(args[1])) {
+      const action = args[1], group = flag('--group'), reason = flag('--reason'), version = flag('--version'), head = flag('--head');
+      if (!group) { console.error('Give --group.'); process.exit(1); }
+      const path = `/api/manager/${encodeURIComponent(group)}`;
+      if (action === 'cards') console.log(JSON.stringify(await call('GET', `${path}/cards`), null, 2));
+      else if (action === 'archive') {
+        if (!args[2] || !reason) { console.error('Give a task and --reason.'); process.exit(1); }
+        const target = await task(args[2]);
+        console.log(JSON.stringify(await call('POST', `${path}/archive/${encodeURIComponent(target.id)}`, { reason }), null, 2));
+      } else {
+        if (!args[2] || !reason || !version) { console.error('Give a card, --version and --reason.'); process.exit(1); }
+        console.log(JSON.stringify(await call('POST', `${path}/cards/${encodeURIComponent(args[2])}/decide`, { approve: action === 'approve', reason, version, head }), null, 2));
+      }
+      break;
+    }
     if (!['set', 'remove'].includes(args[1]) || process.env.TASK_ID !== 'controller') { console.error('tb manager set <task> --group <group> [--preset watch|direct|create] --user-request "exact user message" | tb manager remove --group <group> --user-request "exact user message"'); process.exit(1); }
     const group = flag('--group'), userRequest = flag('--user-request'), preset = flag('--preset');
     if (!group || !userRequest) { console.error('Give --group and --user-request.'); process.exit(1); }
@@ -570,6 +593,42 @@ switch (cmd) {
     if (args[2] === 'none' && preset) { console.error('A preset needs a manager task.'); process.exit(1); }
     const taskRef = args[1] === 'remove' || args[2] === 'none' ? null : (await task(args[2])).id;
     console.log(JSON.stringify(await call('POST', `/api/manager/${encodeURIComponent(group)}`, { task: taskRef, userRequest, ...(preset ? { preset } : {}) }), null, 2));
+    break;
+  }
+  case 'delegation': {
+    const action = args[1], group = flag('--group'), all = has('--all');
+    if (action === 'restart-request') {
+      if (!group || !process.env.TASK_ID) { console.error('Give --group from a task in that group.'); process.exit(1); }
+      await call('POST', '/api/restart/request', { group });
+      break;
+    }
+    if (!['status', 'audit', 'on', 'off'].includes(action) || (!group && !(action === 'off' && all)) || (group && all)) {
+      console.error('tb delegation status|audit|on|off --group GROUP | tb delegation off --all'); process.exit(1);
+    }
+    if (['on', 'off'].includes(action) && (process.env.TASK_ID || process.env.TB_TASK_TOKEN || process.env.TB_MAIL_CONTROLLER_TOKEN)) {
+      console.error('Only a user CLI session can change delegation. Task messages and controller requests cannot change it.'); process.exit(1);
+    }
+    if (action === 'audit') { console.log(JSON.stringify(await call('GET', `/api/delegation/audit?group=${encodeURIComponent(group)}`), null, 2)); break; }
+    if (action === 'off' && all) { console.log(JSON.stringify(await call('POST', '/api/delegation/revoke-all', {}), null, 2)); break; }
+    const path = `/api/delegation/${encodeURIComponent(group)}`;
+    const current = await call('GET', path);
+    if (action === 'status') { console.log(JSON.stringify(current, null, 2)); break; }
+    const list = value => String(value || '').split(',').map(x => x.trim()).filter(Boolean);
+    const kinds = action === 'on' ? list(flag('--kinds')) : current.kinds;
+    const dangerous = action === 'on' ? list(flag('--dangerous')) : current.dangerous;
+    const confirmDangerous = has('--confirm-dangerous');
+    if (action === 'on' && !kinds.length) { console.error('Choose --kinds from tb delegation status.'); process.exit(1); }
+    if (action === 'on') for (const kind of dangerous) console.error(`${kind}: ${current.warnings[kind] || 'Unknown dangerous switch.'}`);
+    if (action === 'on' && dangerous.length && !confirmDangerous) {
+      console.error('Read the warnings. Give --confirm-dangerous to accept them.'); process.exit(1);
+    }
+    console.log(JSON.stringify(await call('POST', path, { enabled: action === 'on', kinds, dangerous, confirmDangerous }), null, 2));
+    break;
+  }
+  case 'complete': {
+    const result = flag('--result');
+    if (!process.env.TASK_ID || !result) { console.error('Run tb complete --result "final result" inside the completed task.'); process.exit(1); }
+    console.log(JSON.stringify(await call('POST', `/api/tasks/${encodeURIComponent(process.env.TASK_ID)}/complete`, { result }), null, 2));
     break;
   }
   case 'plan': {
@@ -595,7 +654,7 @@ switch (cmd) {
   }
   case 'result': {
     const t = await task(rest[0]); const d = await call('GET', `/api/tasks/${t.id}/docs`);
-    console.log(`#${t.num} ${t.title} — ${t.status}\n\n${t.now || '(no message yet)'}\n\nOutbox:\n${d.outbox.map(x => '  ' + x.path).join('\n') || '  (empty)'}`);
+    console.log(`#${t.num} ${t.title} — ${t.status}\n\n${t.completion?.result || t.now || '(no message yet)'}\n\nOutbox:\n${d.outbox.map(x => '  ' + x.path).join('\n') || '  (empty)'}`);
     break;
   }
   case 'wait': {

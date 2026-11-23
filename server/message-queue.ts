@@ -176,6 +176,9 @@ function tellSender(to: Task, q: Queued, news: News) {
 // for messages to a manager that is parked (server/index.ts).
 export async function send(t: Task, text: string, opts: { from: string; kind: Kind; holdWhenParked?: boolean; queueOnError?: boolean }): Promise<SendResult> {
   const empty = textError(text); if (empty) throw new Error(empty);
+  if (t.completion) store.update(t.id, { completion: undefined });
+  store.communicate(t.id);
+  if (store.get(opts.from)) store.communicate(opts.from);
   const queue = (state: Queued['state'], reason: string): SendResult => {
     const q = enqueue(t, text, opts.from, opts.kind, state, reason);
     return typeof q === 'string' ? { state: 'failed', reason: q } : { state, reason: q.reason, id: q.id } as SendResult;

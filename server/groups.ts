@@ -7,7 +7,7 @@ import { VAULT } from './config.ts';
 
 // order: the position of the tab on the Canvas page and of the column on the Board, set by reorder().
 // A group without order (written before reorder() existed) comes after the groups with one, oldest first.
-export interface Group { id: string; name: string; color: string; tasks: string[]; created: string; order?: number; manager?: string; managerPreset?: 'watch' | 'direct' | 'create' }
+export interface Group { id: string; name: string; color: string; tasks: string[]; created: string; order?: number; manager?: string; managerPreset?: 'watch' | 'direct' | 'create'; delegation?: import('./manager-delegation.ts').Delegation }
 
 const DIR = join(VAULT, 'groups');
 mkdirSync(DIR, { recursive: true });
@@ -19,7 +19,7 @@ const emit = () => listeners.forEach(f => f());
 
 function write(g: Group) {
   const body = `# ${g.name}\n\n${g.tasks.map(t => `- [[${t}]]`).join('\n')}\n`;
-  const data = { id: g.id, name: g.name, color: g.color, tasks: g.tasks, created: g.created, ...(typeof g.order === 'number' ? { order: g.order } : {}), ...(g.manager ? { manager: g.manager } : {}), ...(g.manager && g.managerPreset ? { managerPreset: g.managerPreset } : {}) };
+  const data = { ...(g.delegation ? { delegation: g.delegation } : {}), id: g.id, name: g.name, color: g.color, tasks: g.tasks, created: g.created, ...(typeof g.order === 'number' ? { order: g.order } : {}), ...(g.manager ? { manager: g.manager } : {}), ...(g.manager && g.managerPreset ? { managerPreset: g.managerPreset } : {}) };
   writeFileSync(join(DIR, g.id + '.md'), matter.stringify(body, data));
 }
 
@@ -45,12 +45,13 @@ export function create(name: string, tasks: string[] = []): Group {
   if (orders.length) g.order = Math.max(...orders) + 1;
   groups.set(id, g); write(g); emit(); return g;
 }
-export function update(id: string, patch: Partial<Pick<Group, 'name' | 'color' | 'tasks' | 'manager' | 'managerPreset'>>): Group | undefined {
+export function update(id: string, patch: Partial<Pick<Group, 'name' | 'color' | 'tasks' | 'manager' | 'managerPreset' | 'delegation'>>): Group | undefined {
   const g = groups.get(id); if (!g) return;
+  if ('manager' in patch && patch.manager !== g.manager) patch.delegation = undefined;
   if (patch.tasks) patch.tasks = [...new Set(patch.tasks)];
   Object.assign(g, patch);
   // a manager that leaves its group loses the role (server/manager-role.ts). Adding the task again does not give it back.
-  if (g.manager && !g.tasks.includes(g.manager)) { g.manager = undefined; g.managerPreset = undefined; }
+  if (g.manager && !g.tasks.includes(g.manager)) { g.manager = undefined; g.managerPreset = undefined; g.delegation = undefined; }
   write(g); emit(); return g;
 }
 export function moveTask(taskId: string, fromId: string, toId: string): Group[] {
@@ -59,13 +60,13 @@ export function moveTask(taskId: string, fromId: string, toId: string): Group[] 
   if (fromId === toId) throw new Error('The source and target groups are the same.');
   if (!from.tasks.includes(taskId)) throw new Error('The task is no longer in the source group.');
   const beforeFrom = from.tasks, beforeTo = to.tasks;
-  const beforeManager = [from.manager, from.managerPreset] as const;
+  const beforeManager = [from.manager, from.managerPreset, from.delegation] as const;
   from.tasks = from.tasks.filter(id => id !== taskId);
-  if (from.manager === taskId) { from.manager = undefined; from.managerPreset = undefined; }
+  if (from.manager === taskId) { from.manager = undefined; from.managerPreset = undefined; from.delegation = undefined; }
   to.tasks = [...new Set([...to.tasks, taskId])];
   try { write(to); write(from); }
   catch (e) {
-    from.tasks = beforeFrom; to.tasks = beforeTo; [from.manager, from.managerPreset] = beforeManager;
+    from.tasks = beforeFrom; to.tasks = beforeTo; [from.manager, from.managerPreset, from.delegation] = beforeManager;
     write(to); write(from);
     throw e;
   }

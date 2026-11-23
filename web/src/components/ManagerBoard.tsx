@@ -4,6 +4,7 @@ import { api, useStore, useStoreValue } from '../api';
 import { CONFIRM_MS, cardTime, needsConfirm } from '../clickGuard';
 import { badgeTitle, boardOf, loadBoards, boardSummary, fmtAge, loadScope, managerGroupsOf, managerMenu, managersVersion, needAction, refreshManagerDetails, rowOf, scopeOf, setManager, subscribeManagers, waitLabel, watchBoards, type Audit, type BoardRow, type FindCard, type ManagerChoice, type ManagerMenu, type PresetKey, type Scope } from '../managerBoard';
 import { PopMenu } from './PopMenu';
+import { DelegationSettings } from './DelegationSettings';
 
 type TaskRef = { id: string; num: number; title: string };
 type RoleTask = TaskRef & { status: string; role?: string };
@@ -17,6 +18,11 @@ function useScope(group: string) {
 }
 // Read the boards of all groups while the calling view is shown
 export function useBoards() { useEffect(() => watchBoards(), []); return useManagers(); }
+export function TaskStateWarning({ id }: { id: string }) {
+  useManagers();
+  const problem = rowOf(id)?.row.violation;
+  return problem ? <div className="pc-note warn" role="status">{problem}</div> : null;
+}
 // Find a card of the store by the card id of a wait
 function useFindCard(): FindCard {
   const approvals = useStoreValue(s => s.approvals);
@@ -51,6 +57,7 @@ export function WaitLabel({ taskId, group, children }: { taskId: string; group?:
   useManagers();
   const find = useFindCard();
   const at = rowOf(taskId, group);
+  if (at?.row.violation) return <span className="st st-label needs-you" title={at.row.violation}>Check task state</span>;
   const text = at && waitLabel(at.row, at.column, find);
   if (!text) return <>{children}</>;
   const w = at.row.waitingOn;
@@ -77,16 +84,17 @@ export function GroupNeeds({ group, open, toast }: { group: string; open: (id: s
   const btn = useRef<HTMLButtonElement>(null);
   const [shown, setShown] = useState(false);
   if (!b?.group.manager) return null;
-  const n = boardSummary(b).counts.needsYou;
+  const violations = Object.values(b.columns).flat().filter(row => row.violation);
+  const n = new Set([...(b.columns.needsYou || []), ...violations].map(row => row.id)).size;
   return <>
     <GroupNeedsButton count={n} groupName={b.group.name} shown={shown} buttonRef={btn} toggle={() => setShown(x => !x)} />
     {shown && <PopMenu anchor={btn.current} close={() => setShown(false)} className="need-pop" align="left" label={`${b.group.name}: need you`}>
-      <NeedsPanel group={group} rows={b.columns.needsYou || []} manager={b.group.manager} open={id => { setShown(false); open(id); }} toast={toast} />
+      <NeedsPanel group={group} rows={b.columns.needsYou || []} violations={violations} manager={b.group.manager} open={id => { setShown(false); open(id); }} toast={toast} />
     </PopMenu>}
   </>;
 }
 
-function NeedsPanel({ group, rows, manager, open, toast }: { group: string; rows: BoardRow[]; manager: string; open: (id: string) => void; toast: (text: string) => void }) {
+function NeedsPanel({ group, rows, violations, manager, open, toast }: { group: string; rows: BoardRow[]; violations: BoardRow[]; manager: string; open: (id: string) => void; toast: (text: string) => void }) {
   const [tab, setTab] = useState<'need' | 'did'>('need');
   const [audit, setAudit] = useState<Audit[] | null>(null);
   const find = useFindCard();
@@ -96,6 +104,11 @@ function NeedsPanel({ group, rows, manager, open, toast }: { group: string; rows
   const fail = (e: unknown) => toast(String((e as Error).message || e));
   const mgr = tasks.find(t => t.id === manager);
   return <div className="need-panel" onClick={e => e.stopPropagation()}>
+    {violations.length > 0 && <div className="need-list" aria-label="Tasks that need a state check">
+      {violations.map(row => <div key={row.id} className="need-row">
+        <button className="btn" onClick={() => open(row.id)}>#{row.num} {row.title}</button><small>{row.violation}</small>
+      </div>)}
+    </div>}
     <div className="need-tabs" role="tablist">
       <button role="tab" aria-selected={tab === 'need'} className={tab === 'need' ? 'on' : ''} onClick={() => setTab('need')}>Need you <span>{rows.length}</span></button>
       <button role="tab" aria-selected={tab === 'did'} className={tab === 'did' ? 'on' : ''} onClick={() => setTab('did')}>Manager did <span>{audit?.length ?? '…'}</span></button>
@@ -148,6 +161,7 @@ export function ManagerScope({ group, tasks }: { group: string; tasks: (TaskRef 
       </select></label>
       <PresetText scope={scope} preset={key} />
     </>}
+    <DelegationSettings group={group} />
     {error && <div className="sel-warn">{error}</div>}
     <div className="sub">Limits: {Object.entries(scope.caps).map(([key, value]) => `${key} ${value}`).join(' · ')}</div>
   </div>;
