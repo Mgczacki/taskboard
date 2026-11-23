@@ -115,7 +115,7 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
     addEventListener('hashchange', go);
     return () => { clearTimeout(timer); removeEventListener('hashchange', go); };
   }, []);
-  const save = async (p: { routingRules?: string; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; allTaskCommunication?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; agySkipPermissions?: boolean; controllerCanApprovePermits?: boolean; holdPermissionHook?: boolean; permitFolders?: string[]; permitRequestLimits?: Partial<MachineInfo['settings']['permitRequestLimits']>; scopeLimit?: Partial<MachineInfo['settings']['scopeLimit']>; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; checkPrivateNotes?: boolean; confirmLowerControl?: boolean; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; confirmRisk?: Partial<ConfirmRisk>; controllerApprovals?: Partial<ControllerApprovals>; agentErrors?: Parameters<typeof api.updateInfo>[0]['agentErrors'] }) => {
+  const save = async (p: { routingRules?: string; controllerNeedsApproval?: boolean; agentsNeedApproval?: boolean; allTaskCommunication?: boolean; trustWorkspaces?: boolean; autoReview?: boolean; agySkipPermissions?: boolean; controllerCanApprovePermits?: boolean; holdPermissionHook?: boolean; permitFolders?: string[]; permitRequestLimits?: Partial<MachineInfo['settings']['permitRequestLimits']>; scopeLimit?: Partial<MachineInfo['settings']['scopeLimit']>; pushTaskBranches?: 'run' | 'ask' | 'never'; ownRepositories?: string[]; protectedBranches?: string[]; askAgent?: 'claude' | 'codex'; askAccount?: string; askModel?: string; reviewAccount?: string; reviewModel?: string; messageIncoming?: MessageLevel; messageOutgoing?: MessageLevel; checkPrivateNotes?: boolean; confirmLowerControl?: boolean; autoMoveOnLimit?: 'off' | 'same-kind' | 'any-kind'; defaultMaxParallel?: number; applyMaxParallelToAll?: boolean; browserClaude?: BrowserMode; browserCodex?: BrowserMode; chromePath?: string; confirmRisk?: Partial<ConfirmRisk>; controllerApprovals?: Partial<ControllerApprovals>; agentErrors?: Parameters<typeof api.updateInfo>[0]['agentErrors'] }) => {
     setBusy(true); try { setInfo(await api.updateInfo(p)); } catch (e) { setErr(String((e as Error).message || e)); } setBusy(false);
   };
   const ctl = tasks.find(t => t.role === 'controller');
@@ -243,6 +243,15 @@ export function SettingsPage({ tasks }: { tasks: Task[] }) {
                 </SettingItem>}
               </SettingGroup>
               <SettingGroup section="accounts" id="routing" title="Task routing">
+                <SettingItem id="autoMoveOnLimit">
+                  <label className="opt" htmlFor="auto-move-on-limit">Move tasks after an account limit</label>
+                  <select id="auto-move-on-limit" disabled={busy} value={info?.settings.accounts.autoMoveOnLimit || 'off'} onChange={e => void save({ autoMoveOnLimit: e.target.value as 'off' | 'same-kind' | 'any-kind' })}>
+                    <option value="off">Off</option>
+                    <option value="same-kind">Same kind only</option>
+                    <option value="any-kind">Same kind then another kind</option>
+                  </select>
+                  <div className="sub">Move after a confirmed usage limit or credit error. Another agent kind starts a new conversation with saved task context. Custom routing rules can prevent a move. Off keeps the existing retry after a failed first start.</div>
+                </SettingItem>
                 <SettingItem id="routingRules">
                   <label className="opt" htmlFor="routing-rules">Rules for choosing an agent and account</label>
                   <textarea id="routing-rules" maxLength={1000} value={routingRules} onChange={e => setRoutingRules(e.target.value)} rows={5} />

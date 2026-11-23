@@ -2,7 +2,7 @@ import { TestResources } from './helpers/test-resources.ts';
 const resources = new TestResources();
 import assert from 'node:assert/strict';
 import { execFileSync, spawn } from 'node:child_process';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, chmodSync, realpathSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { once } from 'node:events';
@@ -56,8 +56,9 @@ function fixture(agent: Agent, num: number) {
   return t;
 }
 
-const fixtures = [fixture('claude', 1), fixture('codex', 2), fixture('antigravity', 3), fixture('claude', 4), fixture('codex', 5), fixture('antigravity', 6), fixture('claude', 7), fixture('claude', 8), fixture('codex', 9), fixture('antigravity', 10)];
+const fixtures = [fixture('claude', 1), fixture('codex', 2), fixture('antigravity', 3), fixture('claude', 4), fixture('codex', 5), fixture('antigravity', 6), fixture('claude', 7), fixture('claude', 8), fixture('codex', 9), fixture('antigravity', 10), fixture('claude', 11), fixture('claude', 12), fixture('claude', 13), fixture('claude', 14), fixture('codex', 15)];
 
+store.update('move-12', { model: 'opus' });
 store.update('move-7', { transcript: '/missing-transcript.jsonl', desc: 'LARGE_ORIGINAL_42 '.repeat(500) });
 writeFileSync(store.logFile('move-7'), 'LARGE_LOG_42 '.repeat(1000));
 for (let i = 0; i < 5; i++) writeFileSync(join(store.taskDir('move-7'), 'outbox', `large-${i}.md`), 'LARGE_OUTBOX_42 '.repeat(200));
@@ -96,7 +97,7 @@ if (agent === 'agy' && (process.argv.includes('models') || process.argv.includes
 fs.writeFileSync(path.join(process.env.TASK_DIR, 'launch.json'), JSON.stringify({ agent, args: process.argv.slice(2), cwd: process.cwd(), accountDir: process.env.CLAUDE_CONFIG_DIR || process.env.CODEX_HOME }));
 // Antigravity draws its input box between two rules (server/type-command.ts); its first prompt is typed in there
 console.log(agent === 'agy' ? ['─'.repeat(40), '> ', '─'.repeat(40), '  ? for shortcuts'].join('\\n') : 'TEST_AGENT_READY');
-if (agent === 'agy') process.stdin.on('data', chunk => fs.appendFileSync(path.join(process.env.TASK_DIR, 'pasted.txt'), chunk));
+if (agent === 'agy') { process.stdin.setRawMode(true); process.stdin.on('data', chunk => fs.appendFileSync(path.join(process.env.TASK_DIR, 'pasted.txt'), chunk)); }
 setInterval(() => {}, 1000);
 }
 `;
@@ -111,6 +112,7 @@ const r = cp.spawnSync(${JSON.stringify(realTmux)}, process.argv.slice(2), { std
   const accounts = ['claude', 'codex', 'antigravity'].map(agent => ({ id: `${agent}-default`, agent, name: agent, dir: join(root, 'accounts', agent), isDefault: agent === 'antigravity', maxParallel: 8, created: new Date().toISOString(), usage: { windows: [{ label: 'weekly', usedPct: 99 }], at: new Date().toISOString(), source: 'test' } }));
   accounts.push({ ...accounts[0], id: 'claude-other', name: 'Claude other', dir: join(root, 'accounts', 'claude-other'), isDefault: false });
   accounts.push({ ...accounts[1], id: 'codex-other', name: 'Codex other', dir: join(root, 'accounts', 'codex-other'), isDefault: false });
+  accounts.push({ ...accounts[0], id: 'claude-slot', name: 'Claude slot', dir: join(root, 'accounts', 'claude-slot'), maxParallel: 1, limited: { at: new Date().toISOString(), note: 'fixture' } } as any);
   for (const a of accounts) mkdirSync(a.dir, { recursive: true });
   writeFileSync(join(root, 'state', 'accounts.json'), JSON.stringify(accounts));
   writeFileSync(join(root, 'state', 'machine.json'), JSON.stringify({ name: 'move-test', controller: { autostart: false, remoteControl: false }, permissions: { controllerNeedsApproval: true, agentsNeedApproval: true, trustWorkspaces: false, autoReview: false } }));
@@ -131,9 +133,9 @@ const r = cp.spawnSync(${JSON.stringify(realTmux)}, process.argv.slice(2), { std
   };
   const current = async (id: string) => (await request('/api/tasks')).data.find((t: Task) => t.id === id);
   const cli = (args: string[], actor = '') => new Promise<string>((resolve, reject) => {
-    const p = spawn(process.execPath, ['bin/tb', ...args], { env: { ...env, TB_URL: url, TB_TOKEN_FILE: TOKEN_FILE, TASK_ID: actor }, stdio: ['ignore', 'pipe', 'pipe'] });
+    const p = spawn(process.execPath, ['bin/tb', ...args], { env: { ...env, TB_URL: url, TB_TOKEN_FILE: TOKEN_FILE, TB_TASK_TOKEN: '', TB_MAIL_CONTROLLER_TOKEN: actor === 'controller' ? readFileSync(join(root, 'state', 'mail-controller.token'), 'utf8').trim() : '', TASK_ID: actor }, stdio: ['ignore', 'pipe', 'pipe'] });
     let out = ''; p.stdout.on('data', d => out += d); p.stderr.on('data', d => out += d);
-    p.on('exit', code => code === 0 ? resolve(out) : reject(new Error(out)));
+    p.on('exit', code => code === 0 || (code === 2 && /Approval pending/.test(out)) ? resolve(out) : reject(new Error(out)));
   });
   try {
     let up = false;
@@ -149,7 +151,7 @@ const r = cp.spawnSync(${JSON.stringify(realTmux)}, process.argv.slice(2), { std
         for (let n = 0; n < 40 && !approval; n++) { approval = (await request('/api/approvals')).data.find((a: any) => a.state === 'pending'); if (!approval) await sleep(100); }
         assert.ok(approval); assert.equal((await current(original.id)).agent, original.agent);
         assert.equal((await request(`/api/approvals/${approval.id}/approve`, {}, '', true)).status, 200);
-        assert.match(await moved, /Moved #1/);
+        assert.match(await moved, /Approval pending/);
       } else {
         const moved = await request(`/api/tasks/${original.id}/move-account`, { account: target }, '', true);
         assert.equal(moved.status, 200, JSON.stringify(moved.data));
@@ -164,8 +166,9 @@ const r = cp.spawnSync(${JSON.stringify(realTmux)}, process.argv.slice(2), { std
       let launch: any;
       for (let n = 0; n < 30; n++) { try { launch = JSON.parse(readFileSync(join(store.taskDir(t.id), 'launch.json'), 'utf8')); break; } catch {} await sleep(100); }
       assert.equal(launch.agent, target.split('-')[0]); assert.equal(launch.cwd, cwd);
-      assert.ok(launch.args.at(-1).includes(t.handoff));
-      assert.ok(Buffer.byteLength(launch.args.at(-1)) < 1024);
+      const prompt = launch.args.find((arg: string) => arg.includes(t.handoff)) || readFileSync(join(store.taskDir(t.id), 'pending-prompt.txt'), 'utf8');
+      assert.ok(prompt.includes(t.handoff));
+      assert.ok(Buffer.byteLength(prompt) < 1024);
       const oldHook = original.agent === 'claude' ? ['/api/hooks/claude', { taskId: t.id, input: { hook_event_name: 'StopFailure', session_id: original.sessionId, error: 'OLD_ERROR' } }]
         : original.agent === 'codex' ? ['/api/hooks/codex', { taskId: t.id, payload: { type: 'agent-turn-complete', 'thread-id': original.sessionId, 'last-assistant-message': 'OLD_ANSWER' } }]
         : ['/api/hooks/antigravity', { taskId: t.id, event: 'Stop', input: { conversationId: original.sessionId, error: 'OLD_ERROR' } }];
@@ -218,13 +221,109 @@ const r = cp.spawnSync(${JSON.stringify(realTmux)}, process.argv.slice(2), { std
     execFileSync(realTmux, ['-L', process.env.TASKBOARD_TMUX_SOCKET!, 'kill-session', '-t', '=task-7']);
     const retry = await request('/api/tasks/move-7/resume', {});
     assert.equal(retry.status, 200); assert.equal(retry.data.status, 'working');
+    // Off keeps an established task on its chosen account.
+    const settings = async (autoMoveOnLimit: string) => {
+      const r = await fetch(url + '/api/info', { method: 'PATCH', headers: { 'content-type': 'application/json', 'x-taskboard-token': token, origin: url }, body: JSON.stringify({ autoMoveOnLimit }) });
+      assert.equal(r.status, 200, await r.text());
+    };
+    const failure = (id: string, session: string, error = 'rate_limit', text = 'You have hit your weekly limit') => request('/api/hooks/claude', { taskId: id, input: { hook_event_name: 'StopFailure', session_id: session, error, last_assistant_message: text } });
+    const waitTask = async (id: string, predicate: (t: any) => boolean) => {
+      let t: any;
+      for (let n = 0; n < 200; n++) { t = await current(id); if (predicate(t)) return t; await sleep(100); }
+      assert.fail(JSON.stringify(t) + output.slice(-2000));
+    };
+    assert.equal((await request('/api/info')).data.settings.accounts.autoMoveOnLimit, 'off');
+    await failure('move-11', fixtures[10].sessionId!);
+    assert.equal((await current('move-11')).account, 'claude-default');
+    assert.equal((await current('move-11')).lastAutoMove, undefined);
+    await settings('same-kind');
+    // Overload remains a model error and does not start a move.
+    await failure('move-12', fixtures[11].sessionId!, 'overloaded', 'Model overloaded');
+    assert.equal((await current('move-12')).account, 'claude-default');
+    assert.equal((await current('move-12')).lastAutoMove, undefined);
+    await failure('move-12', fixtures[11].sessionId!, 'authentication_failed', 'Please sign in');
+    assert.equal((await current('move-12')).account, 'claude-default');
+    assert.equal((await current('move-12')).lastAutoMove, undefined);
+    // Duplicate hooks produce one move. Claude resumes the copied conversation.
+    await Promise.all([failure('move-12', fixtures[11].sessionId!), failure('move-12', fixtures[11].sessionId!)]);
+    const automatic = await waitTask('move-12', t => !!t.lastAutoMove);
+    assert.equal(automatic.account, 'claude-other');
+    assert.equal(automatic.sessionId, fixtures[11].sessionId);
+    assert.equal(automatic.cwd, fixtures[11].cwd);
+    assert.equal(automatic.worktree, true);
+    assert.match(automatic.lastAutoMove.reason, /weekly limit/);
+    assert.match(readFileSync(store.logFile('move-12'), 'utf8'), /Automatic move from claude .* to Claude other/);
+    assert.deepEqual(automatic.autoMoveAttempts, ['claude-default', 'claude-other']);
+    await request('/api/hooks/claude', { taskId: 'move-12', input: { hook_event_name: 'StopFailure', session_id: automatic.sessionId, taskboard_account: 'claude-default', error: 'billing_error' } });
+    assert.equal((await current('move-12')).status, 'working');
+    // Same-kind mode stops when both Claude accounts are limited.
+    await failure('move-12', automatic.sessionId);
+    const noTarget = await waitTask('move-12', t => /Automatic move stopped/.test(t.statusSource));
+    assert.equal(noTarget.account, 'claude-other');
+    assert.equal(noTarget.status, 'stopped');
+    // A fresh launch can fall back to another kind, with saved context.
+    await request('/api/accounts/claude-other/clear-limit', {});
+    execFileSync(realTmux, ['-L', process.env.TASKBOARD_TMUX_SOCKET!, 'kill-session', '-t', '=task-12']);
+    const resumedAuto = await request('/api/tasks/move-12/resume', {});
+    assert.equal(resumedAuto.status, 200);
+    await settings('any-kind');
+    await failure('move-12', automatic.sessionId);
+    const cross = await waitTask('move-12', t => t.agent === 'codex' && t.lastAutoMove.to.includes('codex'));
+    assert.equal(cross.model, undefined);
+    assert.equal(cross.cwd, cwd);
+    assert.equal(cross.branch, 'test');
+    assert.notEqual(cross.sessionId, automatic.sessionId);
+    const autoHandoff = readFileSync(cross.handoff, 'utf8');
+    for (const value of [fixtures[11].title, cwd, 'LOG_ENTRY_42', 'old conversation cannot resume here']) assert.ok(autoHandoff.includes(value), value);
+    assert.equal((readFileSync(store.logFile('move-12'), 'utf8').match(/Automatic move from/g) || []).length, 2);
+    // Manual moves clear the persisted sequence.
+    await request('/api/accounts/claude-default/clear-limit', {});
+    const manual = await request('/api/tasks/move-12/move-account', { account: 'claude-default' });
+    assert.equal(manual.status, 200);
+    assert.equal(manual.data.autoMoveAttempts, undefined);
+    await request('/api/accounts/claude-other/clear-limit', {});
+    await settings('same-kind');
     writeFileSync(join(root, 'fail-launch'), 'fail');
+    await failure('move-11', fixtures[10].sessionId!);
+    const autoFailed = await waitTask('move-11', t => /Automatic move stopped/.test(t.statusSource));
+    assert.equal(autoFailed.account, 'claude-default');
+    assert.equal(autoFailed.sessionId, fixtures[10].sessionId);
+    assert.equal(autoFailed.status, 'stopped');
+    assert.deepEqual(autoFailed.autoMoveAttempts, ['claude-default', 'claude-other']);
     const failed = await request('/api/tasks/move-6/move-account', { account: 'codex-default' });
     assert.equal(failed.status, 400);
     const restored = await current('move-6');
     assert.equal(restored.agent, 'antigravity'); assert.equal(restored.account, 'antigravity-default');
     assert.equal(restored.sessionId, fixtures[5].sessionId); assert.equal(restored.transcript, fixtures[5].transcript);
     assert.match(restored.statusSource, /Move failed/);
+    // Two failures compete for one available slot. Only one task can move.
+    rmSync(join(root, 'fail-launch'));
+    await settings('off');
+    await failure('move-4', fixtures[3].sessionId!);
+    await request('/api/accounts/claude-slot/clear-limit', {});
+    await settings('same-kind');
+    await Promise.all([failure('move-13', fixtures[12].sessionId!), failure('move-14', fixtures[13].sessionId!)]);
+    const competed = await Promise.all(['move-13', 'move-14'].map(id => waitTask(id, t => !!t.lastAutoMove || /Automatic move stopped/.test(t.statusSource))));
+    assert.equal(competed.filter(t => t.account === 'claude-slot').length, 1);
+    assert.equal(competed.filter(t => t.account === 'claude-default' && t.status === 'stopped').length, 1);
+    // Clearing the old account does not allow a return in the same sequence.
+    await request('/api/accounts/claude-default/clear-limit', {});
+    const winner = competed.find(t => t.account === 'claude-slot');
+    await failure(winner.id, winner.sessionId);
+    const stayed = await waitTask(winner.id, t => /Automatic move stopped/.test(t.statusSource));
+    assert.equal(stayed.account, 'claude-slot');
+    assert.deepEqual(stayed.autoMoveAttempts, ['claude-default', 'claude-slot']);
+    // A Codex failure after earlier work moves through the transcript watcher.
+    const codexResume = await request('/api/tasks/move-15/resume', {});
+    assert.equal(codexResume.status, 200);
+    await sleep(1500);
+    writeFileSync(fixtures[14].transcript!, '\n' + JSON.stringify({ timestamp: new Date().toISOString(), type: 'event_msg', payload: { type: 'task_complete', error: { codex_error_info: 'usage_limit_exceeded', message: 'Your workspace is out of credits.' } } }) + '\n', { flag: 'a' });
+    const codexAuto = await waitTask('move-15', t => !!t.lastAutoMove);
+    assert.equal(codexAuto.agent, 'codex');
+    assert.equal(codexAuto.account, 'codex-other');
+    assert.equal(codexAuto.cwd, cwd);
+    assert.match(codexAuto.lastAutoMove.reason, /out of credits/);
+    assert.match(readFileSync(join(root, 'vault', 'tasks', 'move-15.md'), 'utf8'), /autoMoveAttempts:/);
     console.log(`Sandbox evidence: ${root}`);
   } finally {
     child.kill('SIGTERM'); await once(child, 'exit');

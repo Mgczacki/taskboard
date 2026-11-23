@@ -65,6 +65,7 @@ export const SECTIONS: SectionDef[] = [
       { id: 'defaultMaxParallel', label: 'Default maximum tasks per account', words: 'limit parallel apply to all accounts' },
     ] },
     { id: 'routing', title: 'Task routing', settings: [
+      { id: 'autoMoveOnLimit', label: 'Move tasks after an account limit', words: 'automatic credits same kind another kind off' },
       { id: 'routingRules', label: 'Rules for choosing an agent and account', words: 'routing controller' },
     ] },
   ] },

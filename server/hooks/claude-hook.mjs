@@ -6,6 +6,8 @@
 // PermissionRequest waits up to 30 minutes: the server keeps the request open until the user answers the card on the
 // Waiting page (server/pending.ts). The dialog stays in the terminal; an answer there makes Claude Code stop this script.
 import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 
 const taskId = process.env.TASK_ID;
 if (!taskId) process.exit(0); // a Claude Code session that Taskboard did not start
@@ -16,7 +18,8 @@ for await (const chunk of process.stdin) input += chunk;
 
 try {
   const token = readFileSync(process.env.TB_TOKEN_FILE, 'utf8').trim();
-  const event = JSON.parse(input || '{}');
+  const event = { ...JSON.parse(input || '{}'), taskboard_account: process.env.TB_ACCOUNT_ID,
+    taskboard_account_dir: process.env.CLAUDE_CONFIG_DIR || join(homedir(), '.claude') };
   const hold = event.hook_event_name === 'PermissionRequest';
   const res = await fetch(`${process.env.TB_URL}/api/hooks/claude`, {
     method: 'POST',

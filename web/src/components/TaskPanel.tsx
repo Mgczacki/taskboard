@@ -268,6 +268,7 @@ export function TaskPanel({ t, tasks, groups, onClose, onCanvas, onOpenTask, ini
           </select>
         </div>
         {!!t.scopes?.length && <ScopeList t={t} toast={toast} />}
+        {t.lastAutoMove && <div className="banner" role="status">Automatic move: {t.lastAutoMove.from} → {t.lastAutoMove.to}. {t.lastAutoMove.reason}</div>}
         <div className={`dr-status ${t.status}`}><Dot s={t.status} /><div title={t.statusSource}><span className={`st-label ${t.status}`}>{STATUS_LABEL[t.status]}</span> <ErrorChip t={t} />{attention && <span className="waitchip">waiting {fmtWait(t.waitMin)}</span>}{t.statusSource && !isHookNote(t.statusSource) ? ` · ${t.statusSource}` : ''}</div></div>
         {t.status === 'stopped' && t.errorLabel && t.agentError && <AutoContinueRow t={t} act={act} message={autoMessage} />}
         <div className="ctx"><ThreeLines t={t} fixed /></div>
