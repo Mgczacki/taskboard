@@ -169,7 +169,7 @@ test('urgent mode and Permissions approve eligible requests while protected acti
     };
     assert.ok(Object.values((await get('/api/info')).data.settings.permissionAutoApprove).every(on => on === false));
     assert.equal((await patch({ permissionAutoApprove: { permit: true } }, { ...as('t1'), origin: base })).status, 403);
-    for (const type of ['forcePush', 'release', 'restart', 'rollback', 'github-pr', 'github-pr-merge'])
+    for (const type of ['rollback', 'tool-refusal', 'pending:choice'])
       assert.equal((await patch({ permissionAutoApprove: { [type]: true } })).status, 400, type);
     assert.equal((await patch({ permissionAutoApprove: { permit: 'true' } })).status, 400);
     assert.equal((await patch({ permissionAutoApprove: { permit: true }, permitRequestLimits: { enabled: false } })).status, 200);
