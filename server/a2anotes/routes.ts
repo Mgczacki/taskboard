@@ -509,7 +509,8 @@ export function mountA2ANotes(app: Express, options: { delivery?: A2ADeps; setti
   app.post('/api/a2anotes/setup', endpoint(async req => {
     need(req, 'person');
     if (options.settings) throw new A2AError('not_configured', 'This server has fixed A2A Notes settings.');
-    return { setup: await setup(settingsFile, settingsFor, {desktopUrl: req.body?.desktopUrl, teamId: req.body?.teamId}) };
+    return { setup: await setup(settingsFile, settingsFor, {desktopUrl: req.body?.desktopUrl, teamId: req.body?.teamId,
+      ...(typeof req.body?.autoRestart === 'boolean' ? {autoRestart: req.body.autoRestart} : {})}) };
   }));
   // Slack sign-in for the A2A Notes service. After sign-in, Slack returns the browser to the Taskboard Settings page.
   app.post('/api/a2anotes/slack-disconnect', endpoint(req => service().call(need(req, 'person'), 'a2anotes_slack_disconnect')));

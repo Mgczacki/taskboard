@@ -18,4 +18,11 @@ test('app migration and endpoint changes preserve explicit native posting and co
   assert.equal(slackAppConfig({...config,desktop:{send:false}},'TNEW01','http://127.0.0.1:19323').desktop.send,false);
   assert.equal(slackAppConfig({...config,desktop:{enabled:false}},'TNEW01','http://127.0.0.1:19323').desktop,undefined);
   assert.throws(()=>slackAppConfig({...config,desktop:{send:'true'}},'TNEW01','http://127.0.0.1:19323'),/boolean/);
+  // The opt-in Slack restart survives setup, and only a boolean can change it.
+  assert.deepEqual(slackAppConfig({...config,desktop:{send:true}},'TNEW01','http://127.0.0.1:19323',true).desktop,{url:'http://127.0.0.1:19323',send:true,autoRestart:true});
+  assert.equal(slackAppConfig({...config,desktop:{send:true,autoRestart:true}},'TNEW01','http://127.0.0.1:19323').desktop.autoRestart,true);
+  assert.equal(slackAppConfig({...config,desktop:{send:true,autoRestart:true}},'TNEW01','http://127.0.0.1:19323',false).desktop.autoRestart,undefined);
+  const {desktop: _desktop, ...withoutDesktop} = config;
+  assert.deepEqual(slackAppConfig(withoutDesktop,'TNEW01','http://127.0.0.1:19323',true).desktop,{url:'http://127.0.0.1:19323',autoRestart:true});
+  assert.throws(()=>slackAppConfig({...config,desktop:{autoRestart:'yes'}},'TNEW01','http://127.0.0.1:19323'),/boolean/);
 });

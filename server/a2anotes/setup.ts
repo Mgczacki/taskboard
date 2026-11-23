@@ -107,7 +107,8 @@ export interface SetupState {
   checks: 'model' | 'rules';
   // the config has other check commands than this Taskboard would write (for example a new controller account)
   checksOutdated: boolean;
-  desktop: {url: string; teamId: string};
+  // autoRestart: A2A Notes restarts a freshly started Slack that has no debugging port.
+  desktop: {url: string; teamId: string; autoRestart: boolean};
 }
 // true when version a is older than version b (both in the form 1.2.3; a part that is not a number counts as 0)
 export function olderVersion(a: string, b: string) {
@@ -133,30 +134,33 @@ export async function setupState(settings: Settings): Promise<SetupState> {
     restartStep: restartStep(existsSync(AGENT_FILE)),
     checks: checksInConfig().reviewCommand ? 'model' : 'rules',
     checksOutdated: existsSync(configFile()) && !sameChecks(checksInConfig(), checkCommands()),
-    desktop: (() => {try {const c = JSON.parse(readFileSync(configFile(), 'utf8')); return {url: c.desktop?.url || c.slack?.desktopUrl || 'http://127.0.0.1:19322', teamId: c.slack?.teamId || chosen.teamId};} catch {return {url: 'http://127.0.0.1:19322', teamId: chosen.teamId};}})(),
+    desktop: (() => {try {const c = JSON.parse(readFileSync(configFile(), 'utf8')); return {url: c.desktop?.url || c.slack?.desktopUrl || 'http://127.0.0.1:19322', teamId: c.slack?.teamId || chosen.teamId, autoRestart: c.desktop?.autoRestart === true};} catch {return {url: 'http://127.0.0.1:19322', teamId: chosen.teamId, autoRestart: false};}})(),
   };
 }
 
 let running: Promise<SetupState> | undefined;
-export function slackAppConfig(config: Record<string, any>, teamId: string, desktopUrl: string) {
+export function slackAppConfig(config: Record<string, any>, teamId: string, desktopUrl: string, autoRestart?: boolean) {
   const next: Record<string, any>={...config,slack:{teamId,desktopUrl,
     ...(config.slack?.acknowledgementEmoji ? {acknowledgementEmoji:config.slack.acknowledgementEmoji} : {}),
     ...(config.slack?.projectLink !== undefined ? {projectLink:config.slack.projectLink} : {})}};
+  if(config.desktop?.autoRestart !== undefined && typeof config.desktop.autoRestart !== 'boolean') throw new Error('desktop.autoRestart must be a boolean.');
+  const restart = autoRestart ?? config.desktop?.autoRestart === true;
   if(config.desktop?.send !== undefined) {
     if(typeof config.desktop.send !== 'boolean') throw new Error('desktop.send must be a boolean.');
-    next.desktop={url:desktopUrl,send:config.desktop.send};
-  } else delete next.desktop;
+    next.desktop={url:desktopUrl,send:config.desktop.send,...(restart?{autoRestart:true}:{})};
+  } else if(restart) next.desktop={url:desktopUrl,autoRestart:true};
+  else delete next.desktop;
   return next;
 }
 // applySlackApp: write the Slack app that this Taskboard chooses into an existing A2A Notes config.json. Only the
 // "Use this Slack app" button sends it, so setup never changes the app of a config that the user wrote by hand.
-export function setup(settingsFile: string, read: () => Settings, options: {desktopUrl?: string; teamId?: string} = {}) {
+export function setup(settingsFile: string, read: () => Settings, options: {desktopUrl?: string; teamId?: string; autoRestart?: boolean} = {}) {
   // one setup at a time: a second click waits for the first one
   running ||= doSetup(settingsFile, read, options).finally(() => { running = undefined; });
   return running;
 }
 
-async function doSetup(settingsFile: string, read: () => Settings, options: {desktopUrl?: string; teamId?: string}): Promise<SetupState> {
+async function doSetup(settingsFile: string, read: () => Settings, options: {desktopUrl?: string; teamId?: string; autoRestart?: boolean}): Promise<SetupState> {
   let state = await setupState(read());
   if (!state.installed) throw new Error('A2A Notes is not installed with this Taskboard. Run pnpm install in the Taskboard folder.');
   if (!state.configured) {
@@ -179,7 +183,7 @@ async function doSetup(settingsFile: string, read: () => Settings, options: {des
   if (parsed.protocol !== 'http:' || parsed.hostname !== '127.0.0.1' || !parsed.port || parsed.username || parsed.password || parsed.pathname !== '/' || parsed.search || parsed.hash) throw new Error('Use a loopback Slack Desktop endpoint with a port.');
   const teamId = options.teamId || config.slack?.teamId || slackApp().teamId;
   if (!/^T[A-Z0-9]+$/.test(teamId)) throw new Error('Use a Slack workspace ID.');
-  const next = slackAppConfig(config,teamId,parsed.origin);
+  const next = slackAppConfig(config,teamId,parsed.origin,options.autoRestart);
   if (JSON.stringify(next) !== JSON.stringify(config)) {
     const backup = join(SERVICE_DIR, 'config.before-slack-app.json');
     if ((config.slack?.clientId || config.slack?.redirectUri) && !existsSync(backup)) savePrivate(backup, config);

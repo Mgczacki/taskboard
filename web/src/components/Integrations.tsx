@@ -12,20 +12,21 @@ function useAction(load: () => Promise<void>) {
   return { busy, error, act };
 }
 
-function SlackDesktopSettings({status, busy, apply}: {status: Status; busy: boolean; apply: (url: string, team: string) => void}) {
+function SlackDesktopSettings({status, busy, apply}: {status: Status; busy: boolean; apply: (url: string, team: string, autoRestart: boolean) => void}) {
   const settings = status.setup!.desktop;
-  const [url, setUrl] = useState(settings.url), [team, setTeam] = useState(settings.teamId);
+  const [url, setUrl] = useState(settings.url), [team, setTeam] = useState(settings.teamId), [autoRestart, setAutoRestart] = useState(settings.autoRestart);
   return <details>
     <summary>Slack Desktop connection</summary>
     <p>A2A Notes uses the signed-in Slack app. It does not use OAuth or Slack Web API tokens.</p>
-    <p>Slack must run with its debugging port restricted to this computer. The connector reads app messages and uses app controls.</p>
+    <p>Slack must run with its debugging port restricted to this computer. The connector reads and sends through the app in the background. It does not change the Slack window.</p>
     <label htmlFor="a2a-desktop-url">Local app endpoint</label>
     <input id="a2a-desktop-url" value={url} onChange={e => setUrl(e.target.value)} spellCheck={false} />
     <label htmlFor="a2a-desktop-team">Slack workspace ID</label>
     <input id="a2a-desktop-team" value={team} onChange={e => setTeam(e.target.value)} spellCheck={false} />
-    <p>Small attachments travel in the message data. The complete message must fit within 39,000 bytes. History recovery reads messages available in the app.</p>
-    <p>Quit Slack normally. Start Slack with: <code>open -a /Applications/Slack.app --args --remote-debugging-address=127.0.0.1 --remote-debugging-port={new URL(settings.url).port}</code></p>
-    <button className="btn" disabled={busy} onClick={() => apply(url, team)}>Save app connection</button>
+    <p>Supporting files travel as Slack attachments of up to 2 MiB. The note text must fit within 39,000 bytes.</p>
+    <p>A Slack update, a reboot, or reopening Slack starts it without its debugging port. Use <b>Restart Slack for A2A Notes</b> when Taskboard shows it, or start Slack with: <code>open -a /Applications/Slack.app --args --remote-debugging-address=127.0.0.1 --remote-debugging-port={new URL(settings.url).port}</code></p>
+    <label><input type="checkbox" checked={autoRestart} onChange={e => setAutoRestart(e.target.checked)} /> Restart Slack automatically when it starts without its debugging port (macOS). A2A Notes restarts it only within two minutes after Slack starts, at most three times an hour.</label>
+    <button className="btn" disabled={busy} onClick={() => apply(url, team, autoRestart)}>Save app connection</button>
   </details>;
 }
 
@@ -88,7 +89,7 @@ function A2ANotesCard() {
       {status.enabled && s?.checksOutdated && <div>The message check settings changed (for example the controller account). Update A2A Notes to use them.</div>}
       {!status.enabled && s?.installed && <div className="sub">Setup writes the A2A Notes settings in {s.folder}, starts the service{s.running ? ' (it is already running)' : ''}, keeps it running after you sign in to this computer, and connects Taskboard to it.</div>}
       {c?.signed_in && <SlackTaskAliases />}
-      {s && <SlackDesktopSettings status={status} busy={busy} apply={(desktopUrl, teamId) => act(() => a2aRequest('/setup', {desktopUrl, teamId}))} />}
+      {s && <SlackDesktopSettings status={status} busy={busy} apply={(desktopUrl, teamId, autoRestart) => act(() => a2aRequest('/setup', {desktopUrl, teamId, autoRestart}))} />}
       {error && <div role="alert">{error}</div>}
       <div className="mail-tabs">
         {!status.enabled && <button className="btn" disabled={busy || !s?.installed} onClick={setup}>{busy ? 'Setting up…' : 'Set up A2A Notes'}</button>}
