@@ -27,6 +27,8 @@ export interface Task {
   handoff?: string; // saved prompt for a replacement conversation, also used if startup needs a retry
   created: string;
   updated: string;
+  communicationAt?: string;
+  completion?: { at: string; result: string };
   statusAt: string;        // when the status last changed (drives "waiting 14 min")
   statusSource?: string;
   goal?: string;           // your words
@@ -159,6 +161,9 @@ export function update(id: string, patch: Partial<Task>): Task | undefined {
   const t = tasks.get(id); if (!t) return;
   const statusChanged = patch.status && patch.status !== t.status;
   if (patch.status === 'stopped' && patch.stopReason && !patch.lastFailure) patch.lastFailure = failureAccountOnStop(t, patch.stopReason);
+  const communicates = Object.entries(patch).some(([k, v]) => ['status', 'now', 'ask', 'waitingOn', 'completion'].includes(k) && JSON.stringify(t[k as keyof Task]) !== JSON.stringify(v));
+  if (patch.status === 'working' && t.status !== 'working') patch.completion = undefined;
+  if (communicates) patch.communicationAt = now();
   Object.assign(t, patch, { updated: now() }, statusChanged ? { statusAt: now() } : {});
   changed('num' in patch);
   write(t);
@@ -202,7 +207,13 @@ export function touch(id: string) { const t = tasks.get(id); if (t) emit(t); }
 
 export function appendLog(id: string, entry: { did: string; wait?: string; next?: string }) {
   const stamp = new Date().toISOString().slice(0, 16).replace('T', ' ') + ' UTC';
+  communicate(id);
   appendFileSync(logFile(id), `\n## ${stamp}\n- Did: ${entry.did}\n- Waiting: ${entry.wait || 'Nothing.'}\n- Next: ${entry.next || '—'}\n`);
+}
+
+export function communicate(id: string) {
+  const t = tasks.get(id); if (!t) return;
+  t.communicationAt = now(); write(t);
 }
 
 export function readLog(id: string) {

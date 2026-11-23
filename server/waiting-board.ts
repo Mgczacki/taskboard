@@ -5,7 +5,9 @@ import * as review from './review.ts';
 import * as links from './links.ts';
 import * as messageQueue from './message-queue.ts';
 import type { Group } from './groups.ts';
+import * as managerCheckins from './manager-checkins.ts';
 import * as managerEvents from './manager-events.ts';
+import * as groups from './groups.ts';
 
 export function waitFor(t: store.Task): store.WaitingOn | undefined {
   const card = approvals.pendingFor(t.id)[0];
@@ -43,7 +45,7 @@ export function board(g: Group) {
     const waitingOn = waitFor(t);
     const old = t.status !== 'working' && Date.now() - Date.parse(waitingOn?.since || t.updated) > 2 * 60 * 60_000;
     const row = { id: t.id, num: t.num, title: t.title, status: t.status, state: links.state(t), now: t.now,
-      waitingOn, ageMinutes: Math.max(0, Math.round((Date.now() - Date.parse(waitingOn?.since || t.statusAt)) / 60000)),
+      violation: managerCheckins.violation(t, waitingOn), waitingOn, ageMinutes: Math.max(0, Math.round((Date.now() - Date.parse(waitingOn?.since || t.statusAt)) / 60000)),
       source: old ? 'old' : waitingOn?.source || 'reported' };
     if (waitingOn?.on === 'user') columns.needsYou.push(row);
     else if (t.status === 'stopped' || waitingOn?.needs.startsWith('Retry or')) columns.blocked.push(row);
@@ -52,4 +54,12 @@ export function board(g: Group) {
     else columns.free.push(row);
   }
   return { group: { id: g.id, name: g.name, manager: g.manager }, heartbeat: managerEvents.heartbeat(g.id), columns };
+}
+
+export function allBoards() {
+  const all = groups.all();
+  const grouped = new Set(all.flatMap(g => g.tasks));
+  const ungrouped = store.all().filter(t => !grouped.has(t.id) && t.role !== 'controller' && t.status !== 'archived');
+  return [...all.map(board), ...(ungrouped.length ? [board({ id: '__ungrouped__', name: 'Ungrouped', color: '',
+    tasks: ungrouped.map(t => t.id), created: '' })] : [])];
 }

@@ -94,6 +94,9 @@ import * as managerEvents from './manager-events.ts';
 import * as agentErrorWatch from './agent-error-watch.ts';
 import * as agentExit from './agent-exit.ts';
 import * as managerRole from './manager-role.ts';
+import * as managerDelegation from './manager-delegation.ts';
+import * as managerCheckins from './manager-checkins.ts';
+import * as managerRoutes from './manager-routes.ts';
 import * as taskGroup from './task-group.ts';
 import * as managerArchive from './manager-archive.ts';
 import * as standing from './standing-approvals.ts';
@@ -208,6 +211,7 @@ setInterval(() => {
 }, STALE_CHECK_MS).unref();
 groups.load();
 managerEvents.start();
+managerCheckins.start();
 // several tasks of one account stop on an overloaded model: tell the controller once (agent-error-watch.ts health)
 agentErrorWatch.onOverload(text => { const c = store.get('controller'); if (c && c.status !== 'archived') void messageQueue.send(c, text, { from: 'taskboard', kind: 'message' }).catch(e => console.error('overload notice', e)); });
 canvasOrder.load();
@@ -364,14 +368,14 @@ function crossGroupCard(req: express.Request, res: express.Response, source: sto
   const card = approvals.request({ actor, action: 'send', target: `cross-group:${kind}:${source.id}:${target.id}:${key}`,
     summary: `${kind === 'message' ? 'send a message' : 'send a document'} from #${source.num} ${source.title} to #${target.num} ${target.title}`,
     detail: `${extra.note ? `${extra.note}\n\n` : ''}Source: #${source.num} ${source.title}\nTarget: #${target.num} ${target.title}\nExact action: ${kind === 'message' ? 'type this message into the target task' : 'copy this document into the target task inbox and tell the task'}\n${detail}`,
-    payload: { from: source.id, to: target.id, kind, key }, allow: extra.allow }, async () => run(),
+    payload: { from: source.id, to: target.id, kind, key }, affectedTasks: [source.id, target.id], allow: extra.allow }, async () => run(),
     { check: async () => !store.get(source.id) || !store.get(target.id) ? 'The source or target task no longer exists.' : check?.() });
   if (source.status !== 'parked') store.update(actor, { status: 'needs-you', ask: `Approve: ${card.summary}`, statusSource: 'Waiting for your approval on the dashboard.' });
   res.status(202).json({ approval: card });
 }
 // extra.allow: the card offers Allow always (allow-rules.ts). extra.note: a line above the detail, for example why a
 // rule did not cover this message.
-async function guarded(req: express.Request, res: express.Response, summary: string, detail: string, action: approvals.Approval['action'], run: () => Promise<unknown>, describe: (r: any) => string, extra: { allow?: allowRules.AllowOffer; note?: string } = {}) {
+async function guarded(req: express.Request, res: express.Response, summary: string, detail: string, action: approvals.Approval['action'], run: (decider?: approvals.Decider) => Promise<unknown>, describe: (r: any) => string, extra: { allow?: allowRules.AllowOffer; note?: string } = {}) {
   const actor = req.get('x-tb-actor') || '';
   let forceCard = false;
   const manager = action === 'new' ? managerRole.newTaskGroup(actor, req.body?.group) : managerRole.role(actor);
@@ -393,7 +397,8 @@ async function guarded(req: express.Request, res: express.Response, summary: str
     managerEvents.record(actor, 'manager cap', check.reason, true);
   }
   if (!forceCard && !needsCard(req)) { try { res.json(await run()); } catch (e) { fail(res, e); } return; }
-  const a = approvals.request({ actor, action, summary, detail: extra.note ? `${extra.note}\n\n${detail}` : detail, payload: req.body, allow: extra.allow }, async () => describe(await run()));
+  const a = approvals.request({ actor, action, summary, detail: extra.note ? `${extra.note}\n\n${detail}` : detail,
+    payload: req.body, affectedTasks: [req.params.id, req.body?.from, req.body?.to].filter(Boolean), allow: extra.allow }, async decider => describe(await run(decider)));
   if (store.get(actor)) store.update(actor, { status: 'needs-you', ask: `Approve: ${summary}`, statusSource: 'Waiting for your approval on the dashboard.' });
   res.status(202).json({ approval: a });
 }
@@ -470,7 +475,7 @@ app.post('/api/approvals/:id/notify', async (req, res) => {
 });
 app.get('/api/board', (req, res) => {
   const all = groups.all();
-  if (req.query.all === '1') return res.json(all.map(waitingBoard.board));
+  if (req.query.all === '1') return res.json(waitingBoard.allBoards());
   const g = all.find(x => x.id === req.query.group || x.name === req.query.group);
   return g ? res.json(waitingBoard.board(g)) : res.status(404).json({ error: 'No group with that name.' });
 });
@@ -533,7 +538,9 @@ app.post('/api/plan/request', (req, res) => {
         const item = approvals.get(String(step.card));
         if (!item || item.state !== 'pending') { results.push(`${step.card}: no longer pending`); continue; }
         if (step.askAgain || managerArchive.requestOf(item) || /\bprod(?:uction)?\b/i.test(JSON.stringify(item.covers || {}))) { results.push(`${step.card}: asks again`); continue; }
-        const result = await approvals.decide(item.id, true, decider);
+        const result = decider.by === 'manager'
+          ? await managerDelegation.decide(decider.manager!, decider.group!, item, { approve: true, version: managerDelegation.versionOf(item), head: managerDelegation.cardHead(item)?.head, reason: decider.reason! })
+          : await approvals.decide(item.id, true, decider);
         results.push(`${item.id}: ${result?.staleFacts ? `stale, ${result.staleFacts}` : result?.state}`);
         if (result?.staleFacts || result?.state === 'failed') break;
       }
@@ -585,7 +592,8 @@ app.post('/api/approvals/:id/:decision', async (req, res, next) => {
   // any other word (return) is a different route; it must never count as Deny
   if (!['approve', 'deny', 'dismiss', 'undo'].includes(req.params.decision)) return next();
   // only you, from the dashboard, can decide
-  if (!req.get('origin')) return res.status(403).json({ error: 'approvals are decided on the dashboard' });
+  if (!req.get('origin') || req.get('x-tb-actor') || req.get('x-tb-task-token') || req.get('x-tb-mail-controller'))
+    return res.status(403).json({ error: 'approvals are decided on the dashboard' });
   const origin = approvals.cleanOrigin(req.body?.origin, req.get('user-agent'));
   // Dismiss closes a refused-command card without a decision. Undo reopens a card that the user denied less than a minute ago.
   if (req.params.decision === 'dismiss' || req.params.decision === 'undo') {
@@ -632,6 +640,12 @@ app.post('/api/approvals/:id/return', async (req, res) => {
 // Only the user adds or revokes a rule, on the dashboard: the request has Taskboard's own origin and neither the token
 // nor x-tb-actor, which tb always sends. Tasks and the controller only read the rules (tb allow list).
 const fromDashboard = (req: express.Request) => !!req.get('origin') && originOk(req.get('origin')) && !req.get('x-tb-actor') && !req.get('x-taskboard-token');
+managerRoutes.mount(app, {
+  dashboard: human,
+  userCli: req => !req.get('origin') && req.get('x-taskboard-token') === TOKEN &&
+    !req.get('x-tb-actor') && !req.get('x-tb-task-token') && !req.get('x-tb-mail-controller'),
+  cardView: agentCard, archive: endAndArchive, inFlight: releaseInFlight,
+});
 // builtIn: the rules that come from a role and that nobody stores or revokes here (the group manager rule, manager-role.ts)
 const builtInRules = () => [{ id: 'group-managers', text: managerRole.RULE_TEXT, limitText: managerRole.RULE_LIMIT_TEXT,
   groups: groups.all().filter(g => g.manager && managerRole.role(g.manager)?.id === g.id)
@@ -797,8 +811,8 @@ function createPermit(task: store.Task, reason: string, steps: permits.StepInput
     const p = permits.request(task, reason, steps, refusalId, statedRisk);
     const card = approvals.request({ actor, action: externalAction ? 'external' : 'permit', summary: externalAction ? `${externalAction.action} ${externalAction.target}` : `run ${p.steps.length} approved step${p.steps.length === 1 ? '' : 's'}`,
       detail: `Task: #${task.num} ${task.title}\nReason: ${p.reason}\n${p.steps.map((s, i) => `${i + 1}. ${s.command}\n   ${s.cwd} · ${s.timeoutSeconds} s · Network: ${s.network ? 'Yes' : 'No'}\n${permits.settingsDetail(s)}`).join('\n')}\nSHA-256: ${p.stepHash}\n${p.expiresAt ? `Expires: ${p.expiresAt}` : ''}`,
-      payload: { permitId: p.id }, ...(p.expiresAt ? { validUntil: p.expiresAt } : {}), ...(externalAction ? { target: externalAction.target, covers: externalAction.covers } : {}) }, async () => {
-        const result = await permits.run(p, task, 'user', p.decisionComment || '');
+      payload: { permitId: p.id }, ...(p.expiresAt ? { validUntil: p.expiresAt } : {}), ...(externalAction ? { target: externalAction.target, covers: externalAction.covers } : {}) }, async decider => {
+        const result = await permits.run(p, task, decider.by === 'manager' ? 'manager' : 'user', p.decisionComment || '');
         if (result.state !== 'succeeded') throw new Error(result.error || result.state);
         return `Permit ${p.id} succeeded.`;
       }, { onDeny: () => { permits.deny(p, 'Denied on the dashboard.'); }, onReopen: () => { permits.reopen(p); }, check: async () => permits.expire(p) ? 'The permit expired. Nothing ran.' : undefined });
@@ -882,7 +896,7 @@ app.post('/api/permits/supervised', (req, res) => {
     const card = approvals.request({ actor: task.id, action: 'permit', summary: `start approved run ${p.supervised!.name}`,
       detail: `Task: #${task.num} ${task.title}\nOwner: ${task.id}\nReason: ${p.reason}\nRisk: ${p.statedRisk || p.riskFlags.join(', ')}\nCommand: ${step.command}\n${permits.settingsDetail(step)}\nScript SHA-256: ${step.scriptHash}\nFolder: ${step.cwd}\nNetwork: ${step.network ? 'Yes' : 'No'}\nExpires: ${p.expiresAt}`,
       payload: { permitId: p.id }, validUntil: p.expiresAt }, async decider => {
-        if (decider.by !== 'user' && decider.by !== 'urgent') throw new Error('A supervised run needs a dashboard decision by the user or urgent mode.');
+        if (decider.by !== 'user' && decider.by !== 'urgent' && decider.by !== 'manager') throw new Error('A supervised run needs a user decision or group delegation.');
         const result = await permits.runSupervised(p, task, undefined, agents.baseEnv(task));
         if (result.state !== 'running') throw new Error(result.error || result.state);
         return `Approved run ${p.id} started. Read its logs and result with tb permit result ${p.id}.`;
@@ -986,7 +1000,7 @@ app.post('/api/release/request', (req, res) => {
 });
 // ---------- restart (scripts/restart.mjs, server/restart.ts) ----------
 // Only the user restarts Taskboard: from the dashboard (POST /api/restart) or a terminal (tb restart runs the script).
-// The controller asks with POST /api/restart/request, which waits for an Approve card. Tasks cannot ask.
+// The controller asks with POST /api/restart/request. A group task can also ask when its group delegates restarts.
 async function restartImpact() {
   const t = await restart.tmuxProcess();
   return restart.restartImpact({
@@ -1018,12 +1032,19 @@ app.post('/api/restart', async (req, res) => {
   } catch (e) { fail(res, e); }
 });
 app.post('/api/restart/request', async (req, res) => {
-  if (req.get('x-tb-actor') !== 'controller' || req.get('x-tb-mail-controller') !== controllerMailToken)
+  const actor = req.get('x-tb-actor') || '';
+  const source = store.get(actor);
+  const group = groups.all().find(g => g.id === req.body.group || g.name === req.body.group);
+  const policy = group && managerDelegation.settings(group);
+  const delegated = source && source.role !== 'controller' && source.status !== 'archived' && group && group.manager !== actor &&
+    group.tasks.includes(actor) && managerRole.roles(group.manager || '').some(g => g.id === group.id) &&
+    policy?.enabled && policy.kinds.includes('restart') && policy.dangerous.includes('restart');
+  if (!delegated && (actor !== 'controller' || req.get('x-tb-mail-controller') !== controllerMailToken))
     return res.status(403).json({ error: 'Only the user restarts Taskboard, from the dashboard or a terminal. Ask the user.' });
   try {
     const impact = await restartImpact();
-    const approval = approvals.request({ actor: 'controller', action: 'restart', summary: 'restart Taskboard',
-      detail: `The controller asks to restart Taskboard. It starts the installed release again and builds nothing.\n${impactText(impact)}`, payload: {} }, async () => {
+    const approval = approvals.request({ actor: delegated ? actor : 'controller', action: 'restart', summary: 'restart Taskboard',
+      detail: `${delegated ? `Task #${source!.num}` : 'The controller'} asks to restart Taskboard. It starts the installed release again and builds nothing.\n${impactText(impact)}`, payload: {} }, async () => {
       if (Date.now() - restartStarted < 60000) throw new Error('A restart is already running.');
       restartStarted = Date.now();
       return `Restart started (process ${restart.startRestart()}). Log: ${join(TB_DIR, 'restart.log')}`;
@@ -1702,7 +1723,13 @@ app.post('/api/tasks/:id/status', async (req, res) => {
   if (controllerResume && !resumable(t0))
     return fail(res, `#${t0.num} is ${t0.status}. Only parked or archived tasks can be resumed with tb resume.`);
   await guarded(req, res, `${s === 'archived' ? 'archive' : s === 'parked' ? 'park' : 'unpark'} #${t0.num} ${t0.title}`, '', 'status',
-    async () => {
+    async decider => {
+      if (s === 'archived' && decider?.by === 'manager') {
+        return endAndArchive(t0, () => {
+          managerDelegation.groupFor(decider.manager!, decider.group!, t0.id);
+          managerCheckins.canArchive(t0, waitingBoard.waitFor(t0));
+        });
+      }
       if (controllerResume) {
         const current = store.get(t0.id)!;
         if (!resumable(current)) throw new Error(`#${current.num} is ${current.status}. Only parked or archived tasks can be resumed with tb resume.`);
@@ -2108,13 +2135,15 @@ runtime.watchBrowserIdle();
 const endingTasks = new Set<string>();
 const activeRestarts = new Map<string, Promise<void>>();
 // End the agent session, the processes, the test servers and the browser of a task, then archive it.
-async function endAndArchive(t: store.Task) {
+async function endAndArchive(t: store.Task, beforeArchive?: () => void) {
   endingTasks.add(t.id);
   try {
     await activeRestarts.get(t.id);
+    beforeArchive?.();
     await tmux.killSession(t.session);
     await stopTaskSandboxes(t.id);
     await runtime.stopTaskRuntime(t, 'stopped');
+    beforeArchive?.();
     trimTerminalLog(store.terminalLog(t.id));
     const archived = store.update(t.id, { status: 'archived', statusSource: 'Session ended and archived.' })!;
     await recoverArchived([archived]);
@@ -2164,7 +2193,10 @@ app.post('/api/tasks/:id/kill', async (req, res) => {
   const t = store.get(req.params.id); if (!t) return res.status(404).end();
   const actor = req.get('x-tb-actor') || '';
   if (managerRole.roles(actor).length) return managerArchiveRequest(res, actor, t.id);
-  await guarded(req, res, `end and archive #${t.num} ${t.title}`, '', 'kill', () => endAndArchive(t), () => `#${t.num} ended and archived.`);
+  await guarded(req, res, `end and archive #${t.num} ${t.title}`, '', 'kill', decider => endAndArchive(t, decider?.by === 'manager' ? () => {
+    managerDelegation.groupFor(decider.manager!, decider.group!, t.id);
+    managerCheckins.canArchive(t, waitingBoard.waitFor(t));
+  } : undefined), () => `#${t.num} ended and archived.`);
 });
 // Remove a task from Taskboard (dashboard only). Ends its tmux session unless it runs in another terminal; the note
 // and folder go to ~/.taskboard/trash, and the conversation files of Claude Code / Codex stay where they are.
@@ -2354,7 +2386,7 @@ app.post('/api/docs/send', async (req, res) => {
       return res.json({ ...r, allowedBy: rule.id });
     } catch (e) { return fail(res, e); }
   }
-  await guarded(req, res, `send the document ${basename(name)} to #${dst.num} ${dst.title}`, `From the outbox of #${src.num} ${src.title}: ${basename(name)}`, 'send', sendIt,
+  await guarded(req, res, `send the document ${basename(name)} to #${dst.num} ${dst.title}`, `From the outbox of #${src.num} ${src.title}: ${basename(name)}`, 'send', () => sendIt(),
     (r: Awaited<ReturnType<typeof sendIt>>) => `Copied to ${r.path}. ${r.delivery === 'delivered' ? `#${dst.num} was told about the file.` : `#${dst.num} was not told yet: ${r.reason}`}`,
     { allow: rule ? undefined : allowRules.offer(sender, dst, 'doc'), note: limit || managerLimit });
 });

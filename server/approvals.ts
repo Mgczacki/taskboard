@@ -33,6 +33,7 @@ export interface Approval {
   noUndo?: string;
   // the user reopened the card with Undo after a denial
   reopened?: { at: string; origin?: DecisionOrigin };
+  affectedTasks?: string[];
   target?: string;
   version?: string;
   covers?: Record<string, string>;
@@ -46,7 +47,7 @@ export interface Approval {
   notifyMe?: boolean;
 }
 // by 'urgent': the card's task was in urgent mode (server/urgent.ts), so Taskboard approved the card without a decision
-export interface Decider { by: 'user' | 'controller' | 'urgent'; userRequest?: string }
+export interface Decider { by: 'user' | 'controller' | 'urgent' | 'manager'; userRequest?: string; manager?: string; group?: string; reason?: string }
 // Where a decision came from, for the audit. The dashboard sends from, target, shownMs and pointerMs. The server adds
 // the user agent. shownMs: how long the card showed in that place before the click. pointerMs: the time from the
 // pointerdown on the button to the click.
@@ -95,8 +96,8 @@ function audit(x: Approval, event: string, origin?: DecisionOrigin, ageMs?: numb
 }
 // the time since the card appeared, or since the server last changed it in place
 export const cardAge = (x: Pick<Approval, 'created' | 'updated' | 'reopened'>, now = Date.now()) => Math.max(0, now - Date.parse(x.reopened?.at || x.updated || x.created));
-const version = (a: Pick<Approval, 'action' | 'target' | 'covers' | 'payload' | 'detail'>) =>
-  createHash('sha256').update(JSON.stringify([a.action, a.target, a.covers, a.payload, a.detail])).digest('hex').slice(0, 12);
+const version = (a: Pick<Approval, 'action' | 'target' | 'covers' | 'payload' | 'detail' | 'affectedTasks'>) =>
+  createHash('sha256').update(JSON.stringify([a.action, a.target, a.covers, a.payload, a.detail, a.affectedTasks])).digest('hex').slice(0, 12);
 const prune = () => {
   const closed = [...items.values()].filter(x => x.state !== 'pending' && x.state !== 'running');
   for (const x of closed.slice(0, Math.max(0, closed.length - 100))) items.delete(x.id);
@@ -179,19 +180,23 @@ export function finishExternal(id: string, state: 'approved' | 'failed', result:
   const x = items.get(id); if (!x || x.state !== 'running') return;
   x.state = state; x.result = result; emit(); decided(x);
 }
-export async function decide(id: string, approve: boolean, d: Decider = { by: 'user' }, origin?: DecisionOrigin): Promise<Approval | undefined> {
+export async function decide(id: string, approve: boolean, d: Decider = { by: 'user' }, origin?: DecisionOrigin, authorize?: () => void): Promise<Approval | undefined> {
   const x = items.get(id); if (!x || x.state !== 'pending') return x;
   const ageMs = cardAge(x);
   const by = { ...d, at: new Date().toISOString(), ...(origin ? { origin } : {}), ageMs };
   if (!approve) {
+    authorize?.();
     // a refused-command card has nothing to deny: it is dismissed (dismiss below)
-    if (x.action === 'tool-refusal') return dismiss(id, origin);
+    if (x.action === 'tool-refusal') return dismiss(id, origin, d);
     deniers.get(id)?.(); hold(id);
-    x.state = 'denied'; x.result = 'Denied by the user.'; x.decidedBy = by;
+    x.state = 'denied'; x.result = d.by === 'manager' ? `Denied by manager ${d.manager}. Reason: ${d.reason}` : 'Denied by the user.'; x.decidedBy = by;
     if (NO_UNDO[x.action]) x.noUndo = NO_UNDO[x.action]; else x.undoUntil = new Date(Date.now() + UNDO_MS).toISOString();
     forget(id); audit(x, 'deny', origin, ageMs); emit(); decided(x); return x;
   }
+  const checkedVersion = x.version;
   const changed = await stale(id);
+  authorize?.();
+  if (x.state !== 'pending' || x.version !== checkedVersion) return x;
   if (changed) { x.staleFacts = changed; x.updated = new Date().toISOString(); emit(); return x; }
   const run = runners.get(id);
   if (!run) { x.state = 'expired'; x.result = 'This approval can no longer run.'; emit(); decided(x); return x; }
@@ -238,11 +243,12 @@ export function setDelivery(id: string, text: string) {
   x.delivery = text; emit();
 }
 // Close a refused-command card without a decision. The task gets no message (index.ts onDecision skips this state).
-export function dismiss(id: string, origin?: DecisionOrigin): Approval | undefined {
+export function dismiss(id: string, origin?: DecisionOrigin, d: Decider = { by: 'user' }): Approval | undefined {
   const x = items.get(id); if (!x || x.state !== 'pending') return x;
   if (x.action !== 'tool-refusal') throw new Error('Only a refused-command card can be dismissed. Decide this card with its own buttons.');
   const ageMs = cardAge(x);
-  x.state = 'dismissed'; x.result = DISMISSED_RESULT; x.decidedBy = { by: 'user', at: new Date().toISOString(), ...(origin ? { origin } : {}), ageMs };
+  x.state = 'dismissed'; x.result = d.by === 'manager' ? `Closed by manager ${d.manager}. No tool call was approved.` : DISMISSED_RESULT;
+  x.decidedBy = { ...d, at: new Date().toISOString(), ...(origin ? { origin } : {}), ageMs };
   forget(id); audit(x, 'dismiss', origin, ageMs); emit(); decided(x); return x;
 }
 // Reopen a card that the user denied less than UNDO_MS ago. Nothing ran on a denial. The kind's own state (a permit or a

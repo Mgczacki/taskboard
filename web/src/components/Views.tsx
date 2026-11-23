@@ -3,7 +3,7 @@ import { useScrollPosition } from '../scrollPosition';
 import { hasFiles, uploadAll } from '../drop';
 import type { Group, Task } from '../api';
 import { ATTN, ORDER, STATUS_LABEL, api, fmtWait, shortPath } from '../api';
-import { ManagerBadge } from './ManagerBoard';
+import { ManagerBadge, TaskStateWarning, useBoards } from './ManagerBoard';
 import { AgentChip, ByController, Dot, Kbd, MachineChip, ThreeLines, WhereChip, BrowserAskChip, ErrorChip } from './ui';
 import { planGroupDrop, planUngroup, type DropPlan } from '../groupMove';
 import { runGroupChange, type Toast } from '../groupActions';
@@ -76,6 +76,7 @@ function ScrollCards({ name, children }: { name: string; children: ReactNode }) 
 }
 
 export function BoardView({ tasks, groups, open, openDocs, selected, toggleSel, newGroup, toast }: { tasks: Task[]; groups: Group[]; open: (id: string) => void; openDocs: (id: string) => void; selected: Set<string>; toggleSel: (id: string) => void; newGroup: () => void; toast: Toast }) {
+  useBoards();
   const [by, setBy] = useState<'status' | 'groups'>(() => (localStorage.getItem('tb-board-by') as 'status' | 'groups') || 'status');
   const [over, setOver] = useState<{ key: string; refused?: string } | null>(null); // the column under a dragged card
   const [dragging, setDragging] = useState<{ id: string; from: string } | null>(null); // dragover events cannot read the dragged data
@@ -94,6 +95,7 @@ export function BoardView({ tasks, groups, open, openDocs, selected, toggleSel, 
       <div className="meta"><ManagerBadge id={t.id} /><ByController t={t} /><AgentChip a={t.agent} /><MachineChip t={t} /><WhereChip t={t} /><BrowserAskChip t={t} /><ErrorChip t={t} /><span className="chip mono">{shortPath(t.cwd).replace('~/', '')}</span><GroupDots t={t} groups={groups} /></div>
       {['stopped', 'review'].includes(t.status) && <div className={`st-label ${t.status}`} style={{ marginTop: 6 }}>{STATUS_LABEL[t.status]}</div>}
       <ThreeLines t={t} />
+      <TaskStateWarning id={t.id} />
       <div className="foot"><span className="sp" /><span className="io" onClick={e => { e.stopPropagation(); openDocs(t.id); }} title="Inbox and outbox">in {t.docs?.inbox || 0} · out {t.docs?.outbox || 0}</span></div>
       {from.startsWith('g:') && <button className="rm" onClick={() => { const p = planUngroup(t.id, t.num, groups, from.slice(2)); if ('change' in p) runGroupChange(p.change, toast); }} title={`Remove from ${groups.find(g => 'g:' + g.id === from)?.name}. The agent keeps running.`}>remove</button>}
     </div>
