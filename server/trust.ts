@@ -1,4 +1,4 @@
-// Trust only folders Taskboard launches. Keep the earlier value so Settings can undo Taskboard's edit.
+// Trust only folders Taskboard launches an agent in or gives it with --add-dir. Keep the earlier value so Settings can undo Taskboard's edit.
 import { existsSync, readFileSync, realpathSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { HOME, TB_DIR } from './config.ts';
@@ -59,13 +59,21 @@ export function trustCodexHook(t: Task, key: string, hash: string) {
   save(file, next);
 }
 
-export function trust(t: Task) {
-  const path = real(t.cwd);
+// Trust the task folder and each extra folder that the agent gets with --add-dir (the vault and attached worktrees).
+// Claude Code 2.1.330 asks "Adding a new directory" for an --add-dir folder that no trusted project entry covers,
+// and keeps the answer only for that session, so task #709 stopped at that question for its attached worktree.
+export function trust(t: Task, extraDirs: string[] = []) {
+  const recorded = changes();
+  const before = JSON.stringify(recorded);
+  for (const dir of [...new Set([t.cwd, ...extraDirs].map(real))]) trustPath(t, dir, recorded);
+  if (JSON.stringify(recorded) !== before) save(changesFile, JSON.stringify(recorded, null, 2));
+}
+
+function trustPath(t: Task, path: string, recorded: Change[]) {
   const acct = accounts.get(t.account) || accounts.defaultFor(t.agent);
   const file = t.agent === 'antigravity' ? join(accounts.agyConfigDir(acct), 'settings.json')
     : t.agent === 'codex' ? join(acct.isDefault ? join(HOME, '.codex') : acct.dir, 'config.toml')
     : acct.isDefault ? join(HOME, '.claude.json') : join(acct.dir, '.claude.json');
-  const recorded = changes();
   if (t.agent === 'codex') {
     const body = existsSync(file) ? readFileSync(file, 'utf8') : '';
     const s = section(body, path);
@@ -93,7 +101,6 @@ export function trust(t: Task) {
     save(file, JSON.stringify(cfg, null, 2));
     if (!recorded.some(c => c.file === file && c.path === path)) recorded.push({ agent: t.agent, file, path, before });
   }
-  save(changesFile, JSON.stringify(recorded, null, 2));
 }
 
 export function restore() {
