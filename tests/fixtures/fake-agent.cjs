@@ -9,6 +9,7 @@
 //   "[Pasted Content N chars]". Claude Code mode shows "[Pasted text #n]" for a paste over 800 characters.
 // - TEST_QUESTION=1 shows a trust question. FAKE_UPDATE=1 shows the box, then after 600 ms Codex's update dialog,
 //   where Enter chooses "Update now" (recorded as UPDATE_CHOSEN) and Esc or 2 skips.
+// - FAKE_DROP_ENTERS drops this many Enter keys with the message still visible. This models a lost key.
 // - TASK_DIR/fake-state.json (read every 100 ms) changes the screen as Claude Code 2.1.287 drew it (observed):
 //   busy: a spinner above the box and "esc to interrupt" below it. Enter keeps the text as a queued message, shown
 //     above the spinner with "ctrl+x ctrl+s to send now", and the empty box shows the dim hint "Press up to edit queued
@@ -54,6 +55,7 @@ const RULE = '─'.repeat(80), width = () => Math.max(20, (process.stdout.column
 const parts = []; // the box: { text, shown }
 let burst = null, burstTimer = null, pasting = null, pastes = 0, history = [];
 let dialog = process.env.TEST_QUESTION === '1' ? 'trust' : null;
+let droppedEnters = Number(process.env.FAKE_DROP_ENTERS || 0);
 let state = {}, queued = [];
 const stateFile = path.join(dir, 'fake-state.json');
 setInterval(() => {
@@ -122,7 +124,10 @@ function key(ch) {
     return;
   }
   if (burst !== null) { burst += ch; clearTimeout(burstTimer); burstTimer = setTimeout(endBurst, BURST_MS); return; }
-  if (ch === '\r') return submit();
+  if (ch === '\r') {
+    if (droppedEnters > 0) { droppedEnters--; return draw(); }
+    return submit();
+  }
   if (ch === '\x7f') { const p = parts[parts.length - 1]; if (p) { p.text = p.text.slice(0, -1); p.shown = p.shown.slice(0, -1); if (!p.text) parts.pop(); } return draw(); }
   if (ch === '\x15') { parts.length = 0; return draw(); }
   if (ch >= ' ') { add(ch, false); draw(); }

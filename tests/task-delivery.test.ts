@@ -2,14 +2,14 @@ import { TestResources } from './helpers/test-resources.ts';
 const resources = new TestResources();
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import express from 'express';
 import { waitFor } from './helpers/wait-for.ts';
 
-const root = mkdtempSync(join(tmpdir(), 'tb-delivery-'));
+const root = realpathSync(mkdtempSync(join(tmpdir(), 'tb-delivery-')));
 process.env.TASKBOARD_DIR = join(root, 'state');
 process.env.TASKBOARD_VAULT = join(root, 'vault');
 process.env.TASKBOARD_TMUX_SOCKET = resources.socket(`tb-delivery-${process.pid}`);
@@ -192,6 +192,33 @@ test('a trust question blocks text sent to a live session', async () => {
     });
     await assert.rejects(agents.sendTaskText(t, 'Do not type this'), /asks a question/);
   } finally { await tmux.killSession(t.session); }
+});
+
+test('dropped Enter keys are retried through tmux for all three agents', { timeout: 60_000 }, async () => {
+  const text = 'Mockup job: make the viewer states in one HTML file. '.repeat(5);
+  for (const [i, agent] of (['claude', 'codex', 'antigravity'] as const).entries()) {
+    const t = task(agent, 90 + i, `fixture-retry-${agent}`);
+    // The panel text comes from #763. The dropped keys are a test condition, not a claim about that panel.
+    writeFileSync(join(store.taskDir(t.id), 'fake-state.json'), JSON.stringify({ history: [
+      '╭──────────────────────────────────────────────────────────────────────────────╮',
+      '│ Bug report drafted',
+      '│ clear text to review, send, or dismiss',
+      '╰──────────────────────────────────────────────────────────────────────────────╯',
+      '✔ Update installed · /restart to apply',
+    ] }));
+    await tmux.newSession(t.session, root, { TASK_DIR: store.taskDir(t.id), FAKE_DROP_ENTERS: '2' }, [join(bin, agent === 'antigravity' ? 'agy' : agent)], async () => {});
+    try {
+      await waitFor(async () => (await tmux.capture(t.session, 0)).includes('clear text to review'), { description: `${agent} to show the panel` });
+      store.update(t.id, { status: 'idle' });
+      assert.equal((await agents.sendTaskText(t, text)).submitted, true);
+      const submissions = readFileSync(join(store.taskDir(t.id), 'submitted.jsonl'), 'utf8').trim().split('\n').map(x => JSON.parse(x).text);
+      assert.deepEqual(submissions, [text]);
+      const log = store.readLog(t.id);
+      assert.match(log, /Enter retry 1 of 2/);
+      assert.match(log, /Enter retry 2 of 2/);
+      assert.equal((readFileSync(join(store.taskDir(t.id), 'input.txt'), 'utf8').match(/\r/g) || []).length, 3);
+    } finally { await tmux.killSession(t.session); }
+  }
 });
 
 test('a limited account keeps the task stopped and its inbox notice pending', async () => {
