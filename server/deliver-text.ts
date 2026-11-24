@@ -31,6 +31,8 @@
 // When the text that Taskboard typed did not arrive whole, or Enter did not submit it, Taskboard removes that text from
 // the box (the box was empty before) and the message is tried again: such a NotTyped has the state 'retry'. Text left
 // in the box made every later message wait behind it as a "draft" (task 271).
+// Before removing an unsent message, Taskboard retries Enter at most twice, after 3 s with the same box text.
+// Each retry checks for questions and dashboard keys. A hidden box does not prove that the message was submitted.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import * as tmux from './tmux.ts';
@@ -45,6 +47,8 @@ export const MAX_TEXT = 100_000;
 export const DRAFT_QUIET_MS = 3000;
 export const MIN_COLS = 100, MIN_ROWS = 24, USABLE_COLS = 200, USABLE_ROWS = 50;
 export const WIDE_COLS = 2000;
+const ENTER_RETRY_MS = 3000, MAX_ENTER_RETRIES = 2;
+const ENTER_CHECK_MS = 250, ENTER_CHECKS = 36;
 
 const wait = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
 // the bottom of the visible screen, where a question or dialog that waits for an answer sits
@@ -215,12 +219,13 @@ async function clearBox(io: DeliverIO, t: Target, agent: PromptAgent, chars: num
 // shows only text, and throws NotTyped 'retry'; otherwise throws an Error that says that a part may be in the box.
 async function typeMessage(io: DeliverIO, t: Target, text: string, agent: PromptAgent): Promise<Delivered> {
   const name = agentName(t.agent), target = '=' + t.session + ':';
+  const keyAt = io.lastKeyAt(t.session);
   const asks = (screen: string) => boxState(screen, agent) === 'question';
   const question = `${name} in #${t.num} asks a question or shows a dialog in its terminal. Answer it there, then send again.`;
   const partly = `Enter was not pressed. The input box of #${t.num} may hold a part of the text: clear it in the terminal, then send again.`;
-  const removeAndRetry = async (why: string): Promise<never> => {
+  const removeAndRetry = async (why: string, enterPressed = false): Promise<never> => {
     if (await clearBox(io, t, agent, [...text].length + 10)) throw new NotTyped(`${why} Taskboard removed the text from the box and tries again.`, 'retry');
-    throw new Error(`${why} ${partly}`);
+    throw new Error(`${why} ${enterPressed ? 'The message may still be in the input box. Check the terminal before sending again.' : partly}`);
   };
   const pasted = text.length > TYPE_MAX;
   if (pasted) await io.paste(t.session, text);
@@ -237,13 +242,46 @@ async function typeMessage(io: DeliverIO, t: Target, text: string, agent: Prompt
   await io.wait(400);
   screen = await io.capture(t.session);
   if (asks(screen)) throw new Error(`${question} ${partly}`);
+  if (io.lastKeyAt(t.session) !== keyAt) throw new Error(`A dashboard terminal sent a key while Taskboard typed the message. ${partly}`);
   if (!holdsText(screen, text, agent, pasted)) return removeAndRetry(`The input box of ${name} in #${t.num} changed before Enter.`);
+  const enteredBox = squash(inputBox(plainText(screen), agent)!);
   await io.tmux('send-keys', '-t', target, 'Enter');
-  for (let i = 0; i < 36; i++) {
-    await io.wait(250);
-    if (!holdsText(await io.capture(t.session), text, agent, pasted)) return { submitted: true };
+  const unconfirmed = () => new Error(`Taskboard could not confirm that the message to ${name} in #${t.num} was submitted. Enter was pressed. Check the terminal before sending again.`);
+  // A redraw can hide the box without submitting the message. Only an empty box confirms submission.
+  // A question or changed text stops delivery without clearing text or sending more keys.
+  const submitted = (screen: string): boolean => {
+    if (io.lastKeyAt(t.session) !== keyAt) throw unconfirmed();
+    const state = boxState(screen, agent);
+    if (state === 'question') throw unconfirmed();
+    if (state === 'no-box') return false;
+    if (state === 'empty' && !holdsText(screen, text, agent, pasted)) return true;
+    if (!holdsText(screen, text, agent, pasted) || squash(inputBox(plainText(screen), agent)!) !== enteredBox) throw unconfirmed();
+    return false;
+  };
+  let retries = 0, unchangedSince: number | undefined = io.now();
+  for (let i = 0; i < ENTER_CHECKS; i++) {
+    await io.wait(ENTER_CHECK_MS);
+    screen = await io.capture(t.session);
+    if (submitted(screen)) return { submitted: true };
+    if (!holdsText(screen, text, agent, pasted)) { unchangedSince = undefined; continue; }
+    unchangedSince ??= io.now();
+    if (retries >= MAX_ENTER_RETRIES || io.now() - unchangedSince < ENTER_RETRY_MS) continue;
+    // Keep three seconds of checks after a retry before the existing cleanup can remove the message.
+    if (i + ENTER_RETRY_MS / ENTER_CHECK_MS >= ENTER_CHECKS) continue;
+    // Read again just before the retry. A question can replace the box while the message waits.
+    screen = await io.capture(t.session);
+    if (submitted(screen)) return { submitted: true };
+    if (!holdsText(screen, text, agent, pasted)) { unchangedSince = undefined; continue; }
+    retries++;
+    await io.tmux('send-keys', '-t', target, 'Enter');
+    if (t.id) store.appendLog(t.id, {
+      did: `Enter retry ${retries} of ${MAX_ENTER_RETRIES}: the message remained in the input box of ${name} for ${ENTER_RETRY_MS / 1000} s. Taskboard sent Enter again.`,
+      next: 'Check whether the input box becomes empty.',
+    });
+    unchangedSince = io.now();
   }
-  return removeAndRetry(`Enter was pressed, but the text was still in the input box of ${name} in #${t.num} after 9 s.`);
+  if (!holdsText(screen, text, agent, pasted)) throw unconfirmed();
+  return removeAndRetry(`Enter was pressed, but the text was still in the input box of ${name} in #${t.num} after 9 s.`, true);
 }
 
 // Types the draft back into the empty box, without Enter, and checks that the box shows it.
