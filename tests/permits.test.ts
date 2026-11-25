@@ -230,7 +230,7 @@ test('the installation and Taskboard control files stay protected from an allowe
   const task = freshTask('task-controls'), own = taskDir(task.id), installation = join(root, 'tbdir');
   symlinkSync(installation, join(own, 'installation'));
   assert.throws(() => permits.validate(task, [{ command: 'pwd', cwd: installation }]), /protected Taskboard files/);
-  for (const command of ['cat installation/token', `cat ${join(root, 'vault', 'tasks', task.id + '.md')}`, 'cat pending-prompt.txt', 'rm procs.json', 'cat --file=message-queue.json', 'cat queued-messages/next.txt']) {
+  for (const command of ['cat installation/token', `cat ${join(root, 'vault', 'tasks', task.id + '.md')}`, 'cat pending-prompt.txt', 'cat text-recovery.json', 'cat delivery-limit.json', 'rm procs.json', 'cat --file=message-queue.json', 'cat queued-messages/next.txt']) {
     assert.throws(() => permits.validate(task, [{ command, cwd: own }]), /protected Taskboard files/);
   }
   mkdirSync(join(own, 'queued-messages'));

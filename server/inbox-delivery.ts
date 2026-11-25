@@ -16,12 +16,16 @@ import * as agents from './agents.ts';
 import * as docs from './docs.ts';
 import * as store from './store.ts';
 import * as tmux from './tmux.ts';
+import * as recovery from './text-recovery.ts';
+import { DeliveryUnconfirmed } from './deliver-text.ts';
 
 export interface Delivery {
   task: string; name: string; queued: string;
   deliveredAt?: string; resumed?: boolean;
   // why the last try did not type the notice; cleared on delivery
   problem?: string; triedAt?: string;
+  tries?: number;
+  blocked?: boolean;
 }
 const FILE = join(TB_DIR, 'inbox-deliveries.json');
 const items = new Map<string, Delivery>();
@@ -45,6 +49,9 @@ export function track(task: string, name: string, problem?: string): Delivery {
 }
 
 docs.onInboxTold((task, names) => {
+  const entry = recovery.read(task);
+  if (entry && !entry.confirmed && /^New files? in your Taskboard inbox\./.test(entry.text))
+    recovery.write(task, { ...entry, cleanupOnly: true });
   let changed = false;
   for (const name of names) {
     const d = items.get(key(task, name));
@@ -70,10 +77,17 @@ async function tryOnce(taskId: string) {
   const open = waiting.filter(d => !d.deliveredAt);
   const fail = (problem: string) => { for (const d of open) { d.problem = problem; d.triedAt = now(); } save(); };
   if (!open.length || !pending) return save();
+  if (open.some(d => d.blocked)) return;
+  if (open.some(d => Date.now() - Date.parse(d.queued) >= 5 * 60_000 || (d.tries || 0) >= 5)) {
+    for (const d of open) d.blocked = true;
+    return fail(`Automatic inbox delivery stopped after five minutes or five attempts. ${open[0].problem || 'The notice has not arrived.'}`);
+  }
   const t = store.get(taskId);
   if (!t) return fail('The task no longer exists.');
   if (t.agent === 'antigravity' && t.status === 'working') return fail('The agent is working. Antigravity reads new inbox files when its turn ends.');
   try {
+    for (const d of open) d.tries = (d.tries || 0) + 1;
+    save();
     if (t.role === 'controller') {
       // sendTaskText resumes a stopped task; the controller is started only by agents.startController
       const s = (await tmux.listSessions())?.find(x => x.name === t.session);
@@ -83,7 +97,10 @@ async function tryOnce(taskId: string) {
     for (const d of open) d.resumed = result.resumed;
     docs.acknowledgeInboxNotice(taskId, pending.names);
     store.update(taskId, { status: 'working', ask: '', statusSource: `Inbox notice sent to the agent${result.resumed ? ' after resuming the task' : ''} at ${new Date().toLocaleTimeString()}.` });
-  } catch (e) { fail(e instanceof Error ? e.message : String(e)); }
+  } catch (e) {
+    if (e instanceof DeliveryUnconfirmed) for (const d of open) d.blocked = true;
+    fail(e instanceof Error ? e.message : String(e));
+  }
 }
 
 // Tells the agent about a file that is already in its inbox and in .pending.json. Resolves after the try, with the result.
@@ -98,6 +115,11 @@ export async function deliver(task: string, name: string): Promise<Delivery> {
 export const openTasks = () => [...new Set([...items.values()].filter(d => !d.deliveredAt).map(d => d.task))];
 export const openFor = (task: string) => [...items.values()].filter(d => d.task === task && !d.deliveredAt);
 export const retry = (task: string) => attempt(task);
+
+export function recovered(task: string, text: string) {
+  const pending = docs.pendingInboxNotice(task);
+  if (pending?.notice.replace(/\r?\n/g, ' ') === text) docs.acknowledgeInboxNotice(task, pending.names);
+}
 
 // Tries again when a task's turn ends or the task resumes, and at server start for tasks that wait for input.
 const retryStatuses = new Set(['idle', 'unread', 'review']);

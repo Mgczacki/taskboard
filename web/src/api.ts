@@ -26,6 +26,7 @@ export interface Task {
   scopes?: Scope[];
   // messages that Taskboard could not type into the agent yet (server/message-queue.ts), and inbox notices not delivered yet
   queue?: QueuedMessage[];
+  deliveryWait?: { reason: string; since: string; id: string };
   transfer?: { id: string; machine: string; task: string; direction: 'source' | 'target'; state: 'staged' | 'starting' | 'started' | 'failed'; worktreeCreated?: boolean; peerIdentity?: string };
   // a model or API error (server/agent-error-watch.ts). errorLabel is set only while it applies to the status:
   // "Stopped: model overloaded" on a stopped task, "Retrying (attempt 3/10)" on a working one

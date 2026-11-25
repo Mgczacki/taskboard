@@ -34,7 +34,7 @@ const clock = (iso: string) => { const d = new Date(iso); return isNaN(+d) ? '' 
 export const isHookNote = (s?: string) => !!s && /queued messages? (was|were) given to the agent by the .* hook/.test(s);
 
 export interface NoticeInput {
-  t: Pick<Task, 'id' | 'num' | 'status' | 'statusAt' | 'statusSource' | 'stopReason' | 'queue' | 'interrupted' | 'restartFailed' | 'restartWhenDone' | 'restartOverdue' | 'restartWait' | 'imported' | 'errorLabel' | 'agentError' | 'autoContinueOn'>;
+  t: Pick<Task, 'id' | 'num' | 'status' | 'statusAt' | 'statusSource' | 'stopReason' | 'queue' | 'deliveryWait' | 'interrupted' | 'restartFailed' | 'restartWhenDone' | 'restartOverdue' | 'restartWait' | 'imported' | 'errorLabel' | 'agentError' | 'autoContinueOn'>;
   pending?: PendingItem[]; // question cards of this task
   approvals?: Approval[]; // waiting approval cards of this task (liveApprovals in stack.ts)
   closed?: Approval[]; // closed approval cards of this task, for failed permits
@@ -53,6 +53,10 @@ const failedPermit = (a: Approval, now: number) => a.action === 'permit' && (a.s
 
 export function taskNotices({ t, pending = [], approvals = [], closed = [], error, drop, autoMessage = 'continue', now = Date.now() }: NoticeInput): TaskNotice[] {
   const out: TaskNotice[] = [];
+  if (t.deliveryWait && !(t.queue || []).some(q => q.id === t.deliveryWait!.id)) {
+    out.push({ key: `delivery:${t.deliveryWait.id}`, kind: 'message', level: 'error', title: 'Message delivery waits',
+      reason: oneLine(t.deliveryWait.reason), full: t.deliveryWait.reason, at: t.deliveryWait.since, count: 1, ids: [] });
+  }
   // queued and failed messages: one item for each state, kind and sender
   const groups = new Map<string, QueuedMessage[]>();
   for (const q of t.queue || []) {

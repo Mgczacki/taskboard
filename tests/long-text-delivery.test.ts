@@ -167,7 +167,11 @@ test('resuming a task without a saved session id starts a new session with its f
     assert.equal(r.status, 'working');
     assert.match(r.statusSource || '', /new session with its first prompt/);
     assert.equal(await tmux.hasSession(t.session), true);
-    await waitFor(() => submitted(t).some(s => s.argv && s.text === 'FIRST_PROMPT_158 Renumber the migrations.'), {
+    await waitFor(async () => {
+      // Long checkout paths can push the startup command past the tmux limit.
+      if (agents.pendingPrompt.has(t.id)) await agents.typePendingPrompt(store.get(t.id)!, await tmux.capture(t.session, 0));
+      return submitted(t).some(s => s.text === 'FIRST_PROMPT_158 Renumber the migrations.');
+    }, {
       description: 'the resumed task to receive its first prompt', state: async () => `submissions: ${JSON.stringify(submitted(t))}; screen:\n${await tmux.capture(t.session, 0)}`,
     });
   } finally { await tmux.killSession(t.session); }
@@ -203,7 +207,9 @@ test('Codex update dialog: the real text is a blocking question, and no Enter re
     await agents.typePendingPrompt(t, await tmux.capture(t.session, 0));
     agents.pendingPrompt.set(t.id, 'A first prompt');
     await agents.typePendingPrompt(t, await tmux.capture(t.session, 0));
-    assert.equal(agents.pendingPrompt.get(t.id), 'A first prompt', 'the first prompt waits while the dialog shows');
+    assert.equal(agents.pendingPrompt.has(t.id), false, 'the message queue now stores the first prompt');
+    const messages = await import('../server/message-queue.ts');
+    assert.equal(messages.list(t.id).find(q => q.text === 'A first prompt')?.state, 'queued', 'the first prompt waits while the dialog shows');
     await pause(500);
     assert.deepEqual(submitted(t), []);
   } finally { agents.pendingPrompt.delete(t.id); await tmux.killSession(t.session); }

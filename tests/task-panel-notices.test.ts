@@ -280,3 +280,13 @@ test('a delayed restart stays visible with its cause and a restart action', asyn
     assert.deepEqual(calls, [`${t.id}:now`, `${t.id}:now`]);
   } finally { api.restart = original; }
 });
+
+test('unfinished message cleanup shows a dashboard wait without a queue entry', () => {
+  const list = N.taskNotices({ t: task({ statusSource: '', deliveryWait: {
+    id: 'text-recovery', reason: 'Cleanup waits: the agent shows a question or dialog.', since: ago(1)
+  } }), now });
+  assert.equal(list[0].title, 'Message delivery waits');
+  assert.equal(list[0].level, 'error');
+  assert.match(list[0].reason, /question or dialog/);
+  assert.equal(list[0].autoHide, undefined);
+});

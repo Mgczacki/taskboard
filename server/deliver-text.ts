@@ -38,6 +38,7 @@ import { join } from 'node:path';
 import * as tmux from './tmux.ts';
 import * as store from './store.ts';
 import * as terminalInput from './terminal-input.ts';
+import * as recovery from './text-recovery.ts';
 import { boxRows, boxState, inputBox, MARK, plainText, squash, type BoxState, type PromptAgent } from './type-command.ts';
 import { agentName } from './agents.ts';
 import type { Agent } from './store.ts';
@@ -138,6 +139,7 @@ export function textError(text: unknown): string | null {
 export class NotTyped extends Error {
   constructor(readonly reason: string, readonly state: BoxState | 'busy' | 'retry') { super(`${reason} Nothing was typed.`); }
 }
+export class DeliveryUnconfirmed extends Error {}
 // Why a screen does not take a message now, or null when its input box is empty.
 export function notReadyReason(screen: string, agent: PromptAgent, name: string, num: number): NotTyped | null {
   const state = boxState(screen, agent);
@@ -199,14 +201,15 @@ export async function fitUnwatched(session: string, io: DeliverIO = realIO) {
 }
 
 // Empties a box that holds only text, with End, then Delete and Backspace keys. False when the box is not empty after.
-async function clearBox(io: DeliverIO, t: Target, agent: PromptAgent, chars: number): Promise<boolean> {
+async function clearBox(io: DeliverIO, t: Target, agent: PromptAgent, chars: number, allowed?: (screen: string) => boolean): Promise<boolean> {
   const target = '=' + t.session + ':';
   const n = String(Math.min(chars + 20, 20_000));
-  for (let i = 0; i < 3; i++) {
+  for (let i = 0; i < Math.max(3, Math.ceil(chars / 20_000) + 1); i++) {
     const screen = await io.capture(t.session);
-    const state = boxState(screen, agent);
+    const state = boxState(screen, agent, !!allowed && allowed(screen));
     if (state === 'empty') return true;
     if (state !== 'draft') return false; // a question or dialog would take the keys as answers
+    if (allowed && !allowed(screen)) return false;
     await io.tmux('send-keys', '-t', target, 'End');
     await io.tmux('send-keys', '-t', target, '-N', n, 'DC');
     await io.tmux('send-keys', '-t', target, '-N', n, 'BSpace');
@@ -220,68 +223,172 @@ async function clearBox(io: DeliverIO, t: Target, agent: PromptAgent, chars: num
 async function typeMessage(io: DeliverIO, t: Target, text: string, agent: PromptAgent): Promise<Delivered> {
   const name = agentName(t.agent), target = '=' + t.session + ':';
   const keyAt = io.lastKeyAt(t.session);
-  const asks = (screen: string) => boxState(screen, agent) === 'question';
+  const entry: recovery.Recovery = { text, session: t.session,
+    pane: (await io.tmux('display-message', '-p', '-t', target, '#{pane_id}:#{pane_pid}')).trim(),
+    keyAt, at: io.now(), reason: 'Taskboard has not confirmed submission.', attempts: 0 };
+  if (t.id) recovery.write(t.id, entry);
+  // Clear only our own text. A changed draft or a question must receive no keys.
+  const ours = (screen: string) => {
+    if (io.lastKeyAt(t.session) !== keyAt) return false;
+    const box = inputBox(plainText(screen), agent);
+    if (!box || !MARK[agent].test(box)) return false;
+    if (holdsText(screen, text, agent, text.length > TYPE_MAX))
+      return !entry.box || squash(box) === entry.box;
+    const content = squash(box).slice(1);
+    return !!content && squash(text).startsWith(content);
+  };
+  const stateOf = (screen: string) => boxState(screen, agent, holdsText(screen, text, agent, text.length > TYPE_MAX));
+  const asks = (screen: string) => stateOf(screen) === 'question';
   const question = `${name} in #${t.num} asks a question or shows a dialog in its terminal. Answer it there, then send again.`;
   const partly = `Enter was not pressed. The input box of #${t.num} may hold a part of the text: clear it in the terminal, then send again.`;
   const removeAndRetry = async (why: string, enterPressed = false): Promise<never> => {
-    if (await clearBox(io, t, agent, [...text].length + 10)) throw new NotTyped(`${why} Taskboard removed the text from the box and tries again.`, 'retry');
+    if (await clearBox(io, t, agent, [...text].length + 10, ours)) {
+      if (t.id) recovery.write(t.id, undefined);
+      throw new NotTyped(`${why} Taskboard removed the text from the box and tries again.`, 'retry');
+    }
     throw new Error(`${why} ${enterPressed ? 'The message may still be in the input box. Check the terminal before sending again.' : partly}`);
   };
-  const pasted = text.length > TYPE_MAX;
-  if (pasted) await io.paste(t.session, text);
-  else await io.tmux('send-keys', '-t', target, '-l', text);
-  let arrived = false, screen = '';
-  for (let i = 0; i < 60 && !arrived; i++) {
-    await io.wait(i ? 250 : 300);
+  let wrote = false;
+  try {
+    const pasted = text.length > TYPE_MAX;
+    const ready = await io.capture(t.session);
+    const refused = notReadyReason(ready, agent, name, t.num);
+    if (refused || io.lastKeyAt(t.session) !== keyAt) {
+      if (t.id) recovery.write(t.id, undefined);
+      throw refused || new NotTyped('A person typed before delivery started.', 'busy');
+    }
+    wrote = true;
+    if (pasted) await io.paste(t.session, text);
+    else await io.tmux('send-keys', '-t', target, '-l', text);
+    let arrived = false, screen = '';
+    for (let i = 0; i < 60 && !arrived; i++) {
+      await io.wait(i ? 250 : 300);
+      screen = await io.capture(t.session);
+      if (asks(screen)) throw new Error(`${question} ${partly}`);
+      arrived = holdsText(screen, text, agent, pasted);
+      if (arrived) {
+        entry.box = squash(inputBox(plainText(screen), agent)!);
+        if (t.id) recovery.write(t.id, entry);
+      }
+    }
+    if (!arrived) return await removeAndRetry(`The text did not arrive whole in the input box of ${name} in #${t.num} within 15 s.`);
+    // Codex takes an Enter that comes right after fast input as a part of that input
+    await io.wait(400);
     screen = await io.capture(t.session);
     if (asks(screen)) throw new Error(`${question} ${partly}`);
-    arrived = holdsText(screen, text, agent, pasted);
-  }
-  if (!arrived) return removeAndRetry(`The text did not arrive whole in the input box of ${name} in #${t.num} within 15 s.`);
-  // Codex takes an Enter that comes right after fast input as a part of that input
-  await io.wait(400);
-  screen = await io.capture(t.session);
-  if (asks(screen)) throw new Error(`${question} ${partly}`);
-  if (io.lastKeyAt(t.session) !== keyAt) throw new Error(`A dashboard terminal sent a key while Taskboard typed the message. ${partly}`);
-  if (!holdsText(screen, text, agent, pasted)) return removeAndRetry(`The input box of ${name} in #${t.num} changed before Enter.`);
-  const enteredBox = squash(inputBox(plainText(screen), agent)!);
-  await io.tmux('send-keys', '-t', target, 'Enter');
-  const unconfirmed = () => new Error(`Taskboard could not confirm that the message to ${name} in #${t.num} was submitted. Enter was pressed. Check the terminal before sending again.`);
-  // A redraw can hide the box without submitting the message. Only an empty box confirms submission.
-  // A question or changed text stops delivery without clearing text or sending more keys.
-  const submitted = (screen: string): boolean => {
-    if (io.lastKeyAt(t.session) !== keyAt) throw unconfirmed();
-    const state = boxState(screen, agent);
-    if (state === 'question') throw unconfirmed();
-    if (state === 'no-box') return false;
-    if (state === 'empty' && !holdsText(screen, text, agent, pasted)) return true;
-    if (!holdsText(screen, text, agent, pasted) || squash(inputBox(plainText(screen), agent)!) !== enteredBox) throw unconfirmed();
-    return false;
-  };
-  let retries = 0, unchangedSince: number | undefined = io.now();
-  for (let i = 0; i < ENTER_CHECKS; i++) {
-    await io.wait(ENTER_CHECK_MS);
-    screen = await io.capture(t.session);
-    if (submitted(screen)) return { submitted: true };
-    if (!holdsText(screen, text, agent, pasted)) { unchangedSince = undefined; continue; }
-    unchangedSince ??= io.now();
-    if (retries >= MAX_ENTER_RETRIES || io.now() - unchangedSince < ENTER_RETRY_MS) continue;
-    // Keep three seconds of checks after a retry before the existing cleanup can remove the message.
-    if (i + ENTER_RETRY_MS / ENTER_CHECK_MS >= ENTER_CHECKS) continue;
-    // Read again just before the retry. A question can replace the box while the message waits.
-    screen = await io.capture(t.session);
-    if (submitted(screen)) return { submitted: true };
-    if (!holdsText(screen, text, agent, pasted)) { unchangedSince = undefined; continue; }
-    retries++;
+    if (io.lastKeyAt(t.session) !== keyAt) throw new Error(`A dashboard terminal sent a key while Taskboard typed the message. ${partly}`);
+    if (!holdsText(screen, text, agent, pasted)) return await removeAndRetry(`The input box of ${name} in #${t.num} changed before Enter.`);
+    const enteredBox = squash(inputBox(plainText(screen), agent)!);
+    entry.box = enteredBox;
+    if (t.id) recovery.write(t.id, entry);
     await io.tmux('send-keys', '-t', target, 'Enter');
-    if (t.id) store.appendLog(t.id, {
-      did: `Enter retry ${retries} of ${MAX_ENTER_RETRIES}: the message remained in the input box of ${name} for ${ENTER_RETRY_MS / 1000} s. Taskboard sent Enter again.`,
-      next: 'Check whether the input box becomes empty.',
-    });
-    unchangedSince = io.now();
+    const unconfirmed = () => new Error(`Taskboard could not confirm that the message to ${name} in #${t.num} was submitted. Enter was pressed. Check the terminal before sending again.`);
+    // A redraw can hide the box without submitting the message. Only an empty box confirms submission.
+    // A question or changed text stops delivery without clearing text or sending more keys.
+    const submitted = (screen: string): boolean => {
+      if (io.lastKeyAt(t.session) !== keyAt) throw unconfirmed();
+      const state = stateOf(screen);
+      if (state === 'question') throw unconfirmed();
+      if (state === 'no-box') return false;
+      if (state === 'empty' && !holdsText(screen, text, agent, pasted)) return true;
+      if (!holdsText(screen, text, agent, pasted) || squash(inputBox(plainText(screen), agent)!) !== enteredBox) throw unconfirmed();
+      return false;
+    };
+    let retries = 0, unchangedSince: number | undefined = io.now();
+    for (let i = 0; i < ENTER_CHECKS; i++) {
+      await io.wait(ENTER_CHECK_MS);
+      screen = await io.capture(t.session);
+      if (submitted(screen)) { if (t.id) recovery.write(t.id, { ...entry, confirmed: true }); return { submitted: true }; }
+      if (!holdsText(screen, text, agent, pasted)) { unchangedSince = undefined; continue; }
+      unchangedSince ??= io.now();
+      if (retries >= MAX_ENTER_RETRIES || io.now() - unchangedSince < ENTER_RETRY_MS) continue;
+      // Keep three seconds of checks after a retry before the existing cleanup can remove the message.
+      if (i + ENTER_RETRY_MS / ENTER_CHECK_MS >= ENTER_CHECKS) continue;
+      // Read again just before the retry. A question can replace the box while the message waits.
+      screen = await io.capture(t.session);
+      if (submitted(screen)) { if (t.id) recovery.write(t.id, { ...entry, confirmed: true }); return { submitted: true }; }
+      if (!holdsText(screen, text, agent, pasted)) { unchangedSince = undefined; continue; }
+      retries++;
+      await io.tmux('send-keys', '-t', target, 'Enter');
+      if (t.id) store.appendLog(t.id, {
+        did: `Enter retry ${retries} of ${MAX_ENTER_RETRIES}: the message remained in the input box of ${name} for ${ENTER_RETRY_MS / 1000} s. Taskboard sent Enter again.`,
+        next: 'Check whether the input box becomes empty.',
+      });
+      unchangedSince = io.now();
+    }
+    if (!holdsText(screen, text, agent, pasted)) throw unconfirmed();
+    return await removeAndRetry(`Enter was pressed, but the text was still in the input box of ${name} in #${t.num} after 9 s.`, true);
+  } catch (error) {
+    if (error instanceof NotTyped) throw error;
+    if (!wrote) { if (t.id) recovery.write(t.id, undefined); throw error; }
+    const reason = error instanceof Error ? error.message : String(error);
+    const cleared = await clearBox(io, t, agent, [...text].length + 10, ours).catch(() => false);
+    if (cleared) {
+      if (t.id) recovery.write(t.id, undefined);
+      // An uncertain Enter can already have submitted the message. Never type it again automatically.
+      throw new DeliveryUnconfirmed(`${reason} Taskboard removed its remaining text. Submission is unknown.`);
+    }
+    if (t.id) recovery.write(t.id, { ...entry, reason: `${reason} Cleanup waits for a safe input box.` });
+    throw new DeliveryUnconfirmed(`${reason} Cleanup waits for a safe input box. Taskboard recorded the text for its watcher.`);
   }
-  if (!holdsText(screen, text, agent, pasted)) throw unconfirmed();
-  return removeAndRetry(`Enter was pressed, but the text was still in the input box of ${name} in #${t.num} after 9 s.`, true);
+}
+
+// The queue watcher calls this after delivery ends. No hook or new message may bypass unfinished cleanup.
+export async function recoverText(t: Target, io: DeliverIO = realIO): Promise<'submitted' | 'cleared' | void> {
+  if (!t.id || recovery.active.has(t.id)) return;
+  const entry = recovery.read(t.id);
+  if (!entry) return;
+  const agent = t.agent as PromptAgent;
+  if (io.now() - entry.at >= 5 * 60_000) entry.cleanupOnly = true;
+  const save = (reason: string) => recovery.write(t.id!, { ...entry, reason });
+  const pane = (await io.tmux('display-message', '-p', '-t', '=' + t.session + ':', '#{pane_id}:#{pane_pid}')).trim();
+  const screen = await io.capture(t.session);
+  const state = boxState(screen, agent, io.lastKeyAt(t.session) === entry.keyAt &&
+    holdsText(screen, entry.text, agent, entry.text.length > TYPE_MAX));
+  if (entry.session !== t.session || entry.pane !== pane) {
+    if (state === 'empty') recovery.write(t.id, undefined);
+    else recovery.write(t.id, { ...entry, exhausted: true, reason: 'The agent session changed. Submission is unknown. Review the message before retrying.' });
+    return;
+  }
+  if (state === 'empty') {
+    if (!entry.confirmed || io.now() - entry.at >= 60_000) recovery.write(t.id, undefined);
+    if (entry.attempts && io.lastKeyAt(t.session) === entry.keyAt) return 'submitted';
+    return;
+  }
+  if (entry.exhausted) return;
+  if (state === 'question' || state === 'no-box') { save(`Cleanup waits: ${state === 'question' ? 'the agent shows a question or dialog' : 'the input box is hidden'}.`); return; }
+  if (io.lastKeyAt(t.session) !== entry.keyAt || !draftQuiet(t.session, screen, agent, io)) {
+    save('Cleanup waits: a person typed or the input box changed.'); return;
+  }
+  const same = (s: string) => io.lastKeyAt(t.session) === entry.keyAt &&
+    holdsText(s, entry.text, agent, entry.text.length > TYPE_MAX) &&
+    (entry.box ? squash(inputBox(plainText(s), agent) || '') === entry.box :
+      squash(inputBox(plainText(s), agent) || '').slice(1) === squash(entry.text));
+  if (!same(screen)) {
+    const partial = (s: string) => {
+      const box = inputBox(plainText(s), agent);
+      const content = box && MARK[agent].test(box) ? squash(box).slice(1) : '';
+      return io.lastKeyAt(t.session) === entry.keyAt && !!content && squash(entry.text).startsWith(content);
+    };
+    if (!entry.confirmed && partial(screen) && await clearBox(io, t, agent, entry.text.length, partial)) {
+      recovery.write(t.id, undefined); return 'cleared';
+    }
+    if (entry.confirmed) recovery.write(t.id, undefined);
+    else save('Cleanup waits: the input box holds different text. Submission is unknown.');
+    return;
+  }
+  if (entry.attemptedAt && io.now() - entry.attemptedAt < ENTER_RETRY_MS) return;
+  if (entry.attempts >= 2 || entry.cleanupOnly) {
+    if (await clearBox(io, t, agent, [...entry.text].length + 10, same)) { recovery.write(t.id, undefined); return 'cleared'; }
+    else recovery.write(t.id, { ...entry, exhausted: true, reason: 'Two watcher retries failed. The input box still needs review.' });
+    return;
+  }
+  // Read again immediately before Enter. A message is never an answer to a question.
+  const last = await io.capture(t.session);
+  if (!same(last) || boxState(last, agent, true) !== 'draft') return;
+  recovery.write(t.id, { ...entry, confirmed: false, attempts: entry.attempts + 1, attemptedAt: io.now(),
+    reason: `Watcher Enter retry ${entry.attempts + 1} of 2. Submission is not confirmed.` });
+  await io.tmux('send-keys', '-t', '=' + t.session + ':', 'Enter');
 }
 
 // Types the draft back into the empty box, without Enter, and checks that the box shows it.
@@ -349,9 +456,17 @@ export async function deliverText(t: Target, raw: string, io: DeliverIO = realIO
   const agent = t.agent as PromptAgent;
   if (!(agent in MARK)) throw new Error('Taskboard does not know the input box of this agent.');
   const name = agentName(t.agent), target = '=' + t.session + ':';
+  const pending = t.id && recovery.read(t.id);
+  if (pending && !pending.confirmed) throw new NotTyped(`Message cleanup waits in #${t.num}: ${pending.reason}`, 'busy');
+  if (pending && holdsText(await io.capture(t.session), pending.text, agent, pending.text.length > TYPE_MAX))
+    throw new NotTyped(`A previous message remains in the input box of #${t.num}. The watcher must check it first.`, 'busy');
+  if (io.now() - io.lastKeyAt(t.session) < DRAFT_QUIET_MS)
+    throw new NotTyped(`A person typed in #${t.num} within the last 3 s.`, 'busy');
   // a pane in copy mode would take the keys as copy-mode commands
   if ((await io.tmux('display-message', '-p', '-t', target, '#{pane_mode}')).trim() === 'copy-mode') await io.tmux('send-keys', '-X', '-t', target, 'cancel');
   const restoreSize = await usableSize(io, t.session);
+  const release = io.hold(t.session);
+  if (t.id) recovery.active.add(t.id);
   try {
     const screen = await io.capture(t.session);
     const state = boxState(screen, agent);
@@ -364,5 +479,5 @@ export async function deliverText(t: Target, raw: string, io: DeliverIO = realIO
     const notReady = notReadyReason(screen, agent, name, t.num);
     if (notReady) throw notReady;
     return await typeMessage(io, t, text, agent);
-  } finally { await restoreSize().catch(() => {}); }
+  } finally { if (t.id) recovery.active.delete(t.id); release(); await restoreSize().catch(() => {}); }
 }

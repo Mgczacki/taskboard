@@ -121,7 +121,7 @@ test('a permission question in the last read before a retry gets no Enter', asyn
   });
   await assert.rejects(f.run(), /could not confirm.*submitted/);
   assert.equal(f.state.enters.length, 1);
-  assert.equal(f.state.text, f.text);
+  assert.equal(f.state.text, '', 'the question disappears on the next capture, so cleanup removes the message');
 });
 
 test('submission in the last read before a retry gets no extra Enter', async () => {

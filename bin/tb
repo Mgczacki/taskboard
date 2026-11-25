@@ -124,7 +124,7 @@ function printSet(s, byId) {
   }
 }
 // errorLabel: a model or API error (server/agent-errors.ts shortLabel), "Stopped: model overloaded" or "Retrying (attempt 3/10)"
-const line = t => `#${String(t.num).padEnd(4)} ${t.status.padEnd(10)} ${t.agent.padEnd(11)} ${t.title}${t.errorLabel ? `  — ${t.errorLabel}${t.agentError?.text ? `: ${t.agentError.text}` : ''}` : ''}${t.ask ? `  — waiting: ${t.ask}` : ''}`;
+const line = t => `#${String(t.num).padEnd(4)} ${t.status.padEnd(10)} ${t.agent.padEnd(11)} ${t.title}${t.errorLabel ? `  — ${t.errorLabel}${t.agentError?.text ? `: ${t.agentError.text}` : ''}` : ''}${t.ask ? `  — waiting: ${t.ask}` : ''}${t.deliveryWait ? `  — delivery waits: ${t.deliveryWait.reason}` : ''}`;
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 const HELP = `tb — Taskboard command line
