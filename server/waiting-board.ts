@@ -22,9 +22,9 @@ export function waitFor(t: store.Task): store.WaitingOn | undefined {
   const dep = t.links?.find(l => l.kind === 'dependsOn' && !links.depDone(l));
   if (dep) return { on: 'task', target: String(store.get(dep.to)?.num || dep.to), reason: dep.note || 'Dependency not met',
     needs: `Complete task #${store.get(dep.to)?.num || dep.to}`, since: dep.at, card: '', unblocks: [], source: 'checked' };
-  const failed = messageQueue.list(t.id).find(q => q.state === 'failed');
-  if (failed) return { on: 'task', target: String(t.num), reason: failed.reason, needs: 'Retry or remove the failed message',
-    since: failed.queued, card: '', unblocks: [], source: 'checked' };
+  const delivery = messageQueue.deliveryWait(t.id);
+  if (delivery) return { on: 'task', target: String(t.num), reason: delivery.reason, needs: `Retry or review delivery: ${delivery.reason}`,
+    since: delivery.since, card: '', unblocks: [], source: 'checked' };
   const ready = links.state(t) === 'ready';
   if (t.waitingOn?.on && t.waitingOn.on !== 'nothing' && !(ready && t.waitingOn.on === 'task' &&
       (t.links || []).some(link => link.kind === 'dependsOn' && links.depDone(link) &&

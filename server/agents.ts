@@ -4,7 +4,7 @@
 import { execFile, execFileSync, spawn } from 'node:child_process';
 import { prepareWorktreeDependencies, useTaskWorktree } from './task-worktree.ts';
 import { randomUUID } from 'node:crypto';
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { hostname } from 'node:os';
 import { promisify } from 'node:util';
@@ -180,22 +180,17 @@ export const pendingPrompt = {
   delete: (id: string) => rmSync(pendingFile(id), { force: true }),
 };
 const typingPrompt = new Set<string>();
-// Called by the server's status loop with the visible screen. Types the prompt in once the agent shows an empty input
-// box and no question or dialog (Codex's update dialog has "Update now" as its default answer).
-export async function typePendingPrompt(t: Task, screen: string) {
+// The status loop moves the saved prompt into the message queue. The queue checks the screen before typing.
+export async function typePendingPrompt(t: Task, _screen: string) {
   const p = pendingPrompt.get(t.id); if (!p || typingPrompt.has(t.id)) return;
-  if (!readyForInput(screen, t.agent as PromptAgent)) return; // not at the prompt yet
   typingPrompt.add(t.id);
   try {
+    const source = `first-prompt-${statSync(pendingFile(t.id)).mtimeMs}`;
+    const messages = await import('./message-queue.ts');
+    messages.queueFirstPrompt(t, p, source);
     pendingPrompt.delete(t.id);
-    // Antigravity's paste placeholder is not known, so its box cannot be checked; its prompt is pasted as before
-    if (t.agent === 'antigravity') { await tmux.paste(t.session, p); return; }
-    const r = await deliverText(t, p);
-    if (r.warning) store.update(t.id, { statusSource: `First prompt: ${r.warning}` });
   } catch (e) {
-    // nothing was typed (the screen changed after the check): the prompt waits for the next check
-    if (e instanceof NotTyped) { pendingPrompt.set(t.id, p); return; }
-    store.update(t.id, { status: 'needs-you', ask: 'The first prompt was not submitted. Check the terminal.', statusSource: `First prompt not submitted: ${e instanceof Error ? e.message : e}` });
+    store.update(t.id, { status: 'needs-you', ask: 'The first prompt could not enter the message queue.', statusSource: `First prompt not queued: ${e instanceof Error ? e.message : e}` });
   } finally { typingPrompt.delete(t.id); }
 }
 
@@ -1092,6 +1087,7 @@ export async function sendTaskText(t: Task, text: string, opts: { answer?: boole
   const empty = textError(text); if (empty) throw new Error(empty);
   if (delivering.has(t.id)) throw new NotTyped('Another message is being typed into this task now.', 'busy');
   delivering.add(t.id);
+  const release = terminalInput.hold(t.session);
   try {
     if (t.status === 'archived' || t.status === 'parked') throw new Error('This task is archived or set aside. Run tb resume <task>, then send again.');
     if (t.openElsewhere) throw new Error('This task is open in another terminal. Move it here before sending a message.');
@@ -1131,7 +1127,7 @@ export async function sendTaskText(t: Task, text: string, opts: { answer?: boole
       throw new NotTyped(`${agentName(t.agent)} in #${t.num} asks a question in its terminal${current.ask ? ` (${current.ask.slice(0, 120)})` : ''}.`, 'question');
     const r = await deliverText(current, text);
     return { resumed, ...r };
-  } finally { delivering.delete(t.id); }
+  } finally { release(); delivering.delete(t.id); }
 }
 
 export const resumeCommand = (agent: Agent) => agent === 'claude' ? 'claude --resume' : agent === 'codex' ? 'codex resume' : 'agy --conversation';

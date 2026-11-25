@@ -122,11 +122,11 @@ const submitted = (t: { id: string }) => {
 };
 const typed = (t: { id: string }) => { try { return readFileSync(join(store.taskDir(t.id), 'input.txt'), 'utf8'); } catch { return ''; } };
 const until = async (check: () => boolean | Promise<boolean>, ms = 15000) => { for (let i = 0; i < ms / 100 && !(await check()); i++) await pause(100); return check(); };
-async function liveTask(agent: 'claude' | 'codex' | 'antigravity' = 'claude', role?: 'controller') {
+async function liveTask(agent: 'claude' | 'codex' | 'antigravity' = 'claude', role?: 'controller', env: Record<string, string> = {}) {
   const n = ++num;
   const t = store.create({ id: role ? 'controller' : `queue-${n}`, num: role ? 0 : n, title: 'Queue fixture', agent, status: 'working', cwd: root, folder: root, session: role ? 'tb-controller' : `task-${n}`, sessionId: `fixture-${n}`, account: agent === 'codex' ? 'codex-fixture' : undefined, desc: '', ...(role ? { role } : {}) });
   mkdirSync(store.taskDir(t.id), { recursive: true });
-  await tmux.newSession(t.session, root, { TASK_DIR: store.taskDir(t.id), FAKE_AGENT: agent }, [join(bin, agent === 'antigravity' ? 'agy' : agent)], async () => {});
+  await tmux.newSession(t.session, root, { TASK_DIR: store.taskDir(t.id), FAKE_AGENT: agent, ...env }, [join(bin, agent === 'antigravity' ? 'agy' : agent)], async () => {});
   await until(async () => /for shortcuts/.test(await tmux.capture(t.session, 0)), 4000);
   return t;
 }
@@ -416,4 +416,47 @@ test('an inbox notice that cannot be typed is tried again when the box becomes e
     assert.ok(await until(() => submitted(t).some(s => /New file in your Taskboard inbox/.test(s))));
     assert.ok(inboxDelivery.get(t.id, 'review-note.md')?.deliveredAt);
   } finally { await tmux.killSession(t.session); }
+});
+
+test('a feedback panel and installed update below Claude input do not prevent delivery', async () => {
+  const t = await liveTask();
+  try {
+    fakeState(t, { footer: ['╭' + '─'.repeat(78) + '╮', '│ Bug report drafted',
+      '│ clear text to review, send, or dismiss', '╰' + '─'.repeat(78) + '╯',
+      '✔ Update installed · /restart to apply', '  Opus 5.5 · 1 feedback draft'] });
+    await pause(300);
+    assert.equal((await queue.send(t, 'Message below notices', { from: 'controller', kind: 'message' })).state, 'delivered');
+    assert.ok(await until(() => submitted(t).includes('Message below notices')));
+    assert.equal(boxText(t), '');
+  } finally { await tmux.killSession(t.session); }
+});
+
+for (const agent of ['claude', 'codex', 'antigravity'] as const) {
+  test(`${agent}: question words in a message reach the agent through tmux`, async () => {
+    const t = await liveTask(agent);
+    const text = 'Do you want to review? Allow this action only after user approval.';
+    try {
+      assert.equal((await queue.send(t, text, { from: 'controller', kind: 'message' })).state, 'delivered');
+      assert.ok(await until(() => submitted(t).includes(text)));
+      assert.equal(boxText(t), '');
+    } finally { await tmux.killSession(t.session); }
+  });
+}
+
+test('a delivery with dropped Enter does not delay a different recipient', { timeout: 60000 }, async () => {
+  const slow = await liveTask('claude', undefined, { FAKE_DROP_ENTERS: '100' });
+  const ready = await liveTask();
+  try {
+    for (const t of [slow, ready]) fakeState(t, { permission: true });
+    await pause(300);
+    assert.equal((await queue.send(slow, 'Slow recipient', { from: 'taskboard', kind: 'message' })).state, 'queued');
+    assert.equal((await queue.send(ready, 'Ready recipient', { from: 'taskboard', kind: 'message' })).state, 'queued');
+    for (const t of [slow, ready]) fakeState(t, {});
+    await pause(300);
+    const work = queue.tick();
+    assert.ok(await until(() => submitted(ready).includes('Ready recipient'), 3000), 'the second task receives its message while the first still waits');
+    assert.equal(queue.list(slow.id)[0].state, 'queued');
+    await work;
+    assert.equal(boxText(slow), '', 'the slow task has no unsent text after its attempt');
+  } finally { await tmux.killSession(slow.session); await tmux.killSession(ready.session); }
 });

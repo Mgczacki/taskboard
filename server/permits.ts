@@ -114,7 +114,7 @@ const records = new Map<string, Permit>();
 const listeners = new Set<(p: Permit) => void>();
 const now = () => new Date().toISOString();
 const inside = (root: string, path: string) => path === root || (!relative(root, path).startsWith('..' + sep) && relative(root, path) !== '..' && !isAbsolute(relative(root, path)));
-const taskControlFiles = ['pending-prompt.txt', 'message-queue.json', 'queued-messages', 'ask.json', 'answer-history.json', 'procs.json', 'workspace-stage.json'];
+const taskControlFiles = ['pending-prompt.txt', 'message-queue.json', 'text-recovery.json', 'delivery-limit.json', 'queued-messages', 'ask.json', 'answer-history.json', 'procs.json', 'workspace-stage.json'];
 // A working directory can contain tasks. A command path cannot name their parent.
 function unsafeRoot(root: string, ownTaskFolder?: string, allowTasksParent = false): string | undefined {
   const installation = realpathSync(TB_DIR), tasks = realpathSync(TASKS_DIR);

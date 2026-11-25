@@ -8,6 +8,8 @@ import { fileURLToPath } from 'node:url';
 import { HOME, TASKS_DIR, VAULT } from './config.ts';
 import * as store from './store.ts';
 import * as groups from './groups.ts';
+import * as recovery from './text-recovery.ts';
+import * as terminalInput from './terminal-input.ts';
 
 export interface DocInfo { name: string; path: string; kind: 'md' | 'html' | 'other'; size: number; mtime: string; from?: { task: string; num: number; title: string; at: string }; sentTo?: { task: string; num: number; at: string }[]; pending?: boolean }
 
@@ -161,6 +163,8 @@ export function takePending(taskId: string): InboxArrival[] {
 
 // Text for the agent about files it has not been told about; clears the list.
 export function takeInboxNotice(taskId: string): string | null {
+  const entry = recovery.read(taskId);
+  if (terminalInput.held(store.get(taskId)?.session || '') || recovery.active.has(taskId) || (entry && !entry.confirmed)) return null;
   const pending = takePending(taskId);
   if (!pending.length) return null;
   const lines = pending.map(f => `- ${f.path}${f.from?.num ? ` (from task #${f.from.num} "${f.from.title}")` : ''}`);

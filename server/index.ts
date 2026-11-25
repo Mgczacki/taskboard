@@ -1615,7 +1615,7 @@ app.delete('/api/machines/:id', (req, res) => { machines.remove(req.params.id); 
 // waitSig: the signature of the task row on the Waiting page, for a dismiss (dismiss.ts taskSignature)
 const WAITS_ON_USER = ['needs-you', 'stopped', 'review'];
 const waitSig = (t: store.Task) => WAITS_ON_USER.includes(t.status) ? dismiss.taskSignature(t, t.status === 'review' ? pendingFor(t.id) : undefined) : undefined;
-const view = (t: store.Task) => ({ ...t, urgent: urgent.get(t.id), computerUse: agents.computerUseAllowed(t), answerCount: answerHistory.answers(t.id).length, browserAsk: runtime.browserAsk(t.id), waitSig: waitSig(t), link: links.info(t), docs: docs.counts(t.id), queue: messageQueue.forView(t.id), waitMin: Math.round((Date.now() - Date.parse(t.statusAt)) / 60000), errorLabel: agentErrorWatch.errorLabel(t) || undefined, autoContinueOn: agentErrorWatch.errorAutoContinueOn(t), attach: `tmux -L taskboard attach -t ${t.session}`, ...(t.agent === 'antigravity' ? { tokenEstimate: stats.taskEstimate(t) } : {}) });
+const view = (t: store.Task) => ({ ...t, urgent: urgent.get(t.id), computerUse: agents.computerUseAllowed(t), answerCount: answerHistory.answers(t.id).length, browserAsk: runtime.browserAsk(t.id), waitSig: waitSig(t), link: links.info(t), docs: docs.counts(t.id), queue: messageQueue.forView(t.id), deliveryWait: messageQueue.deliveryWait(t.id), waitMin: Math.round((Date.now() - Date.parse(t.statusAt)) / 60000), errorLabel: agentErrorWatch.errorLabel(t) || undefined, autoContinueOn: agentErrorWatch.errorAutoContinueOn(t), attach: `tmux -L taskboard attach -t ${t.session}`, ...(t.agent === 'antigravity' ? { tokenEstimate: stats.taskEstimate(t) } : {}) });
 pending.setIo({
   capture: session => tmux.capture(session, 0),
   key: async (session, key, literal) => { await tmux.tmux('send-keys', '-t', '=' + session + ':', ...(literal ? ['-l', key] : [key])); },
@@ -2394,13 +2394,13 @@ app.post('/api/docs/send', async (req, res) => {
 });
 function noticeResult(d: inboxDelivery.Delivery): { delivery: 'delivered' | 'queued' | 'failed'; reason?: string; resumed?: boolean } {
   if (d.deliveredAt) return { delivery: 'delivered', resumed: !!d.resumed };
-  if (!store.get(d.task)) return { delivery: 'failed', reason: d.problem || 'The task no longer exists.' };
+  if (!store.get(d.task) || d.blocked) return { delivery: 'failed', reason: d.problem || 'The task no longer exists.' };
   return { delivery: 'queued', reason: d.problem || 'The notice waits to be typed.' };
 }
 // How a queued message still reaches the agent (message-queue.ts).
 function queuedNext(t: store.Task) {
   const hook = messageQueue.hookEvents(t);
-  return `${hook ? `A hook gives it to the agent when ${hook}. ` : ''}Taskboard types it when the input box is empty. It stays queued until it is delivered or the user removes it. You get a notice in your inbox if it still waits after ${messageQueue.WARN_MS / 60000} minutes. Do not send it again.`;
+  return `${hook ? `A hook gives it to the agent when ${hook}. ` : ''}Taskboard checks the input box before typing. Automatic delivery stops after ${messageQueue.WARN_MS / 60000} minutes or ${messageQueue.MAX_RETRIES} failed typing attempts. The message then stays visible for review. Taskboard tells the sender and supervisors. Do not send it again.`;
 }
 // The text for an approval card and for tb, for each result of messageQueue.send.
 function sendText(t: store.Task, d: messageQueue.SendResult) {

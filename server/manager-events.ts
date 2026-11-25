@@ -108,7 +108,7 @@ export async function flush(group: string) {
   if (groups.get(group)?.manager !== manager.id) return;
   try {
     const result = await messageQueue.send(manager, digest, { from: 'taskboard', kind: 'message', holdWhenParked: true, queueOnError: true });
-    if (result.state === 'failed') throw new Error(result.reason || 'The manager message was not queued.');
+    if (result.state === 'failed' && !result.id) throw new Error(result.reason || 'The manager message was not queued.');
   }
   catch (e) { queue.unshift(...events); save(); schedule(group); console.error('manager event delivery', e); }
 }

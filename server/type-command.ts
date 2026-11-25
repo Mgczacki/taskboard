@@ -35,10 +35,28 @@ export const MARK: Record<PromptAgent, RegExp> = { claude: /^❯(?:\s|$)/, antig
 const FOOTER_ROWS = 4; // at most this many rows with text below the box (status rows)
 const below = (lines: string[], from: number) => lines.slice(from).filter(l => l.trim()).length;
 
+// Remove only notices with no answer controls. Keep permission and update choice dialogs.
+export function inputScreen(screen: string): string {
+  const rows = screen.split('\n');
+  const result: string[] = [];
+  for (let i = 0; i < rows.length; i++) {
+    const row = plainText(rows[i]);
+    if (/^\s*[╭┌][─━][^╮┐]*[╮┐]\s*$/.test(row)) {
+      const end = rows.findIndex((r, n) => n > i && /^\s*[╰└][─━]+[╯┘]\s*$/.test(plainText(r)));
+      const panel = rows.slice(i, end + 1).map(plainText).join('\n');
+      if (end > i && /clear text to review, send, or dismiss/i.test(panel) &&
+          !blockingQuestion.test(panel) && !QUESTION.test(panel)) { i = end; continue; }
+    }
+    if (/^\s*[✔✓]?\s*Update installed\s*[·•]\s*\/restart to apply\s*$/.test(row)) continue;
+    result.push(rows[i]);
+  }
+  return result.join('\n');
+}
+
 // The rows of the agent's input box as the plain screen shows them (the first row starts with the prompt mark), or null
 // when the screen does not end with one.
 export function boxRows(screen: string, agent: PromptAgent = 'claude'): string[] | null {
-  const lines = screen.replace(/\s+$/, '').split('\n');
+  const lines = inputScreen(screen).replace(/\s+$/, '').split('\n');
   if (agent === 'codex') {
     let top = -1;
     for (let i = lines.length - 1; i >= 0; i--) if (/^[›!](?:\s|$)/.test(lines[i])) { top = i; break; }
@@ -76,7 +94,8 @@ const QUESTION = /Do you want to|Would you like to|Requesting permission|Run thi
 // the agents draw their questions in place of the box or in it: Claude Code and Antigravity replace the box, and Codex
 // shows the numbered answers with its "›" mark, where inputBox finds them.
 export type BoxState = 'empty' | 'draft' | 'question' | 'no-box';
-export function boxState(screen: string, agent: PromptAgent = 'claude'): BoxState {
+export function boxState(screen: string, agent: PromptAgent = 'claude', ownText = false): BoxState {
+  screen = inputScreen(screen);
   const plain = plainText(screen);
   if (agent === 'codex' && (CODEX_QUESTIONS.test(plain) || CODEX_QUESTION_OPEN.test(plain) || CODEX_ASYNC_OPEN.test(plain))) return 'question';
   const box = inputBox(plain, agent);
@@ -86,7 +105,14 @@ export function boxState(screen: string, agent: PromptAgent = 'claude'): BoxStat
   const lines = plain.replace(/\s+$/, '').split('\n');
   const rules = lines.flatMap((l, i) => RULE.test(l) ? [i] : []);
   const from = agent === 'codex' ? lastIndex(lines, l => /^[›!](?:\s|$)/.test(l)) : rules[rules.length - 2];
-  if (asks(lines.slice(from).join('\n'))) return 'question';
+  const area = lines.slice(from).join('\n');
+  if (!ownText && asks(area)) return 'question';
+  if (/^\s*[❯>›]\s*\d+\.\s/m.test(box)) return 'question';
+  // Words in ordinary message text are not a dialog. Questions outside the box still block keys.
+  const outside = !MARK[agent].test(box) ? area : agent === 'codex'
+    ? lines.slice(from + (boxRows(plain, agent)?.length || 1)).join('\n')
+    : lines.slice(rules.at(-1)! + 1).join('\n');
+  if (asks(outside)) return 'question';
   if (!MARK[agent].test(box) || box.includes('\n')) return 'draft';
   return typedText(screen, agent) ? 'draft' : 'empty';
 }

@@ -125,7 +125,7 @@ test('a message longer than one hook answer is saved to a file, and the agent ge
   assert.match(readFileSync(path, 'utf8'), /xEND\n$/);
 });
 
-test('after 5 minutes the sender is told once; it is told again when the message arrives', async () => {
+test('after 5 minutes delivery stops and the sender is told once; explicit retry can deliver it', async () => {
   const sender = task();
   const t = task();
   fill(t, [{ text: 'Waits a long time.', from: sender.id, queued: minutesAgo(6) }, { text: 'Recent.', from: sender.id }]);
@@ -133,14 +133,16 @@ test('after 5 minutes the sender is told once; it is told again when the message
   assert.deepEqual(view.map(v => v.late), [true, false], 'the dashboard warns about the old one only');
   await queue.tick();
   const id = `${t.id}-0`;
-  const waiting = join(docs.inboxDir(sender.id), `message-${id}-waiting.md`);
+  const waiting = join(docs.inboxDir(sender.id), `message-${id}-failed.md`);
   assert.ok(existsSync(waiting));
-  assert.match(readFileSync(waiting, 'utf8'), new RegExp(`not delivered yet after 6 minutes\\. #${t.num} did not read it\\.[\\s\\S]*Do not send it again`));
-  assert.ok(docs.pendingNames(sender.id).includes(`message-${id}-waiting.md`), 'the sender hook gives it to the sender agent');
+  assert.match(readFileSync(waiting, 'utf8'), /failed[\s\S]*Automatic delivery stopped/);
+  assert.ok(docs.pendingNames(sender.id).includes(`message-${id}-failed.md`), 'the sender hook gives it to the sender agent');
   assert.equal(inboxDelivery.openFor(sender.id).length, 1);
   assert.ok(queue.list(t.id)[0].warnedAt);
   await queue.tick();
-  assert.equal(docs.pendingNames(sender.id).filter(n => n.endsWith('-waiting.md')).length, 1, 'once only');
+  assert.equal(docs.pendingNames(sender.id).filter(n => n.endsWith('-failed.md')).length, 1, 'once only');
+  assert.equal(queue.list(t.id)[0].state, 'failed');
+  queue.retry(t.id, id);
   claude(t, { hook_event_name: 'PostToolUse', tool_name: 'Bash' });
   assert.match(readFileSync(join(docs.inboxDir(sender.id), `message-${id}-delivered.md`), 'utf8'), /was delivered at .* \(PostToolUse hook\)/);
   assert.ok(!existsSync(join(docs.inboxDir(sender.id), `message-${t.id}-1-delivered.md`)), 'a message without a warning gets no notice');
@@ -187,4 +189,25 @@ test('the queue holds at most 50 waiting messages for a task', async () => {
   assert.equal(r.state, 'failed');
   assert.match(r.reason!, /50 messages already wait for #0 \(the limit is 50\)/);
   assert.equal(queue.list(controller.id).length, 50);
+});
+
+test('a full queue rejects only that recipient and shows its limit as a wait', async () => {
+  fill(controller, Array.from({ length: 50 }, (_, i) => ({ text: `full ${i}`, from: 'you' })));
+  const r = await queue.send(controller, 'Rejected message', { from: 'you', kind: 'message' });
+  assert.equal(r.state, 'failed');
+  assert.match(queue.deliveryWait(controller.id)!.reason, /limit is 50/);
+  const other = task();
+  fill(other, [{ text: 'Independent message', from: 'you' }]);
+  assert.match(queue.takeForHook(other.id, 'PostToolUse')!, /Independent message/);
+  assert.equal(queue.list(other.id)[0].state, 'delivered');
+  assert.equal(queue.list(controller.id).filter(q => q.state === 'queued').length, 50);
+});
+
+test('a rejected message keeps the character limit visible until the queue drains', async () => {
+  fill(controller, [100000, 100000, 100000, 100000, 99999].map(n => ({ text: 'x'.repeat(n), from: 'you' })));
+  const r = await queue.send(controller, 'xx', { from: 'you', kind: 'message' });
+  assert.equal(r.state, 'failed');
+  assert.match(queue.deliveryWait(controller.id)!.reason, /500000 characters/);
+  queue.takeForHook(controller.id, 'PostToolUse');
+  assert.notEqual(queue.deliveryWait(controller.id)?.id, 'queue-limit');
 });
