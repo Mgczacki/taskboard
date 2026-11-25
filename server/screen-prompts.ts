@@ -239,7 +239,7 @@ export function parsePrompt(agent: PromptAgent, screen: string): ScreenPrompt | 
   if (signin >= 0) return make(`${agent}-signin`, 'signin', rows[signin].trim().replace(/:$/, ''), numberedBlock(rows), {}, tail(rows, 15), undefined, false);
 
   if (agent === 'claude') {
-    const trust = find(/Is this a project you created or one you trust\?|Do you trust the files in this folder\?/);
+    const trust = find(/Is this a (?:project|directory) you created or one you trust\?|Do you trust the files in this folder\?/);
     if (trust >= 0) {
       const block = plainBlock(rows, trust);
       const path = rows.slice(Math.max(0, trust - 4), trust).map(r => r.trim()).find(r => r.startsWith('/') || r.startsWith('~'));

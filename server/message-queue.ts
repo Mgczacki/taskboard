@@ -13,11 +13,11 @@
 //   minutes. Each screen check is counted in `checks`, and `seen` says in plain words what the last check saw.
 // Automatic delivery stops after five minutes or five failed typing attempts. The message stays for review.
 // The sender gets an inbox file after a failure. The controller and group managers get separate inbox files.
-// Messages with blockedAt stay visible until a person retries or removes them.
-// Older failed messages can still expire after the agent takes a later turn.
+// Failed messages do not use the capacity for queued messages. The newest failures remain visible.
+// Older failures above MAX_FAILED are saved in failed-messages before they close.
 // The watcher also checks text-recovery.json for a message left in an input box.
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 import { join } from 'node:path';
 import * as store from './store.ts';
 import type { Task } from './store.ts';
@@ -33,7 +33,7 @@ import { boxState, type BoxState, type PromptAgent } from './type-command.ts';
 
 export const TICK_MS = 2000;
 export const WARN_MS = 5 * 60_000; // stop automatic delivery and name the wait after five minutes
-export const MAX_OPEN = 50; // messages that wait (queued or failed) for one task
+export const MAX_OPEN = 50; // messages queued for automatic delivery to one task
 export const MAX_BYTES = 500_000; // characters of text that wait for one task
 const KEEP_DELIVERED = 20; // delivered and expired messages kept in the file, with the time and the path
 export const EXPIRE_MS = 60 * 60_000; // a failed message closes after this, once the agent took a turn after the failure
@@ -52,6 +52,7 @@ export interface Queued {
   tries: number; // typing attempts
   retries?: number; // typing tries that Taskboard removed from the box again (NotTyped 'retry'); MAX_RETRIES fail it
   triedAt?: string;
+  typingStartedAt?: string;
   checks?: number; checkedAt?: string; seen?: string; // screen checks of the 2 s loop, and what the last one saw
   via?: 'hook'; // the user chose "Deliver by hook": the typing loop leaves this message (and the ones after it) alone
   deliveredAt?: string; deliveredBy?: string;
@@ -104,8 +105,8 @@ export function seenWords(state: BoxState | 'not running', working: boolean): st
   return `${working ? 'The agent was working and ' : ''}${working ? what : what[0].toUpperCase() + what.slice(1)}.`;
 }
 
-function enqueue(t: Task, text: string, from: string, kind: Kind, state: Queued['state'], reason: string, sourceCard?: string): Queued | string {
-  const items = list(t.id), waiting = open(items);
+function enqueue(t: Task, text: string, from: string, kind: Kind, state: Queued['state'], reason: string, sourceCard?: string, typingStartedAt?: string): Queued | string {
+  const items = list(t.id), waiting = items.filter(q => q.state === 'queued');
   const size = waiting.reduce((n, q) => n + q.text.length, 0);
   const limit = (reason: string) => {
     const path = join(store.taskDir(t.id), 'delivery-limit.json');
@@ -116,9 +117,9 @@ function enqueue(t: Task, text: string, from: string, kind: Kind, state: Queued[
     }
     return reason;
   };
-  if (waiting.length >= MAX_OPEN) return limit(`${waiting.length} messages already wait for #${t.num} (the limit is ${MAX_OPEN}). Remove some on the dashboard first.`);
-  if (size + text.length > MAX_BYTES) return limit(`The messages that wait for #${t.num} would hold more than ${MAX_BYTES} characters. Put the text in a file and send the path.`);
-  const q: Queued = { id: randomUUID().slice(0, 8), text, kind, from, queued: iso(), state, reason, tries: 1, triedAt: iso(), checks: 0, ...(sourceCard ? { sourceCard } : {}) };
+  if (state === 'queued' && waiting.length >= MAX_OPEN) return limit(`${waiting.length} messages already wait for #${t.num} (the limit is ${MAX_OPEN}). Automatic delivery stops after five minutes. Retry later.`);
+  if (state === 'queued' && size + text.length > MAX_BYTES) return limit(`The messages that wait for #${t.num} would hold more than ${MAX_BYTES} characters. Automatic delivery stops after five minutes. Retry later or send a file path.`);
+  const q: Queued = { id: randomUUID().slice(0, 8), text, kind, from, queued: iso(), state, reason, tries: 1, triedAt: iso(), checks: 0, ...(sourceCard ? { sourceCard } : {}), ...(typingStartedAt ? { typingStartedAt } : {}) };
   write(t.id, [...items, q]);
   if (state === 'failed') { q.blockedAt = iso(); write(t.id, [...items, q]); tellSupervisors(t, reason, q.id); }
   return q;
@@ -183,11 +184,14 @@ function tellSender(to: Task, q: Queued, news: News) {
   const at = (s?: string) => s ? new Date(s).toLocaleString('sv-SE').slice(0, 16) : 'unknown';
   const start = q.text.length > 300 ? q.text.slice(0, 300) + '…' : q.text;
   const head = `Your message to #${to.num} "${to.title}" (queued at ${at(q.queued)}, message id ${q.id})`;
+  const uncertain = /could not confirm|Submission is unknown/i.test(q.reason);
   const body = news === 'waiting'
     ? `${head} is not delivered yet after ${minutes(q.queued)} minutes. #${to.num} did not read it. Last check: ${q.seen || q.reason}\n\nTaskboard keeps it in the queue until #${to.num} gets it or the user removes it. Do not send it again. The user sees it on the dashboard as a warning.`
     : news === 'delivered' ? `${head} was delivered at ${at(q.deliveredAt)} (${q.deliveredBy}).`
-    : news === 'failed' ? `${head} failed at ${at(q.triedAt)}. #${to.num} did not read it. Reason: ${q.reason}\n\nThe user can type it again from the dashboard.`
-    : news === 'expired' ? `${head} failed and was not delivered. Taskboard closed it at ${at(q.closedAt)}. #${to.num} did not read it. Reason: ${q.reason}\n\nSend it again if #${to.num} still needs it.`
+    : news === 'failed' ? `${head} failed at ${at(q.triedAt)}. ${uncertain ? `Taskboard could not confirm whether #${to.num} received it.` : `#${to.num} did not read it.`} Reason: ${q.reason}\n\n${uncertain ? 'Do not send it again until receipt is checked.' : 'The user can type it again from the dashboard.'}`
+    : news === 'expired' ? uncertain
+      ? `${head} has unknown delivery. Taskboard closed its failure record at ${at(q.closedAt)}. Reason: ${q.reason}\n\nDo not send it again until receipt is checked. Saved record: ${join(store.taskDir(to.id), 'failed-messages', q.id.replace(/[^a-zA-Z0-9_-]/g, '_') + '.json')}`
+      : `${head} failed and was not delivered. Taskboard closed it at ${at(q.closedAt)}. #${to.num} did not read it. Reason: ${q.reason}\n\nSend it again if #${to.num} still needs it. Saved record: ${join(store.taskDir(to.id), 'failed-messages', q.id.replace(/[^a-zA-Z0-9_-]/g, '_') + '.json')}`
     : `${head} was removed by the user at ${at(iso())}. #${to.num} did not read it.`;
   const name = `message-${q.id}-${news}.md`;
   try { docs.uploadSystem(from.id, name, `# Message to #${to.num}: ${news === 'waiting' ? 'not delivered yet' : news}\n\n${body}\n\nMessage start:\n\n> ${start.replace(/\n/g, '\n> ')}\n`); inboxDelivery.track(from.id, name); }
@@ -203,10 +207,15 @@ export async function send(t: Task, text: string, opts: { from: string; kind: Ki
   if (t.completion) store.update(t.id, { completion: undefined });
   store.communicate(t.id);
   if (store.get(opts.from)) store.communicate(opts.from);
+  let typingStartedAt: string | undefined;
   const queue = (state: Queued['state'], reason: string): SendResult => {
-    const q = enqueue(t, text, opts.from, opts.kind, state, reason);
+    const q = enqueue(t, text, opts.from, opts.kind, state, reason, undefined, typingStartedAt);
     return typeof q === 'string' ? { state: 'failed', reason: q } : { state, reason: q.reason, id: q.id } as SendResult;
   };
+  if (t.status === 'archived' || (t.status === 'parked' && !opts.holdWhenParked))
+    return queue('failed', `#${t.num} is ${t.status === 'archived' ? 'archived' : 'set aside'}. Nothing was typed. Resume it before sending again.`);
+  if (opts.holdWhenParked && t.status === 'parked')
+    return queue('queued', `#${t.num} is parked. Taskboard waits at most five minutes for the user to resume it.`);
   // a message does not jump ahead of the ones that wait
   const waiting = list(t.id).filter(q => q.state === 'queued').length;
   if (waiting) {
@@ -214,8 +223,7 @@ export async function send(t: Task, text: string, opts: { from: string; kind: Ki
     void flush(t.id);
     return r;
   }
-  if (opts.holdWhenParked && t.status === 'parked')
-    return queue('queued', `#${t.num} is parked. Taskboard types the message after the user resumes #${t.num}.`);
+  typingStartedAt = iso();
   try {
     const r = await typeNow(t, text);
     delivered(t, opts.kind, opts.from, false);
@@ -243,7 +251,8 @@ export async function send(t: Task, text: string, opts: { from: string; kind: Ki
 export function takeForHook(taskId: string, event: string, room = HOOK_ROOM): string | null {
   const t = store.get(taskId); if (!t) return null;
   if (typing.has(taskId) || terminalInput.held(t.session) || recovery.active.has(taskId) || !known.has(taskId)) return null;
-  if (recovery.read(taskId) && !recovery.read(taskId)!.confirmed) return null;
+  const pending = recovery.read(taskId);
+  if (pending && (!pending.confirmed || pending.cleanupOnly)) return null;
   // A stopped task can still run hooks in a live session. Keep its messages until its account can work again.
   if (t.status === 'stopped') { try { agents.checkResumeAccount(t); } catch { return null; } }
   const items = list(taskId);
@@ -332,6 +341,7 @@ async function flushOnce(taskId: string) {
   // a hook took the message while the screen was read
   if (list(taskId).find(x => x.id === q.id)?.state !== 'queued') return;
   try {
+    update({ typingStartedAt: iso() }, false);
     const r = await typeNow(t, q.text);
     markTyped(t, q.id, true, r);
     // the next message, in order, if the box is still empty
@@ -349,6 +359,20 @@ function markTyped(t: Task, id: string, later: boolean, r?: { draft?: 'kept' | '
   delivered(t, q.kind, q.from, later);
   if (r?.warning) store.update(t.id, { statusSource: r.warning });
   if (q.warnedAt) tellSender(t, q, 'delivered');
+}
+
+// Merge only system notices which have not started typing. A recovery record keeps the old text unchanged.
+export function replaceQueuedNotice(taskId: string, ids: string[], text: string): Queued | null {
+  const t = store.get(taskId);
+  if (!t || typing.has(taskId) || terminalInput.held(t.session) || recovery.active.has(taskId) || recovery.read(taskId)) return null;
+  const items = list(taskId), notices = items.filter(q => ids.includes(q.id));
+  if (!notices.length || notices.some(q => q.state !== 'queued' || q.from !== 'taskboard')) return null;
+  const first = notices[0];
+  const size = items.filter(q => q.state === 'queued' && !ids.includes(q.id)).reduce((n, q) => n + q.text.length, 0) + text.length;
+  if (textError(text) || size > MAX_BYTES) return null;
+  first.text = text;
+  write(taskId, items.filter(q => !ids.includes(q.id) || q === first));
+  return first;
 }
 
 // The dashboard: type a failed message again (it waits in the queue again), or remove a message.
@@ -408,7 +432,8 @@ function warnLate(taskId: string) {
   if (!late.length) return;
   for (const q of late) {
     q.warnedAt = iso(); q.blockedAt = iso(); q.state = 'failed';
-    q.reason = `Message ${q.id} waited for ${minutes(q.queued)} minutes. Automatic delivery stopped. ${q.seen || q.reason}`;
+    const reason = ['archived', 'parked'].includes(t.status) ? 'The task is archived or set aside.' : q.reason;
+    q.reason = `Message ${q.id} waited for ${minutes(q.queued)} minutes. Automatic delivery stopped. ${reason}${q.seen && !['archived', 'parked'].includes(t.status) ? ` Last screen check: ${q.seen}` : ''}`;
   }
   write(taskId, items);
   for (const q of late) { tellSender(t, q, 'failed'); tellSupervisors(t, q.reason, q.id); }
@@ -430,12 +455,12 @@ export function tellSupervisors(t: Task, reason: string, id: string) {
 export function deliveryWait(taskId: string): { reason: string; since: string; id: string } | undefined {
   const limit = readLimit(taskId);
   if (limit) {
-    const waiting = open(list(taskId));
+    const waiting = list(taskId).filter(q => q.state === 'queued');
     if (waiting.length >= MAX_OPEN || waiting.reduce((n, q) => n + q.text.length, 0) >= (limit.bytes ?? MAX_BYTES)) return limit;
     rmSync(join(store.taskDir(taskId), 'delivery-limit.json'), { force: true });
   }
   const r = recovery.read(taskId);
-  if (r && !r.confirmed) return { reason: r.reason, since: iso(r.at), id: 'text-recovery' };
+  if (r && (!r.confirmed || r.cleanupOnly) && !recovery.active.has(taskId) && !typing.has(taskId)) return { reason: r.reason, since: iso(r.at), id: 'text-recovery' };
   const q = list(taskId).find(q => q.state === 'failed' || (q.state === 'queued' && Date.now() - Date.parse(q.queued) >= WARN_MS));
   if (q) return { reason: `Message ${q.id}: ${q.reason}`, since: q.queued, id: q.id };
   const d = inboxDelivery.openFor(taskId).find(d => d.blocked || Date.now() - Date.parse(d.queued) >= WARN_MS);
@@ -450,13 +475,18 @@ function readLimit(taskId: string): { reason: string; since: string; id: string;
 export function expireFailed(taskId: string, now = Date.now()) {
   const t = store.get(taskId); if (!t) return;
   const items = list(taskId);
-  const failed = items.filter(q => q.state === 'failed' && !q.blockedAt && !recovery.read(taskId));
+  const failed = items.filter(q => q.state === 'failed');
   if (!failed.length) return;
   const failedAt = (q: Queued) => Date.parse(q.triedAt || q.queued);
   const turnAfter = (q: Queued) => items.some(x => x.state === 'delivered' && x.deliveredAt && Date.parse(x.deliveredAt) > failedAt(q)) || Date.parse(t.statusAt) > failedAt(q);
-  const close = failed.filter((q, i) => i < failed.length - MAX_FAILED || (now - failedAt(q) >= EXPIRE_MS && turnAfter(q)));
+  const close = failed.filter((q, i) => i < failed.length - MAX_FAILED || (!q.blockedAt && !recovery.read(taskId) && now - failedAt(q) >= EXPIRE_MS && turnAfter(q)));
   if (!close.length) return;
-  for (const q of close) Object.assign(q, { state: 'expired', closedAt: iso(now) });
+  const folder = join(store.taskDir(taskId), 'failed-messages');
+  mkdirSync(folder, { recursive: true });
+  for (const q of close) {
+    writeFileSync(join(folder, `${q.id.replace(/[^a-zA-Z0-9_-]/g, '_')}.json`), JSON.stringify(q, null, 2), { mode: 0o600 });
+    Object.assign(q, { state: 'expired', closedAt: iso(now) });
+  }
   write(taskId, items);
   for (const q of close) tellSender(t, q, 'expired');
 }
@@ -484,6 +514,48 @@ export function stop() { if (timer) clearInterval(timer); timer = undefined; }
 let ticking = false;
 const watching = new Set<string>();
 const reported = new Map<string, string>();
+const transcriptChecked = new Map<string, string>();
+
+// An exact user entry proves receipt. Assistant output and entries before the send cannot prove it.
+function confirmFromTranscript(t: Task) {
+  const items = list(t.id);
+  const uncertain = items.filter(q => q.state === 'failed' && /could not confirm|Submission is unknown/i.test(q.reason));
+  if (!uncertain.length || !t.transcript || typing.has(t.id) || recovery.active.has(t.id)) return;
+  try {
+    const info = statSync(t.transcript), version = `${t.transcript}:${info.size}:${info.mtimeMs}`;
+    if (transcriptChecked.get(t.id) === version) return;
+    transcriptChecked.set(t.id, version);
+    const fd = openSync(t.transcript, 'r'), start = Math.max(0, info.size - 1024 * 1024), buffer = Buffer.alloc(info.size - start);
+    try { readSync(fd, buffer, 0, buffer.length, start); } finally { closeSync(fd); }
+    const lines = buffer.toString('utf8').split('\n');
+    if (start) lines.shift();
+    const normalize = (text: string) => text.replace(/\r?\n/g, ' ');
+    let changed = false;
+    for (const line of lines) {
+      let row: any; try { row = JSON.parse(line); } catch { continue; }
+      const p = row.payload;
+      const content = t.agent === 'codex' && row.type === 'response_item' && p?.type === 'message' && p.role === 'user' ? p.content
+        : t.agent === 'claude' && row.type === 'user' && !row.isMeta ? row.message?.content
+        : t.agent === 'codex' && row.type === 'event_msg' && p?.type === 'user_message' ? p.message
+        : t.agent === 'antigravity' && row.type === 'USER_INPUT' ? row.content : undefined;
+      const text = typeof content === 'string' ? content : Array.isArray(content) ? content.filter((c: any) => ['text', 'input_text'].includes(c.type)).map((c: any) => c.text || '').join('\n') : undefined;
+      const at = Date.parse(row.timestamp || row.created_at || '');
+      if (!text || !Number.isFinite(at)) continue;
+      const matches = uncertain.filter(q => q.state === 'failed' && at >= Date.parse(q.typingStartedAt || q.queued) && normalize(text) === normalize(q.text));
+      if (matches.length !== 1 || items.some(q => q.state === 'delivered' && q.deliveredAt === iso(at) && normalize(q.text) === normalize(text))) continue;
+      const q = matches[0];
+      Object.assign(q, { state: 'delivered', deliveredAt: iso(at), deliveredBy: 'confirmed by an exact user entry in the agent transcript' });
+      const pending = recovery.read(t.id);
+      if (pending && normalize(pending.text) === normalize(q.text))
+        recovery.write(t.id, { ...pending, confirmed: true, cleanupOnly: true, reason: 'The transcript confirms receipt. Cleanup waits for a safe input box.' });
+      changed = true;
+    }
+    if (changed) {
+      write(t.id, items);
+      for (const q of uncertain) if (q.state === 'delivered') tellSender(t, q, 'delivered');
+    }
+  } catch { /* Keep the failure visible when the transcript cannot prove receipt. */ }
+}
 export async function tick() {
   if (ticking) return;
   ticking = true;
@@ -495,6 +567,7 @@ export async function tick() {
       if (!known.has(id) && !recovery.read(id) && !inboxDelivery.openFor(id).length) continue;
       watching.add(id);
       jobs.push((async () => {
+        confirmFromTranscript(t);
         warnLate(id);
         expireFailed(id);
         const canType = !['archived', 'parked', 'suspended', 'stopped'].includes(t.status) && !t.openElsewhere;

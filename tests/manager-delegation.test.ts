@@ -269,7 +269,7 @@ test('communication includes log edits, messages, state and outbox results', asy
   assert.ok(Date.parse(f.manager.communicationAt!) > Date.parse(old));
 });
 
-test('check-ins repeat each 30 minutes of silence and do not count as task communication', async () => {
+test('check-ins keep one pending notice and do not count as task communication', async () => {
   const f = fixture();
   // Other fixtures remain active. All managers are parked, so no external agent starts.
   const last = checkins.lastCommunication(f.worker);
@@ -282,9 +282,17 @@ test('check-ins repeat each 30 minutes of silence and do not count as task commu
   await checkins.checkIns(last + checkins.SILENCE_MS * 2 - 1);
   assert.equal(count(), 1);
   await checkins.checkIns(last + checkins.SILENCE_MS * 2);
-  assert.equal(count(), 2);
+  assert.equal(count(), 1);
   assert.match(messages.list(f.manager.id).find(m => m.text.includes(`task #${f.worker.num}]`))!.text, /Task log.*never approval/);
   store.update(f.worker.id, { status: 'archived' });
   await checkins.checkIns(last + checkins.SILENCE_MS * 3);
-  assert.equal(count(), 2);
+  assert.equal(count(), 1);
+});
+
+test('check-ins do not repeat while the worker waits for the user', async () => {
+  const f = fixture();
+  store.update(f.worker.id, { status: 'needs-you', ask: 'Approve the report' });
+  const last = checkins.lastCommunication(f.worker);
+  await checkins.checkIns(last + checkins.SILENCE_MS * 2);
+  assert.equal(messages.list(f.manager.id).filter(m => m.text.startsWith('[Taskboard check-in') && m.text.includes(`task #${f.worker.num}]`)).length, 0);
 });

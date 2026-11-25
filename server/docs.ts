@@ -164,7 +164,7 @@ export function takePending(taskId: string): InboxArrival[] {
 // Text for the agent about files it has not been told about; clears the list.
 export function takeInboxNotice(taskId: string): string | null {
   const entry = recovery.read(taskId);
-  if (terminalInput.held(store.get(taskId)?.session || '') || recovery.active.has(taskId) || (entry && !entry.confirmed)) return null;
+  if (terminalInput.held(store.get(taskId)?.session || '') || recovery.active.has(taskId) || (entry && (!entry.confirmed || entry.cleanupOnly))) return null;
   const pending = takePending(taskId);
   if (!pending.length) return null;
   const lines = pending.map(f => `- ${f.path}${f.from?.num ? ` (from task #${f.from.num} "${f.from.title}")` : ''}`);
