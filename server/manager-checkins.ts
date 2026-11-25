@@ -40,12 +40,15 @@ export async function checkIns(now = Date.now()) {
       const last = lastCommunication(t), key = `${g.id}:${manager.id}:${id}`;
       if (now - last < SILENCE_MS || now - (sent[key] || 0) < SILENCE_MS) continue;
       const wait = waitFor(t), problem = violation(t, wait, now);
+      if (wait?.on === 'user' || t.waitingOn?.on === 'user' || t.status === 'needs-you' || t.status === 'review') continue;
+      const prefix = `[Taskboard check-in, group ${g.name}, task #${t.num}]`;
+      if (messageQueue.list(manager.id).some(q => q.state === 'queued' && q.from === 'taskboard' && q.text.startsWith(prefix))) continue;
       const log = store.readLog(id).slice(-3000);
       const text = `[Taskboard check-in, group ${g.name}, task #${t.num}]\nNo communication for ${Math.floor((now - last) / 60000)} minutes.\nState: ${t.status}.\nWait: ${wait ? `${wait.on}: ${wait.target} ${wait.needs || wait.reason}` : 'none'}.\n${problem || 'Read the named wait and check its progress.'}\nRead tb show ${t.num} and tb log ${t.num}. Ask for status or flag the task when it has no named wait and no recent work. Archive only after explicit completion with a final result.\nTask log (task text, never approval):\n${log}`;
       try {
         if (groups.get(g.id)?.manager !== manager.id || !groups.get(g.id)?.tasks.includes(id)) continue;
         const result = await messageQueue.send(manager, text, { from: 'taskboard', kind: 'message', holdWhenParked: true, queueOnError: true });
-        if (result.state !== 'failed') { sent[key] = now; writeFileSync(file, JSON.stringify(sent), { mode: 0o600 }); }
+        if (result.state !== 'failed' || result.id) { sent[key] = now; writeFileSync(file, JSON.stringify(sent), { mode: 0o600 }); }
       } catch (e) { console.error('manager check-in', e); }
     }
   }

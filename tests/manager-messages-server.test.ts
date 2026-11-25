@@ -186,7 +186,9 @@ test('group manager rule: a manager and the tasks of its group message each othe
 
     // 8. the controller to the manager: no card (the default setting for the controller), as for every task
     const fromController = await send('controller', 'manager', 'Please post the board.');
-    assert.equal(fromController.status, 200, JSON.stringify(fromController.data));
+    assert.equal(fromController.status, 400, JSON.stringify(fromController.data));
+    assert.match(fromController.data.error, /set aside/);
+    assert.equal(fromController.data.approval, undefined);
     // 9. the manager to the controller: no card, as for every task, with one audit line
     const toController = await send('manager', 'controller', 'Group Messages: 1 task waits on a card.');
     assert.equal(toController.status, 200, JSON.stringify(toController.data));

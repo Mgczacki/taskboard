@@ -130,3 +130,19 @@ test('a worker event waits through review without clearing the review decision',
     assert.equal(store.get(manager.id)?.ask, 'Review report.md');
   } finally { delete account.limited; }
 });
+
+test('repeated worker events merge into the pending manager digest', async () => {
+  for (const item of messageQueue.list(manager.id)) messageQueue.remove(manager.id, item.id);
+  store.update(manager.id, { status: 'parked' });
+  events.record(worker.id, 'waiting', 'Waiting for Mario.');
+  events.record(worker.id, 'waiting', 'Waiting for Mario.');
+  assert.equal(events.heartbeat(group.id).pending, 1);
+  await events.flush(group.id);
+  events.record(worker.id, 'result', 'The local tests passed.');
+  await events.flush(group.id);
+  const pending = messageQueue.list(manager.id).filter(x => x.state === 'queued');
+  assert.equal(pending.length, 1);
+  assert.match(pending[0].text, /Waiting for Mario/);
+  assert.match(pending[0].text, /The local tests passed/);
+  assert.equal(pending[0].text.split('Waiting for Mario.').length - 1, 1);
+});

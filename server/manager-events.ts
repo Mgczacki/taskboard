@@ -21,6 +21,8 @@ const timers = new Map<string, NodeJS.Timeout>();
 const exec = promisify(execFile);
 const backoff = [60_000, 120_000, 300_000, 600_000];
 const fromManager = (event: ManagerEvent) => groups.get(event.group)?.manager === event.task;
+const waitingEvents = new Map<string, string>();
+const eventKey = (event: ManagerEvent) => `${event.group}:${event.task}:${event.kind}:${event.text}`;
 const groupSnapshot = () => new Map(groups.all().map(g => [g.id, { manager: g.manager, tasks: [...g.tasks], name: g.name }]));
 let lastGroups = groupSnapshot();
 const selfOnlyDigest = (text: string, manager: store.Task) => {
@@ -41,6 +43,10 @@ export function record(task: string, kind: string, text: string, immediate = fal
   for (const g of groups.groupsOf(task)) {
     if (!g.manager || g.manager === task) continue;
     const event: ManagerEvent = { at: new Date().toISOString(), group: g.id, task, kind, text: safe(text).slice(0, 500) };
+    const current = store.get(task), key = `${g.id}:${task}:${kind}`;
+    const waitsForUser = current && (current.status === 'needs-you' || current.status === 'review' || current.waitingOn?.on === 'user');
+    if (queue.some(x => eventKey(x) === eventKey(event)) || (waitsForUser && waitingEvents.get(key) === event.text)) continue;
+    if (waitsForUser) waitingEvents.set(key, event.text); else waitingEvents.delete(key);
     appendFileSync(eventFile, JSON.stringify(event) + '\n');
     queue.push(event); save();
     if (immediate) void flush(g.id);
@@ -88,15 +94,27 @@ function groupChanged() {
   lastGroups = current;
 }
 
+const flushing = new Set<string>();
 export async function flush(group: string) {
+  if (flushing.has(group)) { schedule(group); return; }
+  flushing.add(group);
+  try { await flushOnce(group); }
+  finally { flushing.delete(group); }
+}
+
+async function flushOnce(group: string) {
   const timer = timers.get(group); if (timer) { clearTimeout(timer); timers.delete(group); }
   const g = groups.get(group); const manager = g?.manager && store.get(g.manager);
   if (!manager) return;
-  const events = queue.filter(x => x.group === group && !fromManager(x) && (x.task === 'taskboard' || g!.tasks.includes(x.task)));
+  const events = queue.filter(x => x.group === group && !fromManager(x) && (x.task === 'taskboard' || g!.tasks.includes(x.task)))
+    .filter((x, i, all) => all.findIndex(y => eventKey(y) === eventKey(x)) === i);
   if (!queue.some(x => x.group === group)) return;
   queue.splice(0, queue.length, ...queue.filter(x => x.group !== group)); save();
   if (!events.length) return;
-  const lines = events.map(x => x.task === 'taskboard' ? `- group: ${x.text}` : `- #${store.get(x.task)?.num || x.task} ${x.kind}: ${x.text}`);
+  const pending = messageQueue.list(manager.id).filter(q => q.state === 'queued' && q.from === 'taskboard' &&
+    q.text.startsWith('[Taskboard event digest, ') && q.text.includes(`, group ${g.name}, `));
+  const previous = pending.flatMap(q => q.text.split('\n').slice(1).join('\n').split('\nCurrent group:\n')[0].split('\nBoard: ')[0].split('\n'));
+  const lines = [...new Set([...previous, ...events.map(x => x.task === 'taskboard' ? `- group: ${x.text}` : `- #${store.get(x.task)?.num || x.task} ${x.kind}: ${x.text}`)])];
   let snapshot = '';
   if (events.some(x => x.task === 'taskboard' || x.kind === 'ready')) {
     const { board } = await import('./waiting-board.ts');
@@ -104,9 +122,14 @@ export async function flush(group: string) {
     const rows = Object.values(current.columns).flat() as { num: number; title: string; status: string; state?: string; waitingOn?: { on: string; needs: string; reason: string } }[];
     snapshot = `\nCurrent group:\n${rows.map(row => `- #${row.num} ${row.title} (${row.status}${row.state ? `, ${row.state}` : ''})${row.waitingOn && row.waitingOn.on !== 'nothing' ? `: ${row.waitingOn.on}: ${row.waitingOn.needs || row.waitingOn.reason}` : ''}`).join('\n') || '- No active tasks'}`;
   }
-  const digest = `[Taskboard event digest, ${new Date().toISOString()}, group ${g.name}, ${events.length} events]\n${lines.join('\n')}${snapshot}\nBoard: tb board "${g.name}"`;
+  const count = lines.filter(line => /^- (?:group:|#)/.test(line)).length;
+  const digest = `[Taskboard event digest, ${new Date().toISOString()}, group ${g.name}, ${count} events]\n${lines.join('\n')}${snapshot}\nBoard: tb board "${g.name}"`;
   if (groups.get(group)?.manager !== manager.id) return;
   try {
+    if (pending.length) {
+      if (!messageQueue.replaceQueuedNotice(manager.id, pending.map(q => q.id), digest)) throw new Error('The manager digest waits for the active delivery to end.');
+      return;
+    }
     const result = await messageQueue.send(manager, digest, { from: 'taskboard', kind: 'message', holdWhenParked: true, queueOnError: true });
     if (result.state === 'failed' && !result.id) throw new Error(result.reason || 'The manager message was not queued.');
   }

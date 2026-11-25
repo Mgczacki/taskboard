@@ -1078,7 +1078,7 @@ export async function withTaskInput<T>(t: Task, run: () => Promise<T>): Promise<
 // continue using codex. Request increase?  1. Yes (y)  2. No (default) (n)" and "Approaching rate limits  Switch to
 // gpt-6-luna for lower credit usage?  1. Switch to gpt-6-luna  2. Keep current model". Typed text answers them: Codex
 // changed the model of task 163 to gpt-6-luna while an inbox notice was typed, and a "y" asks the owner for more credit.
-export const blockingQuestion = /Usage limit reached[\s\S]*Request increase|Approaching rate limits[\s\S]*Keep current model|trust this folder|Do you trust the (files|contents)|Select login method|Please log in|Sign in with ChatGPT|Update available[\s\S]*(Update now|Skip)|approval requested|Allow this action|Approve this tool|\d\.\s*(Update|Upgrade|Install)( now|\s+v?\d)|\(runs `[^`]*(curl|wget)[^`]*\|[^`]*sh\b|install\.sh\b/i;
+export const blockingQuestion = /Usage limit reached[\s\S]*Request increase|Approaching rate limits[\s\S]*Keep current model|trust this folder|Is this a (project|directory) you created or one you trust|Do you trust the (files|contents)|Select login method|Please log in|Sign in with ChatGPT|Update available[\s\S]*(Update now|Skip)|approval requested|Allow this action|Approve this tool|\d\.\s*(Update|Upgrade|Install)( now|\s+v?\d)|\(runs `[^`]*(curl|wget)[^`]*\|[^`]*sh\b|install\.sh\b/i;
 
 // Resume before typing into a task whose tmux session has ended.
 // answer: the text answers the question at the end of the last turn. The caller (pending.ts typeAnswer) checked that

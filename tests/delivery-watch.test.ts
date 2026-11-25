@@ -183,3 +183,45 @@ test('a first prompt enters the durable queue once and stops at the same time li
   assert.equal(queue.list(t.id)[0].state, 'failed');
   assert.match(queue.deliveryWait(t.id)!.reason, /Automatic delivery stopped/);
 });
+
+test('a normal delivery in progress does not report an unconfirmed submission as a wait', () => {
+  const f = fixture();
+  recovery.write(f.t.id, { text: 'Message', session: f.t.session, pane: f.state.pane,
+    keyAt: 0, at: f.state.now, reason: 'Taskboard has not confirmed submission.', attempts: 0 });
+  recovery.active.add(f.t.id);
+  try { assert.equal(queue.deliveryWait(f.t.id), undefined); }
+  finally { recovery.active.delete(f.t.id); }
+  assert.ok(queue.deliveryWait(f.t.id));
+});
+
+test('a redraw after Enter can show an older message before the empty Codex input returns', async () => {
+  const f = fixture('codex'); f.state.accept = true;
+  const capture = f.io.capture;
+  let redraws = 0;
+  f.io.capture = async s => f.state.enters && redraws++ < 2 ? screen('codex', 'An older message') : capture(s);
+  assert.equal((await delivery.deliverText(f.t, 'New message', f.io)).submitted, true);
+  assert.equal(f.state.enters, 1);
+  assert.equal(f.state.deletes, 0);
+});
+
+test('live Claude directory trust screens remain questions and receive no delivery keys', async () => {
+  for (const num of [299, 288]) {
+    const captured = readFileSync(join(import.meta.dirname, 'fixtures/screens', `claude-directory-trust-${num}.ansi`), 'utf8');
+    assert.equal(boxState(captured, 'claude'), 'question');
+    const f = fixture(); f.io.capture = async () => captured;
+    await assert.rejects(delivery.deliverText(f.t, 'A message is never an approval.', f.io), e => e instanceof delivery.NotTyped && e.state === 'question');
+    assert.equal(f.state.enters, 0); assert.equal(f.state.deletes, 0); assert.equal(f.state.text, '');
+  }
+});
+
+test('transcript confirmation permits only cleanup of matching text, never another Enter', async () => {
+  const f = fixture(); f.state.text = 'Already received';
+  recovery.write(f.t.id, { text: f.state.text, session: f.t.session, pane: f.state.pane,
+    keyAt: 0, at: f.state.now, reason: 'Confirmed by transcript', attempts: 0, confirmed: true, cleanupOnly: true });
+  await delivery.recoverText(f.t, f.io);
+  f.state.now += 3100;
+  await delivery.recoverText(f.t, f.io);
+  assert.equal(f.state.enters, 0);
+  assert.equal(f.state.text, '');
+  assert.equal(recovery.read(f.t.id), undefined);
+});

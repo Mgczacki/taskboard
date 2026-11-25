@@ -279,6 +279,7 @@ async function typeMessage(io: DeliverIO, t: Target, text: string, agent: Prompt
     if (io.lastKeyAt(t.session) !== keyAt) throw new Error(`A dashboard terminal sent a key while Taskboard typed the message. ${partly}`);
     if (!holdsText(screen, text, agent, pasted)) return await removeAndRetry(`The input box of ${name} in #${t.num} changed before Enter.`);
     const enteredBox = squash(inputBox(plainText(screen), agent)!);
+    const unchanged = (screen: string) => holdsText(screen, text, agent, pasted) && squash(inputBox(plainText(screen), agent)!) === enteredBox;
     entry.box = enteredBox;
     if (t.id) recovery.write(t.id, entry);
     await io.tmux('send-keys', '-t', target, 'Enter');
@@ -291,7 +292,8 @@ async function typeMessage(io: DeliverIO, t: Target, text: string, agent: Prompt
       if (state === 'question') throw unconfirmed();
       if (state === 'no-box') return false;
       if (state === 'empty' && !holdsText(screen, text, agent, pasted)) return true;
-      if (!holdsText(screen, text, agent, pasted) || squash(inputBox(plainText(screen), agent)!) !== enteredBox) throw unconfirmed();
+      // A redraw can show an earlier message. Wait without keys until the current input returns.
+      if (!unchanged(screen)) return false;
       return false;
     };
     let retries = 0, unchangedSince: number | undefined = io.now();
@@ -299,7 +301,7 @@ async function typeMessage(io: DeliverIO, t: Target, text: string, agent: Prompt
       await io.wait(ENTER_CHECK_MS);
       screen = await io.capture(t.session);
       if (submitted(screen)) { if (t.id) recovery.write(t.id, { ...entry, confirmed: true }); return { submitted: true }; }
-      if (!holdsText(screen, text, agent, pasted)) { unchangedSince = undefined; continue; }
+      if (!unchanged(screen)) { unchangedSince = undefined; continue; }
       unchangedSince ??= io.now();
       if (retries >= MAX_ENTER_RETRIES || io.now() - unchangedSince < ENTER_RETRY_MS) continue;
       // Keep three seconds of checks after a retry before the existing cleanup can remove the message.
@@ -307,7 +309,7 @@ async function typeMessage(io: DeliverIO, t: Target, text: string, agent: Prompt
       // Read again just before the retry. A question can replace the box while the message waits.
       screen = await io.capture(t.session);
       if (submitted(screen)) { if (t.id) recovery.write(t.id, { ...entry, confirmed: true }); return { submitted: true }; }
-      if (!holdsText(screen, text, agent, pasted)) { unchangedSince = undefined; continue; }
+      if (!unchanged(screen)) { unchangedSince = undefined; continue; }
       retries++;
       await io.tmux('send-keys', '-t', target, 'Enter');
       if (t.id) store.appendLog(t.id, {
@@ -316,7 +318,7 @@ async function typeMessage(io: DeliverIO, t: Target, text: string, agent: Prompt
       });
       unchangedSince = io.now();
     }
-    if (!holdsText(screen, text, agent, pasted)) throw unconfirmed();
+    if (!unchanged(screen)) throw unconfirmed();
     return await removeAndRetry(`Enter was pressed, but the text was still in the input box of ${name} in #${t.num} after 9 s.`, true);
   } catch (error) {
     if (error instanceof NotTyped) throw error;
@@ -351,8 +353,8 @@ export async function recoverText(t: Target, io: DeliverIO = realIO): Promise<'s
     return;
   }
   if (state === 'empty') {
-    if (!entry.confirmed || io.now() - entry.at >= 60_000) recovery.write(t.id, undefined);
-    if (entry.attempts && io.lastKeyAt(t.session) === entry.keyAt) return 'submitted';
+    if (!entry.confirmed || entry.cleanupOnly || io.now() - entry.at >= 60_000) recovery.write(t.id, undefined);
+    if (entry.attempts && !entry.confirmed && !entry.cleanupOnly && io.lastKeyAt(t.session) === entry.keyAt) return 'submitted';
     return;
   }
   if (entry.exhausted) return;
@@ -379,7 +381,7 @@ export async function recoverText(t: Target, io: DeliverIO = realIO): Promise<'s
   }
   if (entry.attemptedAt && io.now() - entry.attemptedAt < ENTER_RETRY_MS) return;
   if (entry.attempts >= 2 || entry.cleanupOnly) {
-    if (await clearBox(io, t, agent, [...entry.text].length + 10, same)) { recovery.write(t.id, undefined); return 'cleared'; }
+    if (await clearBox(io, t, agent, [...entry.text].length + 10, same)) { recovery.write(t.id, undefined); return entry.confirmed ? undefined : 'cleared'; }
     else recovery.write(t.id, { ...entry, exhausted: true, reason: 'Two watcher retries failed. The input box still needs review.' });
     return;
   }
@@ -457,7 +459,7 @@ export async function deliverText(t: Target, raw: string, io: DeliverIO = realIO
   if (!(agent in MARK)) throw new Error('Taskboard does not know the input box of this agent.');
   const name = agentName(t.agent), target = '=' + t.session + ':';
   const pending = t.id && recovery.read(t.id);
-  if (pending && !pending.confirmed) throw new NotTyped(`Message cleanup waits in #${t.num}: ${pending.reason}`, 'busy');
+  if (pending && (!pending.confirmed || pending.cleanupOnly)) throw new NotTyped(`Message cleanup waits in #${t.num}: ${pending.reason}`, 'busy');
   if (pending && holdsText(await io.capture(t.session), pending.text, agent, pending.text.length > TYPE_MAX))
     throw new NotTyped(`A previous message remains in the input box of #${t.num}. The watcher must check it first.`, 'busy');
   if (io.now() - io.lastKeyAt(t.session) < DRAFT_QUIET_MS)

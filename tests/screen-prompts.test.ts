@@ -2,6 +2,16 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { parsePrompt, riskOf } from '../server/screen-prompts.ts';
+import { plainText } from '../server/type-command.ts';
+
+test('live directory trust questions produce Claude trust cards', () => {
+  for (const num of [299, 288]) {
+    const screen = readFileSync(new URL(`./fixtures/screens/claude-directory-trust-${num}.ansi`, import.meta.url), 'utf8');
+    const prompt = parsePrompt('claude', plainText(screen));
+    assert.equal(prompt?.name, 'claude-trust');
+    assert.match(prompt?.question || '', /directory you created or one you trust/);
+  }
+});
 
 // Screens captured on 2026-10-02 (Claude Code 2.1.287, Codex 0.160.0, Antigravity 1.2.14), folders shortened.
 const W = '─'.repeat(80), D = '╌'.repeat(80);
