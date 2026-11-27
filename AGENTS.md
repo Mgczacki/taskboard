@@ -35,7 +35,12 @@ The approval is valid for five minutes, for one command, for that task and that 
 - either one with `--no-switch` (build and check only)
 
 The guard refuses `;`, `&&`, `||`, `|`, backticks, `$( )`, quotes, redirects and other script paths in that line.
-If the guard blocks a command, stop and tell the user what the guard said. Do not try another way to run it.
+If the guard refuses a call, report that call and its reason. Continue authorized local work and finish the report.
+Do not bypass the refused operation. A refusal does not end the task.
+For a Node report script, use `tb suggest "node <file>" --local-script --why "<reason>"`.
+This route still needs a permit decision. It writes only the task outbox and cannot use the network or child processes.
+Taskboard source work includes source edits and local tests within the task scope.
+This source authorization never approves a protected operation or an approval card.
 Read the release and rollback scripts with the Read tool, or with `cat`, `head`, `tail` or `grep` alone or joined with `|`.
 Only the user runs `pnpm rollback`.
 

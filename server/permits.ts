@@ -12,6 +12,9 @@ import { taskWorktrees, worktreeScopes } from './scopes.ts';
 import * as procs from './task-procs.ts';
 import * as approvals from './approvals.ts';
 import * as urgent from './urgent.ts';
+import { gitOperation, gitReadOnly, pathArguments, productionWrite, runsScript } from './hooks/script-command.mjs';
+import { inspectJavaScript, inspectPython, inspectShell } from './script-inspection.ts';
+import { localScriptEnvironment, localScriptExecution } from './local-script.ts';
 
 export type StepState = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled';
 export type PermitState = 'pending' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'denied' | 'expired' | 'unknown';
@@ -19,6 +22,7 @@ export interface PermitStep {
   command: string; argv: string[]; cwd: string; timeoutSeconds: number; network: boolean;
   env?: Record<string, string>; envPaths?: Record<string, string>; unsetEnv?: string[]; reviewRule?: string;
   scriptHash?: string;
+  localScript?: boolean;
   state: StepState; startedAt?: string; finishedAt?: string; exitCode?: number | null; signal?: string | null;
   outputTail?: string; error?: string;
 }
@@ -32,10 +36,12 @@ export interface Permit {
   // the task cancelled its own pending request (withdraw below)
   withdrawnAt?: string;
 }
-export interface StepInput { command: string; cwd?: string; timeoutSeconds?: number; network?: boolean; continueOnFailure?: boolean; env?: Record<string, string>; unsetEnv?: string[] }
+export interface StepInput { command: string; cwd?: string; timeoutSeconds?: number; network?: boolean; localScript?: boolean; continueOnFailure?: boolean; env?: Record<string, string>; unsetEnv?: string[] }
 export interface PermitDiagnostic { rule: string; cwd: string; conflictingWorktree?: string; conflictingTask?: string; protectedPath?: string; correction: string }
 export class PermitValidationError extends Error {
-  constructor(message: string, public diagnostic?: PermitDiagnostic) { super(message); }
+  constructor(message: string, public diagnostic?: PermitDiagnostic) {
+    super(message + ' Only this permit request failed. Continue authorized local work and finish the report.');
+  }
 }
 
 const pathSettings = new Set(['GH_CONFIG_DIR', 'GIT_CONFIG_GLOBAL', 'CLOUDSDK_CONFIG', 'GOOGLE_APPLICATION_CREDENTIALS']);
@@ -91,6 +97,7 @@ export function commandSettings(input: StepInput): { command: string; argv: stri
 function stepHash(taskId: string, steps: PermitStep[]): string {
   return createHash('sha256').update(JSON.stringify({ taskId, steps: steps.map(s => {
     const fields: unknown[] = [s.command, s.cwd, s.timeoutSeconds, s.network, s.scriptHash];
+    if (s.localScript) fields.push({ localScript: true });
     if (s.env || s.unsetEnv) fields.push(s.env || {}, s.unsetEnv || [], s.envPaths || {});
     return fields;
   }) })).digest('hex');
@@ -102,8 +109,9 @@ export function stepEnvironment(step: PermitStep, base: NodeJS.ProcessEnv): Node
   return env;
 }
 
-export function settingsDetail(step: Pick<PermitStep, 'env' | 'envPaths' | 'unsetEnv' | 'reviewRule'>): string {
+export function settingsDetail(step: Pick<PermitStep, 'env' | 'envPaths' | 'unsetEnv' | 'reviewRule' | 'localScript'>): string {
   return [
+    ...(step.localScript ? ['Local Node script: reads task source and report data. Writes only the task outbox. No network, child processes, or process signals.'] : []),
     ...Object.entries(step.env || {}).map(([name, value]) => `Set ${name}: ${value}${step.envPaths?.[name] && step.envPaths[name] !== value ? `\nResolved path: ${step.envPaths[name]}` : ''}`),
     ...(step.unsetEnv || []).map(name => `Remove ${name} from the child environment.`),
     ...(step.reviewRule ? [`Rule: ${step.reviewRule}. Only named nonsecret settings moved to separate fields. Approval runs this exact command once.`] : []),
@@ -200,7 +208,7 @@ function allowedSharedGit(argv: string[], task: Task): boolean {
     (argv.length === 3 && argv[1] === 'merge' && (argv[2] === '--abort' || argv[2] === task.branch)) ||
     (argv.length === 4 && argv[1] === 'merge' && argv[2] === '--no-ff' && argv[3] === task.branch));
 }
-function hardRule(argv: string[], task?: Task) {
+function hardRule(argv: string[], task?: Task, localScript = false, cwd?: string, approvedExternal = false) {
   const bin = argv[0].split('/').pop() || '';
   const text = argv.join(' ');
   if (redactOutput(text) !== text) throw new Error('The command contains a secret value. Use a file or a credential store instead.');
@@ -208,21 +216,31 @@ function hardRule(argv: string[], task?: Task) {
   if (/^(sudo|su|ssh|scp|sftp|vi|vim|nano|less|more|top|htop)$/.test(bin) || (/^(bash|sh|zsh|python|python3|node)$/.test(bin) && argv.includes('-i'))) throw new Error('Interactive commands cannot run from a permit.');
   if (/^(bash|sh|zsh|python|python3|node)$/.test(bin) && argv.some(a => /^(?:-c|-e|--eval|--command)$/.test(a))) throw new Error('Put interpreter code in a script file before requesting a permit.');
   if (bin === 'tb' || bin === 'taskboard') throw new Error('A permit cannot run another Taskboard command.');
-  if (bin === 'git' && argv.slice(1).some(x => /^(add|commit|rebase|merge|reset|checkout|switch|push|pull|cherry-pick|revert|worktree|update-ref|stash|branch|tag)$/.test(x)) && !allowedTaskGit(argv) && !(task && allowedSharedGit(argv, task)))
+  if (bin === 'git' && /^(add|commit|rebase|merge|reset|checkout|switch|push|pull|cherry-pick|revert|worktree|update-ref|stash|branch|tag)$/.test(gitOperation(argv).sub || '') && !gitReadOnly(argv) && !allowedTaskGit(argv) && !(task && allowedSharedGit(argv, task)))
     throw new Error(argv.includes('worktree') || (task && !task.worktree)
       ? `Use the task Git commands for changes to Git refs. A permit cannot create a worktree. ${scopeHint}`
       : 'Use the task Git commands for changes to Git refs.');
-  if (/\bgit\b[^\n;&|]*\bpush\b|\bgh\b[^\n;&|]*\b(repo|pr|api)\b/.test(text)) throw new Error(/\bgh\s+pr\s+create\b/.test(text)
+  if (bin === 'git' && gitOperation(argv).sub === 'push' || bin === 'gh' && argv.some(a => ['repo', 'pr', 'api'].includes(a))) throw new Error(bin === 'gh' && argv.includes('create')
     ? 'A GitHub write needs a separate user decision. To open a pull request from your branch, run tb git pr-request.'
-    : /\bgh\s+pr\s+merge\b/.test(text)
+    : bin === 'gh' && argv.includes('merge')
       ? 'A GitHub write needs a separate user decision. To merge a pull request at a reviewed head, run tb git pr-merge-request.'
-      : /\bgh\s+pr\s+ready\b/.test(text)
+      : bin === 'gh' && argv.includes('ready')
         ? 'A GitHub write needs a separate user decision. To mark a draft pull request ready for review, run tb git pr-ready-request.'
       : 'A GitHub write needs a separate user decision.');
-  if (/\b(pnpm|npm|yarn|bun|npx)\b.*\b(release|rollback)\b|scripts\/release\.mjs|scripts\/rollback\.mjs/.test(text)) throw new Error('A release or rollback needs its own rule.');
-  if (/scripts\/restart\.mjs/.test(text)) throw new Error('A restart of Taskboard needs the user.');
-  if (/\b(pkill|killall|launchctl)\b/.test(text)) throw new Error('This process command is outside permit scope.');
-  if (/\.taskboard|server\.pid|server\/index\.ts|taskboard\s+kill-server/.test(text)) throw new Error('A permit cannot change the running Taskboard server.');
+  const operationRoots = [cwd, task?.cwd, ...(task ? worktreeScopes(task).map(s => s.path) : [])].filter((path): path is string => !!path);
+  const taskboardRoots = operationRoots.filter(root => {
+    try { return JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')).name === 'taskboard'; } catch { return false; }
+  });
+  const protectedLocal = localScript && bin === 'node' && argv.length === 2 && cwd &&
+    taskboardRoots.some(root => ['release', 'rollback', 'restart', 'stop'].some(name =>
+      realTarget(resolve(cwd, argv[1])) === realTarget(resolve(root, 'scripts', name + '.mjs'))));
+  if (protectedLocal) throw new Error('A protected Taskboard operation needs its own user decision.');
+  const localFile = localScript && bin === 'node' && argv.length === 2 && cwd;
+  if (!localFile && (runsScript(argv, 'release') || runsScript(argv, 'rollback'))) throw new Error('A release or rollback needs its own rule.');
+  if (!localFile && runsScript(argv, 'restart')) throw new Error('A restart of Taskboard needs the user.');
+  if (!localFile && runsScript(argv, 'stop')) throw new Error('Stopping Taskboard needs its own user decision.');
+  if (['pkill', 'killall', 'launchctl'].includes(bin)) throw new Error('This process command is outside permit scope.');
+  if (!approvedExternal && productionWrite([bin, ...argv.slice(1)])) throw new Error('A production write or deploy needs its own user decision. Use tb external request.');
   if (argv.some(a => /(^|\/)\.env(?:\.|$)|\.(?:pem|key|p8|p12|pfx)$/.test(a))) throw new Error('A suggestion cannot display a credential file.');
   if (bin === 'env' && argv.some(a => /^[A-Za-z_][A-Za-z0-9_]*=/.test(a))) throw new Error('Do not place environment values in the command card.');
   if (bin === 'security' && argv.includes('-p')) throw new Error('Do not place a keychain password in the command card.');
@@ -246,7 +264,7 @@ function risk(argv: string[], cwd: string, task: Task, network: boolean): string
   if (!/^(pwd|rg|ls|cat|head|tail|wc|echo|true|false|test|stat)$/.test(bin)) flags.push('Writes in task paths');
   return flags;
 }
-function scriptHash(argv: string[], cwd: string, roots: string[], otherWorktrees: string[]): string | undefined {
+function scriptHash(argv: string[], cwd: string, roots: string[], otherWorktrees: string[], localScript = false): string | undefined {
   const bin = argv[0].split('/').pop() || '';
   const name = /^(bash|sh|zsh|python|python3|node)$/.test(bin) ? argv[1] : /\.(sh|py|js|mjs)$/.test(argv[0]) ? argv[0] : undefined;
   if (!name || name.startsWith('-')) return;
@@ -255,14 +273,13 @@ function scriptHash(argv: string[], cwd: string, roots: string[], otherWorktrees
     const real = realpathSync(target);
     if (!roots.some(root => inside(root, real))) throw new Error('The script file is outside this task.');
     const content = readFileSync(real);
-    if (/\bgit\b[^\n;&|]*\bpush\b|\bgh\b[^\n;&|]*\b(repo|pr|api)\b/.test(content.toString('utf8'))) throw new Error('A GitHub write needs a separate user decision.');
-    if (/\b(pnpm|npm|yarn|bun|npx)\b[^\n;&|]*\b(release|rollback)\b|scripts\/(release|rollback|restart)\.mjs|\btb\s+restart\b|\blaunchctl\b[^\n]*taskboard|server\.pid/.test(content.toString('utf8')))
-      throw new Error('A protected Taskboard operation needs its own user decision.');
-    const paths = content.toString('utf8').match(/(?:\.\.?\/|\/)[^\s'"`;,)]+/g) || [];
+    if (localScript) return createHash('sha256').update(content).digest('hex');
+    const paths = bin === 'node' || /\.(mjs|cjs|js)$/.test(real) ? inspectJavaScript(content.toString('utf8'), cwd)
+      : /^python[0-9.]*$/.test(bin) || /\.py$/.test(real) ? inspectPython(content.toString('utf8'), cwd) : inspectShell(content.toString('utf8'), cwd);
     checkWorktreeAccess(paths, dirname(real), otherWorktrees);
     return createHash('sha256').update(content).digest('hex');
   }
-  catch (e) { if (e instanceof Error && /outside this task|GitHub write|another task worktree|protected Taskboard operation/.test(e.message)) throw e; throw new Error('The script file must exist when you request the permit.'); }
+  catch (e) { if (e instanceof Error && /outside this task|GitHub write|another task worktree|protected Taskboard operation|local-script/.test(e.message)) throw e; throw new Error('The script file must exist when you request the permit.'); }
 }
 // Resolve an existing parent as well, so a new output file below a symlink gets the same check.
 function realTarget(path: string): string {
@@ -296,14 +313,14 @@ function checkWorktreeAccess(argv: string[], cwd: string, others: string[], task
     if (overlaps(realTarget(target))) throw new Error('The command accesses another task worktree.');
   }
 }
-export function validate(task: Task, inputs: StepInput[]): { steps: PermitStep[]; riskFlags: string[] } {
-  try { return validateSteps(task, inputs); }
+export function validate(task: Task, inputs: StepInput[], externalRequest = false): { steps: PermitStep[]; riskFlags: string[] } {
+  try { return validateSteps(task, inputs, externalRequest); }
   catch (error) {
     if (error instanceof PermitValidationError) throw error;
     throw new PermitValidationError(redactOutput(error instanceof Error ? error.message : String(error)));
   }
 }
-function validateSteps(task: Task, inputs: StepInput[]): { steps: PermitStep[]; riskFlags: string[] } {
+function validateSteps(task: Task, inputs: StepInput[], externalRequest = false): { steps: PermitStep[]; riskFlags: string[] } {
   if (!Array.isArray(inputs) || inputs.length < 1 || inputs.length > 8) throw new Error('Give one through eight steps.');
   if (task.role === 'controller') throw new Error('The controller cannot request a permit for itself.');
   const ownTaskFolder = join(realpathSync(TASKS_DIR), task.id);
@@ -324,13 +341,14 @@ function validateSteps(task: Task, inputs: StepInput[]): { steps: PermitStep[]; 
   const steps = inputs.map(input => {
     if (input.continueOnFailure) throw new Error('Steps must stop after a failure.');
     const settings = commandSettings(input);
-    const { argv } = settings; hardRule(argv, task);
+    const { argv } = settings;
     const requested = input.cwd || task.cwd;
     if (!isAbsolute(requested)) throw new Error('A working directory must be absolute.');
     const cwd = realpathSync(requested);
+    hardRule(argv, task, input.localScript, cwd, externalRequest);
     checkTaskboardPath(cwd, ownTaskFolder, true);
-    checkTaskboardAccess(argv, cwd, ownTaskFolder);
-    checkWorktreeAccess(argv, cwd, otherWorktrees, task);
+    checkTaskboardAccess(pathArguments(argv), cwd, ownTaskFolder);
+    checkWorktreeAccess(pathArguments(argv), cwd, otherWorktrees, task);
     const envPaths: Record<string, string> = {};
     for (const [name, value] of Object.entries(settings.env || {})) {
       if (!pathSettings.has(name)) continue;
@@ -344,7 +362,12 @@ function validateSteps(task: Task, inputs: StepInput[]): { steps: PermitStep[]; 
     if (argv[0] === 'git' && allowedSharedGit(argv, task) && cwd !== realpathSync(task.folder)) throw new Error('The merge command needs the task’s shared checkout.');
     const timeoutSeconds = input.timeoutSeconds ?? 30;
     if (!Number.isInteger(timeoutSeconds) || timeoutSeconds < 1 || timeoutSeconds > 120) throw new Error('A step timeout must be 1 through 120 seconds.');
-    return { ...settings, ...(settings.env ? { envPaths } : {}), cwd, timeoutSeconds, network: input.network === true, scriptHash: scriptHash(argv, cwd, [...roots, cwd], otherWorktrees), state: 'pending' as const };
+    if (input.localScript !== undefined && typeof input.localScript !== 'boolean') throw new Error('localScript must be a boolean.');
+    if (input.localScript) {
+      if (input.network || settings.env || settings.unsetEnv) throw new Error('Local scripts cannot use network access or environment settings.');
+      localScriptExecution(argv, cwd, ownTaskFolder);
+    }
+    return { ...settings, ...(settings.env ? { envPaths } : {}), ...(input.localScript ? { localScript: true } : {}), cwd, timeoutSeconds, network: input.network === true, scriptHash: scriptHash(argv, cwd, [...roots, cwd], otherWorktrees, input.localScript), state: 'pending' as const };
   });
   if (steps.reduce((sum, s) => sum + s.timeoutSeconds, 0) > 300) throw new Error('The sequence exceeds five minutes.');
   return { steps, riskFlags: [...new Set(steps.flatMap(s => risk(s.argv, s.cwd, task, s.network)))] };
@@ -368,7 +391,7 @@ export function requestLimitBlock(createdAt: string[], limits: machine.PermitReq
   const details = full.map(window => `${window.label} (${window.count}/${window.max})`).join(' and ');
   return `This task has reached its permit request limit for ${details}. The next request can be made at ${new Date(Math.max(...full.map(window => window.next))).toISOString()}.`;
 }
-export function request(task: Task, reason: string, inputs: StepInput[], refusalId?: string, statedRisk = ''): Permit {
+export function request(task: Task, reason: string, inputs: StepInput[], refusalId?: string, statedRisk = '', externalRequest = false): Permit {
   if (typeof reason !== 'string' || !reason.trim() || reason.length > 1000) throw new Error('Give a reason under 1000 characters.');
   if (typeof statedRisk !== 'string' || statedRisk.length > 500) throw new Error('Keep the risk under 500 characters.');
   const recent = all().filter(p => p.taskId === task.id);
@@ -378,7 +401,7 @@ export function request(task: Task, reason: string, inputs: StepInput[], refusal
     const limitBlock = requestLimitBlock(recent.map(p => p.createdAt), machine.get().permitRequestLimits);
     if (limitBlock) throw new Error(limitBlock);
   }
-  const { steps, riskFlags } = validate(task, inputs);
+  const { steps, riskFlags } = validate(task, inputs, externalRequest);
   const id = randomUUID();
   const p: Permit = { id, taskId: task.id, taskNum: task.num, agent: task.agent, reason: redactOutput(reason.trim()), refusalId,
     createdAt: now(), expiresAt: steps.some(s => s.env || s.unsetEnv || s.reviewRule) ? new Date(Date.now() + 15 * 60_000).toISOString() : '',
@@ -541,8 +564,12 @@ export function classify(steps: PermitStep[], task: Task): 'low' | 'high' {
   return 'high';
 }
 
-async function guard(task: Task, step: PermitStep) {
-  hardRule(step.argv, task);
+async function guard(task: Task, step: PermitStep, approvedExternal = false) {
+  hardRule(step.argv, task, step.localScript, step.cwd, approvedExternal);
+  // The local runtime enforces effects. A script name cannot grant any process or network access.
+  if (step.localScript) return;
+  // The matching external card supplies the production decision. Other hard rules still apply.
+  if (approvedExternal && productionWrite(step.argv)) return;
   const result = spawnSync(process.execPath, [GUARD_SCRIPT], { input: JSON.stringify({ tool_input: { command: step.command } }), encoding: 'utf8',
     env: { ...process.env, TASK_ID: task.id, TASK_WORKTREE: task.worktree ? task.cwd : '', TASKBOARD_DIR: TB_DIR, TASKBOARD_PORT: String(PORT) } });
   if (result.status !== 0) throw new Error(result.stderr || 'The Taskboard guard failed.');
@@ -556,9 +583,12 @@ const approvalRule = (by: approvals.Decider['by'], riskClass?: string) => by ===
 export async function run(p: Permit, task: Task, by: approvals.Decider['by'], comment = '', controllerRequestText = '', executor: typeof execute = execute) {
   if (expire(p) || p.state !== 'pending') return p;
   if (p.taskId !== task.id) throw new Error('The task changed.');
+  const card = p.approvalId && approvals.get(p.approvalId);
+  const approvedExternal = !!(card && card.action === 'external' && card.actor === task.id && card.state === 'running' &&
+    (card.payload as { permitId?: string })?.permitId === p.id);
   let approvedSteps: PermitStep[];
   try {
-    const { steps } = validate(task, p.steps);
+    const { steps } = validate(task, p.steps, approvedExternal);
     approvedSteps = steps;
     const hash = stepHash(task.id, steps);
     if (hash !== p.stepHash) throw new Error('The approved steps changed.');
@@ -574,7 +604,7 @@ export async function run(p: Permit, task: Task, by: approvals.Decider['by'], co
   for (let i = 0; i < p.steps.length; i++) {
     const step = p.steps[i];
     try {
-      const checked = validate(task, [step]).steps[0];
+      const checked = validate(task, [step], approvedExternal).steps[0];
       if (stepHash(task.id, [checked]) !== stepHash(task.id, [approvedSteps[i]]) || JSON.stringify(checked.argv) !== JSON.stringify(step.argv))
         throw new Error('The command, settings, working directory, or script changed after approval.');
       if (step.argv[0] === 'git' && allowedTaskGit(step.argv)) await taskGit.mergeStateForSource(task, true);
@@ -582,7 +612,7 @@ export async function run(p: Permit, task: Task, by: approvals.Decider['by'], co
         const branch = spawnSync('git', ['branch', '--show-current'], { cwd: step.cwd, encoding: 'utf8' });
         if (branch.status !== 0 || branch.stdout.trim() !== 'master') throw new Error('The shared checkout is no longer on master.');
       }
-      await guard(task, step);
+      await guard(task, step, approvedExternal);
       step.state = 'running'; step.startedAt = now(); save(p);
       const result = await executor(task, step);
       step.exitCode = result.code; step.signal = result.signal; step.outputTail = redactOutput(result.output.split('\n').slice(-200).join('\n').slice(-65536));
@@ -600,9 +630,11 @@ export async function run(p: Permit, task: Task, by: approvals.Decider['by'], co
 }
 
 async function execute(task: Task, step: PermitStep): Promise<{ code: number | null; signal: string | null; output: string; error?: string }> {
+  const local = step.localScript && localScriptExecution(step.argv, step.cwd, store.taskDir(task.id));
+  const env = stepEnvironment(step, { ...process.env, TASK_ID: task.id });
   return new Promise(resolveResult => {
-    const child = spawn(step.argv[0], step.argv.slice(1),
-      { cwd: step.cwd, env: stepEnvironment(step, { ...process.env, TASK_ID: task.id }), stdio: ['ignore', 'pipe', 'pipe'], detached: true });
+    const child = spawn(local ? local.bin : step.argv[0], local ? local.args : step.argv.slice(1),
+      { cwd: step.cwd, env: local ? localScriptEnvironment(env) : env, stdio: ['ignore', 'pipe', 'pipe'], detached: true });
     let output = '', done = false, timedOut = false;
     const finish = (code: number | null, signal: string | null, error?: string) => {
       if (done) return; done = true; clearTimeout(timer);

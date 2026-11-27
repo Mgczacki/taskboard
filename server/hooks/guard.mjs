@@ -3,10 +3,11 @@
 // started by Taskboard. Blocks commands that would stop
 // the running Taskboard server or its agents from inside a Taskboard task: an agent working on Taskboard itself once
 // stopped the real server with `pkill -f "tsx server/index.ts"` while meaning to stop its own test server.
-// Runs without the server, so it also protects while the server is being restarted. Never fails the tool call.
+// Runs without the server, so it also protects during a restart. A denial refuses one call. The hook exits 0.
 import { readFileSync, unlinkSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { commandCalls, gitOperation, gitReadOnly, productionWrite, runsScript, runsShellScript, runsServerStop } from './script-command.mjs';
 
 let input = '';
 process.stdin.setEncoding('utf8');
@@ -31,13 +32,14 @@ const literalLine = new RegExp(`^(${literalWord})(?:[ \t]+(${literalWord}))*[ \t
 const tbPush = cmd.trim().match(/^(tb|\/[^\s]+)[ \t]+git[ \t]+(push-request|push-result)(?=[ \t]|$)/);
 if (tbPush && (tbPush[1] === 'tb' || tbPush[1] === join(tbDir, 'bin', 'tb')) && literalLine.test(cmd.trim()))
   process.exit(0);
-const tbText = cmd.trim().match(/^(tb|\/[^\s]+)[ \t]+(send|new|approve|pending|scope|permit|mail)(?=[ \t]|$)([\s\S]*)$/);
+const tbText = cmd.trim().match(/^(tb|\/[^\s]+)[ \t]+(send|new|approve|pending|scope|permit|suggest|mail)(?=[ \t]|$)([\s\S]*)$/);
 if (tbText && (tbText[1] === 'tb' || tbText[1] === join(tbDir, 'bin', 'tb')) &&
     literalLine.test(cmd.trim())) {
   const sub = tbText[3].trim().split(/\s+/, 1)[0];
-  const inert = ['send', 'new', 'approve'].includes(tbText[2]) ||
+  const inert = ['send', 'new', 'approve', 'suggest'].includes(tbText[2]) ||
     tbText[2] === 'pending' && sub === 'answer' ||
     ['scope', 'permit'].includes(tbText[2]) && sub === 'approve' ||
+    tbText[2] === 'permit' && ['request', 'run-request'].includes(sub) ||
     tbText[2] === 'mail' && ['draft', 'revise', 'submit'].includes(sub);
   if (inert) process.exit(0);
 }
@@ -46,7 +48,7 @@ try { serverPid = String(JSON.parse(readFileSync(join(tbDir, 'server.pid'), 'utf
 const socket = process.env.TASKBOARD_TMUX_SOCKET || 'taskboard';
 
 // each part of a command line separated by ; && || | or a newline is checked on its own
-const parts = cmd.split(/;|&&|\|\||\||\n/);
+const calls = commandCalls(cmd);
 const reasons = [];
 let attached = [];
 try {
@@ -54,26 +56,30 @@ try {
   if (Array.isArray(value)) attached = value.filter(s => typeof s?.name === 'string' && typeof s?.path === 'string');
 } catch { /* an older session may have no scope list */ }
 const gitWrite = /^(?:add|commit|rebase|merge|reset|checkout|switch|push|pull|cherry-pick|revert|worktree|update-ref|stash|branch|tag)$/;
-const gitCommand = /^\s*(?:[A-Z_][A-Z0-9_]*=\S+\s+)*(?:\S*\/)?git\s+(?:(?:-C|--git-dir|--work-tree)\s+\S+\s+)*([a-z-]+)\b(.*)$/;
-for (const p of parts) {
-  const match = p.match(gitCommand);
+for (const words of calls) {
+  const [bin, ...args] = words;
+  const p = words.join(' ');
+  if (bin === 'unclassified-code' || bin === 'kill' && args.includes('<dynamic>'))
+    reasons.push('this evaluated code has an unknown process effect. Put local report code in a file and use tb suggest with --local-script');
+  const git = gitOperation(words);
+  const match = bin === 'git' ? [p, git.sub, ' ' + git.args.join(' ')] : null;
   // `git branch --show-current` reads the branch name. Other branch forms can change refs.
   if ((!urgent || match?.[1] === 'push') && process.env.TASK_ID && process.env.TASK_ID !== 'controller' && match && gitWrite.test(match[1]) &&
-      !(match[1] === 'branch' && /^\s+--show-current\s*$/.test(match[2])))
+      !gitReadOnly(words))
     reasons.push((/^(?:merge|pull)$/.test(match[1]) ? 'to merge a base such as origin/main into your task branch without a rebase, run `tb git merge-from origin/main`. Otherwise, ' : '') + (attached.length
       ? `run \`tb git commit\`, \`tb git rebase\`, \`tb git merge-from\`, \`tb git repair\`, or \`tb git merge-request\` for Git writes. This task has attached worktrees: ${attached.map(s => s.name).join(', ')}. Select one with \`--worktree <name>\`. The main checkouts and other tasks' worktrees are outside this task's write scope`
       : process.env.TASK_WORKTREE
       ? 'run `tb git commit`, `tb git rebase`, `tb git merge-from`, `tb git repair`, or `tb git merge-request` for Git writes in a Taskboard task. To change another repository, run `tb scope request worktree --repo <main checkout> --base origin/<branch> --branch <new branch> --reason "<why>"` and then use `tb git commit --worktree <name>`'
       : 'this task has no worktree. Run `tb scope request worktree --repo <main checkout> --base origin/<branch> --branch <new branch> --reason "<why>"`, for example `tb scope request worktree --repo ~/code/app --base origin/master --branch task/fix-login --reason "Fix the login bug"`. The user approves it on the dashboard. Then run `tb git commit`, `tb git rebase`, `tb git merge-from`, `tb git repair`, or `tb git merge-request` with `--worktree <name>`'));
-  if (/\b(pkill|killall)\b/.test(p) && /server\/index|taskboard|\btsx\b|\bnode\b|\bnpx\b/i.test(p))
+  if (['pkill', 'killall'].includes(bin) && /server\/index|taskboard|\btsx\b|\bnode\b|\bnpx\b/i.test(args.join(' ')))
     reasons.push('pkill/killall by name can match the real Taskboard server, not only a test server');
-  if (serverPid && /\bkill\b/.test(p) && new RegExp(`(^|[^0-9])${serverPid}([^0-9]|$)`).test(p))
+  if (serverPid && bin === 'kill' && args.some(a => a === serverPid || a === '-' + serverPid))
     reasons.push(`process ${serverPid} is the running Taskboard server`);
-  if (new RegExp(`tmux\\b.*-L\\s*${socket}\\b.*\\bkill-(server|session)\\b`).test(p))
+  if (bin === 'tmux' && args.some(a => ['kill-server', 'kill-session'].includes(a)) && args[args.indexOf('-L') + 1] === socket)
     reasons.push(`tmux -L ${socket} holds the real agents and the controller`);
-  if (/launchctl\b.*\b(bootout|unload|remove|kill|kickstart|stop)\b.*taskboard/i.test(p))
+  if (bin === 'launchctl' && args.some(a => /^(bootout|unload|remove|kill|kickstart|stop)$/.test(a)) && args.some(a => /taskboard/i.test(a)))
     reasons.push('this stops the Taskboard login service');
-  if (/\bdoctor(\.mjs)?\b.*--repair\b/.test(p))
+  if ((runsShellScript(p, 'doctor') || bin === 'doctor') && args.includes('--repair'))
     reasons.push('the doctor repair loads or restarts the Taskboard login service; only the user runs it, from the Taskboard app or Terminal');
 }
 // A command that only reads files (cat, grep and similar, also joined with |) may name the release, rollback and restart
@@ -102,7 +108,7 @@ function releaseForm(c) {
   return { ref, noSwitch };
 }
 const clock = ms => new Date(ms).toTimeString().slice(0, 8);
-const STOP = 'Do not try another way to run it. Stop and tell the user what this message says';
+const STOP = 'Do not bypass this refusal. Report this call to the user. Continue the authorized local work and finish the report';
 // '' when the release command may run (the permit is then deleted), otherwise the case and what to do
 function releaseRefusal(taskId, now = Date.now()) {
   if (!/^[a-zA-Z0-9_-]+$/.test(taskId) || taskId === 'controller')
@@ -124,44 +130,52 @@ function releaseRefusal(taskId, now = Date.now()) {
   return '';
 }
 // any package manager that runs the release or rollback script (also npm run release, yarn release), or the script file
-const release = !readOnly && /\b(pnpm|npm|yarn|bun|npx)\b[^;&|\n]*\srelease\b|\brelease\.mjs\b/.test(cmd);
-const rollback = !readOnly && /\b(pnpm|npm|yarn|bun|npx)\b[^;&|\n]*\srollback\b|\brollback\.mjs\b/.test(cmd);
+const release = runsShellScript(cmd, 'release') || calls.some(w => runsScript(w, 'release'));
+const rollback = runsShellScript(cmd, 'rollback') || calls.some(w => runsScript(w, 'rollback'));
 // reasons that are complete without the text about stopping the server
 const ownText = [];
-if (process.env.TASK_ID && /\bgit\b[^;&|\n]*\bpush\b/.test(cmd))
+if (calls.some(w => w[0] === 'tb' && w[1] === 'git' && ['push-request', 'push-result'].includes(w[2])))
+  ownText.push('use the installed tb command for a push request or result');
+if (process.env.TASK_ID && calls.some(w => w[0] === 'git' && gitOperation(w).sub === 'push'))
   ownText.push('use `tb git push-request` for pushes. A force push gets its own approval card');
-if (/\bgh\b[^;&|\n]*\bpr\s+(create|merge)\b/.test(cmd))
+if (calls.some(w => w[0] === 'gh' && w.some((a, i) => a === 'pr' && ['create', 'merge'].includes(w[i + 1]))))
   ownText.push('use `tb git pr-request` or `tb git pr-merge-request`. Each one gets an approval card');
 // Only the server writes the urgent mode records and their audit log. A command that only reads them may run.
 const urgentPaths = [join(tbDir, 'urgent'), join(tbDir, 'urgent-mode.jsonl')];
-if (process.env.TASK_ID && !readOnly && (/\.taskboard\/urgent(\b|-mode)/.test(cmd) || urgentPaths.some(path => cmd.includes(path))))
+const urgentTarget = value => /^(?:~|\$HOME|\/Users\/[^/]+)\/\.taskboard\/urgent(?:\/|-mode|$)/.test(value) || urgentPaths.some(path => value === path || value.startsWith(path + '/'));
+if (process.env.TASK_ID && !readOnly && calls.some(([bin, ...args]) =>
+    ['cp', 'mv', 'rm', 'tee', 'touch', 'mkdir', 'install', 'rsync', 'truncate', 'chmod', 'chown', 'ln', 'write-file'].includes(bin) && args.some(urgentTarget) ||
+    args.some((arg, i) => arg === '>' && urgentTarget(args[i + 1] || ''))))
   ownText.push(`only the user or the controller turns urgent mode on or off, with Taskboard (the dashboard or \`tb urgent\` in the controller). A task cannot change the urgent mode files. ${STOP}`);
 if (release) { const why = releaseRefusal(process.env.TASK_ID || ''); if (why) ownText.push(why); }
 if (rollback) reasons.push('a Taskboard rollback needs the user to run it');
+if (runsServerStop(cmd, tbDir)) reasons.push('only the user stops the running Taskboard server. Use pnpm sandbox stop for a sandbox');
 // Only the user restarts Taskboard. The controller may run `tb restart`: it only puts an Approve card on the dashboard.
-if ((!readOnly && /scripts\/restart\.mjs/.test(cmd)) || (process.env.TASK_ID !== 'controller' && /(^|[\s;&|(\/])tb\s+restart\b/.test(cmd)))
+if (runsShellScript(cmd, 'restart') || calls.some(w => runsScript(w, 'restart')) || (process.env.TASK_ID !== 'controller' && calls.some(w => w[0] === 'tb' && w[1] === 'restart')))
   reasons.push('only the user restarts Taskboard, from the dashboard or a terminal');
 // deleting or moving the real Taskboard's own folder (sandboxes live in the system temp folder instead)
-if (/\b(rm|mv|rsync\s+--delete)\b[^\n]*(~|\$HOME|\/Users\/[^/\s]+)\/\.taskboard(\/(app|releases|server\.pid|token|hooks|bin))?(\/?\s|\/?$)/.test(cmd)) reasons.push('this deletes or moves the real Taskboard\'s folder ~/.taskboard');
+if (calls.some(([bin, ...args]) => ['rm', 'mv', 'rsync'].includes(bin) && args.some(a => /^(~|\$HOME|\/Users\/[^/]+)\/\.taskboard(?:\/|$)/.test(a)))) reasons.push('this deletes or moves the real Taskboard\'s folder ~/.taskboard');
 // whole command: any stop command that names the server's pid file, entry point, port or tmux socket, also through
 // indirections such as kill $(cat ~/.taskboard/server.pid) or pgrep -f server/index | xargs kill. Paths of sandboxes
 // and worktrees (taskboard-sandbox, taskboard-wt) are not the real server and are ignored.
 {
   // tmux kill-server / kill-session are judged by the socket rule above; a bare "taskboard" (the repository folder
   // ~/taskboard) is not the server
-  const c = cmd.replace(/taskboard-(sandbox|wt)[^\s'"]*/g, '').replace(/\bkill-(server|session|pane|window)\b/g, '');
-  if (/\b(kill|pkill|killall)\b/.test(c) && /server\.pid|server[\\/\[\]]*index|index\.ts|\btsx\b|\.taskboard\b/i.test(c)) reasons.push('this stop command names the real Taskboard server');
+  const c = calls.filter(w => ['kill', 'pkill', 'killall', 'pgrep', 'cat', 'lsof', 'fuser'].includes(w[0])).map(w => w.join(' ')).join(' ').replace(/taskboard-(sandbox|wt)[^\s'"]*/g, '');
+  if (calls.some(w => ['kill', 'pkill', 'killall'].includes(w[0])) && /server\.pid|server[\\/\[\]]*index|index\.ts|\btsx\b|\.taskboard\b/i.test(c)) reasons.push('this stop command names the real Taskboard server');
 }
 // whole command: killing whatever listens on the real server's port (lsof -ti tcp:4317 | xargs kill, fuser -k)
 const port = process.env.TASKBOARD_PORT || '4317';
-if (/\bkill\b|fuser\s+-k/.test(cmd) && new RegExp(`[:=\\s]${port}\\b`).test(cmd)) reasons.push(`port ${port} is the real Taskboard server`);
+if (calls.some(w => w[0] === 'kill' || w[0] === 'fuser' && w.includes('-k')) && calls.filter(w => ['kill', 'lsof', 'fuser'].includes(w[0])).some(w => new RegExp(`[:=\\s]${port}\\b`).test(w.join(' ')))) reasons.push(`port ${port} is the real Taskboard server`);
+if (calls.some(productionWrite)) ownText.push('a production write or deploy needs its own user decision. Continue local tests and report preparation');
 if (reasons.length || ownText.length) {
   const gitOnly = reasons.length === 1 && (reasons[0].startsWith('run `tb git') || reasons[0].startsWith('to merge a base') || reasons[0].startsWith('this task has no worktree'));
   if (gitOnly) ownText.unshift(reasons.pop());
   const stops = [...new Set(reasons)];
   const reason = 'Blocked by Taskboard: ' + [...ownText.map(r => r + '.'), ...(stops.length ? [`${stops.join('; ')}. You are running inside Taskboard, so stopping it would cut off you and every other agent. ` +
       'To stop a test server, kill it by the process id you started it with (for example `... & PID=$!` and later `kill $PID`), or run `pnpm stop` with that server\'s TASKBOARD_DIR set. ' +
-      'Test servers must use their own TASKBOARD_PORT, TASKBOARD_DIR, TASKBOARD_VAULT and TASKBOARD_TMUX_SOCKET (see CLAUDE.md in the Taskboard repository).'] : [])].join(' ');
+      'Test servers must use their own TASKBOARD_PORT, TASKBOARD_DIR, TASKBOARD_VAULT and TASKBOARD_TMUX_SOCKET (see CLAUDE.md in the Taskboard repository).'] : [])].join(' ') +
+      ` Refused call: ${JSON.stringify(cmd)}. Only this call was refused. Continue authorized local work. Finish the report.\nYou may continue:\n- File reads.\n- Source edits within your scope.\n- Local tests.\n- Reports.\nFor a Node report script, use tb suggest with --local-script. Do not bypass a protected operation. A task cannot approve a card.`;
   // agy: no output means "no decision" (the normal approval question follows); so we print only a denial
   process.stdout.write(JSON.stringify(agy ? { decision: 'deny', reason }
     : { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } }));

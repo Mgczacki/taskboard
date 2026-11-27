@@ -187,13 +187,13 @@ const HELP = `tb — Taskboard command line
   tb release-result ID [--wait] [--timeout 540]
                                      the decision on that card. After the approval, run the approved command within
                                      five minutes, alone on the command line: pnpm release, or pnpm release --ref <branch>
-                                     (--no-switch may be added). If the guard blocks it, stop and tell the user
+                                     (--no-switch may be added). Report a guard refusal and continue authorized local work
   tb restart [--yes]                 the user: restart the installed Taskboard (no release); the controller: ask on the dashboard
   tb permit request --reason "text" --command "program args" [--cwd PATH] [--timeout 30] [--network]
   tb permit request --reason "text" --steps steps.json
   tb permit run-request <name> --reason "text" --risk "text" --command "script command" [--cwd PATH] [--network]
                                      ask the user to start one exact script under process supervision
-  tb suggest "program args" --why "reason" [--cwd PATH] [--env NAME=VALUE] [--unset-env NAME] [--risk "risk"] [--timeout 30]
+  tb suggest "program args" --why "reason" [--cwd PATH] [--env NAME=VALUE] [--unset-env NAME] [--risk "risk"] [--timeout 30] [--local-script]
   tb suggest --steps steps.json --why "reason" [--risk "risk"]
   tb permit result ID [--wait] | tb permit list
   tb permit withdraw ID [--reason "text"]   cancel your own pending permit; nothing runs and its card closes
@@ -879,7 +879,7 @@ switch (cmd) {
       const a = await call('GET', `/api/approvals/${encodeURIComponent(id)}`);
       if (a.action !== 'release') { console.error(`tb release-result: ${id} is not a release card`); process.exit(1); }
       if (wait && ['pending', 'running'].includes(a.state) && Date.now() < end) { await sleep(2000); continue; }
-      if (a.state === 'approved') console.log(`Approved. ${a.result} The approved card authorizes that command. Run it now, alone on the command line. Do not wait for expiry or ask for the same approval again. If the guard blocks it, stop and tell the user what the guard said.`);
+      if (a.state === 'approved') console.log(`Approved. ${a.result} The approved card authorizes that command. Run it now, alone on the command line. Do not wait for expiry or ask for the same approval again. If the guard refuses it, report that call and its reason. Do not retry the release. Continue authorized local work and finish the report.`);
       else if (a.state === 'pending') console.log(`The card still waits for the user.${wait ? ' Run this command again to keep waiting.' : ''}`);
       else console.log(`${a.state}: ${a.result || ''} Do not run the release. Tell the user.`);
       if (a.state !== 'approved') process.exitCode = a.state === 'pending' ? 2 : 3;
@@ -1048,9 +1048,10 @@ switch (cmd) {
       const timeout = flag('--timeout');
       const stepsFile = flag('--steps');
       const network = has('--network');
+      const localScript = has('--local-script');
       if (!reason || (!!command === !!stepsFile)) { console.error('tb permit request: give --reason and exactly one of --command or --steps'); process.exit(1); }
-      if (stepsFile && (cwd || timeout || network || Object.keys(settings).length)) { console.error('tb permit request: set the directory, environment, timeout, and network flag in each step'); process.exit(1); }
-      const inputs = stepsFile ? JSON.parse(readFileSync(resolve(stepsFile), 'utf8')).steps : [{ command, ...(timeout ? { timeoutSeconds: Number(timeout) } : {}), network, ...settings }];
+      if (stepsFile && (cwd || timeout || network || localScript || Object.keys(settings).length)) { console.error('tb permit request: set the directory, environment, timeout, network, and localScript flags in each step'); process.exit(1); }
+      const inputs = stepsFile ? JSON.parse(readFileSync(resolve(stepsFile), 'utf8')).steps : [{ command, ...(timeout ? { timeoutSeconds: Number(timeout) } : {}), network, ...(localScript ? { localScript: true } : {}), ...settings }];
       if (!Array.isArray(inputs)) { console.error('tb permit request: the steps file must contain a steps list.'); process.exit(1); }
       const steps = inputs.map(step => ({ ...step, cwd: resolve(step.cwd || cwd || process.cwd()) }));
       const result = await call('POST', '/api/permits', { reason, steps, risk });

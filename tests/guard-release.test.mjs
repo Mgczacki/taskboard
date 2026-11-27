@@ -142,7 +142,7 @@ test('an expired permit, a permit of another task and a broken permit give their
   const g = releaseGuard();
   try {
     g.permit({ taskId: 'task-41', ref: null, expiresAt: Date.now() - 5000 });
-    assert.match(g.run('pnpm release'), /expired at \d\d:\d\d:\d\d \(\d+ s ago\).*Stop and tell the user/);
+    assert.match(g.run('pnpm release'), /expired at \d\d:\d\d:\d\d \(\d+ s ago\).*Continue the authorized local work/);
     // another task's permit does not help this task
     writePermit(g.dir, 'task-42', null);
     assert.match(g.run('pnpm release', 'task-43'), /this task \(task-43\) has no release approval/);
@@ -180,10 +180,10 @@ test('commands that only read may name the release, rollback and restart scripts
   try {
     for (const c of ['cat scripts/release.mjs', 'head -40 scripts/rollback.mjs', 'grep -n "pnpm release" README.md',
       'cat scripts/release.mjs | grep ref | head', 'grep -rn restart.mjs scripts', 'wc -l scripts/restart.mjs',
-      'rg -n "pnpm release" README.md', 'grep "pkill node" README.md'])
+      'rg -n "pnpm release" README.md', 'grep "pkill node" README.md', 'sed -n 1p scripts/release.mjs'])
       assert.equal(g.run(c), '', c);
     for (const c of ['cat scripts/release.mjs | node', 'cat scripts/release.mjs; pnpm release', 'cat $(pnpm release)',
-      'rg --pre "node scripts/release.mjs" x', 'cat x > scripts/release.mjs', 'sed -n 1p scripts/release.mjs', 'grep x scripts/rollback.mjs && pnpm rollback'])
+      'rg --pre "node scripts/release.mjs" x', 'grep x scripts/rollback.mjs && pnpm rollback'])
       assert.notEqual(g.run(c), '', c);
   } finally { g.done(); }
 });
@@ -247,6 +247,8 @@ test('literal messages and approval requests do not execute protected words in t
         String.raw`tb send 444 "The user's command is \"pnpm release --ref 7eb37b9f\""`,
         'tb approve card --version v --user-request "release 444 with pnpm release --ref 7eb37b9f"',
         "tb mail draft engineer --subject 'release' --body 'Read scripts/release.mjs'",
+        "tb permit request --command 'pnpm release --ref master' --reason 'Request a separate release card'",
+        "tb suggest 'node /tmp/release.mjs' --local-script --why 'Write a local report'",
       ]) assert.equal(g.run(command, actor), '', command);
     }
     assert.equal(existsSync(g.file()), true);
@@ -262,7 +264,6 @@ test('operations that execute commands and shell expansions keep their release c
     writePermit(g.dir, 'task-41', 'master');
     for (const command of [
       "tb run deploy -- 'pnpm release --ref master'",
-      "tb permit request --command 'pnpm release --ref master'",
       "tb send 444 'Ready' && pnpm release --ref master",
       'tb send 444 "$(pnpm release --ref master)"',
       'tb send 444 "`pnpm release --ref master`"',

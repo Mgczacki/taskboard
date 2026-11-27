@@ -24,6 +24,14 @@ test('the dashboard renders reviewed settings apart from the command', () => {
   assert.equal(renderToStaticMarkup(createElement(PermitSettings, { step: { command: 'pwd', cwd: '/work', timeoutSeconds: 30, network: false, state: 'pending' } })), '');
 });
 
+test('the dashboard shows the limits of a local script before approval', () => {
+  const markup = renderToStaticMarkup(createElement(PermitSettings, { step: {
+    command: 'node report.mjs', cwd: '/work', timeoutSeconds: 30, network: false, localScript: true, state: 'pending',
+  } }));
+  assert.match(markup, /Writes only this task’s outbox/);
+  assert.match(markup, /No network, child processes, or process signals/);
+});
+
 test('the dashboard explains directory conflicts without suggesting a bypass', () => {
   const correction = 'Use --cwd with this task\'s attached worktree: /work/attached. Run tb scope to inspect the attached worktrees.';
   const text = refusalText({ detail: 'Refused directory', payload: { command: 'pwd', canPermit: false, diagnostic: {
