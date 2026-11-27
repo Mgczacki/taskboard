@@ -15,6 +15,7 @@ import { dashboardComputerUseGrant } from './computer-use.ts';
 import { HOME, HOST, machineId, PORT, ROOT, STABLE_DIR, TB_DIR, TOKEN, URL_BASE } from './config.ts';
 import * as docs from './docs.ts';
 import * as releasePermit from './release-permit.ts';
+import { runsScript } from './hooks/script-command.mjs';
 import * as events from './events.ts';
 import * as groups from './groups.ts';
 import * as links from './links.ts';
@@ -801,7 +802,7 @@ function refusePermitValidation(res: express.Response, task: store.Task, error: 
   if (!(error instanceof permits.PermitValidationError)) return false;
   // Invalid input can contain secrets. Store the error without the submitted command or settings.
   const message = permits.redactOutput(error.message);
-  const correction = error.diagnostic?.correction || 'Correct the request using the error above, then submit it again.';
+  const correction = error.diagnostic?.correction || 'Correct this request using the error above. Continue authorized local work and finish the report.';
   const card = approvals.request({ actor: task.id, action: 'tool-refusal', summary: 'review a refused permit',
     detail: message, payload: { canPermit: false, reason: message, permitValidation: true, diagnostic: error.diagnostic, correction } }, async () => correction);
   store.update(task.id, { status: 'needs-you', ask: 'Refused: correct the permit request.', statusSource: message });
@@ -810,7 +811,7 @@ function refusePermitValidation(res: express.Response, task: store.Task, error: 
 }
 function createPermit(task: store.Task, reason: string, steps: permits.StepInput[], refusalId?: string, statedRisk = '', externalAction?: { action: 'deploy' | 'catalog-release'; covers: Record<string, string>; target: string }) {
     const actor = task.id;
-    const p = permits.request(task, reason, steps, refusalId, statedRisk);
+    const p = permits.request(task, reason, steps, refusalId, statedRisk, !!externalAction);
     const card = approvals.request({ actor, action: externalAction ? 'external' : 'permit', summary: externalAction ? `${externalAction.action} ${externalAction.target}` : `run ${p.steps.length} approved step${p.steps.length === 1 ? '' : 's'}`,
       detail: `Task: #${task.num} ${task.title}\nReason: ${p.reason}\n${p.steps.map((s, i) => `${i + 1}. ${s.command}\n   ${s.cwd} · ${s.timeoutSeconds} s · Network: ${s.network ? 'Yes' : 'No'}\n${permits.settingsDetail(s)}`).join('\n')}\nSHA-256: ${p.stepHash}\n${p.expiresAt ? `Expires: ${p.expiresAt}` : ''}`,
       payload: { permitId: p.id }, ...(p.expiresAt ? { validUntil: p.expiresAt } : {}), ...(externalAction ? { target: externalAction.target, covers: externalAction.covers } : {}) }, async decider => {
@@ -866,7 +867,7 @@ app.post('/api/permits', (req, res) => {
       store.update(actor, { status: 'needs-you', ask: `Refused: ${command}`, statusSource: message });
       return res.status(400).json({ error: message, refusal: card.id });
     }
-    if (/^(pnpm|npm|yarn)$/.test(argv[0] || '') && argv.includes('release')) {
+    if (!steps[0].localScript && runsScript(argv, 'release')) {
       const i = argv.indexOf('--ref');
       let ref: string | null;
       try { ref = releasePermit.checkRef(i < 0 ? null : argv[i + 1] ?? ''); } catch (e) { return fail(res, e); }

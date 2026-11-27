@@ -19,8 +19,81 @@ type Task = import('../server/store.ts').Task;
 mkdirSync(join(root, 'work'), { recursive: true });
 mkdirSync(join(root, 'tbdir', 'hooks'), { recursive: true });
 copyFileSync(fileURLToPath(new URL('../server/hooks/guard.mjs', import.meta.url)), GUARD_SCRIPT);
+copyFileSync(fileURLToPath(new URL('../server/hooks/script-command.mjs', import.meta.url)), join(root, 'tbdir', 'hooks', 'script-command.mjs'));
 const freshTask = (id: string) => { mkdirSync(taskDir(id), { recursive: true }); return { id, num: 1, agent: 'codex', cwd: join(root, 'work'), folder: join(root, 'work'), role: undefined, worktree: false } as Task; };
 after(() => rmSync(root, { recursive: true, force: true }));
+
+test('task 822 report prose is data and the local mode remains part of the approved hash', async () => {
+  const task = freshTask('report-822'), own = taskDir(task.id), outbox = join(own, 'outbox');
+  mkdirSync(outbox);
+  const script = join(own, 'report-generator.mjs');
+  writeFileSync(script, `import fs from 'node:fs';
+    const out=${JSON.stringify(outbox)};
+    fs.writeFileSync(out+'/phase-1-processes.md', 'I read the server PID from /Users/mariogarrido/.taskboard/server.pid.');
+    fs.writeFileSync(out+'/phase-1-and-2-report.md', 'A later Taskboard release and restart are needed. Use pnpm release only after approval.');`);
+  const command = `node ${script}`;
+  assert.doesNotThrow(() => permits.validate(task, [{ command }]));
+  const p = permits.request(task, 'Write the two reports', [{ command, localScript: true }]);
+  assert.equal(p.state, 'pending');
+  assert.equal(p.steps[0].localScript, true);
+  assert.match(p.steps[0].scriptHash!, /^[a-f0-9]{64}$/);
+  const namedRelease = join(own, 'release.mjs');
+  writeFileSync(namedRelease, 'console.log("local report");');
+  assert.doesNotThrow(() => permits.validate(task, [{ command: `node ${namedRelease}`, localScript: true }]));
+  mkdirSync(join(task.cwd, 'scripts'), { recursive: true });
+  writeFileSync(join(task.cwd, 'package.json'), JSON.stringify({ name: 'taskboard' }));
+  const operation = join(task.cwd, 'scripts', 'release.mjs'), alias = join(own, 'operation.mjs');
+  writeFileSync(operation, 'console.log("operation fixture");');
+  symlinkSync(operation, alias);
+  for (const path of [operation, alias])
+    assert.throws(() => permits.validate(task, [{ command: `node ${path}`, cwd: own, localScript: true }]), /protected Taskboard operation/);
+  p.steps[0].localScript = false;
+  let ran = false;
+  await permits.run(p, task, 'user', '', '', async () => { ran = true; return { code: 0, signal: null, output: '' }; });
+  assert.equal(ran, false);
+  assert.equal(p.state, 'failed');
+  assert.match(p.error!, /approved steps changed/i);
+  for (const input of [
+    { command, localScript: true, network: true },
+    { command, localScript: true, env: { GH_CONFIG_DIR: '/tmp/config' } },
+    { command: `node --allow-child-process ${script}`, localScript: true },
+    { command: 'pnpm release', localScript: true },
+    { command: 'node scripts/restart.mjs', localScript: true },
+  ]) assert.throws(() => permits.validate(task, [input]));
+});
+
+test('task 774 test-name arguments and source reads pass permit checks', () => {
+  const task = freshTask('test-774');
+  for (const command of [
+    'pnpm test -- --test-name-pattern "release approval"',
+    'npm test -- "pnpm release"', 'yarn test release', 'bun test release', 'npx tsx --test release',
+    'git show HEAD:scripts/release.mjs', 'echo "git push; gh pr merge; pkill node; server.pid"',
+    'git branch --contains 34b4cc51', 'git stash list', 'git worktree list',
+    `echo ${process.env.TASKBOARD_DIR}/urgent/example.json`,
+    `rg '${process.env.TASKBOARD_DIR}/urgent/example.json' README.md`,
+  ]) assert.doesNotThrow(() => permits.validate(task, [{ command }]), command);
+  for (const command of [
+    'pnpm release', 'pnpm rollback', 'node scripts/restart.mjs',
+    'git push origin master', 'gh pr merge 42', 'pnpm deploy --env production',
+    'aws ecs update-service --cluster prod', 'kubectl apply -f prod.yaml',
+    'psql postgres://production/app -c "UPDATE users SET enabled=true"',
+  ]) assert.throws(() => permits.validate(task, [{ command }]), command);
+});
+
+test('Python and JavaScript syntax checks distinguish report text from process calls', () => {
+  const task = freshTask('script-syntax');
+  for (const [file, source] of [
+    ['report.py', 'from pathlib import Path\nPath("report.md").write_text("pnpm release and gh pr merge")\n'],
+    ['report.mjs', 'import fs from "node:fs"; fs.writeFileSync("report.md", "pnpm release and gh pr merge");'],
+  ]) {
+    writeFileSync(join(task.cwd, file), source);
+    assert.doesNotThrow(() => permits.validate(task, [{ command: `${file.endsWith('.py') ? 'python3' : 'node'} ${file}` }]));
+  }
+  for (const command of ['pnpm release', 'pnpm rollback', 'node scripts/restart.mjs', 'gh pr merge 42', 'git push origin master', 'pnpm deploy --env production']) {
+    writeFileSync(join(task.cwd, 'process.py'), `import subprocess\nsubprocess.run(${JSON.stringify(command)}, shell=True)\n`);
+    assert.throws(() => permits.validate(task, [{ command: 'python3 process.py' }]), /user decision/);
+  }
+});
 
 test('scripts cannot wrap operations that need their own user decision', () => {
   const task = freshTask('protected-script');
@@ -30,6 +103,34 @@ test('scripts cannot wrap operations that need their own user decision', () => {
     writeFileSync(join(task.cwd, 'protected.sh'), `${command}\n`);
     assert.throws(() => permits.validate(task, [{ command: 'bash protected.sh', cwd: task.cwd }]), /separate user decision|protected Taskboard operation/, command);
   }
+  for (const command of [`kill $(cat ${process.env.TASKBOARD_DIR}/server.pid)`, `echo changed > ${process.env.TASKBOARD_DIR}/release-permits/example.json`, 'tmux -L taskboard kill-server']) {
+    writeFileSync(join(task.cwd, 'protected.sh'), `${command}\n`);
+    assert.throws(() => permits.validate(task, [{ command: 'bash protected.sh' }]), /protected Taskboard operation/, command);
+  }
+});
+
+test('production commands run only through their matching external approval', async () => {
+  const command = '/opt/homebrew/bin/aws ecs update-service --cluster production --service example';
+  const task = freshTask('external-production');
+  assert.throws(() => permits.request(task, 'Local route', [{ command }]), /own user decision/);
+  const unapproved = permits.request(task, 'External route', [{ command }], undefined, '', true);
+  let ran = false;
+  await permits.run(unapproved, task, 'user', '', '', async () => { ran = true; return { code: 0, signal: null, output: '' }; });
+  assert.equal(ran, false);
+  assert.equal(unapproved.state, 'failed');
+  const approvedTask = freshTask('external-production-approved');
+  const p = permits.request(approvedTask, 'External route', [{ command }], undefined, '', true);
+  const card = approvals.request({ actor: approvedTask.id, action: 'external', summary: 'Deploy fixture', detail: command,
+    payload: { permitId: p.id }, target: 'fixture@production', covers: { environment: 'production' } }, async decider => {
+    await permits.run(p, approvedTask, decider.by, '', '', async () => { ran = true; return { code: 0, signal: null, output: '' }; });
+    return p.state;
+  });
+  permits.attachApproval(p, card.id);
+  assert.equal(p.state, 'pending');
+  assert.equal(ran, false);
+  await approvals.decide(card.id, true);
+  assert.equal(p.state, 'succeeded');
+  assert.equal(ran, true);
 });
 
 test('rolling permit windows use the current setting and give the next request time', () => {

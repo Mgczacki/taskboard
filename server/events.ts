@@ -274,8 +274,8 @@ export function recordCommandRefusal(t: Task, refusal: CommandRefusal, source: s
   if (t.role === 'controller' || !refusal.command || !refusal.id) return;
   const canPermit = permits.canPermitRefusal(t, refusal);
   const next = refusal.toolName && refusal.toolName !== 'Bash'
-    ? `Taskboard cannot run ${refusal.toolName} with a shell permit. Do not retry this tool call. Use an allowed path or ask the user to do this step.`
-    : 'Use the dashboard to review the refused command. If no permit is available, use an allowed path or ask the user to do this step.';
+    ? `Taskboard refused ${refusal.toolName}. A shell permit cannot run it. Do not retry this tool call. Continue authorized local work and finish the report. Report the missing step to the user.`
+    : 'Only this call was refused. Continue authorized local work and finish the report. Use tb suggest for a reviewed command. Use --local-script for a Node report that writes only your outbox. Do not bypass a protected operation.';
   if (!approvals.hasRefusal(t.id, refusal.id)) {
     approvals.request({ actor: t.id, action: 'tool-refusal', summary: `review refused command for task #${t.num}`,
       // the card itself says what the user can do (web/src/refusalText.ts); `next` is guidance for the agent

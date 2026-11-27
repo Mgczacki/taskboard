@@ -1,5 +1,5 @@
 import { TestResources } from './helpers/test-resources.ts';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createServer } from 'node:net';
 import { mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -29,6 +29,8 @@ test('CLI and routes review exact settings and explain a conflicting directory',
   });
   const base = `http://127.0.0.1:${port}`;
   const socket = resources.socket(`tb-permit-review-${port}`);
+  // Reconcile must see this test task's session while the test checks its status.
+  execFileSync('tmux', ['-L', socket, 'new-session', '-d', '-s', 't216', '-c', attached, 'sleep 600']);
   const child = resources.child(spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { env: { ...clean, TASKBOARD_PORT: String(port), TASKBOARD_DIR: tbdir, TASKBOARD_VAULT: vault, TASKBOARD_TMUX_SOCKET: socket, TASKBOARD_MACHINE_NAME: 'permit-test' }, detached: true, stdio: ['ignore', 'pipe', 'pipe'] }));
   let output = '';
   child.stdout.on('data', data => { output += data; }); child.stderr.on('data', data => { output += data; });
@@ -81,6 +83,20 @@ test('CLI and routes review exact settings and explain a conflicting directory',
     assert.equal(decided.data.approvedBy, 'controller');
     assert.equal((await permitCard(p.id)).decidedBy.by, 'controller');
     assert.equal((await post(`/api/permits/${p.id}/controller-approve`, {}, controllerHeaders)).status, 403);
+
+    const own = join(vault, 'tasks', 't216');
+    mkdirSync(join(own, 'outbox'));
+    const report = join(own, 'report-generator.mjs');
+    writeFileSync(report, 'console.log("pnpm release is report text");');
+    const local = await cli(['suggest', `node ${report}`, '--local-script', '--why', 'Write the local report']);
+    assert.equal(local.code, 0, local.out);
+    const localPermit = await latest();
+    assert.equal(localPermit.steps[0].localScript, true);
+    assert.equal(localPermit.state, 'pending');
+    assert.ok((await permitCard(localPermit.id)).detail.includes('Writes only the task outbox'));
+    assert.equal((await post(`/api/permits/${localPermit.id}/controller-approve`, {}, taskHeaders)).status, 403);
+    const withdrawn = await cli(['permit', 'withdraw', localPermit.id, '--reason', 'The local test only checks the request']);
+    assert.equal(withdrawn.code, 0, withdrawn.out);
 
     // A rejected parent directory makes a card with a correction and no execution button.
     const rejected = await cli(['suggest', 'pwd', '--why', 'Inspect the parent', '--cwd', parent]);

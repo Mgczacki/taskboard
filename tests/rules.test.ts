@@ -84,6 +84,16 @@ test('Codex release guidance keeps the dashboard permit and requests sandbox acc
   assert.doesNotMatch(command.join(' '), /sandbox_workspace_write\.writable_roots=.*\.taskboard\/releases/);
 });
 
+test('each agent keeps local work after a refusal and preserves the release decision', () => {
+  for (const agent of ['claude', 'codex', 'antigravity'] as const) {
+    const text = agents.taskInstructions(task(agent, 908));
+    assert.match(text, /Report a refused call\. Continue authorized local work and finish the report\./);
+    assert.match(text, /Do not bypass the refusal/);
+    assert.match(text, /The release still needs its approved card/);
+    assert.doesNotMatch(text, /guard blocks a command, stop/);
+  }
+});
+
 test('task rules at the maximum length fit, and a long prompt moves them into a copy in the task folder', { timeout: 30000 }, async () => {
   const t = task('claude', 904);
   try {
